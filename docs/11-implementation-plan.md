@@ -1,0 +1,497 @@
+# 11 — Implementation Plan
+
+**Shape:** 6 milestones, ~6 weeks with 2 engineers (or ~10 weeks with 1). Each milestone
+ends in something that runs and is demonstrable — never in "the interfaces are done".
+
+**Task format.** Every task states: *What · Why · Where · How · Depends · Contract ·
+Failure · Test · Done.* If two engineers could read a task and build different things, the
+task is not finished being written — raise it rather than guessing.
+
+**Ordering rule.** M0 is a vertical slice, not a foundation layer. Interfaces are extracted
+from working code, not written before it. This is deliberate: interfaces designed in the
+abstract are wrong in ways you only discover when something calls them.
+
+---
+
+## Dependency graph
+
+```mermaid
+graph TD
+  M0["M0 · Walking skeleton"] --> M1["M1 · Safety & budget"]
+  M0 --> M2["M2 · Cost & context"]
+  M1 --> M3["M3 · Observability & durability"]
+  M2 --> M3
+  M3 --> M4["M4 · Extensibility"]
+  M4 --> M5["M5 · DX & release"]
+
+  T00["T-0.1 repo/CI"] --> T01["T-0.2 @tool + schema"]
+  T01 --> T02["T-0.3 ToolSet"]
+  T00 --> T03["T-0.4 provider + FakeModel"]
+  T02 --> T04["T-0.5 RunEngine loop"]
+  T03 --> T04
+  T04 --> T05["T-0.6 Agent + Result"]
+  T05 --> T06["T-0.7 testing kit"]
+```
+
+M1 and M2 are independent after M0 and can run in parallel across two engineers. That is
+the intended split: one takes safety, one takes cost.
+
+---
+
+# M0 — Walking skeleton  *(week 1)*
+
+**Goal.** `examples/01_hello.py` runs a real agent, with a real tool, against the real API,
+and the same example runs green in CI against `FakeModel`. Nothing else.
+
+**Why first.** A vertical slice on day 1 means every later task integrates into something
+that already works. It also validates the riskiest assumption — that the loop shape is
+right — before anything is built on top of it.
+
+### T-0.1 — Repository, tooling, CI
+
+- **What.** `src/` layout, `pyproject.toml`, `uv` lock, ruff, mypy strict, pytest, GitHub Actions on 3.11/3.12/3.13.
+- **Why.** Every later gate hangs off this. Retrofitting `mypy --strict` at week 5 costs days.
+- **Where.** Repo root, `.github/workflows/ci.yml`.
+- **How.** PEP 621 metadata; runtime deps exactly `anthropic`, `typing-extensions`, `jsonschema`; extras `otel`/`cli`/`dev`; ship `py.typed`; commit the lockfile.
+- **Depends.** —
+- **Contract.** `uv run pytest`, `uv run mypy --strict src`, `uv run ruff check` all pass on an empty package.
+- **Failure.** CI red blocks merge. No exceptions, no `# type: ignore` without a linked issue.
+- **Test.** CI green on a trivial `test_imports`.
+- **Done.** A PR from a fork runs the full matrix green in < 3 min.
+
+### T-0.2 — `@tool` decorator and schema generation ★
+
+- **What.** `@tool(effect=...)` turning a plain function into a `ToolSpec`, with JSON Schema derived from type hints.
+- **Why.** The single most-used surface in the library. If this is awkward, nothing else matters.
+- **Where.** `tools/__init__.py`, `tools/schema.py`.
+- **How.** `inspect.signature` + `typing.get_type_hints(include_extras=True)`. Docstring summary → `description`; Google/NumPy-style `Args:` → per-property descriptions. Emit `additionalProperties: false` and a complete `required` list so the schema is `strict`-compatible. Sync functions wrapped so `ToolSpec.fn` is always awaitable. Record `source` as `file:line` for error messages.
+- **Depends.** T-0.1
+- **Contract.** [§04.1](04-interfaces.md#1-tools) verbatim.
+- **Failure.** Missing `effect` → `MissingEffectError` at decoration, with the four options and a name-based guess. Unsupported type → `ToolSchemaError` naming parameter and type. Bad name → `ToolSchemaError`. Missing/empty docstring → `ToolSchemaError`. **All at import; none at run time.**
+- **Test.** Supported-type matrix (16 cases) → expected schema. Unsupported-type matrix (8 cases) → `ToolSchemaError` mentioning the parameter. Missing effect → message contains all four options. Sync and async both yield awaitable `fn`. Property P-4.
+- **Done.** `@tool(effect="read") def add(a: int, b: int) -> int` produces the exact expected schema; every negative case raises at import with a message that names the offending symbol.
+
+### T-0.3 — `ToolSet`
+
+- **What.** Frozen, name-sorted collection with canonical serialization.
+- **Why.** Deterministic tool rendering is a precondition for caching (ADR-004). Sorting here means the assembler cannot get it wrong later.
+- **Where.** `tools/registry.py`.
+- **How.** `frozenset`-backed with a sorted tuple view; `to_api()` returns tools sorted by name, serialized with `sort_keys=True` and fixed separators.
+- **Depends.** T-0.2
+- **Contract.** `to_api()` is byte-identical across processes and interpreter runs.
+- **Failure.** Duplicate name → `DuplicateToolError` naming both `source` locations.
+- **Test.** Property P-5. Insertion order does not affect output. Duplicate raises with both paths in the message.
+- **Done.** Two `ToolSet`s built in different orders from the same tools serialize identically.
+
+### T-0.4 — `ModelProvider` protocol, Anthropic adapter, `FakeModel`
+
+- **What.** The provider seam plus its two first implementations.
+- **Why.** Building the real adapter and the fake together is what proves the seam is real. A seam with one implementation is a guess.
+- **Where.** `models/base.py`, `models/anthropic.py`, `models/fake.py`.
+- **How.** Adapter wraps `anthropic.AsyncAnthropic`. Import the SDK lazily inside the constructor (NFR-01). `thinking={"type":"adaptive"}`, `output_config={"effort": ...}`; never send `budget_tokens`. Enable server-side refusal fallbacks by default. Map errors per [§10.3](10-observability-ops.md#3-provider-error-mapping). Surface `pause_turn` rather than swallowing it. `count_input_tokens` uses the provider's token-counting endpoint, memoized by request hash.
+- **Depends.** T-0.1
+- **Contract.** [§04.2](04-interfaces.md#2-model-provider).
+- **Failure.** No vendor exception escapes the adapter. Unknown model in `price()` → `UnknownModelError`, never zero.
+- **Test.** Error-mapping table (6 cases) against a stubbed HTTP layer. `FakeModel` records requests and replays scripts. Assert `budget_tokens` never appears in an outgoing request.
+- **Done.** The same `RunEngine` runs unchanged against both implementations.
+
+### T-0.5 — `RunEngine` — the loop ★★
+
+- **What.** The state machine of [§02.3](02-architecture.md#3-the-run-loop).
+- **Why.** The core of the product, and the only place invariants 2 and 3 can be enforced (ADR-001).
+- **Where.** `run.py`.
+- **How.** Follow the documented manual-loop shape exactly. Append `response.content` (not just text) to messages. Collect **all** `tool_result` blocks into **one** user message. Handle `pause_turn` by re-sending, capped at 5. Handle `refusal` as a terminal stop reason. In M0 the ledger and policy calls are present but stubbed to always-allow — the *call sites exist* so M1 fills in behavior, not structure.
+- **Depends.** T-0.3, T-0.4
+- **Contract.** Invariants I-1…I-4 of [§02.3](02-architecture.md#3-the-run-loop).
+- **Failure.** A tool raising becomes an `is_error` result; the run continues. A missing `tool_result` is a bug, caught by P-3.
+- **Test.** Integration suite against `FakeModel`: single step, multi-step, parallel calls, tool error, unknown tool, `pause_turn` resume, refusal, `max_tokens` truncation. Property P-3.
+- **Done.** All eight integration scenarios pass; the module is under 250 lines. **If it exceeds 250 lines, that is a design signal — stop and raise it, do not refactor around it.**
+
+### T-0.6 — `Agent` and `Result`
+
+- **What.** The frozen public facade and the return type.
+- **Why.** The DX contract of [§03](03-public-api.md).
+- **Where.** `agent.py`, `result.py`.
+- **How.** Frozen dataclass, keyword-only `__init__`, validation in `__post_init__`. `run()`/`try_run()` sync facades over `arun()`/`atry_run()` via `asyncio.run`, guarded by a running-loop check. `with_()` returns a new instance.
+- **Depends.** T-0.5
+- **Contract.** [§03.3](03-public-api.md#3-agent--the-complete-signature) and [§03.5](03-public-api.md#5-result).
+- **Failure.** Positional args → `TypeError`. Any mutation attempt → `FrozenInstanceError`. `.run()` inside a running loop → `SyncInAsyncContextError` naming `arun()`.
+- **Test.** Keyword-only enforcement; immutability; `with_()` returns a new object and leaves the original untouched; sync-in-async detection; `run()` raises `RunFailed` with `.partial` while `try_run()` returns.
+- **Done.** `examples/01_hello.py` runs against the real API and against `FakeModel` in CI.
+
+### T-0.7 — `harness.testing`
+
+- **What.** `FakeModel` re-export, `no_network()`, `record`/`replay`, assertion helpers.
+- **Why.** Promoted to M0 in Round 3. A testing kit added later never gets used, and every subsequent task needs it.
+- **Where.** `testing/__init__.py`, `conftest.py`.
+- **How.** `no_network()` patches `socket.socket` to raise `NetworkAccessInTest`; registered as an **autouse** pytest fixture.
+- **Depends.** T-0.4, T-0.6
+- **Contract.** [§09.3](09-testing.md#3-harnesstesting).
+- **Failure.** A test attempting a real call fails with a message explaining `no_network`.
+- **Test.** A deliberate real-call test asserts it raises.
+- **Done.** The whole suite runs with no network and no API key.
+
+**M0 exit gate.** Example runs both ways · full CI green · `mypy --strict` clean ·
+`run.py` ≤ 250 lines.
+
+---
+
+# M1 — Safety & budget core  *(week 2)*
+
+**Goal.** The 14 red-team scenarios pass, and the budget property test survives 1 000
+adversarial runs.
+
+### T-1.1 — Effect profiles ★
+
+- **What.** `Effect`, `EffectProfile`, `EFFECT_PROFILES`; derive parallelism, retryability, taint, verdict and audit level.
+- **Why.** ADR-003. One classification, five behaviors, nothing to forget or contradict.
+- **Where.** `tools/__init__.py`.
+- **How.** Module-level `Final` mapping. Not configurable — a user who could edit it could disable the taint rule.
+- **Depends.** T-0.2
+- **Contract.** [§04.1](04-interfaces.md#1-tools).
+- **Failure.** No behavior may be overridable per tool except `accepts_tainted`.
+- **Test.** Assert no public API accepts `parallel_safe`, `retryable`, or `requires_approval` (introspection test).
+- **Done.** All four profiles behave as tabulated in the loop's scheduling and retry paths.
+
+### T-1.2 — Policy engine and verdict lattice ★
+
+- **What.** `Verdict`, `Decision`, `Policy`, `PolicyEngine`.
+- **Why.** The only place tool execution is authorized. Restrict-only composition is what makes third-party policies safe to add.
+- **Where.** `policy/base.py`, `policy/engine.py`.
+- **How.** `Verdict(IntEnum)` composed with `max()`. Built-ins registered first and unremovable; user policies appended. Short-circuit on the first `DENY`. Emit `policy.decided` for **every** call including allows.
+- **Depends.** T-1.1
+- **Contract.** [§04.3](04-interfaces.md#3-policy--verdicts).
+- **Failure.** A policy raising is treated as `DENY` and emits `error.raised` — fail closed. A policy exceeding 1 ms warns in debug mode.
+- **Test.** Property P-2 (adding a policy never loosens). RT-11. Raising policy → denied, not crashed.
+- **Done.** P-2 holds over 1 000 generated policy lists.
+
+### T-1.3 — Taint tracker and built-in policies ★★
+
+- **What.** `TaintTracker`; `EffectPolicy`, `TaintPolicy`, `EgressPolicy`, `ApprovalPolicy`.
+- **Why.** ADR-011 — the central safety mechanism.
+- **Where.** `policy/taint.py`, `policy/builtin.py`.
+- **How.** Taint is sticky per run, raised when an `external` tool result is appended, and emits `taint.raised` once. `TaintPolicy` denies `danger` unless `accepts_tainted`. `EgressPolicy` extracts host arguments by schema (any property whose name or format indicates a URL/host) and checks `allowed_hosts`. `ApprovalPolicy` is terminal and resolves surviving `ASK` verdicts.
+- **Depends.** T-1.2
+- **Contract.** [§06.3](06-safety.md#3-the-taint-lattice--the-designs-central-safety-idea).
+- **Failure.** Denial is not a crash: an `is_error` tool result goes back to the model so it can choose another route. With no `approve` callback, `ASK` on `danger` → `DENY` with a one-time warning.
+- **Test.** RT-01, RT-02, RT-03, RT-14. Taint is sticky. Base64 encoding does not evade it (the rule is capability-based, not textual).
+- **Done.** All four scenarios blocked; the run continues rather than crashing.
+
+### T-1.4 — Construction-time unsafe-tool-set check ★
+
+- **What.** `Agent.__init__` rejects an `external` + `danger` combination unless the danger tool declares `accepts_tainted`.
+- **Why.** F9.1 — without this, the beginner discovers the taint rule mid-run, after spending money.
+- **Where.** `agent.py`.
+- **How.** Set intersection over `tools`. Error text is the block in [§06.3](06-safety.md#caught-at-construction-not-at-run-time), verbatim, naming the two specific tools.
+- **Depends.** T-1.3
+- **Contract.** Raises `UnsafeToolSetError`; never a warning.
+- **Failure.** —
+- **Test.** RT-04. Message names both tools and prints both remedies.
+- **Done.** `Agent(tools=[search, send_email])` raises before any network call.
+
+### T-1.5 — Budget and ledger ★★
+
+- **What.** `Budget`, `Budget.parse`, `Ledger`, `reserve`/`settle`.
+- **Why.** ADR-005. Invariant 2 lives here.
+- **Where.** `budget/ledger.py`.
+- **How.** `Decimal` throughout; a lint rule bans `float` in this package. `reserve()` uses the worst-case estimate of [§07.1](07-cost.md#1-the-budget-is-a-ceiling-not-an-alert) and runs immediately before `provider.complete`, with nothing between them. `settle()` corrects from `response.usage`. `Budget.parse` accepts `"$0.10"`, `"10 cents"`, `"5 steps"`, `"$1, 50 steps, 10m"`.
+- **Depends.** T-0.4
+- **Contract.** [§04.4](04-interfaces.md#4-budget--ledger).
+- **Failure.** Insufficient budget → graceful `Result(BUDGET_EXHAUSTED)` with partial text; never an exception from `try_run`. Unparseable string → `InvalidBudgetError` at construction listing accepted forms. `Budget(usd=None)` warns every run.
+- **Test.** **Property P-1 over 1 000 adversarial runs — SC-2.** Parser table (12 cases). No `float` in the module (AST test). Reserve-before-call ordering asserted by an event-sequence test.
+- **Done.** P-1 green at 1 000 cases; `budget/` at 100 % coverage.
+
+### T-1.6 — `Secret` and redaction
+
+- **What.** `Secret` type; transcript redaction pass; entropy scan.
+- **Where.** `secrets.py`, `observe/redact.py`.
+- **How.** Override `__repr__`/`__str__`/`__format__`/`__reduce__`; raise on JSON encode; register the value with the redactor at construction. Redaction happens on write, before bytes exist. Entropy scan matches known key prefixes.
+- **Depends.** T-0.1
+- **Contract.** [§06.5](06-safety.md#5-secrets).
+- **Failure.** An unwrapped key detected in output → `error.raised` warning naming the event, value still redacted.
+- **Test.** RT-08, RT-09, RT-13. Render matrix: `repr`, `str`, f-string, `%`, `logging`, `pprint`, `json.dumps`, traceback.
+- **Done.** No render path emits the value.
+
+**M1 exit gate.** 14/14 red team · P-1 and P-2 green · `budget/` and `policy/` at 100 %
+coverage.
+
+---
+
+# M2 — Cost & context  *(week 3, parallel with M1)*
+
+**Goal.** ≥ 90 % cache reads on turns 3+ of the 10-turn fixture (SC-4), and a
+`datetime.now()` in a system prompt fails at construction.
+
+### T-2.1 — Pricing table
+
+- **What.** Per-model `Price` table with an `as_of` date, plus `Decimal` cost arithmetic.
+- **Why.** The budget ceiling is only as correct as the prices. Round 12 found nobody owned this.
+- **Where.** `models/pricing.py`.
+- **How.** Module constant with explicit `as_of`. `price()` raises `UnknownModelError` for anything unlisted.
+- **Depends.** T-0.4
+- **Contract.** Never returns zero for an unknown model.
+- **Failure.** A CI job fails when `as_of` is older than 90 days, with instructions to verify against published pricing.
+- **Test.** RT-12. Freshness gate. Cost arithmetic against hand-computed fixtures.
+- **Done.** Freshness gate wired into CI.
+
+### T-2.2 — Context assembler ★★
+
+- **What.** Deterministic rendering of `tools` → `system` → `messages`.
+- **Why.** ADR-004. Every cost guarantee depends on byte-stability here.
+- **Where.** `context/assembler.py`.
+- **How.** Canonical JSON everywhere. Tools sorted by name. System prompt assembled once at construction from frozen inputs. No timestamps, no UUIDs, no iteration over unordered collections anywhere in the path.
+- **Depends.** T-0.3
+- **Contract.** Rendering identical inputs twice yields identical bytes, across processes.
+- **Failure.** Any non-determinism is a bug caught by T-2.3.
+- **Test.** Cross-process byte equality. Property P-5. 100 % coverage required.
+- **Done.** Identical bytes across two interpreter processes.
+
+### T-2.3 — Cache linter ★
+
+- **What.** Double-render byte comparison at `Agent.__init__`.
+- **Why.** Register #28 — converts the most expensive invisible bug in LLM apps into a construction-time exception.
+- **Where.** `context/linter.py`.
+- **How.** Render, wait 150 ms, render again, byte-compare. On difference, locate the differing range, identify the section, emit the message in [§07.2.1](07-cost.md#21-the-cache-linter) with a caret marker.
+- **Depends.** T-2.2
+- **Contract.** Runs on every construction; adds < 5 ms when the prompt is static. Disableable only via `HARNESS_SKIP_CACHE_LINT=1`, documented for tests.
+- **Failure.** `NonDeterministicPromptError` with the differing byte range and the fix.
+- **Test.** A prompt containing `datetime.now()` raises with the offset in the message; a static prompt does not; overhead measured.
+- **Done.** The negative case raises with a message a newcomer can act on without reading source.
+
+### T-2.4 — Cache breakpoints
+
+- **What.** `cache_control` placement per [§07.2.2](07-cost.md#22-breakpoint-placement).
+- **Where.** `context/caching.py`.
+- **How.** One breakpoint on the last system block; one on the last content block of the most recent turn for multi-turn. Count tokens first and **omit all markers** when the prefix is under the minimum cacheable size — a marker there only pays the write premium. Never exceed 4.
+- **Depends.** T-2.2, T-2.1
+- **Contract.** ≤ 4 breakpoints; none below the minimum prefix size.
+- **Failure.** Zero cache reads after step 3 with a large prefix → loud `error.raised{where:"cache"}`.
+- **Test.** **Benchmark: ≥ 90 % cache reads on turns 3+ of the 10-turn fixture (SC-4).** Small-prefix case emits no markers.
+- **Done.** Benchmark green in CI against a recorded fixture.
+
+### T-2.5 — Result truncation and duplicate detection
+
+- **What.** `max_result_tokens` truncation; duplicate-call suppression within a step.
+- **Where.** `tools/invoke.py`.
+- **How.** Truncate at a token boundary, never mid-UTF-8-character, and suffix `[truncated: N of M tokens shown]` so the model knows. Duplicate detection hashes `(name, canonical(arguments))` within a step; the second identical call returns the cached result and emits a warning.
+- **Depends.** T-0.5
+- **Contract.** Truncated output is always valid UTF-8 and, when the result was JSON, valid JSON or explicitly marked as truncated text.
+- **Failure.** A 50 MB result must not raise and must not grow memory beyond the cap.
+- **Test.** RT-05. Property P-7. Memory flat under a 50 MB result.
+- **Done.** RT-05 passes with bounded memory.
+
+### T-2.6 — Context window management
+
+- **What.** Editing at 60 %, compaction at 80 %.
+- **Where.** `context/window.py`.
+- **How.** Editing clears old tool results, oldest first, preserving the last 3 steps. Compaction appends `response.content` back **verbatim**, including compaction blocks — extracting only the text silently loses the compaction state. Emit `context.managed`.
+- **Depends.** T-2.2
+- **Contract.** Editing is always attempted before compaction.
+- **Failure.** If compaction fails, the run stops with a clear error rather than sending an over-length request.
+- **Test.** Fixture conversation crossing both thresholds; assert compaction blocks are preserved across turns.
+- **Done.** A 200-step fixture completes without exceeding the context window.
+
+### T-2.7 — Parallel tool scheduling
+
+- **What.** Concurrent execution of parallel-safe calls under a semaphore.
+- **Where.** `run.py`, `tools/invoke.py`.
+- **How.** Partition by `EFFECT_PROFILES[...].parallel_safe`. `asyncio.gather` for the safe set under `max_parallel_tools`; serial for the rest. Results reassembled **in the model's original call order** before being appended.
+- **Depends.** T-1.1, T-0.5
+- **Contract.** Invariant I-4 — one user message with all results, in call order.
+- **Failure.** One tool failing must not cancel its siblings (`return_exceptions=True`).
+- **Test.** N independent reads complete in ~1/N the serial time; result order preserved; one failure does not affect others.
+- **Done.** Timing test shows the expected speedup.
+
+**M2 exit gate.** SC-4 benchmark ≥ 90 % · cache linter catches the `datetime.now()` case ·
+`context/assembler.py` at 100 % coverage.
+
+---
+
+# M3 — Observability & durability  *(week 4)*
+
+### T-3.1 — Event taxonomy and bus
+
+- **What.** The 15 `EventKind`s, `Event`, `EventBus`.
+- **Where.** `observe/events.py`, `observe/bus.py`.
+- **How.** Closed enum. Synchronous ordered fan-out. Each exporter wrapped: an exception becomes one `error.raised` and disables that exporter for the run.
+- **Depends.** T-0.5
+- **Contract.** [§05.1](05-data-and-state.md#1-the-event-taxonomy-closed). `seq` monotonic and gap-free.
+- **Failure.** A broken exporter must never affect the run.
+- **Test.** A raising exporter is disabled and the run completes. Payload schema conformance per kind.
+- **Done.** Every kind emitted at least once by the integration suite.
+
+### T-3.2 — Transcript writer and reader
+
+- **What.** Append-only JSONL with redaction and fsync policy.
+- **Where.** `observe/transcript.py`.
+- **How.** Redact on write. `fsync` on `run.finished`, on `error.raised`, and every 64 events. `tool.requested` stores an argument **digest** unless `transcript_level="debug"`.
+- **Depends.** T-3.1, T-1.6
+- **Contract.** [§05.2](05-data-and-state.md#2-transcript-format).
+- **Failure.** A full or unwritable disk emits a warning and disables the transcript — it never kills the run.
+- **Test.** Crash mid-run leaves a valid, parseable prefix. Secrets absent from the file. Arguments absent at default level.
+- **Done.** A `kill -9` fixture produces a readable transcript.
+
+### T-3.3 — Resume
+
+- **What.** `Agent.resume(transcript)`.
+- **Where.** `run.py`, `observe/transcript.py`.
+- **How.** Replay to reconstruct messages, spend, step count and taint. `read`/`external` interrupted calls re-execute; `write`/`danger` return `is_error("interrupted; not retried automatically")`.
+- **Depends.** T-3.2
+- **Contract.** [§05.3](05-data-and-state.md#3-resume-semantics).
+- **Failure.** A transcript from a newer major version is refused explicitly, not partially parsed.
+- **Test.** Kill at each step of a 10-step fixture; resume completes correctly in all 10. A `write` interrupted mid-call is never re-executed.
+- **Done.** All 10 kill points resume correctly.
+
+### T-3.4 — Console and OTel exporters
+
+- **What.** Human-readable console output; OTel spans and metrics.
+- **Where.** `observe/console.py`, `observe/otel.py`.
+- **How.** Mapping in [§10.2](10-observability-ops.md#2-opentelemetry-mapping). Content excluded unless `include_content=True`. OTel is an optional extra and must not be imported unless configured.
+- **Depends.** T-3.1
+- **Contract.** Never exports prompt or completion text by default.
+- **Test.** Span tree shape against an in-memory OTel exporter. Import-time test proves OTel is not imported by default.
+- **Done.** A run produces the expected span tree; `import harness` does not import OTel.
+
+### T-3.5 — Golden replay harness
+
+- **What.** `record`/`replay` plus 30 fixtures.
+- **Where.** `testing/`, `tests/golden/`.
+- **Depends.** T-3.2
+- **Contract.** Property P-6 — replay reproduces the event stream byte for byte.
+- **Test.** All 30 fixtures replay identically; an intentional loop change produces a readable diff.
+- **Done.** Fixtures committed and green.
+
+**M3 exit gate.** SC-7 (byte-identical replay) · 10/10 resume points · exporter isolation
+proven.
+
+---
+
+# M4 — Extensibility  *(week 5)*
+
+### T-4.1 — Plugin registry
+
+- **What.** Explicit registration; opt-in entry-point discovery; capability ceiling; `API_VERSION` checks.
+- **Where.** `plugins/registry.py`.
+- **How.** Default is explicit registration only. `Agent(discover=True)` loads the `harness.plugins` entry-point group. A plugin declares its maximum effect class; registering above it raises.
+- **Depends.** T-1.1
+- **Contract.** [§06.6](06-safety.md#6-plugin-trust-boundary--stated-honestly).
+- **Failure.** Version mismatch or ceiling violation raises at registration, never at run time.
+- **Test.** RT-10. Discovery off by default (a test package installed in the test env is *not* loaded without `discover=True`).
+- **Done.** RT-10 passes; discovery proven off by default.
+
+### T-4.2 — `Store` protocol, in-memory and SQLite
+
+- **What.** The memory seam and its two implementations.
+- **Where.** `memory/`.
+- **How.** Schema in [§05.5](05-data-and-state.md#5-memory-schema-sqlite). `STRICT` tables, WAL, busy timeout, FTS5 search, expiry enforced on read as well as by sweep, `schema_meta.version` checked at open.
+- **Depends.** T-0.1
+- **Contract.** [§04.5](04-interfaces.md#5-store).
+- **Failure.** A newer schema raises rather than guessing. A locked database retries within the busy timeout, then raises a clear error.
+- **Test.** Same conformance suite runs against both implementations. Concurrent access from two connections. Expiry honored before the sweep runs.
+- **Done.** One conformance suite, two implementations, both green.
+
+### T-4.3 — Memory tools
+
+- **What.** `remember` (write) and `recall` (read) built-in tools.
+- **Where.** `tools/builtin/memory.py`.
+- **How.** Thin wrappers over `ctx.memory`. **Memory is never auto-injected** into the prompt — auto-injection would grow the prefix, void the cache, and raise cost on every call.
+- **Depends.** T-4.2
+- **Test.** Recall across two runs sharing a store. Assert the system prompt is unchanged by memory content.
+- **Done.** Cross-run recall works and the prefix is provably unaffected.
+
+### T-4.4 — Subagents ★
+
+- **What.** `Agent.as_tool()`.
+- **Where.** `agent.py`.
+- **How.** Wrap the child as a `ToolSpec` whose `effect` is the **maximum** of the child's tool effects. The child's budget is capped at the parent's remaining budget; the child's safety level cannot be lower than the parent's. The child gets an explicit, minimal context — never the parent transcript. The child's spend settles into the parent ledger.
+- **Depends.** T-1.5, T-0.6
+- **Contract.** [§06.4](06-safety.md#4-least-privilege) — subagents inherit restriction only.
+- **Failure.** A child that would exceed the parent budget stops gracefully; the parent sees a partial result, not a crash.
+- **Test.** Parent budget is never exceeded by child spend (extends P-1). A child cannot hold a tool the parent's policies would deny. Effect maximum is computed correctly.
+- **Done.** The research/reader example from [§07.4](07-cost.md#4-model-spend) runs and demonstrably costs less than a single-agent equivalent on the same fixture.
+
+### T-4.5 — Out-of-tree plugin examples
+
+- **What.** One working external example per seam (5 total).
+- **Where.** `examples/plugins/`.
+- **Why.** SC-6. An extension point without an out-of-tree example is an untested claim.
+- **Depends.** T-4.1
+- **Done.** All five install and run in CI from outside the package.
+
+**M4 exit gate.** SC-6 (5/5 seams) · subagent cost saving demonstrated · discovery off by
+default.
+
+---
+
+# M5 — DX, documentation, release  *(week 6)*
+
+### T-5.1 — CLI
+
+`harness new` (scaffold), `run`, `trace`, `cost`, `doctor`. `doctor` checks version, key
+presence, pricing-table age, cache determinism for a given agent module, and plugin API
+compatibility. **Depends.** T-3.2. **Done.** Each subcommand has an integration test;
+`doctor` output is the standard bug-report attachment.
+
+### T-5.2 — Error-message pass ★
+
+Every `ConfigError` subclass reviewed against the four-part standard in
+[§03.7](03-public-api.md#7-error-message-standard), with a conformance test. **Why.** Error
+messages are the API for anyone who has made a mistake — which is everyone, on day one.
+**Done.** Conformance test green for all 7 subclasses.
+
+### T-5.3 — Documentation
+
+README (the five-line agent above the fold), a 5-minute quickstart, four guides (tools,
+safety, cost, testing), the [§03.2](03-public-api.md#2-progressive-disclosure-ladder)
+ladder as the site's spine, an API reference, and a plugin-authoring guide **opening with
+the trust-boundary statement verbatim**. Every `__all__` symbol has a runnable docstring
+example, executed in CI (NFR-10). **Done.** Docs build with zero broken links; examples
+execute.
+
+### T-5.4 — Beginner validation ★
+
+Run the SC-1 protocol of [§14.2](14-validation-plan.md#2-sc-1--time-to-first-agent): five
+people who have never seen the library, README only, observed, no help. **Threshold:**
+median ≤ 10 min, ≥ 4/5 succeed unaided. **A miss blocks 1.0 and reopens the council** —
+this is the criterion the whole DX argument rests on, so it is measured, not asserted.
+**Done.** Threshold met, or the API changed and re-measured.
+
+### T-5.5 — Release engineering
+
+Trusted Publishing to PyPI, generated changelog, `1.0.0-rc1` → soak → `1.0.0`. **Done.**
+`pip install harness` works in a clean environment and the five-line example runs.
+
+**M5 exit gate.** SC-1 met · docs build clean · `1.0.0-rc1` on PyPI.
+
+---
+
+## Task index
+
+★ = needs the most experienced person available. ★★ = needs review by two.
+
+| Task | ★ | Milestone | Blocks |
+|---|:--:|---|---|
+| T-0.2 `@tool` + schema | ★ | M0 | everything |
+| T-0.5 RunEngine | ★★ | M0 | everything |
+| T-1.1 Effect profiles | ★ | M1 | T-1.2, T-2.7, T-4.4 |
+| T-1.2 Policy lattice | ★ | M1 | T-1.3 |
+| T-1.3 Taint + built-ins | ★★ | M1 | T-1.4 |
+| T-1.4 Unsafe tool set | ★ | M1 | — |
+| T-1.5 Budget ledger | ★★ | M1 | T-4.4 |
+| T-2.2 Assembler | ★★ | M2 | T-2.3, T-2.4 |
+| T-2.3 Cache linter | ★ | M2 | — |
+| T-4.4 Subagents | ★ | M4 | — |
+| T-5.2 Error messages | ★ | M5 | T-5.4 |
+| T-5.4 Beginner validation | ★ | M5 | 1.0 |
+
+## Global Definition of Done
+
+A task is done when **all** hold:
+
+1. Code merged, matching the contract in [§04](04-interfaces.md) exactly.
+2. Every test listed in the task passes.
+3. All CI gates in [§09.6](09-testing.md#6-ci-gates) green.
+4. Public symbols have runnable docstring examples.
+5. Any deviation from this plan is recorded in the [Implementation Decision Log](12-decision-logs.md).
+6. No new `# type: ignore` without a linked issue.
+7. If the task changed the public API, `__all__` and the changelog are updated in the same PR.

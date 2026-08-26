@@ -1,0 +1,58 @@
+# 13 — Risk Register & Open Issues
+
+## 1. Risks
+
+Scored **L**ikelihood × **I**mpact on 1–5. Anything at 12+ has a mitigation that is a
+*task in the plan*, not an intention.
+
+| # | Risk | L | I | Score | Mitigation | Owner / task |
+|---|---|:--:|:--:|:--:|---|---|
+| R-01 | **The taint rule is too strict and people disable it wholesale** — if `search` + `send_email` is genuinely common, users will find a workaround and lose the protection | 3 | 5 | 15 | No global off switch exists. The opt-out is per-tool and appears in review. The construction-time error names the split-into-two-agents remedy first. **Measured at SC-1: if testers hit it and are confused, the message is rewritten, not the rule.** | T-1.4, T-5.4 |
+| R-02 | **Pre-flight token counting is inaccurate**, so the ceiling leaks | 3 | 4 | 12 | Worst-case estimation over-counts by construction; `settle()` corrects to actuals; P-1 asserts the invariant over 1 000 adversarial runs. If P-1 ever fails, the ceiling is loosened by adding margin, never by removing the check. | T-1.5 |
+| R-03 | **Pricing table goes stale**, so budgets are computed against wrong numbers | 4 | 3 | 12 | CI freshness gate fails at 90 days. `UnknownModelError` rather than a zero price. `harness doctor` reports table age. | T-2.1 |
+| R-04 | **Provider API evolves** (new stop reasons, changed thinking/effort semantics, new content blocks) and the loop breaks | 4 | 3 | 12 | Nightly live smoke tests against the real API. Unknown `stop_reason` values are surfaced as `ERROR` with the raw value, never silently treated as `end_turn`. Provider adapter is the only file that knows vendor shapes. | T-0.4, §09.4 |
+| R-05 | **The five-line promise does not survive contact with reality** — SC-1 fails | 2 | 5 | 10 | SC-1 is a blocking gate (T-5.4) with real people, not a self-assessment. A miss reopens the council rather than shipping. | T-5.4 |
+| R-06 | **`run.py` accretes special cases** and stops being auditable | 3 | 3 | 9 | 250-line ceiling treated as a design signal (IDL-13). Every addition needs a decision-log entry. | IDL-13 |
+| R-07 | **A plugin ecosystem never materializes**, making the five seams dead weight | 3 | 2 | 6 | Each seam already has ≥ 2 in-tree implementations, so none is speculative even with zero third-party adoption. SC-6 proves each works out-of-tree. | T-4.5 |
+| R-08 | **Cache benchmark passes in CI but not in production** because real prompts differ | 2 | 4 | 8 | Runtime detection: zero cache reads after step 3 with a large prefix emits a loud event. `harness cost` reports realized hit rate against the theoretical maximum. | T-2.4 |
+| R-09 | **Someone constructs an `Agent` per web request**, silently killing caching | 4 | 2 | 8 | One-time `cache.per_request_agent` warning with the fix; documented prominently in [§10.5](10-observability-ops.md#5-running-in-production). Cannot be prevented structurally — an agent must be constructible at runtime. | §10.5 |
+| R-10 | **Resume gives a false sense of exactly-once** | 2 | 4 | 8 | `write`/`danger` are never auto-re-executed, and [§05.3](05-data-and-state.md#3-resume-semantics) states the limit plainly rather than implying durability. | T-3.3 |
+| R-11 | **Two maintainers is a bus factor of two** | 3 | 3 | 9 | This design package *is* the mitigation: the reasoning is written down, including the losing arguments, so a new maintainer inherits the decisions rather than re-deriving them. | — |
+| R-12 | **Effort/thinking parameter semantics differ across models**, so a default that is right for one is wrong for another | 3 | 2 | 6 | The adapter owns the mapping and validates against the model before sending; unsupported combinations raise `ProviderBadRequest` at the adapter rather than reaching the API. | T-0.4 |
+
+## 2. Watch list (unscored, monitor)
+
+- **Tool-count growth.** Beyond ~50 tools, schemas dominate the prefix. Tool search is the
+  answer, and it is a clean v2 addition because it *appends* schemas rather than swapping
+  them — so it does not conflict with the frozen tool set (ADR-004).
+- **Context-window changes.** The 60 %/80 % thresholds are ratios, not absolutes, so they
+  scale with the model. Verify when a model ships a materially different window.
+- **Async ecosystem friction.** If sync-only environments turn out to dominate real usage,
+  revisit the thread-pool bridge — not the async core.
+
+## 3. Open Issues
+
+Kept deliberately short. Each states why it does **not** block implementation. Anything
+that would block was resolved during the rounds rather than parked here — standing rule R1.
+
+| # | Issue | Why it does not block |
+|---|---|---|
+| OI-01 | Should `Store.search` eventually support vector similarity? | `Store` is a protocol. A vector implementation is additive and out-of-tree. Nothing in v1 needs deciding now. |
+| OI-02 | Should the CLI ship an interactive REPL? | Pure addition, no architectural implication. Decide after SC-1 tells us how people actually start. |
+| OI-03 | Structured outputs (`output_config.format`) as a first-class `Agent` parameter | The provider already supports it; exposing it is one optional parameter. Deferred until a user asks, per not-over-engineering. |
+| OI-04 | Should `effort` default to `low` for subagents? | Plausible saving, unmeasured. Measure with the T-4.4 cost fixture, then decide with data. |
+| OI-05 | Windows support in CI | The library is pure Python and should work; the matrix costs CI minutes. Add if an issue is filed. |
+| OI-06 | Should `Budget` support a per-tool cost axis (e.g. paid APIs)? | Real need, but no user yet. `Policy` can already enforce it out-of-tree today. |
+| OI-07 | A second `ModelProvider` implementation before 1.0 | The seam is proven by `FakeModel` plus the real adapter. A second vendor is a validation nicety, not a design risk, and would double the maintenance surface at 1.0. |
+
+## 4. What would make the council reconvene
+
+Explicit triggers, so "should we revisit this?" has an answer:
+
+1. **SC-1 fails** at T-5.4 — the DX thesis is wrong and the API needs rework.
+2. **P-1 (budget ceiling) fails** — invariant 2 is not actually enforced.
+3. **Any red-team scenario cannot be fixed within the current design** — invariant 3 has a
+   structural hole.
+4. **`run.py` cannot stay under 250 lines** without omitting a required behavior — the loop
+   shape is wrong.
+5. **The cache benchmark cannot reach 90 %** — the assembler's determinism model is wrong.

@@ -1,0 +1,361 @@
+# 00 — The Implementation Design Council
+
+## 1. Composition
+
+The council was assembled by role, not by seniority. Each member had standing to **block**
+convergence within their domain; a block could only be cleared by a design change, never by
+a vote. Members are named by role throughout the round log so their positions can be traced.
+
+| Role | Mandate | Blocking authority |
+|---|---|---|
+| **Runtime Architect** | Agent loop, concurrency, control flow, state machine | Architecture, component design |
+| **API/DX Designer** | Public surface, naming, progressive disclosure, error messages | Developer experience |
+| **Beginner Advocate** | Plays a total newcomer. Never allowed to read source code to answer a question. | Beginner experience |
+| **Security Engineer** | Threat model, prompt injection, permissions, secrets, supply chain | Security |
+| **Cost Engineer** | Token accounting, caching, model spend, budget enforcement | Cost |
+| **Reliability/SRE** | Failure modes, observability, deployment, upgrade, recovery | Operations |
+| **Test Architect** | Testability, determinism, fakes, CI gates | Testing |
+| **Poka-Yoke Reviewer** | Cross-cutting. Asks one question: *can a competent person still get this wrong?* | All dimensions |
+| **Implementer** | Plays an engineer receiving a task on Monday morning with no context | Implementation tasks |
+| **OSS Maintainer** | Versioning, plugin ecosystem, migration, long-term maintenance cost | Plugin architecture, documentation |
+
+Two standing rules were adopted at Round 0:
+
+- **R1 — No documented defects.** If a review finds a real problem, it is resolved and the
+  plan is re-reviewed. It is never written into "Open Issues" to make the round close.
+  Open Issues holds only genuinely non-blocking items, and every entry states why.
+- **R2 — Simplicity is a blocking concern too.** The Poka-Yoke Reviewer may block a
+  *safety* proposal for being over-engineered, and the Security Engineer may block a *DX*
+  proposal for being unsafe. Neither side automatically wins.
+
+---
+
+## 2. Round log
+
+Each entry records the substantive disagreement, not a summary of agreement. Decisions
+that changed the architecture are cross-referenced to the Design Decision Log (`ADR-nn`).
+
+### Round 0 — Understand
+
+Established goals, constraints, NFRs and success criteria (→ [§01](01-requirements.md)).
+Three ambiguities were material enough to resolve before any design work:
+
+**A0.1 — "A ten-year-old can use it" vs. "a Python library for OSS developers."**
+The Beginner Advocate pointed out that a ten-year-old does not run `pip install`, so the
+requirement as literally stated is unsatisfiable and would push the design toward a
+low-code product nobody asked for. The API/DX Designer proposed reading the requirement as
+a *cognitive-load budget* rather than a literal audience.
+**Resolved:** the target is **≤ 3 concepts and ≤ 5 lines to a working agent**, measured by
+the Time-to-First-Agent test in [§14](14-validation-plan.md). The audience remains
+developers. This became SC-1.
+
+**A0.2 — "Cost-efficient" read as "use small models."**
+The Cost Engineer opened by proposing a default of Haiku with escalation. The Runtime
+Architect blocked: silently choosing a weaker model than the user asked for is a
+correctness decision disguised as a cost decision, and it is the library author making a
+call that belongs to the application author.
+**Resolved:** the default model is the strong one; cost efficiency comes from *mechanism*
+(pre-flight budget checks, cache-safety by construction, effort control, result
+truncation, subagent delegation), never from silent downgrade. → **ADR-006**.
+
+**A0.3 — What "plugin" means.**
+Deferred to Round 2 with an instruction: produce a *test*, not a list.
+
+**Gate:** 4/16 Ready. Proceeded.
+
+---
+
+### Round 1 — Initial plan (baseline)
+
+A deliberately naive baseline was produced so it could be attacked: `Agent`, `Tool`,
+`Runner`, `Memory`, `Plugin`, everything abstract, everything swappable, the SDK's
+`tool_runner` doing the loop.
+
+The baseline survived nineteen minutes.
+
+**Gate:** 6/16. Two blocks filed immediately (Round 2).
+
+---
+
+### Round 2 — Architecture-to-code
+
+**B2.1 — Security Engineer blocks: delegating the loop to the SDK tool runner.**
+"If the SDK owns the loop, there is exactly one place I can enforce a permission check —
+inside the tool function itself. That means every tool author is responsible for security,
+which is the opposite of safe-by-design. I also cannot enforce a budget, because I never
+see the decision point *before* the model call."
+The Runtime Architect added a second, independent reason: the Python tool runner does not
+auto-resume `pause_turn` and does not expose its message history, so a long server-tool
+turn silently truncates the answer with no error raised.
+The API/DX Designer counter-argued KISS: "you are proposing to rewrite something that
+exists."
+**Resolved:** own the loop, but keep it *exactly* the documented manual-loop shape — no
+cleverness, roughly 150 lines. Owning the loop is justified precisely because the loop is
+the only place invariants 2 and 3 can be enforced. → **ADR-001**.
+
+**B2.2 — OSS Maintainer blocks: "everything is a plugin."**
+"Nine abstract base classes and one implementation each is not extensibility, it is
+speculative generality. Each one is a public contract I have to keep stable for years."
+**Resolved:** adopted the three-part plugin-boundary test (→ [§2.4](02-architecture.md)).
+Applying it cut nine extension points to **five**: Tool, Model Provider, Store, Policy,
+Exporter. The loop, context assembly, budget accounting, schema generation and retry are
+core and deliberately not overridable. → **ADR-002**.
+
+**Missing contracts found:** no `RunContext` passed to tools; no defined verdict lattice
+for policies; no token-counting interface on the provider (making pre-flight budget checks
+impossible); no cancellation path. All four added to [§04](04-interfaces.md).
+
+**Gate:** 8/16.
+
+---
+
+### Round 3 — Developer review
+
+The Implementer walked eight baseline tasks asking only *"can I write this today?"* Five
+came back **No**:
+
+| Blocker | Resolution |
+|---|---|
+| "`Tool` is a class with five hook methods. Which do I implement?" | Replaced with one `@tool` decorator over a plain function. Schema generated from type hints. |
+| "What exactly do I return from a tool?" | Return contract pinned: any JSON-serializable value, or `str`. Non-serializable → `ToolContractError` at return, naming the offending field. |
+| "Sync or async?" | Async core, sync facade. Sync tools auto-offloaded to a thread pool. → **ADR-007**. |
+| "What is in the context passed to a tool?" | `RunContext` fully specified in [§04](04-interfaces.md). |
+| "How do I test this without spending money?" | `harness.testing` with `FakeModel`, `record`/`replay`, and `no_network()` promoted from "nice to have" to an **M0 deliverable** — because a testing story added at the end never gets used. |
+
+**Gate:** 10/16.
+
+---
+
+### Round 4 — Beginner UX review
+
+The Beginner Advocate attempted first-agent-in-five-minutes against the Round 3 API and
+failed on three counts.
+
+**C4.1 — Nine required imports.** Resolved: one import (`from harness import Agent`), with
+pre-built tool packs under `harness.tools.*`.
+
+**C4.2 — `system_prompt=` is jargon.** The word makes the newcomer believe there is a
+hidden protocol they must learn. Renamed to **`job=`**, described in the docs as "tell it
+what to do." → **ADR-009**.
+
+**C4.3 — the `can=` debate.** The Beginner Advocate proposed `can=[search]`, which reads as
+English. The OSS Maintainer blocked: every peer library calls this `tools=`, and shipping
+both names is two ways to do one thing — an anti-pattern the same council had just spent a
+round removing.
+**Resolved: `tools=`, single name, no alias.** Naturalness is recovered in prose and in
+the error messages, not by duplicating the parameter. Recorded as a deliberate loss for
+the Beginner Advocate. → **ADR-010**.
+
+**Gate:** 12/16.
+
+---
+
+### Round 5 — Poka-Yoke review
+
+The heaviest round. The reviewer produced 34 concrete "a competent person still gets this
+wrong" scenarios; all 34 are in the [register](08-poka-yoke.md). Four forced architecture
+changes:
+
+**D5.1 — A tool can be defined without anyone knowing what it does to the world.**
+`@tool` over a plain function tells the harness nothing about whether the tool reads,
+writes, calls out, or deletes production data. Every downstream safety and scheduling
+decision therefore has to guess.
+**Resolved:** `effect=` is a **required** argument on `@tool`, with four values
+(`read`/`write`/`external`/`danger`). Parallel-safety, retryability, default permission,
+taint propagation and audit level are all *derived* from it — the developer classifies
+once and never configures the five consequences. → **ADR-003**.
+
+The API/DX Designer immediately counter-blocked: a required argument in the very first
+example violates the cognitive-load budget from A0.1.
+**Counter-resolved, and this is the pattern the council reused four more times:**
+*beginners consume, authors declare.* The built-in tool packs are pre-classified, so the
+five-line first agent never writes `@tool`. The moment you author one, the omission is an
+**import-time** `MissingEffectError` that prints the four options and guesses the likely
+one from the function name. Runtime error → configuration-time error.
+
+**D5.2 — Cache invalidation is invisible, expensive, and diagnosed weeks later.**
+A `datetime.now()` in a system prompt silently costs 10× forever, and nothing fails.
+**Resolved:** the context assembler renders the prefix twice at agent construction and
+byte-compares. A difference raises `NonDeterministicPromptError` naming the differing byte
+range — *before a single token is spent.* Additionally, tools are frozen and name-sorted
+at construction and the system prompt is immutable, so the two most common invalidators
+are not merely detected but structurally impossible. → **ADR-004**.
+
+**D5.3 — Adding a policy could accidentally loosen security.**
+With arbitrary composition, a permissive policy registered late could override a
+restrictive one.
+**Resolved:** verdicts form a lattice (`ALLOW < ASK < DENY`) and composition takes the
+**maximum**. A policy can therefore only ever restrict. This is checked by a property test.
+
+**D5.4 — Budget overrun is discovered by reading the invoice.**
+**Resolved:** the ledger checks the *worst case* (`counted input tokens × input price +
+max_tokens × output price`) **before** the call. The invariant is "never exceed", not
+"alert on exceed". Defaults are finite (`$0.50`, 20 steps, 300 s) — an infinite default is
+fail-open. → **ADR-005**.
+
+**Gate:** 13/16. Security still **No** (Round 7 pending).
+
+---
+
+### Round 6 — Cost & performance
+
+Sources of waste found and closed:
+
+- **Unbounded tool results.** One tool returning a 2 MB file poisons the context for the
+  rest of the run and is re-billed on every subsequent turn. → `max_result_tokens`
+  (default 4 000) on every tool, truncating with an explicit marker Claude can see.
+- **Serial execution of parallel-safe calls.** The effect class from D5.1 already tells us
+  which calls are parallel-safe; the loop now runs `read`/`external` calls concurrently
+  and returns all `tool_result` blocks in a single user message (splitting them across
+  messages silently teaches the model to stop batching).
+- **Retrying non-retryable failures.** Effect class again: `write` and `danger` are never
+  auto-retried. A retried `send_payment` is a duplicate payment.
+- **Subagent forks missing the parent's cache.** A fork that rebuilds `system`/`tools`
+  from scratch misses the parent prefix entirely. → forks copy the parent's rendered
+  prefix verbatim and append.
+- **Compaction/context-editing chosen ad hoc.** → single documented policy in [§07](07-cost.md).
+
+The Cost Engineer re-proposed model routing. The Runtime Architect blocked it as
+speculative: no two-model routing policy could be named that the council agreed was
+correct today. **Deferred to v2 as an explicit non-goal**, with the honest note that
+`subagent(model=...)` already captures most of the available savings without any routing
+magic. → **ADR-006**.
+
+**Gate:** 14/16.
+
+---
+
+### Round 7 — Security & safety (red team)
+
+The Security Engineer ran attacks against the Round 6 design. Three landed.
+
+**E7.1 — The lethal trifecta.** An agent with a web-fetch tool and a `send_email` tool can
+be instructed by a fetched page to exfiltrate whatever it has read. Nothing in the design
+prevented it.
+The first proposal was an injection *detector*. The Poka-Yoke Reviewer blocked it as both
+over-engineered and ineffective — a heuristic classifier gives false confidence.
+**Resolved with a capability rule instead of a detector:** output of `effect="external"`
+tools is **tainted**; once tainted content enters the transcript the run is in tainted
+mode; in tainted mode `effect="danger"` tools are **DENY**, not ASK. Approval prompts are
+the wrong instrument here because a human cannot reliably audit a wall of fetched text —
+approval fatigue makes ASK equivalent to ALLOW. Roughly twenty lines, one sentence to
+explain. → **ADR-011**.
+
+The escape hatch was itself debated. A global `Agent(allow_tainted_danger=True)` was
+rejected as a footgun that would be copy-pasted from Stack Overflow. **Chosen:**
+`@tool(effect="danger", accepts_tainted=True)` — a per-tool, code-level opt-in that
+appears in the diff a reviewer reads.
+
+**E7.2 — Auto-discovery of installed plugins is a supply-chain backdoor.** Most plugin
+systems load every installed entry point at import. A transitively installed package then
+executes code and registers tools without anyone deciding it should.
+**Resolved:** entry-point discovery is **opt-in** (`Agent(discover=True)`), never the
+default. → **ADR-008**.
+
+The council also refused to claim plugin sandboxing. A plugin is Python; installing it is
+`pip install`. [§06](06-safety.md) states the trust boundary plainly rather than implying
+a protection that does not exist.
+
+**E7.3 — Secrets leak through transcripts and tracebacks.** → `Secret` type that does not
+render in `repr`/`str`/logs/tracebacks, unwrapped only inside `with s.reveal()`, plus a
+redaction pass on every transcript write.
+
+**Gate:** 15/16. Observability still **No**.
+
+---
+
+### Round 8 — Production engineering
+
+- **Recovery.** A full durable-execution engine was proposed and rejected as
+  over-engineering for a library. → append-only JSONL transcript + `Agent.resume()` gets
+  ~90 % of the value at ~5 % of the cost. Durable execution is a stated non-goal.
+- **Refusals.** `stop_reason: "refusal"` on current models returns HTTP 200 — code that
+  reads `content` without checking `stop_reason` produces a confident empty answer. →
+  explicit `StopReason.MODEL_REFUSAL`, and server-side fallbacks enabled by default.
+- **Observability.** A closed 15-event taxonomy defined in [§05](05-data-and-state.md);
+  the transcript and the OTel exporter are two renderings of the same stream, so they can
+  never disagree.
+- **Versioning.** Public API = exactly what `harness/__init__.py` exports. Everything else
+  is private and may change in a patch. Plugin contracts get a declared `API_VERSION`.
+
+**Gate:** 16/16 for the first time.
+
+---
+
+### Rounds 9–11 — Recursive review
+
+Re-reviewing the whole design after Rounds 5–8 surfaced three regressions caused by
+earlier fixes. This is why the recursive rounds existed.
+
+**F9.1 — The taint rule (E7.1) broke the most common beginner agent.**
+`Agent(job="research and email me a summary", tools=[search, send_email])` now fails at
+runtime with `DENY`, after doing the work and spending the money. The Beginner Advocate
+filed this as a beginner-experience block.
+**Resolved:** the check moved to **construction time**. If the tool set contains both an
+`external` tool and a `danger` tool that does not declare `accepts_tainted`, `Agent(...)`
+raises immediately with the exact one-line fix. The dangerous combination is now
+impossible to *discover late* — and, notably, this made the design safer *and* friendlier
+at once, which the council treated as evidence the rule was right.
+
+**F9.2 — Frozen tool sets (ADR-004) broke subagents.** A subagent with a different tool
+set appeared to violate the freeze.
+**Resolved:** the freeze is per-`Agent`; a subagent is a *different* `Agent` with its own
+frozen set and its own cache prefix. No conflict, but it was undocumented — now specified.
+
+**F9.3 — `.run()` raising on budget exhaustion (Round 5) destroyed partial work.**
+**Resolved:** `.run()` raises (loud, correct for beginners); `.try_run()` returns the
+`Result` either way; and the raised exception carries `.partial: Result` so nothing is
+lost. Both audiences served without an options flag.
+
+**Gate:** 16/16 held after re-review.
+
+---
+
+### Round 12 — Final implementation simulation
+
+A simulated team ran Day 1 → first deployment purely from [§11](11-implementation-plan.md).
+Four blockers were found and fixed in the plan:
+
+1. **Day 1 had no runnable target.** M0 was a set of interfaces with nothing to execute.
+   → M0 restructured as a **walking skeleton**: a real agent, one real tool, one real
+   model call, end to end, green in CI. Interfaces are extracted from working code, not
+   written before it.
+2. **T-1.3 (schema generation) had no stated behavior for unsupported types.** → pinned:
+   supported set enumerated; anything else raises `ToolSchemaError` at import naming the
+   parameter.
+3. **No task said who writes the pricing table, or what happens when it is stale.** →
+   T-2.1, plus a CI job that fails when the table's `as_of` date is older than 90 days.
+4. **The cache-hit acceptance criterion was unmeasurable** ("caching works"). → replaced
+   with a benchmark: ≥ 90 % `cache_read_input_tokens` on turns 3+ of the 10-turn fixture.
+
+**Final gate: 16/16.** Convergence declared.
+
+---
+
+## 3. Implementation Readiness Gate — final
+
+| Dimension | Ready | Evidence |
+|---|:--:|---|
+| Architecture | **Yes** | [§02](02-architecture.md); ADR-001, 002 |
+| Component design | **Yes** | [§02.5](02-architecture.md) module map, 1:1 with tasks |
+| Interfaces | **Yes** | [§04](04-interfaces.md) — every signature pinned |
+| Data & state | **Yes** | [§05](05-data-and-state.md) — event taxonomy, transcript schema |
+| Security | **Yes** | [§06](06-safety.md) — threat model, ADR-003/008/011, red-team suite |
+| Cost | **Yes** | [§07](07-cost.md) — ADR-004/005/006, measurable gates |
+| Performance | **Yes** | [§07.5](07-cost.md), parallel scheduling from effect classes |
+| Testing | **Yes** | [§09](09-testing.md) — pyramid, fakes, CI gates |
+| Observability | **Yes** | [§10](10-observability-ops.md) — closed taxonomy |
+| Deployment | **Yes** | [§10.4](10-observability-ops.md) — library packaging, semver |
+| Plugin architecture | **Yes** | [§02.4](02-architecture.md) — five boundaries, justified by test |
+| Poka-Yoke | **Yes** | [§08](08-poka-yoke.md) — 34 modes, each with a design-level defense |
+| Developer experience | **Yes** | [§03](03-public-api.md) — disclosure ladder |
+| Beginner experience | **Yes** | SC-1 measured in [§14](14-validation-plan.md) |
+| Documentation | **Yes** | M5 in [§11](11-implementation-plan.md) |
+| Implementation tasks | **Yes** | [§11](11-implementation-plan.md) — every task has contract + DoD |
+
+## 4. Standing verdict
+
+> The council's position is that an engineering team can begin implementation from
+> [§11](11-implementation-plan.md) on Monday without making a further architectural
+> decision. The decisions that remain open are listed in
+> [§13](13-risk-register.md#3-open-issues), and each states why it does not block.

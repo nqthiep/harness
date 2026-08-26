@@ -1,0 +1,173 @@
+# 07 — Cost
+
+> Cost is an architectural concern here, not a post-hoc optimization. Three of the five
+> core services exist for it, and two of them cannot be replaced by a plugin precisely
+> because a replacement could disable the guarantee.
+
+## 1. The budget is a ceiling, not an alert
+
+Most agent frameworks report cost after the fact. That is a dashboard, not a control. The
+harness checks **before** each model call:
+
+```python
+estimate = (count_input_tokens(request) / 1e6) * price.input_per_mtok \
+         + (max_tokens                  / 1e6) * price.output_per_mtok
+
+if ledger.spent + estimate > budget.usd:
+    return Result(stop_reason=BUDGET_EXHAUSTED, ...)   # graceful, with partial text
+```
+
+The estimate is deliberately the **worst case**: it assumes the model emits its full
+`max_tokens` and ignores the cache-read discount. Over-estimating stops a run slightly
+early; under-estimating breaks the ceiling. After the call, `settle()` records the true
+cost from `response.usage`, so the ledger tracks reality while the gate stays conservative.
+
+**Defaults are finite on every axis** — `$0.50`, 20 steps, 300 s. An unlimited default is
+fail-open, and the failure it opens onto is a five-figure invoice. `Budget(usd=None)` is
+available, requires typing `None`, and emits a warning event on every run.
+
+| Axis | Default | Checked |
+|---|---|---|
+| USD | `$0.50` | Before each model call |
+| Steps | 20 | Top of each loop iteration |
+| Wall clock | 300 s | Top of each iteration and before each tool |
+| Tokens | none | Before each model call, when set |
+
+Budget exhaustion is a `StopReason`, not an exception, from `try_run` — an expected
+boundary rather than a failure. `run()` raises `RunFailed` carrying `.partial`, so the
+work already done is never lost.
+
+## 2. Caching by construction
+
+Prompt caching is a **prefix match**: any byte change anywhere in the prefix invalidates
+everything after it. Render order is `tools` → `system` → `messages`. Get this wrong and
+you silently pay roughly 10× forever, with no error, no warning, and no obvious symptom.
+
+The documented invalidators are all "remember not to do this". The harness makes the
+common ones **impossible**, and detects the rest **before spending anything**.
+
+| Known invalidator | How the harness removes it |
+|---|---|
+| `datetime.now()` / UUID interpolated into the system prompt | **Detected at construction** by the cache linter (§2.1) |
+| Tools reordered between calls | `ToolSet` is name-sorted at construction; order cannot vary |
+| Non-deterministic JSON serialization | Canonical serializer: `sort_keys=True`, fixed separators, no `set` iteration |
+| Tool set changed mid-conversation | `tools` is frozen on the `Agent`; there is no add/remove API |
+| System prompt edited mid-conversation | `job` is frozen; `chat.tell()` appends a `role:"system"` message instead |
+| Model switched mid-conversation | `model` is frozen; a different model means a different `Agent` |
+| Conditional system sections (`if flag: system += ...`) | The system prompt is assembled once, at construction, from frozen inputs |
+| Per-user tool sets | Structurally possible, but flagged: constructing agents inside a request handler emits a `cache.per_request_agent` warning once, with the fix |
+| A subagent fork rebuilding the prefix | `as_tool()` copies the parent's rendered `system`/`tools`/`model` verbatim and appends |
+
+### 2.1 The cache linter
+
+At `Agent.__init__`, the assembler renders the full prefix twice, 150 ms apart, and
+byte-compares the results.
+
+```
+NonDeterministicPromptError: your agent's prompt changes between calls, so caching
+will never work and every call will cost roughly 10x more.
+
+  The difference is in the system prompt, bytes 118-137:
+
+    run 1: ... Current time: 2026-08-26 14:22:07 ...
+    run 2: ... Current time: 2026-08-26 14:22:07 ...
+                             ^^^^^^^^^^^^^^^^^^^ differs
+
+  Move it out of `job=` and into the message instead:
+
+      agent.run(f"[now: {datetime.now():%H:%M}] {question}")
+
+  → docs/07-cost.md#21-the-cache-linter
+```
+
+This converts the single most expensive invisible bug in LLM applications into a
+construction-time exception with the fix printed. It costs nothing to run and nothing to
+maintain.
+
+### 2.2 Breakpoint placement
+
+| Situation | Placement |
+|---|---|
+| Any agent with tools or a non-trivial job | One breakpoint on the last system block — caches `tools` + `system` together, since tools render first |
+| Multi-turn conversation | One additional breakpoint on the last content block of the most recent turn; earlier breakpoints stay valid, so hits accrue as the conversation grows |
+| Prefix under ~1 024 tokens | **No breakpoint at all.** Below the minimum cacheable prefix, a marker only pays the write premium with zero reads. The assembler counts and omits it. |
+
+Maximum 4 breakpoints; the assembler never emits more.
+
+### 2.3 Runtime verification
+
+Not everything can be caught statically. After step 3, if `cache_read_input_tokens` is
+still 0 while the prefix exceeds the minimum, the harness emits a loud
+`error.raised{where:"cache"}` event naming the most likely cause. `harness cost <transcript>`
+prints realized cache hit rate and the money left on the table.
+
+## 3. Token discipline
+
+| Source of waste | Control | Default |
+|---|---|---|
+| Huge tool results | `max_result_tokens` per tool, truncated with a visible marker | 4 000 |
+| Unbounded history | Context editing clears old tool results | at 60 % of context |
+| History beyond that | Server-side compaction summarizes earlier turns | at 80 % of context |
+| Verbose reasoning on simple tasks | `effort="medium"` default rather than `high` | medium |
+| Duplicate identical tool calls | Detected within a step; second call returns the cached result | on |
+| Retrying a non-retryable failure | Effect class decides; `write`/`danger` never auto-retried | derived |
+| Serial execution of independent reads | Effect class decides; `read`/`external` run concurrently | derived |
+| Re-billing a full history to a subagent | Subagents get an explicit, minimal context — not the parent transcript | always |
+
+**Context growth policy** (`context/window.py`), in order:
+
+1. Under 60 % of the model's context: do nothing.
+2. 60–80 %: **context editing** — clear old tool results (`clear_tool_uses`), oldest first,
+   keeping the most recent 3 steps intact. Cheap, lossless for recent work, no model call.
+3. Over 80 %: **compaction** — server-side summarization of earlier context. Emits
+   `context.managed`. The response content is appended back verbatim, including the
+   compaction blocks, because dropping them silently loses the compaction state.
+4. Editing is always attempted before compaction: editing is free, compaction costs a
+   summarization pass.
+
+## 4. Model spend
+
+The default is `claude-opus-5` at `effort="medium"`.
+
+The council rejected a cheaper default in Round 0. Choosing a weaker model than the user
+expects is a correctness decision disguised as a cost decision, and it is the library
+author making a call that belongs to the application author. A framework that quietly
+downgrades produces worse answers that get blamed on the model.
+
+Cost efficiency instead comes from mechanisms the user does not have to think about
+(everything in §1–§3) plus two explicit, honest knobs:
+
+- **`effort=`** — `low` for classification and routing steps, `medium` for most work,
+  `high`/`xhigh` when correctness dominates. Lower effort produces fewer, more consolidated
+  tool calls and less preamble, so it saves more than the thinking tokens alone.
+- **Subagents** — the real savings lever, and it requires no routing magic:
+
+```python
+reader   = Agent(name="Reader", job="Summarize this page in 5 bullets.",
+                 tools=[fetch], model="claude-haiku-4-5", budget="$0.01")
+
+research = Agent(name="Research", job="Answer research questions thoroughly.",
+                 tools=[search, reader.as_tool()], model="claude-opus-5")
+```
+
+Reading-heavy fan-out runs on the cheap model; only the summaries reach the expensive
+model's context. For a 20-page research task this is typically a 5–10× reduction, and the
+decision is explicit and legible in the code rather than hidden in a router.
+
+**Automatic model routing is deferred** (ADR-006). No routing policy could be named in
+Round 6 that the council agreed was correct today, and an LLM-based router pays a model
+call to decide which model to call. Deferred, not designed-around: `ModelProvider` is a
+seam, so a router can be added later without touching the loop.
+
+## 5. Performance
+
+| Metric | Target | Approach |
+|---|---|---|
+| Harness overhead per step | < 15 ms p95 | No reflection in the hot path; schemas built once at import; frozen dataclasses with `slots` |
+| `import harness` | < 200 ms | Provider SDK imported lazily on first call, not at import |
+| Parallel tool speedup | ~N× for N independent reads | Derived from effect classes; semaphore-bounded |
+| Time to first token | provider-bound | Streaming supported end to end via `on_delta` |
+| Memory, 100-step run | < 50 MB | Events streamed to the transcript, not accumulated; truncation caps payloads |
+
+The token-counting call on the budget hot path is cached by request hash, so a multi-turn
+conversation does not pay a counting round trip per step for a prefix that has not changed.

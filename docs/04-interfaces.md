@@ -1,0 +1,371 @@
+# 04 — Interfaces & Contracts
+
+Every signature here is normative. An implementer copies these into code; disagreements
+between code and this file are bugs in the code.
+
+Conventions: all data types are `@dataclass(frozen=True, slots=True)`. All protocols are
+`typing.Protocol` with `@runtime_checkable` only where isinstance checks are actually
+needed. No public signature contains `Any` (NFR-04).
+
+---
+
+## 1. Tools
+
+```python
+# harness/tools/__init__.py
+
+class Effect(str, Enum):
+    READ     = "read"
+    WRITE    = "write"
+    EXTERNAL = "external"
+    DANGER   = "danger"
+
+@dataclass(frozen=True, slots=True)
+class EffectProfile:
+    parallel_safe: bool
+    retryable: bool
+    taints_output: bool
+    decision_standard: Verdict   # verdict when safety="standard"
+    decision_strict: Verdict     # verdict when safety="strict"
+    audit_level: Literal["debug", "info", "warning"]
+
+EFFECT_PROFILES: Final[Mapping[Effect, EffectProfile]] = {
+    Effect.READ:     EffectProfile(True,  True,  False, ALLOW, ALLOW, "debug"),
+    Effect.WRITE:    EffectProfile(False, False, False, ALLOW, ASK,   "info"),
+    Effect.EXTERNAL: EffectProfile(True,  True,  True,  ALLOW, ASK,   "info"),
+    Effect.DANGER:   EffectProfile(False, False, False, ASK,   ASK,   "warning"),
+}
+```
+
+`EFFECT_PROFILES` is the single source of truth for tool handling. It is a module-level
+constant, not configuration: a user who could edit it could disable the taint rule.
+
+```python
+@dataclass(frozen=True, slots=True)
+class ToolSpec:
+    name: str                          # ^[a-z][a-z0-9_]{0,63}$ — validated at decoration
+    description: str                   # from the docstring summary; required, non-empty
+    input_schema: Mapping[str, object] # JSON Schema, additionalProperties:false, strict-ready
+    effect: Effect
+    fn: Callable[..., Awaitable[object]]  # always async; sync fns are wrapped at decoration
+    accepts_tainted: bool = False      # only meaningful for DANGER
+    timeout_s: float = 30.0
+    max_result_tokens: int = 4_000
+    source: str = ""                   # "module.py:41" — used in every error message
+
+def tool(
+    *,
+    effect: Effect | Literal["read", "write", "external", "danger"],
+    name: str | None = None,
+    description: str | None = None,
+    accepts_tainted: bool = False,
+    timeout_s: float = 30.0,
+    max_result_tokens: int = 4_000,
+) -> Callable[[Callable[..., object]], ToolSpec]: ...
+```
+
+### Tool contract
+
+| Aspect | Contract |
+|---|---|
+| **Preconditions** | Every parameter annotated with a supported type; docstring present with a summary line. |
+| **Return value** | Any JSON-serializable value, or `str`. Serialized with `json.dumps(sort_keys=True, default=None)`. |
+| **Return violation** | `ToolContractError` raised at return, naming the offending field path. Not a silent `str()`. |
+| **Exceptions** | Any exception is caught by `invoke.py`, converted to `tool_result(is_error=True)` with `type(e).__name__: str(e)`. The traceback is emitted as an event, **never** to the model. |
+| **Timeout** | `timeout_s` enforced with `asyncio.timeout`. On expiry → `is_error` result "timed out after Ns". |
+| **Truncation** | Results exceeding `max_result_tokens` are cut at a token boundary and suffixed with `\n[truncated: N of M tokens shown]` so the model knows. |
+| **Cancellation** | `asyncio.CancelledError` propagates; it is not converted to a tool error. |
+| **Concurrency** | The harness may call a `read`/`external` tool concurrently with others. Tool authors must not assume serialization. Stated in the `@tool` docstring. |
+
+### Supported parameter types (T-1.3)
+
+`str`, `int`, `float`, `bool`, `list[T]`, `dict[str, T]`, `Literal[...]`, `Enum`,
+`Optional[T]`, `T | None`, and any `@dataclass` / `TypedDict` / `pydantic.BaseModel`
+composed of the above. Defaults become non-required properties.
+
+**Anything else raises `ToolSchemaError` at import**, naming the parameter and its type.
+There is no "best effort" fallback: a silently-wrong schema produces malformed tool calls
+that fail at runtime and cost money to discover.
+
+---
+
+## 2. Model provider
+
+```python
+# harness/models/base.py
+
+@dataclass(frozen=True, slots=True)
+class ModelRequest:
+    model: str
+    system: tuple[SystemBlock, ...]     # pre-rendered, immutable
+    tools: tuple[Mapping[str, object], ...]  # name-sorted, canonically serialized
+    messages: tuple[Message, ...]
+    max_tokens: int
+    effort: str
+    thinking: Mapping[str, object] | None
+    stream: bool
+    cache_breakpoints: tuple[int, ...]  # indices carrying cache_control
+
+@dataclass(frozen=True, slots=True)
+class ModelResponse:
+    content: tuple[ContentBlock, ...]
+    stop_reason: Literal["end_turn","tool_use","max_tokens","pause_turn","refusal"]
+    stop_details: Mapping[str, object] | None
+    usage: Usage
+    model: str
+    raw_id: str
+
+@dataclass(frozen=True, slots=True)
+class Price:
+    input_per_mtok: Decimal
+    output_per_mtok: Decimal
+    cache_write_per_mtok: Decimal
+    cache_read_per_mtok: Decimal
+
+class ModelProvider(Protocol):
+    name: str
+
+    async def complete(
+        self, request: ModelRequest, *, on_delta: DeltaFn | None = None
+    ) -> ModelResponse: ...
+
+    def price(self, model: str) -> Price: ...
+
+    async def count_input_tokens(self, request: ModelRequest) -> int: ...
+
+    def max_context(self, model: str) -> int: ...
+```
+
+**Provider contract**
+
+- `complete` must raise `ProviderError` subclasses, never vendor-SDK exceptions. The
+  mapping table for the Anthropic adapter is in [§10.3](10-observability-ops.md).
+- `complete` must **not** retry permanent errors (4xx other than 408/409/429).
+- `count_input_tokens` must not mutate the request and must be safe to call before
+  `complete` (it is on the budget hot path — the adapter caches by request hash).
+- `price` must raise `UnknownModelError` for an unlisted model rather than return zero.
+  A zero price silently disables the budget ceiling — fail-safe, not fail-open.
+- `pause_turn` must be surfaced, not swallowed. The `RunEngine` re-sends to resume, capped
+  at `max_pause_resumes = 5`.
+
+---
+
+## 3. Policy & verdicts
+
+```python
+# harness/policy/base.py
+
+class Verdict(IntEnum):        # IntEnum so max() composes them
+    ALLOW = 0
+    ASK   = 1
+    DENY  = 2
+
+@dataclass(frozen=True, slots=True)
+class Decision:
+    verdict: Verdict
+    reason: str                # shown to the user on ASK, to the model on DENY
+    policy: str                # which policy produced it
+
+@dataclass(frozen=True, slots=True)
+class ToolCall:
+    id: str
+    name: str
+    arguments: Mapping[str, object]
+    spec: ToolSpec
+
+@dataclass(frozen=True, slots=True)
+class RunContext:
+    run_id: str
+    agent_name: str
+    step: int
+    tainted: bool
+    spent: Money
+    budget: Budget
+    safety: Literal["standard", "strict"]
+    memory: Store | None
+    deadline: float                     # monotonic clock
+    emit: Callable[[Event], None]
+    # Deliberately absent: the message history. Tools must not read the transcript —
+    # it is the largest available exfiltration surface. See §06.4.
+
+class Policy(Protocol):
+    name: str
+    def check(self, call: ToolCall, ctx: RunContext) -> Decision: ...
+```
+
+### Composition — the only rule
+
+```python
+final = max(p.check(call, ctx) for p in policies)   # by Verdict value
+```
+
+- **Most restrictive always wins.** Adding a policy can only ever restrict. This is a
+  property test, not a convention (`test_adding_policy_never_loosens`).
+- Evaluation short-circuits on the first `DENY` (policies may be expensive).
+- Built-in policies are always registered **first** and cannot be removed. User policies
+  are appended. There is no "replace the policy chain" API.
+- `check` must be **pure and fast** (< 1 ms). It must not perform I/O or call a model. A
+  policy needing I/O should be a tool wrapper instead. Enforced by a timing assertion in
+  debug mode.
+
+### Built-in policies (always on, in this order)
+
+| Policy | Rule |
+|---|---|
+| `EffectPolicy` | Verdict from `EFFECT_PROFILES[spec.effect]` and `ctx.safety`. |
+| `TaintPolicy` | `ctx.tainted and spec.effect is DANGER and not spec.accepts_tainted` → **DENY**. |
+| `EgressPolicy` | `effect is EXTERNAL` and a host argument is outside `allowed_hosts` → **DENY**. Inactive when `allowed_hosts is None`. |
+| `ApprovalPolicy` | Terminal: converts a surviving `ASK` into `ALLOW`/`DENY` via the `approve` callback. With no callback: **DENY** in strict, **DENY** in standard for `danger`, `ALLOW` otherwise, and emits a warning event once per run. |
+
+```python
+ApprovalFn = Callable[[ToolCall, RunContext], bool | Awaitable[bool]]
+```
+
+---
+
+## 4. Budget & ledger
+
+```python
+# harness/budget/ledger.py
+
+@dataclass(frozen=True, slots=True)
+class Budget:
+    usd: Decimal | None = Decimal("0.50")
+    steps: int = 20
+    wall_clock_s: float = 300.0
+    tokens: int | None = None
+
+    @classmethod
+    def parse(cls, value: "Budget | str | None") -> "Budget": ...
+    # "$0.10" · "10 cents" · "5 steps" · "$1, 50 steps, 10m" · None → DEFAULT_BUDGET
+
+DEFAULT_BUDGET: Final = Budget()   # finite on every axis — never unlimited
+```
+
+`Budget(usd=None)` is permitted but requires passing `None` explicitly, and emits a
+`budget.unlimited` warning event on every run. Unlimited is possible; it is not silent.
+
+```python
+class Ledger:
+    def reserve(self, estimate: Money) -> Reservation:
+        """Raise BudgetExceeded if spent + estimate > budget.usd. Called BEFORE the call."""
+    def settle(self, reservation: Reservation, actual: Usage) -> Money:
+        """Replace the reservation with the true cost from the response."""
+    @property
+    def spent(self) -> Money: ...
+    def remaining_steps(self) -> int: ...
+    def check_deadline(self) -> None: ...
+```
+
+**Worst-case estimate** (the value passed to `reserve`):
+
+```
+estimate = count_input_tokens(request) / 1e6 * price.input_per_mtok
+         + max_tokens                  / 1e6 * price.output_per_mtok
+```
+
+Cache reads are *not* subtracted from the estimate — over-estimating is safe, under-
+estimating breaks the ceiling. `settle` corrects to the true cost from `response.usage`,
+including the cache-read discount.
+
+All money arithmetic uses `Decimal`. Floats are banned in the ledger by a lint rule; a
+float rounding error in a budget check is a real, if small, class of bug.
+
+---
+
+## 5. Store
+
+```python
+# harness/memory/base.py
+
+class Store(Protocol):
+    async def get(self, key: str) -> str | None: ...
+    async def put(self, key: str, value: str, *, ttl_s: float | None = None) -> None: ...
+    async def delete(self, key: str) -> None: ...
+    async def search(self, query: str, *, limit: int = 5) -> Sequence[Memo]: ...
+    async def close(self) -> None: ...
+
+@dataclass(frozen=True, slots=True)
+class Memo:
+    key: str
+    value: str
+    score: float
+    updated_at: float
+```
+
+`search` in the SQLite implementation is FTS5 keyword search — **not** vector similarity.
+This is stated plainly so nobody assumes semantic recall. Vector search is a non-goal
+([§01.5](01-requirements.md#5-non-goals)); a user who wants it implements `Store`.
+
+Values are strings, not arbitrary objects. Pickling user objects into a store is a
+deserialization vulnerability and a versioning trap.
+
+---
+
+## 6. Events & exporters
+
+```python
+# harness/observe/events.py
+
+@dataclass(frozen=True, slots=True)
+class Event:
+    seq: int              # monotonic within a run, from 0
+    ts: float             # time.time()
+    run_id: str
+    kind: EventKind       # closed enum — see §05.1
+    step: int | None
+    data: Mapping[str, object]   # JSON-serializable; schema per kind in §05.1
+
+class Exporter(Protocol):
+    def emit(self, event: Event) -> None: ...
+    def close(self) -> None: ...
+```
+
+**Exporter contract:** `emit` must not raise and must not block. The `EventBus` wraps every
+exporter in a try/except that converts an exception into a single `error.raised` event and
+**disables that exporter for the rest of the run**. A broken telemetry exporter must never
+take down an agent — that is a self-inflicted outage.
+
+---
+
+## 7. Exception hierarchy
+
+```
+HarnessError
+├── ConfigError                     ← always raised at import or construction, never at run
+│   ├── MissingEffectError
+│   ├── ToolSchemaError
+│   ├── DuplicateToolError
+│   ├── NonDeterministicPromptError
+│   ├── UnsafeToolSetError          ← the external+danger construction check (F9.1)
+│   ├── InvalidBudgetError
+│   └── UnknownModelError
+├── ToolContractError               ← tool returned something unserializable
+├── SyncInAsyncContextError
+├── RunFailed                       ← raised by .run() when result.ok is False
+│   └── .partial: Result            ← partial work is never lost
+├── BudgetExceeded
+├── PolicyDenied
+└── ProviderError
+    ├── ProviderAuthError           (401/403)  — no retry
+    ├── ProviderBadRequest          (400/404)  — no retry
+    ├── ProviderRateLimited         (429)      — retry with Retry-After
+    ├── ProviderUnavailable         (5xx)      — retry with backoff
+    └── ProviderTimeout                        — retry with backoff
+```
+
+The `ConfigError` branch is the Poka-Yoke branch: **everything under it is detected before
+a token is spent.** A test asserts that no `ConfigError` subclass is ever raised from
+within `RunEngine.step()` — if one could be, its check belongs earlier.
+
+---
+
+## 8. Stability
+
+| Surface | Stability | Change policy |
+|---|---|---|
+| `harness.__all__` | Stable | Semver major for breaking changes; 2-release deprecation |
+| `ToolSpec`, `Effect`, `Verdict`, `Event` field sets | Stable | Additive only within a major |
+| The 5 protocols | Stable, versioned | Each carries `API_VERSION: int`; a mismatch raises at registration with the required version |
+| `EventKind` values | Additive | New kinds may appear in a minor; consumers must ignore unknown kinds |
+| Anything under `harness._*` or not in `__all__` | Private | May change in a patch |
