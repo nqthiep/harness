@@ -7,6 +7,124 @@ Conventions: all data types are `@dataclass(frozen=True, slots=True)`. All proto
 `typing.Protocol` with `@runtime_checkable` only where isinstance checks are actually
 needed. No public signature contains `Any` (NFR-04).
 
+
+---
+
+## 0. Core value types
+
+Defined first because everything below references them. Round 20 found that seven types
+appearing in normative signatures had **no definition anywhere in this package** — including
+`Money`, which is publicly exported. An implementer would have had to invent them, which is
+precisely the bar this document exists to clear.
+
+```python
+# harness/result.py
+
+class Money:
+    """A USD amount. Decimal-backed; never a float (IDL-01)."""
+    def __init__(self, value: Decimal | int | str) -> None: ...
+    def __add__(self, other: "Money") -> "Money": ...
+    def __sub__(self, other: "Money") -> "Money": ...
+    def __lt__(self, other: "Money") -> bool: ...          # full ordering
+    def __str__(self) -> str: ...                          # "$0.0143" — 4 dp, always signed with $
+    def __repr__(self) -> str: ...                         # "Money('0.0143')"
+    @property
+    def decimal(self) -> Decimal: ...
+    ZERO: ClassVar["Money"]
+
+@dataclass(frozen=True, slots=True)
+class Usage:
+    input_tokens: int
+    output_tokens: int
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+
+    @property
+    def total(self) -> int: ...
+    @property
+    def cache_hit_ratio(self) -> float:
+        """cache_read / (input + cache_read). 0.0 when nothing was sent."""
+    def __add__(self, other: "Usage") -> "Usage": ...      # accumulated across steps
+
+@dataclass(frozen=True, slots=True)
+class Step:
+    index: int
+    usage: Usage
+    cost: Money
+    tool_calls: tuple[str, ...]
+    duration_ms: float
+```
+
+```python
+# harness/models/base.py
+
+ContentBlock = Mapping[str, object]
+"""One provider content block: text, tool_use, tool_result, thinking, compaction.
+Deliberately a Mapping rather than a class hierarchy — the harness routes blocks by
+their "type" key and never interprets their bodies, so modelling them would be a
+per-provider maintenance cost with no reader. Only models/anthropic.py inspects them."""
+
+SystemBlock = Mapping[str, object]
+"""A system content block: {"type": "text", "text": ..., "cache_control"?: ...}."""
+
+DeltaFn = Callable[[str], None]
+"""Streaming callback. Receives text fragments only — never thinking, never tool input.
+Must not raise; the provider wraps it exactly as the EventBus wraps exporters (§04.6)."""
+```
+
+```python
+# harness/budget/ledger.py
+
+@dataclass(frozen=True, slots=True)
+class Reservation:
+    id: str
+    estimate: Money
+    input_tokens: int
+    max_tokens: int      # derived — ADR-017
+    created_at: float
+```
+
+```python
+# harness/observe/events.py
+
+class EventKind(str, Enum):
+    RUN_STARTED = "run.started";        RUN_FINISHED    = "run.finished"
+    STEP_STARTED = "step.started";      STEP_FINISHED   = "step.finished"
+    MODEL_REQUEST = "model.request";    MODEL_RESPONSE  = "model.response"
+    BUDGET_RESERVED = "budget.reserved"; BUDGET_EXHAUSTED = "budget.exhausted"
+    TOOL_REQUESTED = "tool.requested";  POLICY_DECIDED  = "policy.decided"
+    TOOL_STARTED = "tool.started";      TOOL_FINISHED   = "tool.finished"
+    TAINT_RAISED = "taint.raised";      CONTEXT_MANAGED = "context.managed"
+    ERROR_RAISED = "error.raised"
+```
+
+Fifteen values, matching [§05.1](05-data-and-state.md#1-the-event-taxonomy-closed) exactly.
+A test asserts the enum and that table have the same membership — two lists of the same
+thing drift, so one of them is checked against the other.
+
+### Hashability — the rule, and why it needs one
+
+`ToolSpec`, `ModelRequest`, `Message` and `Event` are all `frozen=True` and all carry a
+`Mapping` field. **A frozen dataclass with a dict field is not hashable**, and the design
+originally relied on hashing two of them:
+
+```
+frozenset({tool_spec})   ->  TypeError: unhashable type: 'dict'
+hash(model_request)      ->  TypeError: unhashable type: 'dict'
+```
+
+| Type | `__hash__` | Where identity is needed instead |
+|---|---|---|
+| `ToolSpec` | `None` | `ToolSet` keys by `name` (a `str`) |
+| `ModelRequest` | `None` | Memoization keys on `blake2b(canonical_json(request))` |
+| `Message`, `Event` | `None` | Never used as keys |
+| `Money`, `Usage`, `Budget`, `Price`, `Reservation`, `Step` | generated | Scalar fields only — genuinely hashable |
+
+**Every type in this package that defines `__eq__` either has a consistent `__hash__` or
+sets `__hash__ = None`.** Checked package-wide by AC-22, not per type — the Round 19 defect
+was the same contract violation on `Secret`, and the Round 20 one landed on `ToolSpec`. It
+will land somewhere else next.
+
 ---
 
 ## 1. Tools
@@ -43,6 +161,7 @@ constant, not configuration: a user who could edit it could disable the taint ru
 ```python
 @dataclass(frozen=True, slots=True)
 class ToolSpec:
+    __hash__ = None                    # holds a Mapping — see §0 Hashability
     name: str                          # ^[a-z][a-z0-9_]{0,63}$ — validated at decoration
     description: str                   # from the docstring summary; required, non-empty
     input_schema: Mapping[str, object] # JSON Schema, additionalProperties:false, strict-ready
@@ -102,6 +221,7 @@ that fail at runtime and cost money to discover.
 
 @dataclass(frozen=True, slots=True)
 class ModelRequest:
+    __hash__ = None                    # holds Mappings — memoize on canonical bytes, §0
     model: str
     system: tuple[SystemBlock, ...]     # pre-rendered, immutable
     tools: tuple[Mapping[str, object], ...]  # name-sorted, canonically serialized
@@ -148,7 +268,10 @@ class ModelProvider(Protocol):
   mapping table for the Anthropic adapter is in [§10.3](10-observability-ops.md).
 - `complete` must **not** retry permanent errors (4xx other than 408/409/429).
 - `count_input_tokens` must not mutate the request and must be safe to call before
-  `complete` (it is on the budget hot path — the adapter caches by request hash).
+  `complete` (it is on the budget hot path). **Memoize on `blake2b(canonical_json(request))`,
+  not on the object** — `ModelRequest` holds `Mapping` fields and is unhashable. This reuses
+  the assembler's canonical serializer, which has to exist anyway for caching, so there is
+  one definition of "the same request" in the system rather than two.
 - `price` must raise `UnknownModelError` for an unlisted model rather than return zero.
   A zero price silently disables the budget ceiling — fail-safe, not fail-open.
 - `pause_turn` must be surfaced, not swallowed. The `RunEngine` re-sends to resume, capped

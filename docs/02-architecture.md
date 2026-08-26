@@ -141,7 +141,8 @@ src/harness/
   tools/
     __init__.py         @tool decorator, Effect, ToolSpec, EFFECT_PROFILES
     schema.py           Python signature → JSON Schema (strict-compatible)
-    registry.py         ToolSet: frozen, name-sorted, deterministic serialization
+    registry.py         ToolSet: sorted tuple + name index, deterministic serialization
+                        (not a frozenset — ToolSpec holds a Mapping and is unhashable)
     invoke.py           Execution: timeout, truncation, error capture, taint marking
     builtin/
       web.py            search, fetch          (effect=external, pre-classified)

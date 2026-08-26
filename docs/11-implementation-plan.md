@@ -87,11 +87,11 @@ right — before anything is built on top of it.
 - **What.** Frozen, name-sorted collection with canonical serialization.
 - **Why.** Deterministic tool rendering is a precondition for caching (ADR-004). Sorting here means the assembler cannot get it wrong later.
 - **Where.** `tools/registry.py`.
-- **How.** `frozenset`-backed with a sorted tuple view; `to_api()` returns tools sorted by name, serialized with `sort_keys=True` and fixed separators.
+- **How.** Backed by a **sorted tuple plus a name→spec dict**, never a `frozenset`: `ToolSpec` holds a `Mapping` and is therefore unhashable, and the name ordering a set would destroy is the ordering cache determinism depends on (ADR-004). `to_api()` returns tools sorted by name, serialized with `sort_keys=True` and fixed separators.
 - **Depends.** T-0.2
 - **Contract.** `to_api()` is byte-identical across processes and interpreter runs.
 - **Failure.** Duplicate name → `DuplicateToolError` naming both `source` locations.
-- **Test.** Property P-5. Insertion order does not affect output. Duplicate raises with both paths in the message.
+- **Test.** Property P-5. Insertion order does not affect output. Duplicate raises with both paths in the message. `ToolSpec` is unhashable (`TypeError` in a set) — AC-22.
 - **Done.** Two `ToolSet`s built in different orders from the same tools serialize identically.
 
 ### T-0.4 — `ModelProvider` protocol, Anthropic adapter, `FakeModel`
@@ -99,7 +99,7 @@ right — before anything is built on top of it.
 - **What.** The provider seam plus its two first implementations.
 - **Why.** Building the real adapter and the fake together is what proves the seam is real. A seam with one implementation is a guess.
 - **Where.** `models/base.py`, `models/anthropic.py`, `models/fake.py`.
-- **How.** Adapter wraps `anthropic.AsyncAnthropic`. Import the SDK lazily inside the constructor (NFR-01). `thinking={"type":"adaptive"}`, `output_config={"effort": ...}`; never send `budget_tokens`. Enable server-side refusal fallbacks by default. Map errors per [§10.3](10-observability-ops.md#3-provider-error-mapping). Surface `pause_turn` rather than swallowing it. `count_input_tokens` uses the provider's token-counting endpoint, memoized by request hash.
+- **How.** Define the [§04.0](04-interfaces.md#0-core-value-types) value types (`Money`, `Usage`, `Step`, `ContentBlock`, `SystemBlock`, `DeltaFn`, `Reservation`, `EventKind`) first — everything downstream references them. Adapter wraps `anthropic.AsyncAnthropic`. Import the SDK lazily inside the constructor (NFR-01). `thinking={"type":"adaptive"}`, `output_config={"effort": ...}`; never send `budget_tokens`. Enable server-side refusal fallbacks by default. Map errors per [§10.3](10-observability-ops.md#3-provider-error-mapping). Surface `pause_turn` rather than swallowing it. `count_input_tokens` uses the provider's token-counting endpoint, memoized on `blake2b(canonical_json(request))` — **not** on the object, which is unhashable — reusing the assembler's canonical serializer so "the same request" has one definition in the system.
 - **Depends.** T-0.1
 - **Contract.** [§04.2](04-interfaces.md#2-model-provider).
 - **Failure.** No vendor exception escapes the adapter. Unknown model in `price()` → `UnknownModelError`, never zero.

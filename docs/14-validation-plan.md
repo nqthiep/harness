@@ -157,6 +157,7 @@ milestone; a step that stops working is a regression in the *plan*, not just the
 | 0b. `ls -a` after `harness new` | `.gitignore` exists and lists `.env` | Register #36 |
 | 1. Clone, `uv sync`, `pytest` | Green in < 60 s, no API key needed | SC-5, T-0.1 |
 | 2. Read [§11](11-implementation-plan.md), pick T-0.2 | Contract, tests and DoD are unambiguous | Plan quality |
+| 2b. **Follow every capitalized name in every [§04](04-interfaces.md) signature back to its definition** | All resolve within the package | Round 20 — the Round 12 walkthrough followed tasks, never types, and seven were undefined |
 | 3. Implement T-0.2, run its tests | Pass; error messages match [§03.7](03-public-api.md#8-error-message-standard) | T-0.2 |
 | 4. Wire T-0.5 loop with fakes | Eight integration scenarios pass | T-0.5 |
 | 5. Run `examples/01_hello.py` with a real key | Real agent answers | M0 exit |

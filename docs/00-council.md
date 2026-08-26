@@ -766,6 +766,77 @@ none of the earlier rounds found one by inspection.
 **Gate:** held at 16/16 after the fixes. Security and Interfaces were **No** for the
 duration of H19.1 and H19.2.
 
+
+---
+
+### Round 20 — Executing the type contracts
+
+Round 19 adopted the rule that a type contract is reviewed by writing the lines that
+exercise it. Round 20 was the first round run that way from the start. It found two
+defects, one of which is a straightforward failure of this package's own stated purpose.
+
+**H20.1 — `ToolSet` and the token-count memo both hash things that cannot be hashed.**
+
+[§02.5](02-architecture.md#5-module-map) specifies `ToolSet` as "frozenset-backed".
+[§04.2](04-interfaces.md#2-model-provider) specifies `count_input_tokens` as "memoized by
+request hash". Both `ToolSpec` and `ModelRequest` are `frozen=True` dataclasses carrying
+`Mapping` fields:
+
+```
+frozenset({tool_spec})   ->  TypeError: unhashable type: 'dict'
+hash(model_request)      ->  TypeError: unhashable type: 'dict'
+```
+
+A frozen dataclass generates `__hash__` from its fields, and one of those fields is a dict.
+Neither line could ever have run.
+
+**Resolved, and both fixes are simplifications:**
+
+- `ToolSet` is backed by a **sorted tuple plus a name→spec dict**. It was already required
+  to be name-sorted for cache determinism (ADR-004), so the ordering the frozenset would
+  have destroyed is the ordering the design depends on. The set was the wrong container from
+  the start.
+- Memoization keys on **`blake2b(canonical_json(request))`**, reusing the assembler's
+  canonical serializer — which has to exist anyway for prompt caching. The system now has
+  **one** definition of "the same request" instead of two that could diverge.
+
+The Poka-Yoke Reviewer noted the pattern: both defects were introduced by reaching for a set
+where an ordered structure was required. AC-22, added in Round 19 for `Secret`, catches this
+one too, which is the first evidence that the package-wide framing of that rule was right.
+
+**H20.2 — Seven types in normative signatures have no definition anywhere.**
+
+Scanning [§04](04-interfaces.md) for type names used in signatures but never defined:
+
+```
+ContentBlock · DeltaFn · EventKind · Money · Reservation · SystemBlock · Usage
+```
+
+`Money` is in `__all__` — **a publicly exported type with no contract**. `Usage` appears in
+`Result`, in `ModelResponse` and in three event payloads. An implementer picking up T-0.4 or
+T-0.6 would have had to invent all seven and hope the next person invented them compatibly.
+
+This is not a stylistic gap. [§00](00-council.md) states the package's whole purpose as "an
+engineering team can begin without making a further architectural decision", and seven
+undefined types are seven decisions handed to whoever types fastest.
+
+**Resolved:** [§04.0](04-interfaces.md#0-core-value-types) now defines all seven before
+anything references them.
+
+Two of the definitions were themselves decisions worth recording. `ContentBlock` and
+`SystemBlock` are `Mapping[str, object]` **deliberately**, not a class hierarchy: the harness
+routes blocks by their `type` key and never interprets their bodies, so modelling them would
+be a per-provider maintenance cost with no reader. Only the provider adapter looks inside
+one. The Runtime Architect proposed a full block hierarchy and withdrew it on that argument.
+
+**Why Round 12's simulation missed this.** The Day-1 walkthrough followed *tasks* and
+checked that each had a contract, a test and a definition of done. It never followed a
+*type* from its use back to its definition. **The walkthrough now includes that traversal**,
+and it is cheap: every capitalized name in a signature must resolve to a definition in the
+same package.
+
+**Gate:** held at 16/16 after the fixes. Interfaces was **No** for the duration of H20.2.
+
 ---
 
 ## 3. Implementation Readiness Gate — final

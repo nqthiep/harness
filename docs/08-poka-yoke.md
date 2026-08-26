@@ -1,6 +1,6 @@
 # 08 — Poka-Yoke Register
 
-Fifty ways a competent developer could still get this wrong, and what in the design
+Fifty-two ways a competent developer could still get this wrong, and what in the design
 stops them. The ranking is deliberate:
 
 **Impossible** > **Import-time error** > **Construction-time error** > **First-run error** >
@@ -26,6 +26,8 @@ which is why they are grouped separately below.
 | 5 | Tool name illegal for the API (spaces, 80 chars) | Validated against `^[a-z][a-z0-9_]{0,63}$` at decoration | Import |
 | 6 | Calling sync `.run()` inside a running event loop | Detected; `SyncInAsyncContextError` names `arun()` — instead of the opaque `RuntimeError: This event loop is already running` | First run |
 | 7 | Typo in a parameter name silently ignored | Keyword-only + no `**kwargs` anywhere in the public API → `TypeError` | Impossible |
+| 51 | **A frozen dataclass with a dict field used as a set member or cache key** — `TypeError` only on the path that happens to hash it | `__hash__ = None` declared explicitly on every such type; ordered containers keyed by a scalar instead. AC-22 checks the eq/hash pairing package-wide | Impossible |
+| 52 | **A type used in a signature that nobody ever defined** — each implementer invents an incompatible version | Walkthrough step 2b traverses every capitalized name in [§04](04-interfaces.md) back to a definition | Plan review |
 | 8 | Importing from a private path that later moves | `__all__` is the contract; a CI test fails if any example or doc imports outside it | CI |
 
 ## Tools
