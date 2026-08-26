@@ -11,14 +11,15 @@ requirement, it is a wish.
 
 | Req | Check | Where | Gate |
 |---|---|---|---|
-| G1 / SC-1 | Beginner study, 5 participants | T-5.4 | Blocks 1.0 |
+| G1 / SC-1a | Beginner study, 5 developers | T-5.4 | Blocks 1.0 |
+| G1 / SC-1b | **Beginner study, 3 children aged 10–12** | T-5.4 | Blocks 1.0 |
 | G2 / SC-2 | Property P-1, 1 000 adversarial runs | `tests/property/test_budget.py` | Blocks merge |
 | G3 / SC-3 | Red-team suite, 14 scenarios | `tests/redteam/` | Blocks merge |
 | G4 / SC-4 | Cache benchmark, 10-turn fixture | `benchmarks/cache.py` | Blocks merge |
 | G5 / SC-5 | `no_network()` autouse; suite runs offline | CI | Blocks merge |
 | G6 / SC-6 | 5 out-of-tree plugin examples | `examples/plugins/` | Blocks M4 |
 | G7 / SC-7 | Golden replay, byte-identical | `tests/golden/` | Blocks merge |
-| FR-01…18 | Named integration test per requirement | `tests/integration/` | Blocks merge |
+| FR-01…23 | Named integration test per requirement | `tests/integration/` | Blocks merge |
 | NFR-01 | `python -X importtime` < 200 ms | CI | Blocks merge |
 | NFR-02 | Null-provider benchmark, < 15 ms p95 | `benchmarks/overhead.py` | Blocks merge |
 | NFR-03 | Memory profile, 100-step run < 50 MB | `benchmarks/memory.py` | Blocks merge |
@@ -27,24 +28,21 @@ requirement, it is a wish.
 | NFR-07 | Property P-6 | `tests/property/` | Blocks merge |
 | NFR-08 | Tool-raises integration test | `tests/integration/` | Blocks merge |
 | NFR-10 | Docstring examples executed | CI | Blocks merge |
-| ADR-001…011 | Architecture conformance tests (§4) | `tests/conformance/` | Blocks merge |
+| ADR-001…016 | Architecture conformance tests (§4) | `tests/conformance/` | Blocks merge |
 
 ## 2. SC-1 — Time to First Agent
 
-The measurement the whole DX argument rests on. Run at T-5.4, before 1.0.
+The measurement the whole DX argument rests on. Run at T-5.4, before 1.0. Two populations,
+**both blocking**, because passing one proves nothing about the other.
 
-**Protocol**
-- **Participants:** 5 Python developers who have never seen the library. At least two
-  should have no prior LLM-API experience — that is the population the design claims to
-  serve.
-- **Materials:** the README and nothing else. No walkthrough, no help.
+### SC-1a — developers
+
+- **Participants:** 5 Python developers who have never seen the library. At least two with
+  no prior LLM-API experience.
+- **Materials:** the README and nothing else.
 - **Task:** "Build an agent that answers questions using the web, and run it."
 - **Observation:** screen recording plus think-aloud. The observer does not answer
   questions; unanswered questions are the data.
-- **Measured:** wall-clock to a first successful run; number of times the participant left
-  the README to look something up; every point of confusion, verbatim.
-
-**Thresholds**
 
 | Metric | Pass |
 |---|---|
@@ -53,9 +51,43 @@ The measurement the whole DX argument rests on. Run at T-5.4, before 1.0.
 | Participants who had to read library source | 0 |
 | Distinct confusion points reported by ≥ 2 participants | 0 |
 
-**On failure.** 1.0 is blocked and the council reconvenes on the API — not on the docs.
-If the fix is "explain it better", the API is wrong. This is stated in advance so the
-result cannot be rationalized after the fact.
+### SC-1b — children
+
+The requirement the project owner actually stated, measured rather than asserted.
+
+- **Participants:** 3 children aged 10–12 who have completed a basic Python course —
+  they know `def`, variables, strings, lists, `print`, `import` and `pip install`.
+- **Materials:** [§15 — Your First Agent](15-first-agent.md) and nothing else.
+- **Adult role:** may read words aloud on request, and may perform the one account/payment
+  step in Step 2. **May not** explain, debug, type code, or point at the screen.
+- **Task, in two parts:**
+  1. Build a helper that answers questions.
+  2. **Give it a tool you wrote yourself.**
+- **Environment:** a machine with Python already installed. Installing Python is not part
+  of this library's claim and is excluded.
+
+| Metric | Pass |
+|---|---|
+| Children reaching a working agent | ≥ 2 / 3 in ≤ 20 min |
+| **Children adding a tool of their own** | **≥ 2 / 3** |
+| Children who needed an adult to explain anything beyond Step 2 | 0 |
+| Points where a child gave up and had to be restarted | 0 |
+
+**Part 2 is the one that matters.** Running a provided example proves the example works.
+Writing a tool is the point at which someone has built something rather than run something,
+and it is the only part of the ladder that touches `@tool`, type hints, and `effect=` — the
+three concepts the council argued hardest about.
+
+### On failure — either study
+
+1.0 is blocked and the council reconvenes **on the API, not on the documentation**. If the
+proposed fix is "explain it better", the API is wrong. This is written down in advance
+precisely so the result cannot be rationalized after the fact — which is what happened in
+Round 4, when a beginner review inspected the API, approved it, and never tested whether
+anyone could get from an empty folder to a working agent.
+
+**Every confusion point is logged verbatim and mapped to a register entry in
+[§08](08-poka-yoke.md)** — a confusion with no entry means the register has a gap.
 
 ## 3. SC-4 — Cache benchmark
 
@@ -91,6 +123,16 @@ against slow architectural drift, which no ordinary test catches.
 | AC-10 | `RunContext` has no field referencing message history | IDL-15 |
 | AC-11 | No `float` literal or annotation in `budget/` | IDL-01 |
 | AC-12 | Every `__all__` symbol has a docstring containing a `>>>` example | NFR-10 |
+| AC-13 | Nothing in the package assigns to `sys.excepthook`, `sys.path`, `warnings.filters` or any other global at import | ADR-015 |
+| AC-14 | Progress output is emitted only when `stdout.isatty()`, and never contains tool arguments | ADR-014 |
+| AC-15 | `harness new` output always includes a `.gitignore` listing `.env` | ADR-013, register #36 |
+| AC-16 | No `ToolSchemaError` path defaults an unannotated parameter to `str` | IDL-22 |
+| AC-17 | The unfiltered traceback appears in the `error.raised` event whenever `run()` filtered one | ADR-015 |
+| AC-18 | Every credential-missing error string contains `harness setup` and none contains `ANTHROPIC_API_KEY` | ADR-013 |
+
+AC-13 deserves a note: it is the test that keeps ADR-015 honest. The friendly-traceback
+feature is exactly the kind of thing that gets "simplified" later into a global hook, and
+nothing else in the suite would notice.
 
 AC-04 and AC-05 are the important two. They are AST tests rather than behavioral tests
 because they must hold on *every* path, including ones no test exercises — that is exactly
@@ -103,9 +145,11 @@ milestone; a step that stops working is a regression in the *plan*, not just the
 
 | Step | Expected | Verifies |
 |---|---|---|
+| 0. `pip install harness && harness setup && harness new joker && python joker.py` | A working agent, from nothing, in four commands | SC-1b, ADR-013 |
+| 0b. `ls -a` after `harness new` | `.gitignore` exists and lists `.env` | Register #36 |
 | 1. Clone, `uv sync`, `pytest` | Green in < 60 s, no API key needed | SC-5, T-0.1 |
 | 2. Read [§11](11-implementation-plan.md), pick T-0.2 | Contract, tests and DoD are unambiguous | Plan quality |
-| 3. Implement T-0.2, run its tests | Pass; error messages match [§03.7](03-public-api.md#7-error-message-standard) | T-0.2 |
+| 3. Implement T-0.2, run its tests | Pass; error messages match [§03.7](03-public-api.md#8-error-message-standard) | T-0.2 |
 | 4. Wire T-0.5 loop with fakes | Eight integration scenarios pass | T-0.5 |
 | 5. Run `examples/01_hello.py` with a real key | Real agent answers | M0 exit |
 | 6. Add a tool with no `effect` | Import-time error listing four options | Register #9 |
@@ -116,6 +160,8 @@ milestone; a step that stops working is a regression in the *plan*, not just the
 | 11. `harness cost transcript.jsonl` | Reports spend and cache hit rate | T-5.1 |
 | 12. `kill -9` mid-run, then `resume` | Completes correctly; no `write` re-executed | T-3.3 |
 | 13. Deploy behind a web handler | Module-scope agent; cache hits across requests | §10.5 |
+| 14. Run a failing agent on a terminal | No `asyncio` frames; full traceback still in the transcript | ADR-015 |
+| 15. Pipe a run to a file | Zero progress output in the file | ADR-014 |
 
 ## 6. Sign-off
 
@@ -124,7 +170,8 @@ release.
 
 - [ ] Every row in §1 green
 - [ ] All 12 conformance tests in §4 green
-- [ ] SC-1 thresholds met with real participants
+- [ ] SC-1a thresholds met with real developers
+- [ ] **SC-1b thresholds met with real children, including the add-your-own-tool half**
 - [ ] 14/14 red team
 - [ ] P-1 green at 1 000 cases
 - [ ] Cache benchmark ≥ 90 %

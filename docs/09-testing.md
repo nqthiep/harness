@@ -65,7 +65,7 @@ Canonical JSON serialization. Budget string parsing (`"$0.10"`, `"10 cents"`, `"
 
 **Error-message conformance:** every `ConfigError` subclass is instantiated and asserted to
 render all four required sections — what, where, the copy-pasteable fix, the docs anchor
-([§03.7](03-public-api.md#7-error-message-standard)). Error messages are API.
+([§03.7](03-public-api.md#8-error-message-standard)). Error messages are API.
 
 ### Property (Hypothesis)
 

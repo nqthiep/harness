@@ -31,7 +31,17 @@ who never leaves Level 0 gets a correct, cheap, safe agent.
 
 ### Level 0 — first agent (5 minutes)
 
-`Agent(name, job, tools)` · `agent.run(text) -> Result` · `result.text`
+```
+pip install harness
+harness setup          # asks for a key, checks it works
+harness new joker      # writes joker.py AND the .gitignore that protects the key
+python joker.py
+```
+
+`Agent(name, job, tools)` · `agent.run(text) -> Result` · `print(result)`
+
+While it runs on a terminal, it says what it is doing. When output is piped it says
+nothing (ADR-014). The full child-facing version of this level is [§15](15-first-agent.md).
 
 ### Level 1 — your own tools and limits (30 minutes)
 
@@ -120,9 +130,26 @@ defaults that are correct for a first agent.** The parameters are ordered by the
 the ladder at which a user meets them, and grouped with comments in the source so the
 grouping survives.
 
-All parameters are **keyword-only**. This is deliberate Poka-Yoke: it makes
-`Agent("Bob", "answer questions")` a `TypeError` rather than a silently mis-assigned
-argument, and it means parameters can be reordered or deprecated without breaking callers.
+All parameters are **keyword-only**. This is deliberate Poka-Yoke: with two adjacent
+strings, `Agent("answer questions", "Bob")` would otherwise be silently mis-assigned. It
+also means parameters can be reordered or deprecated without breaking callers.
+
+`__init__` accepts `*args` for one reason only — to **reject** them with a readable message
+instead of Python's `TypeError: __init__() takes 0 positional arguments but 2 were given`:
+
+```
+ConfigError: Agent needs you to label each part, like this:
+
+    Agent(
+        name="Helper",
+        job="tell jokes",
+    )
+
+  You wrote:  Agent("Helper", "tell jokes")
+```
+
+This is the Round 14 pattern, applied throughout: **keep the constraint, replace the
+error.** A Poka-Yoke whose message is incomprehensible is only half-built.
 
 ### Methods
 
@@ -169,6 +196,12 @@ MissingEffectError: tool 'send_invoice' must declare what it does to the world.
   → docs/06-safety.md#effects
 ```
 
+A misspelling — the likeliest mistake in a four-word vocabulary — is caught by name:
+
+```
+ConfigError: 'reed' is not one of the four choices. Did you mean "read"?
+```
+
 ## 5. `Result`
 
 ```python
@@ -184,7 +217,12 @@ class Result:
     run_id: str
     tainted: bool
     def raise_for_status(self) -> None: ...
+    def __str__(self) -> str: return self.text     # print(result) prints the answer
 ```
+
+`__str__` returning the text is what removes attribute access from the first example. It
+is safe: `print(result.text)` had identical exposure, and `Result` defines no `__add__`, so
+`"Answer: " + result` still raises rather than silently concatenating.
 
 `StopReason` is a closed enum: `COMPLETED`, `BUDGET_EXHAUSTED`, `STEP_LIMIT`, `TIMEOUT`,
 `DENIED_BY_POLICY`, `MODEL_REFUSAL`, `CANCELLED`, `ERROR`.
@@ -216,7 +254,26 @@ __all__ = [
 
 Thirty-two symbols. A user reaching Level 0 needs three of them.
 
-## 7. Error-message standard
+## 7. The CLI
+
+Promoted from "should" to **must** in Round 14: five of the six beginner blockers were
+outside the Python API entirely, and three of them are solved here.
+
+| Command | Does | Why it exists |
+|---|---|---|
+| `harness setup` | Asks for a key, **validates it with one minimal call**, stores it. Prints the provider's spend-limit URL. | G13.1 — the true first wall. A key is a shell concept; this makes it a paste. |
+| `harness new <name>` | Writes a runnable, commented agent file **and** a `.gitignore` containing `.env` | G13.6 + key safety. The scaffold includes a small `budget=` so the concept is shown, not explained later. |
+| `harness chat <file>` | Interactive conversation with an agent defined in a file | The moment someone wants a *second* agent. ~20 lines. |
+| `harness run <file>` | Runs it once, non-interactively | Scripting |
+| `harness trace <transcript>` | Renders a run: every model call, tool call, verdict, cost | [§05.2](05-data-and-state.md#2-transcript-format) |
+| `harness cost <transcript>` | Spend and realized cache hit rate | [§07.2.3](07-cost.md#23-runtime-verification) |
+| `harness doctor` | Version, key presence, pricing-table age, cache determinism, plugin compatibility | The standard bug-report attachment |
+
+`harness new` generating the `.gitignore` **in the same command** as the file that needs it
+is the design point, not an implementation detail: a protection that is a separate step is
+a protection that gets skipped.
+
+## 8. Error-message standard
 
 Error messages are part of the API and are reviewed like API. Every `ConfigError`
 subclass must supply all four of:

@@ -20,7 +20,7 @@ surface of Option A.
 
 | # | Goal | Measured by |
 |---|---|---|
-| G1 | A working agent in ≤ 5 lines and ≤ 3 concepts | SC-1 |
+| G1 | A working agent in ≤ 5 lines and ≤ 3 concepts, reachable by a child who knows basic Python | SC-1a, SC-1b |
 | G2 | A runaway agent cannot exceed its budget | SC-2 |
 | G3 | Untrusted content cannot trigger irreversible actions | SC-3 |
 | G4 | Prompt caching works by default, without the author thinking about it | SC-4 |
@@ -32,7 +32,8 @@ surface of Option A.
 
 | # | Criterion | Threshold | Where verified |
 |---|---|---|---|
-| SC-1 | **Time to first agent.** Five people who have never seen the library, given only the README, produce a working agent. | Median ≤ 10 min; ≥ 4/5 succeed without asking a question | [§14.2](14-validation-plan.md) |
+| SC-1a | **Time to first agent (developers).** Five people who have never seen the library, given only the README, produce a working agent. | Median ≤ 10 min; ≥ 4/5 succeed without asking a question | [§14.2](14-validation-plan.md) |
+| SC-1b | **Time to first agent (children).** Three children aged 10–12 who have completed a basic Python course, given only [§15](15-first-agent.md). An adult may read words aloud but may not explain, debug, or type. | ≥ 2/3 reach a working agent in ≤ 20 min **and** ≥ 2/3 add a tool of their own | [§14.2](14-validation-plan.md) |
 | SC-2 | **Budget is a ceiling.** Over 1 000 randomized adversarial runs (tool loops, huge results, retries), actual spend never exceeds the declared budget. | 0 violations | Property test, [§09](09-testing.md) |
 | SC-3 | **Taint containment.** The red-team suite's exfiltration scenarios are blocked. | 100 % of RT-01…RT-12 blocked | Red-team suite, [§09.5](09-testing.md) |
 | SC-4 | **Cache effectiveness.** On the 10-turn conversation fixture, cache reads on turns 3+. | ≥ 90 % of input tokens read from cache | Benchmark, [§14.3](14-validation-plan.md) |
@@ -61,9 +62,14 @@ surface of Option A.
 | FR-13 | Persist and recall memory across runs | Should |
 | FR-14 | Manage context growth (editing, then compaction) automatically | Must |
 | FR-15 | Register plugins explicitly; discover installed ones only on request | Must |
-| FR-16 | CLI: scaffold, run, trace, cost, doctor | Should |
+| FR-16 | CLI: setup, new, chat, run, trace, cost, doctor | Must |
 | FR-17 | Stream output tokens to a callback | Should |
 | FR-18 | Cancel a running agent cooperatively | Must |
+| FR-19 | Guided credential setup that validates the key and needs no shell knowledge | Must |
+| FR-20 | Live progress on an interactive terminal; silent when output is not a TTY | Must |
+| FR-21 | Errors render without harness or asyncio frames, without mutating global state | Must |
+| FR-22 | Scaffold a runnable agent file together with the `.gitignore` that protects its key | Must |
+| FR-23 | Warn once per process when cumulative spend across runs passes a session threshold | Should |
 
 ### 4.2 Non-functional
 
@@ -102,14 +108,15 @@ Each is stated with the reason, so a future contributor does not re-litigate it 
 | **LLM-based model routing** | Paying a model call to decide which model to call is usually a net loss, and no routing policy could be named today that the council agreed was correct. `subagent(model=...)` captures most of the savings explicitly. |
 | **Vector store / RAG engine** | RAG is an application concern built *from* tools, not a harness primitive. A `search` tool is one function. Embedding a vector DB would add the heaviest dependency in the stack to serve a subset of users. |
 | **Multi-agent orchestration graphs** | Subagents cover fan-out. Arbitrary agent graphs are a research area, not a v1 requirement. |
-| **Visual builder / no-code UI** | Out of scope for a library. |
+| **Visual builder / no-code UI** | Out of scope for a library. The beginner requirement is met by the code API itself ([§15](15-first-agent.md)), not by avoiding code — the target user already knows basic Python. |
 | **Fine-tuning, evals platform, prompt management** | Adjacent products. |
 
 ## 6. Assumptions
 
 | # | Assumption | If wrong |
 |---|---|---|
-| A-1 | Users have an Anthropic API key and can make outbound HTTPS calls | The library is unusable; no mitigation, this is the premise |
+| A-1 | Users can obtain an Anthropic API key and make outbound HTTPS calls | The library is unusable; no mitigation, this is the premise. Obtaining the key is the one step [§15](15-first-agent.md) permits an adult to perform for a child. |
+| A-1b | A ten-year-old target user knows `def`, variables, strings, lists, `print`, `import`, calling functions and `pip install` — and does **not** know decorators, type hints, keyword-only arguments, exceptions, classes, async or environment variables | This is the corrected premise from Round 13. The Round 0 assumption that the requirement was unsatisfiable was wrong and is superseded. If the knowledge floor is lower still, SC-1b fails and the council reconvenes on the API. |
 | A-2 | Typical agents have 1–30 tools | Beyond ~50, tool schemas dominate the prefix; tool search becomes necessary (v2, tracked in [§13](13-risk-register.md)) |
 | A-3 | Typical runs are ≤ 50 steps and ≤ 10 minutes | Longer runs need durable execution (non-goal) |
 | A-4 | Token counting via the provider's `count_tokens` is accurate enough for pre-flight budgeting | Budget becomes advisory rather than a ceiling; RISK-03 |

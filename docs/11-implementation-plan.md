@@ -31,6 +31,10 @@ graph TD
   T03 --> T04
   T04 --> T05["T-0.6 Agent + Result"]
   T05 --> T06["T-0.7 testing kit"]
+  T05 --> T07["T-0.8 setup/new/chat"]
+  T05 --> T08["T-0.9 feedback & errors"]
+  T07 --> SC["SC-1b · children"]
+  T08 --> SC
 ```
 
 M1 and M2 are independent after M0 and can run in parallel across two engineers. That is
@@ -40,8 +44,15 @@ the intended split: one takes safety, one takes cost.
 
 # M0 — Walking skeleton  *(week 1)*
 
-**Goal.** `examples/01_hello.py` runs a real agent, with a real tool, against the real API,
-and the same example runs green in CI against `FakeModel`. Nothing else.
+**Goal.** Two things, both end to end. (1) `examples/01_hello.py` runs a real agent with a
+real tool against the real API, and runs green in CI against `FakeModel`. (2) **A person
+with no prior setup reaches a working agent in four commands**:
+`pip install` → `harness setup` → `harness new` → `python joker.py`.
+
+**Why (2) is in M0 and not M5.** Round 13 found that five of six beginner blockers live
+outside the Python API — credentials, feedback, error rendering, scaffolding, repeat-run
+cost. Left to M5 they become a documentation problem nobody can fix by then. They are
+first-run experience, and first-run experience is built first or not at all.
 
 **Why first.** A vertical slice on day 1 means every later task integrates into something
 that already works. It also validates the riskiest assumption — that the loop shape is
@@ -114,7 +125,7 @@ right — before anything is built on top of it.
 - **Where.** `agent.py`, `result.py`.
 - **How.** Frozen dataclass, keyword-only `__init__`, validation in `__post_init__`. `run()`/`try_run()` sync facades over `arun()`/`atry_run()` via `asyncio.run`, guarded by a running-loop check. `with_()` returns a new instance.
 - **Depends.** T-0.5
-- **Contract.** [§03.3](03-public-api.md#3-agent--the-complete-signature) and [§03.5](03-public-api.md#5-result).
+- **Contract.** [§03.3](03-public-api.md#3-agent--the-complete-signature) and [§03.5](03-public-api.md#5-result). `Result.__str__` returns the text so `print(agent.run(...))` works.
 - **Failure.** Positional args → `TypeError`. Any mutation attempt → `FrozenInstanceError`. `.run()` inside a running loop → `SyncInAsyncContextError` naming `arun()`.
 - **Test.** Keyword-only enforcement; immutability; `with_()` returns a new object and leaves the original untouched; sync-in-async detection; `run()` raises `RunFailed` with `.partial` while `try_run()` returns.
 - **Done.** `examples/01_hello.py` runs against the real API and against `FakeModel` in CI.
@@ -131,8 +142,38 @@ right — before anything is built on top of it.
 - **Test.** A deliberate real-call test asserts it raises.
 - **Done.** The whole suite runs with no network and no API key.
 
-**M0 exit gate.** Example runs both ways · full CI green · `mypy --strict` clean ·
-`run.py` ≤ 250 lines.
+### T-0.8 — First-run experience: `setup`, `new`, `chat` ★
+
+- **What.** The three CLI commands that stand between an empty folder and a working agent.
+- **Why.** ADR-013. G13.1 is the true first wall, and it is not in the API at all.
+- **Where.** `cli/setup.py`, `cli/new.py`, `cli/chat.py`.
+- **How.** `setup` prompts for a key, **validates it with one minimal call before storing**, writes to `.env` at mode `0600` (environment variable wins when already present), and prints the provider's spend-limit URL. `new <name>` writes a commented, runnable agent file **and** a `.gitignore` containing `.env` — one command, both files. The scaffold includes `budget="$0.05"` with an explanatory comment. `chat <file>` loads the agent and runs a `Chat` loop until Ctrl-C.
+- **Depends.** T-0.6
+- **Contract.** [§03.7](03-public-api.md#7-the-cli). The scaffold file is byte-identical to the one shown in [§15](15-first-agent.md).
+- **Failure.** An invalid key is rejected **at setup time** with the reason, never stored. If `.env` cannot be written, print the exact `export` line as a fallback rather than failing silently.
+- **Test.** AC-15 (`.gitignore` always generated). AC-18 (no error string mentions `ANTHROPIC_API_KEY`; all say `harness setup`). Generated file runs against `FakeModel`. Invalid key rejected without writing.
+- **Done.** On a clean container with only Python and a valid key, the four commands produce an answer.
+
+### T-0.9 — Beginner-grade feedback and errors ★
+
+- **What.** TTY progress · `Result.__str__` · filtered tracebacks · friendly positional-argument rejection · type-hint and `effect` typo messages.
+- **Why.** ADR-014, ADR-015. G13.2–G13.5. Individually small; together they are the difference between "it works" and "I gave up".
+- **Where.** `observe/console.py`, `result.py`, `run.py`, `agent.py`, `tools/schema.py`.
+- **How.**
+  - Progress: `ConsoleExporter` auto-attached when `sys.stdout.isatty()`. Writes to **stderr** (IDL-24) so redirecting stdout stays clean. Tool **names** only, never arguments.
+  - `Result.__str__` returns `self.text`. No `__add__`.
+  - Tracebacks: `run()` catches, drops harness-internal and `asyncio` frames from `__traceback__`, sets `__suppress_context__`, re-raises. **No global hook of any kind.** `HARNESS_FULL_TRACEBACK=1` restores. The unfiltered traceback still goes to the `error.raised` event.
+  - `Agent.__init__(self, *args, name, job, ...)` — `*args` exists solely to raise a `ConfigError` printing the corrected call.
+  - Unannotated tool parameter → `ToolSchemaError` showing the before/after edit and the four type words. **Never** default to `str` (IDL-22).
+  - `effect=` typo → did-you-mean by edit distance.
+- **Depends.** T-0.6, T-0.2
+- **Contract.** Every message meets the four-part standard in [§03.8](03-public-api.md#8-error-message-standard).
+- **Failure.** No global interpreter state is mutated at import — this is the whole point of ADR-015 and is asserted by AC-13.
+- **Test.** AC-13, AC-14, AC-16, AC-17. Piped run produces zero progress bytes on stdout. Every message in the "When something goes wrong" section of [§15](15-first-agent.md) is asserted by a test against the rendered message body (the tutorial omits the exception class prefix, which is the only difference) — **the tutorial is the specification for these strings, not a paraphrase of them.**
+- **Done.** All six message fixtures match [§15](15-first-agent.md) exactly; AC-13 green.
+
+**M0 exit gate.** Example runs both ways · **four-command cold start works on a clean
+machine** · full CI green · `mypy --strict` clean · `run.py` ≤ 250 lines.
 
 ---
 
@@ -425,36 +466,54 @@ default.
 
 # M5 — DX, documentation, release  *(week 6)*
 
-### T-5.1 — CLI
+### T-5.1 — CLI, remaining commands
 
-`harness new` (scaffold), `run`, `trace`, `cost`, `doctor`. `doctor` checks version, key
-presence, pricing-table age, cache determinism for a given agent module, and plugin API
-compatibility. **Depends.** T-3.2. **Done.** Each subcommand has an integration test;
-`doctor` output is the standard bug-report attachment.
+`harness run`, `trace`, `cost`, `doctor` (`setup`, `new` and `chat` shipped in T-0.8).
+`doctor` checks version, key presence, pricing-table age, cache determinism for a given
+agent module, and plugin API compatibility. **Depends.** T-3.2. **Done.** Each subcommand
+has an integration test; `doctor` output is the standard bug-report attachment.
 
 ### T-5.2 — Error-message pass ★
 
 Every `ConfigError` subclass reviewed against the four-part standard in
-[§03.7](03-public-api.md#7-error-message-standard), with a conformance test. **Why.** Error
+[§03.7](03-public-api.md#8-error-message-standard), with a conformance test. **Why.** Error
 messages are the API for anyone who has made a mistake — which is everyone, on day one.
 **Done.** Conformance test green for all 7 subclasses.
 
-### T-5.3 — Documentation
+### T-5.3 — Documentation, two audiences ★
 
-README (the five-line agent above the fold), a 5-minute quickstart, four guides (tools,
-safety, cost, testing), the [§03.2](03-public-api.md#2-progressive-disclosure-ladder)
-ladder as the site's spine, an API reference, and a plugin-authoring guide **opening with
-the trust-boundary statement verbatim**. Every `__all__` symbol has a runnable docstring
-example, executed in CI (NFR-10). **Done.** Docs build with zero broken links; examples
-execute.
+**Two separate deliverables, not one document with a beginner section.** Round 15 found the
+original single-track plan did not satisfy the revised requirement at all.
 
-### T-5.4 — Beginner validation ★
+1. **[§15 — Your First Agent](15-first-agent.md)**, shipped as the child-facing quickstart.
+   It is already written; this task is to publish it, keep the six error-message fixtures in
+   T-0.9 synchronized with it, and run it past a non-programmer reader before SC-1b.
+2. **Developer docs:** README (five-line agent above the fold), four guides (tools, safety,
+   cost, testing), the [§03.2](03-public-api.md#2-progressive-disclosure-ladder) ladder as
+   the site's spine, an API reference, and a plugin-authoring guide **opening with the
+   trust-boundary statement verbatim**.
 
-Run the SC-1 protocol of [§14.2](14-validation-plan.md#2-sc-1--time-to-first-agent): five
-people who have never seen the library, README only, observed, no help. **Threshold:**
-median ≤ 10 min, ≥ 4/5 succeed unaided. **A miss blocks 1.0 and reopens the council** —
-this is the criterion the whole DX argument rests on, so it is measured, not asserted.
-**Done.** Threshold met, or the API changed and re-measured.
+Every `__all__` symbol has a runnable docstring example, executed in CI (NFR-10).
+**Done.** Docs build with zero broken links; examples execute; every error string in §15
+is covered by a T-0.9 test.
+
+### T-5.4 — Beginner validation, both populations ★★
+
+Run the SC-1 protocol of [§14.2](14-validation-plan.md#2-sc-1--time-to-first-agent).
+
+- **SC-1a:** 5 developers, README only, observed, no help. Median ≤ 10 min, ≥ 4/5 unaided.
+- **SC-1b:** **3 children aged 10–12 with a basic Python course behind them**, given
+  [§15](15-first-agent.md) only. An adult may read words aloud and perform the account step,
+  and may not explain, debug or type. Pass: ≥ 2/3 reach a working agent in ≤ 20 min **and
+  ≥ 2/3 add a tool of their own.**
+
+The second half of SC-1b is the real test. Running a provided example proves the example
+works; writing a tool is where `@tool`, type hints and `effect=` are actually met.
+
+**A miss on either blocks 1.0 and reopens the council on the API — not on the tutorial.**
+Every confusion point is logged verbatim and mapped to a [§08](08-poka-yoke.md) entry; a
+confusion with no entry means the register has a gap.
+**Done.** Both thresholds met, or the API changed and re-measured.
 
 ### T-5.5 — Release engineering
 
@@ -481,8 +540,11 @@ Trusted Publishing to PyPI, generated changelog, `1.0.0-rc1` → soak → `1.0.0
 | T-2.2 Assembler | ★★ | M2 | T-2.3, T-2.4 |
 | T-2.3 Cache linter | ★ | M2 | — |
 | T-4.4 Subagents | ★ | M4 | — |
+| T-0.8 First-run CLI | ★ | M0 | SC-1b |
+| T-0.9 Feedback & errors | ★ | M0 | SC-1b |
 | T-5.2 Error messages | ★ | M5 | T-5.4 |
-| T-5.4 Beginner validation | ★ | M5 | 1.0 |
+| T-5.3 Docs, two audiences | ★ | M5 | T-5.4 |
+| T-5.4 Beginner validation | ★★ | M5 | 1.0 |
 
 ## Global Definition of Done
 

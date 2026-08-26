@@ -1,13 +1,17 @@
 # 08 — Poka-Yoke Register
 
-Thirty-four ways a competent developer could still get this wrong, and what in the design
+Forty-four ways a competent developer could still get this wrong, and what in the design
 stops them. The ranking is deliberate:
 
 **Impossible** > **Import-time error** > **Construction-time error** > **First-run error** >
 **Loud warning** > **Documented**
 
-An item that only reaches "Documented" is a design smell, and each of the four such items
+An item that only reaches "Documented" is a design smell, and each of the five such items
 below states why it could not be raised further.
+
+Entries 35–44 came from Round 13, when the beginner review was re-run against a child who
+knows basic Python. **Five of the six blockers it found were outside the API entirely** —
+which is why they are grouped separately below.
 
 ---
 
@@ -70,9 +74,26 @@ below states why it could not be raised further.
 |---|---|---|---|
 | 34 | A test accidentally calling the real API and billing the developer | `no_network()` active by default in the pytest fixture; any provider call raises | Impossible in CI |
 
+## Getting started (Round 13)
+
+The failures that stop someone before they reach the API at all.
+
+| # | Failure mode | Defense | Rank |
+|---|---|---|---|
+| 35 | Beginner cannot supply an API key — `export VAR=...` is a shell concept, not a Python one | `harness setup`: one paste, validated immediately. Every credential error says `Run: harness setup`, never `set ANTHROPIC_API_KEY` | First run |
+| 36 | **Beginner commits their API key to GitHub** | `harness new` writes `.gitignore` containing `.env` **in the same command** as the file that needs it — never a separate step to skip | Impossible via the scaffold |
+| 37 | Fifteen seconds of silence reads as "broken"; user hits Ctrl-C | Live progress whenever `stdout` is a TTY; silent when piped, so production logs are unaffected | Impossible on a terminal |
+| 38 | A 40-line traceback full of `asyncio` frames ends the session | Frames filtered locally in `run()`; `__suppress_context__` set. Full traceback still in the transcript and the `error.raised` event | First run |
+| 39 | `Agent("Helper", "tell jokes")` → `TypeError: takes 0 positional arguments` | `*args` accepted **only** to reject them with the corrected call printed | First run |
+| 40 | Tool written without type hints returns `"34"` for `add(3, 4)` | Unannotated parameter is a `ToolSchemaError` showing the exact edit. **Never** defaulted to `str` — a silently wrong answer is worse than an error, because there is nothing to search for | Import |
+| 41 | `effect="reed"` — a typo in a four-word vocabulary | Did-you-mean by edit distance, naming the intended value | Import |
+| 42 | A curious user runs the script 80 times; per-run budget does nothing | Scaffold ships with `budget=`; one warning per process past `$5` cumulative; `harness setup` points at the provider's **hard** limit | Warning + provider-side ceiling |
+| 43 | `print(result)` prints `<Result object at 0x...>` | `Result.__str__` returns the text; `+` still raises rather than silently concatenating | Impossible |
+| 44 | Progress output leaks tool arguments containing PII | Tool **names** only, never arguments — consistent with #24 | Impossible |
+
 ---
 
-## The four items that only reach "Documented", and why
+## The five items that only reach "Documented", and why
 
 | # | Why it cannot be raised |
 |---|---|
@@ -80,6 +101,7 @@ below states why it could not be raised further.
 | Plugin trust | Sandboxing Python meaningfully requires process or WASM isolation — a different product ([§01.5](01-requirements.md#5-non-goals)). We state the boundary plainly rather than imply one we do not enforce. |
 | Model persuasion within reversible actions | The taint rule bounds the blast radius to reversible operations. It does not claim to stop a model being talked into a `read`. Stated in the user docs so nobody believes otherwise. |
 | Resume after a partial `write` | A library cannot know whether an interrupted side effect landed. The harness declines to re-run `write`/`danger` and tells the model, which is the honest maximum ([§05.3](05-data-and-state.md#3-resume-semantics)). |
+| Obtaining the API key itself (#35) | `harness setup` reduces it to one paste, but it cannot create an account or add a payment method. [§15](15-first-agent.md) says so plainly and marks it as the one step where SC-1b permits an adult to act — rather than pretending the wall is not there. |
 
 ## The rule this register enforces
 

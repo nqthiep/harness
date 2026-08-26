@@ -330,6 +330,191 @@ Four blockers were found and fixed in the plan:
 
 **Final gate: 16/16.** Convergence declared.
 
+
+---
+
+### Round 13 — Reopened: the beginner premise was wrong
+
+**The project owner corrected the council's Round 0 premise:** a ten-year-old who has
+learned basic Python *does* know `pip install`, `def`, `import`, variables, lists and
+strings. Ambiguity A0.1 was resolved on a false assumption, and its resolution is
+**superseded**.
+
+**A0.1-R (revised).** The requirement is literal. A ten-year-old with basic Python must be
+able to build an agent — including giving it a new ability of their own. The cognitive-load
+budget from A0.1 stands as a *floor*, not as a reinterpretation.
+
+The council re-ran the Beginner UX review with an actual child persona: knows `def`,
+variables, strings, lists, `print`, `import`, calling functions, `pip install`. Does *not*
+reliably know: decorators, type hints, keyword-only arguments, exceptions, context
+managers, classes, async, or environment variables.
+
+The Beginner Advocate's finding was blunt: **the Round 4 review had tested the wrong
+things.** It checked the shape of the API and passed it. It never checked whether a
+newcomer could get from an empty folder to a working agent at all. Six blockers were found,
+and only one of them was in the API.
+
+| # | Blocker | Severity |
+|---|---|---|
+| **G13.1** | **The API key.** Nowhere in the design does a user learn where a key comes from or how to supply one. `export ANTHROPIC_API_KEY=...` is a shell concept, not a Python one. This is the true first wall, and the design was silent on it. | Blocking |
+| **G13.2** | **Fifteen seconds of silence.** The agent runs, nothing prints, the child concludes it is broken and presses Ctrl-C. Streaming was an opt-in parameter. | Blocking |
+| **G13.3** | **Forty-line tracebacks.** Any error dumps `asyncio` internals. An adult skims for the last line; a child closes the terminal. | Blocking |
+| **G13.4** | **`Agent("Helper", "tell jokes")`** — the natural thing to write — produces `TypeError: __init__() takes 0 positional arguments but 2 were given`. | Blocking |
+| **G13.5** | **Required type hints in `@tool`.** A child writes `def add(a, b):`. This is the only genuine API barrier, and it sits exactly where the child wants to go next. | High |
+| **G13.6** | **Repeated runs.** A per-run budget of $0.50 does nothing about a curious child running the file eighty times. | High |
+
+The Runtime Architect noted the uncomfortable part: **five of six blockers are outside the
+API surface the council had spent four rounds polishing.** Time-to-first-agent is dominated
+by setup, feedback and error rendering — not by parameter names.
+
+**Gate:** dropped to 14/16. Beginner Experience and Developer Experience → **No**.
+
+---
+
+### Round 14 — Resolving the six blockers
+
+**G13.1 — the API key. `harness setup`.**
+An interactive command that asks for a key, validates it with one minimal call, and writes
+it where the SDK already looks. Every "no credentials" error is rewritten from
+`set ANTHROPIC_API_KEY` to `Run: harness setup`.
+
+The Security Engineer blocked the first proposal (write the key to `~/.harness/config.toml`)
+on two counts: inventing a credential location the vendor SDK does not read means two
+sources of truth, and a plaintext key in a project folder gets committed to GitHub.
+**Resolved:** prefer the environment variable when present; otherwise write a project
+`.env` with mode `0600`; and `harness new` generates a `.gitignore` containing `.env` **in
+the same command that creates the file that needs it**. The protection cannot be forgotten
+because it is never a separate step. → **ADR-013**.
+
+**G13.2 — silence. Progress by default, on a terminal only.**
+When `stdout` is a TTY, `run()` prints live progress: *Helper is thinking… · Helper is
+searching the web… · done ($0.003, 4s)*. When output is piped or redirected — which is
+every production context — it is silent.
+
+The SRE objected that a library printing to stdout unbidden is bad manners. **Resolved:**
+the TTY check *is* the manners. Nothing that reads harness output programmatically is
+attached to a terminal. Tool **names** only are shown, never arguments — arguments carry
+PII (register #24). → **ADR-014**.
+
+**G13.3 — tracebacks. Filtered, locally, without global state.**
+The first proposal installed a `sys.excepthook` at import. The OSS Maintainer blocked it
+outright: a library that mutates global interpreter state on import is hostile in any
+application that embeds it, and it would break every debugger and error reporter in the
+ecosystem.
+**Resolved:** no global hook. `run()` catches, rewrites `__traceback__` to drop harness
+internals and `asyncio` frames, sets `__suppress_context__`, and re-raises. Purely local to
+the call. `HARNESS_FULL_TRACEBACK=1` restores everything.
+**The full, unfiltered traceback is still recorded in the `error.raised` event and the
+transcript** — nothing is lost, only the console is made readable. → **ADR-015**.
+
+**G13.4 — positional arguments.**
+Keyword-only stays (register #1 — with two adjacent strings, mis-assignment is a real and
+confusing bug). What changes is the error. `__init__` accepts `*args` solely in order to
+reject them with a message that shows the corrected call, rather than letting Python emit
+its own.
+
+This became the round's reusable pattern, applied in four more places: **keep the
+constraint, replace the error.** A Poka-Yoke that produces an incomprehensible message is
+only half-built.
+
+**G13.5 — type hints.** The hardest debate of the round.
+
+*Proposal 1: make hints optional, default unannotated parameters to string.* Rejected —
+`def add(a, b)` would receive `"3"` and `"4"` and return `"34"`. A silently wrong answer is
+far worse for a learner than an error, because there is nothing to search for.
+
+*Proposal 2: infer from default values.* Rejected — works only when defaults exist, and
+produces inconsistent behavior within a single function signature.
+
+*Proposal 3: require hints, but make the error a one-line lesson.* **Accepted.** For
+someone who already knows `def`, adding `: int` is a thirty-second lesson, not a wall —
+provided the error shows the exact edit:
+
+```
+Your tool needs to say what kind of thing each answer is.
+
+    def add(a, b):              ← you wrote this
+    def add(a: int, b: int):    ← change it to this
+
+  int = whole number   float = decimal   str = text   bool = yes/no
+```
+
+The Poka-Yoke Reviewer added the corollary: `effect="reed"` must produce
+*did you mean `"read"`?* — a typo in a four-word vocabulary is the most likely mistake
+anyone will make with it.
+
+**G13.6 — repeated runs.** The Cost Engineer proposed a persistent daily cap in a lock-file.
+The Poka-Yoke Reviewer blocked it: cross-process spend accounting in a library means file
+locking, clock skew and a race the library cannot win, to reimplement — badly — a hard
+limit the API provider already enforces properly.
+**Resolved, two parts, and the distinction between them is load-bearing:**
+1. **The real ceiling belongs at the provider.** `harness setup` prints the console
+   spend-limit URL and asks the user to set one. Do not rebuild what already exists.
+2. **In-process only:** a once-per-process warning when cumulative spend across runs passes
+   `$5`. No files, no locks, no races. It catches the runaway script.
+
+It is documented as a **warning, not a ceiling** — precisely so it cannot dilute the
+"budget is a ceiling" guarantee of ADR-005. → **ADR-016**.
+
+Two further changes came out of the same review:
+
+- **`Result.__str__` returns the text**, so `print(agent.run("hi"))` works. `.text` still
+  exists for people who want it. One line; removes an entire concept from the first example.
+- **`harness new` and `harness chat` move to M0** from M5. A child's first artifact should
+  be a commented, runnable file that already contains a small budget — teaching the concept
+  by showing it — and talking to your own agent is the moment that makes someone want a
+  second one. `harness chat` is roughly twenty lines.
+
+---
+
+### Round 15 — Recursive review of Round 14
+
+Re-reviewing the whole design for regressions introduced by the six fixes:
+
+| Check | Finding |
+|---|---|
+| Does TTY progress leak data? | Tool **names** only. Arguments never printed. Consistent with register #24. ✅ |
+| Does traceback filtering lose diagnostics? | No — the full traceback is in the transcript and the `error.raised` event. Console-only change. ✅ |
+| Does `Result.__str__` weaken anything? | No. `print(result.text)` had identical exposure. `+` still raises. ✅ |
+| Does the session warning dilute ADR-005? | Only if described as a limit. Documentation is required to call it a warning, and [§07.1](07-cost.md#1-the-budget-is-a-ceiling-not-an-alert) states the distinction. ✅ |
+| Does `.env` conflict with the SDK's credential resolution? | No — env var wins; `.env` is the fallback. One source of truth preserved. ✅ |
+| Does `harness new` conflict with ADR-004 (frozen agent)? | No — it generates a module-scope agent, which is also the correct production shape ([§10.5](10-observability-ops.md#5-running-in-production)). The child's first file teaches the right habit. ✅ |
+| Did any fix make things worse for experienced users? | None. Every change is either TTY-gated, additive, or a strictly better error message. ✅ |
+
+**One genuine regression found.** The M5 documentation task was written for developers.
+Under the revised A0.1-R it does not satisfy the requirement at all. → a **separate
+child-facing quickstart** is now a deliverable, not a section of the developer docs, and it
+is written and reviewed as a demonstration rather than asserted:
+[§15 — Your First Agent](15-first-agent.md).
+
+---
+
+### Round 16 — Re-validating the gate
+
+The Test Architect's objection closed the loop: **SC-1 as written measures developers, so
+passing it would prove nothing about the requirement the owner actually stated.** Asserting
+"a child could do this" without measuring it is exactly the kind of claim the council
+refuses everywhere else in this package.
+
+**SC-1 split, both blocking:**
+
+- **SC-1a** — 5 developers, README only. Median ≤ 10 min, ≥ 4/5 unaided. *(unchanged)*
+- **SC-1b** — **3 children aged 10–12 who have completed a basic Python course.** Given
+  [§15](15-first-agent.md) only. An adult may read words aloud but may not explain, debug,
+  or type. **Pass: ≥ 2/3 reach a working agent in ≤ 20 minutes, AND ≥ 2/3 successfully add
+  one tool of their own.**
+
+The second half matters more than the first. Running a provided example proves the example
+works. Adding a tool of your own is the point at which someone has actually built
+something, and it is the only part of the ladder that touches `@tool`.
+
+**If SC-1b fails, 1.0 is blocked and the council reconvenes on the API — not on the
+tutorial.** If the fix is "explain it better", the API is wrong. Stated in advance so the
+result cannot be rationalized afterwards.
+
+**Gate restored to 16/16**, now against the literal requirement rather than a
+reinterpretation of it.
+
 ---
 
 ## 3. Implementation Readiness Gate — final
@@ -348,9 +533,9 @@ Four blockers were found and fixed in the plan:
 | Deployment | **Yes** | [§10.4](10-observability-ops.md) — library packaging, semver |
 | Plugin architecture | **Yes** | [§02.4](02-architecture.md) — five boundaries, justified by test |
 | Poka-Yoke | **Yes** | [§08](08-poka-yoke.md) — 34 modes, each with a design-level defense |
-| Developer experience | **Yes** | [§03](03-public-api.md) — disclosure ladder |
-| Beginner experience | **Yes** | SC-1 measured in [§14](14-validation-plan.md) |
-| Documentation | **Yes** | M5 in [§11](11-implementation-plan.md) |
+| Developer experience | **Yes** | [§03](03-public-api.md) — disclosure ladder; ADR-014, 015 |
+| Beginner experience | **Yes** | [§15](15-first-agent.md) written as a demonstration; **SC-1b measured with real children** ([§14.2](14-validation-plan.md#2-sc-1--time-to-first-agent)) |
+| Documentation | **Yes** | M5 in [§11](11-implementation-plan.md), plus [§15](15-first-agent.md) as a separate deliverable |
 | Implementation tasks | **Yes** | [§11](11-implementation-plan.md) — every task has contract + DoD |
 
 ## 4. Standing verdict
@@ -359,3 +544,11 @@ Four blockers were found and fixed in the plan:
 > [§11](11-implementation-plan.md) on Monday without making a further architectural
 > decision. The decisions that remain open are listed in
 > [§13](13-risk-register.md#3-open-issues), and each states why it does not block.
+
+On the beginner requirement specifically, the council's position is deliberately narrower
+than "we believe this is simple enough". [§15](15-first-agent.md) exists so the claim can be
+read and judged rather than taken on trust, and **SC-1b measures it with actual children
+before 1.0 ships**. The council does not consider the requirement met until that
+measurement passes — Rounds 13–16 exist because the first four rounds of beginner review
+had reassured themselves without ever testing the thing they were reassuring themselves
+about.

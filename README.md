@@ -1,12 +1,19 @@
 # Harness — Implementation Design Package
 
-> **Status: READY FOR IMPLEMENT** (Council converged at Round 12)
+> **Status: READY FOR IMPLEMENT** (Council converged at Round 16)
 > This repository currently contains **no product code**. It contains the complete,
 > reviewed design and implementation plan that an engineering team can start coding from
 > on day one without making further architectural decisions.
 
 **Harness** is a Python library for building AI agents that are *cheap to run, hard to
 misuse, and easy to start with*.
+
+```
+pip install harness
+harness setup          # asks for a key, checks it works
+harness new joker      # writes joker.py — and the .gitignore that protects your key
+python joker.py
+```
 
 ```python
 from harness import Agent
@@ -16,14 +23,22 @@ helper = Agent(
     name="Helper",
     job="Answer questions using the web. Be brief and cite your sources.",
     tools=[search],
+    budget="$0.05",
 )
 
-print(helper.run("What time does the Louvre open on Sundays?").text)
+print(helper.run("What time does the Louvre open on Sundays?"))
 ```
 
 Three concepts (`name`, `job`, `tools`), one method (`run`). Everything else — the agent
 loop, prompt caching, budget enforcement, tool permissions, taint tracking, telemetry —
 is handled by the harness and invisible until you need it.
+
+**The beginner target is literal.** A ten-year-old who has taken a basic Python course
+should be able to build an agent *and give it a tool of their own*. That claim is written
+out as a tutorial you can read and judge — [§15 — Your First Agent](docs/15-first-agent.md) —
+and it is **measured with real children before 1.0 ships** (SC-1b). Rounds 13–16 exist
+because the first four rounds of beginner review approved the API without ever testing
+whether anyone could get from an empty folder to a working agent.
 
 ---
 
@@ -41,7 +56,10 @@ council recorded the trade and the reasoning in the [Design Decision Log](docs/1
 | 5 | **Efficient** | Async core, sync facade, one round-trip per step, truncation ceilings on every tool result. |
 
 Plus the sixth, which shaped the API more than any other: **Poka-Yoke** — see the
-[register of 34 failure modes and their design-level defenses](docs/08-poka-yoke.md).
+[register of 44 failure modes and their design-level defenses](docs/08-poka-yoke.md).
+Ten of those came from Round 13, and **five of the six worst beginner blockers turned out
+to be outside the API entirely** — credentials, feedback, error rendering, scaffolding and
+repeat-run cost.
 
 ---
 
@@ -66,14 +84,16 @@ Read in order if you are new. Jump straight to §11 if you are picking up a task
 | 12 | [Decision logs](docs/12-decision-logs.md) | ADRs and implementation decisions, with the losing arguments recorded |
 | 13 | [Risk register & open issues](docs/13-risk-register.md) | What could still go wrong, and what is explicitly deferred |
 | 14 | [Validation plan](docs/14-validation-plan.md) | How we prove the implementation actually matches this design |
+| 15 | [**Your First Agent**](docs/15-first-agent.md) | The child-facing tutorial, written out in full as evidence rather than described |
 
 ---
 
 ## Scope at a glance
 
 **In scope for v1.0:** the library, one model provider (Anthropic), the safety and budget
-core, deterministic caching, transcripts and replay, a SQLite memory store, subagents, a
-small CLI, and the plugin registry.
+core, deterministic caching, transcripts and replay, a SQLite memory store, subagents, the
+plugin registry, and a CLI whose `setup`/`new`/`chat` commands ship in the **first**
+milestone because first-run experience is built first or not at all.
 
 **Explicitly out of scope for v1.0** (with reasons in [§01](docs/01-requirements.md#5-non-goals)):
 a hosted service, a durable workflow engine, plugin sandboxing, LLM-based model routing,

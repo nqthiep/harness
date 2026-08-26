@@ -37,6 +37,26 @@ Budget exhaustion is a `StopReason`, not an exception, from `try_run` — an exp
 boundary rather than a failure. `run()` raises `RunFailed` carrying `.partial`, so the
 work already done is never lost.
 
+### 1.1 What the budget does **not** cover, and where that gap is closed
+
+A per-run budget says nothing about running the same script eighty times. Round 14 raised
+this as a real beginner cost event (G13.6). The answer is deliberately split, and the split
+matters:
+
+| Mechanism | Strength | Where |
+|---|---|---|
+| **Per-run budget** | A **ceiling.** Enforced before every call. Cannot be exceeded. | This library (ADR-005) |
+| **Session warning** | A **warning only.** One message per process when cumulative spend across runs passes `$5`. No files, no locks, no cross-process state. | This library (ADR-016) |
+| **Account spend limit** | A **hard ceiling across everything.** | **The provider.** `harness setup` prints the URL and asks the user to set one. |
+
+The council rejected a persistent daily cap in the library: cross-process spend accounting
+means file locking, clock skew and a race a library cannot win — to reimplement, badly, a
+limit the provider already enforces properly.
+
+**The session warning is never described as a limit.** Two mechanisms that sound alike and
+have different strengths are worse than one, unless the difference is restated every time
+either is mentioned. That is why this table exists rather than a sentence.
+
 ## 2. Caching by construction
 
 Prompt caching is a **prefix match**: any byte change anywhere in the prefix invalidates

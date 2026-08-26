@@ -40,6 +40,26 @@ Metrics: `harness.run.cost` (histogram, USD), `harness.run.steps`, `harness.tool
 to a telemetry backend is a data-governance decision the library must not make silently.
 `OtelExporter(include_content=True)` is available and documented with its implications.
 
+## 2.1 Console behavior and traceback rendering
+
+Two beginner-facing behaviors that production users should know are inert for them.
+
+**Progress output.** When `sys.stdout.isatty()`, a `ConsoleExporter` is attached
+automatically and writes live progress to **stderr** — tool names, step transitions, final
+cost. When output is piped or redirected, nothing is emitted. Every non-interactive context
+is therefore silent by default, and stdout stays clean even on a terminal (IDL-24).
+Arguments are never printed, only tool names (register #44).
+
+**Traceback filtering.** `run()` removes harness-internal and `asyncio` frames from
+exceptions it re-raises and sets `__suppress_context__`. This is done **locally, inside the
+call** — the package assigns nothing to `sys.excepthook` or any other global at import, and
+AC-13 asserts it. A library that mutates interpreter state on import breaks debuggers and
+error reporters in every application that embeds it.
+
+**Nothing is lost.** The unfiltered traceback is recorded in the `error.raised` event and
+the transcript. `HARNESS_FULL_TRACEBACK=1` restores full console rendering. Filtering is a
+console concern, never a diagnostic one — which is precisely why it was acceptable.
+
 ## 3. Provider error mapping
 
 The Anthropic adapter maps vendor exceptions to the harness hierarchy. Nothing else in the
@@ -96,7 +116,7 @@ Documented recipes for the three real shapes:
 |---|---|
 | **Web request handler** | Construct `Agent` at **module scope**, not per request. Per-request construction re-runs the cache linter, rebuilds the prefix, and (worse) creates per-request prefixes that never share a cache — hence the `cache.per_request_agent` warning. |
 | **Background worker** | One `Agent` per worker process. Transcript to durable storage. Use `try_run` and act on `stop_reason`. |
-| **Notebook / script** | `agent.run()` directly; console exporter on by default. |
+| **Notebook / script** | `agent.run()` directly; progress shown automatically on a terminal, silent when piped. |
 
 Health signals worth alerting on, in priority order: `policy.denials` rate (a spike means
 either an attack or a broken tool), `budget.exhausted` rate (budgets too tight, or a loop),
@@ -111,6 +131,6 @@ either an attack or a broken tool), `budget.exhausted` rate (budgets too tight, 
   automatically, and a newer-than-supported schema raises.
 - Protocol `API_VERSION` mismatch fails at plugin registration, naming the required
   version — never at run time.
-- `harness doctor` reports version, key presence, pricing-table age, cache determinism for
-  a given agent module, and plugin API compatibility. It is the first thing to run when
+- `harness doctor` reports version, key presence and source, pricing-table age, cache
+  determinism for a given agent module, and plugin API compatibility. It is the first thing to run when
   something is wrong, and the first thing to attach to a bug report.

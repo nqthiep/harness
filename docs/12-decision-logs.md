@@ -207,6 +207,105 @@ reads.
 
 ---
 
+### ADR-012 — The beginner requirement is literal
+**Status:** Accepted (Round 13) · **Supersedes:** the Round 0 resolution of A0.1
+
+**Context.** Round 0 concluded that "a ten-year-old can use it" was unsatisfiable as
+written, and reinterpreted it as a cognitive-load budget. The project owner corrected the
+premise: the target child has completed a basic Python course and knows `pip install`,
+`def`, `import`, variables, lists and strings.
+
+**Decision.** Take the requirement literally. A child with that knowledge must reach a
+working agent *and* be able to add a tool of their own. The cognitive-load budget stands as
+a floor, not as a substitute.
+
+**Why this mattered more than it looked.** Re-running the beginner review against a real
+child persona found six blockers, and **five were outside the API surface the council had
+spent four rounds polishing** — credentials, feedback, error rendering, scaffolding, and
+repeat-run cost. Round 4 had tested the shape of the API and passed it without ever testing
+whether someone could get from an empty folder to a working agent.
+
+**The general lesson, recorded because it will recur.** A beginner review that only
+inspects the API measures the wrong thing. Time-to-first-agent is dominated by setup,
+feedback and error messages.
+
+---
+
+### ADR-013 — Credentials are a guided command, not a shell instruction
+**Status:** Accepted (Round 14)
+
+**Decision.** `harness setup` asks for a key, validates it with one minimal call, and
+stores it. Environment variable wins when present; otherwise a project `.env` at mode
+`0600`. `harness new` generates `.gitignore` containing `.env` **in the same command**.
+Every "no credentials" error says `Run: harness setup`.
+
+**Why.** `export ANTHROPIC_API_KEY=...` is a shell concept, and it is the first thing a
+beginner meets. Validating the key immediately converts a silent later failure into an
+instant, obvious one.
+
+**Rejected alternative.** A new config location the vendor SDK does not read. Rejected: two
+sources of truth for one credential is a support burden forever.
+
+**Security position.** A plaintext key in a project folder is a real risk. It is mitigated
+by mode `0600` and by generating the `.gitignore` in the same command as the file that
+needs it — a protection that is a separate step is a protection that gets skipped.
+
+---
+
+### ADR-014 — Feedback and results are shaped for a terminal
+**Status:** Accepted (Round 14)
+
+**Decision.** Three changes: (1) live progress on `stdout.isatty()`, silent otherwise;
+(2) `Result.__str__` returns the text, so `print(agent.run(...))` works; (3) tool **names**
+only in progress output, never arguments.
+
+**Why.** Fifteen seconds of silence reads as "broken" and gets Ctrl-C'd. `.text` is an
+extra concept in the very first example for no benefit.
+
+**Objection answered.** A library printing to stdout unbidden is bad manners — and the TTY
+check *is* the manners. Nothing that consumes harness output programmatically is attached
+to a terminal.
+
+**Safety.** Arguments are excluded from progress output for the same reason they are
+digested in transcripts (register #24): they routinely carry PII.
+
+---
+
+### ADR-015 — Tracebacks are filtered locally, never globally
+**Status:** Accepted (Round 14)
+
+**Decision.** `run()` catches, rewrites `__traceback__` to drop harness-internal and
+`asyncio` frames, sets `__suppress_context__`, re-raises. `HARNESS_FULL_TRACEBACK=1`
+restores everything. **The unfiltered traceback is still recorded in the `error.raised`
+event and the transcript.**
+
+**Rejected alternative.** Installing `sys.excepthook` at import. Rejected outright: a
+library that mutates global interpreter state on import is hostile to any application
+embedding it, and it breaks debuggers and error reporters.
+
+**Why it is safe.** Console rendering changes; diagnostics do not. Nothing is lost, and the
+loss would have been the objection.
+
+---
+
+### ADR-016 — Session spend is a warning; the real ceiling belongs at the provider
+**Status:** Accepted (Round 14)
+
+**Decision.** Two parts. (1) `harness setup` prints the provider's spend-limit URL and asks
+the user to set a hard limit there. (2) In-process only: one warning per process when
+cumulative spend across runs passes `$5`. No files, no locks.
+
+**Why.** A per-run budget does nothing about running a script eighty times. But a
+cross-process cap in a library means file locking, clock skew and a race the library cannot
+win — to reimplement, badly, a hard limit the provider already enforces properly.
+
+**The distinction is load-bearing.** This is documented as a **warning, not a ceiling**,
+specifically so it cannot dilute the ADR-005 guarantee. Two mechanisms that sound similar
+and have different strengths are worse than one, unless the difference is stated every time
+either is mentioned.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
@@ -231,3 +330,9 @@ reads.
 | IDL-18 | Breakpoints omitted below the minimum cacheable prefix | Below it, a marker pays the write premium and never reads |
 | IDL-19 | Server-side refusal fallbacks enabled by default | A routine refusal should route to a fallback, not surface as a dead end |
 | IDL-20 | Parallel results reassembled in the model's call order | Order-dependent behavior in a model's reading of results is real; determinism is cheap |
+| IDL-21 | `Agent.__init__` takes `*args` solely to reject them | Keeps keyword-only enforcement while replacing Python's unreadable `TypeError` (G13.4) |
+| IDL-22 | Unannotated tool parameters are an error, never defaulted to `str` | `def add(a, b)` would receive `"3"`/`"4"` and return `"34"` — a silently wrong answer a learner cannot search for |
+| IDL-23 | `effect=` misspellings get a did-you-mean via edit distance | A typo in a four-word vocabulary is the single likeliest mistake with it |
+| IDL-24 | Progress output goes to `stderr`, not `stdout` | Keeps `python agent.py > out.txt` clean even on a TTY |
+| IDL-25 | `harness setup` validates the key with a minimal call before storing | Converts a silent later failure into an immediate, obvious one |
+| IDL-26 | The scaffold includes `budget=` rather than introducing it later | Showing the guard costs one commented line; explaining it after a surprise bill costs trust |

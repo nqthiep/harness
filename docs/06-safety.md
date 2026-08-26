@@ -147,6 +147,21 @@ class Secret:
 - `reveal()` is a context manager rather than a property so that the unwrapping point is
   visible in code review and greppable in CI.
 
+### 5.1 Where the API key lives
+
+`harness setup` (ADR-013) resolves credentials in one order, with no second source of
+truth: **an existing environment variable wins**; otherwise a project `.env` is written at
+mode `0600`.
+
+A plaintext key in a project folder is a real risk, and the mitigation is structural rather
+than advisory: **`harness new` writes the `.gitignore` containing `.env` in the same command
+that creates the file needing protection.** A safeguard that is a separate step is a
+safeguard that gets skipped — this is register #36, and it is the difference between a
+warning in the docs and a key that cannot be committed by accident.
+
+The key is validated with one minimal call before it is stored, so an invalid key fails at
+setup rather than at the first run.
+
 The redactor also scans for high-entropy strings matching known key formats
 (`sk-ant-`, AWS, GitHub, Slack) even when they were never wrapped, and emits a
 `error.raised` warning naming the event where one appeared.

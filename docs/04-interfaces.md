@@ -79,9 +79,15 @@ def tool(
 
 ### Supported parameter types (T-1.3)
 
-`str`, `int`, `float`, `bool`, `list[T]`, `dict[str, T]`, `Literal[...]`, `Enum`,
-`Optional[T]`, `T | None`, and any `@dataclass` / `TypedDict` / `pydantic.BaseModel`
-composed of the above. Defaults become non-required properties.
+`str`, `int`, `float`, `bool`, `list[T]`, `dict[str, T]`, **bare `list` and `dict`**,
+`Literal[...]`, `Enum`, `Optional[T]`, `T | None`, and any `@dataclass` / `TypedDict` /
+`pydantic.BaseModel` composed of the above. Defaults become non-required properties.
+
+Bare `list` and `dict` are supported deliberately: they are what a beginner writes, and
+unlike an *unannotated* parameter they carry real type information — an array is an array.
+`list` renders as `{"type": "array"}` with no `items` constraint. This is the one place the
+schema is deliberately loose, and it is loose in a direction that cannot produce a silently
+wrong answer (contrast IDL-22).
 
 **Anything else raises `ToolSchemaError` at import**, naming the parameter and its type.
 There is no "best effort" fallback: a silently-wrong schema produces malformed tool calls
