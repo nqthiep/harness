@@ -335,6 +335,18 @@ This one stops **before** your helper does anything, so nothing bad can happen. 
 you doing something wrong — it is Harness noticing that those two powers are risky
 together.
 
+**Your helper's answer got cut off:**
+
+```
+Your helper's answer got cut off because it reached its budget of $0.05.
+
+    "Why did the cat sit on the..."
+
+  To let it write more, change:  budget="$0.20"
+```
+
+A smaller budget means shorter answers. That is normal — it is not broken.
+
 **Your helper ran out of money:**
 
 ```

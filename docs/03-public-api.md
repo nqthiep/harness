@@ -158,7 +158,7 @@ error.** A Poka-Yoke whose message is incomprehensible is only half-built.
 | `run(message, *, stream=None) -> Result` | Result | Raises `RunFailed` on non-success. Sync facade. |
 | `try_run(message, *, stream=None) -> Result` | Result | Never raises for run outcomes; check `result.ok`. |
 | `arun(...)` / `atry_run(...)` | Awaitable[Result] | Async originals. |
-| `chat() -> Chat` | Chat | Stateful multi-turn session. |
+| `chat(*, budget=None) -> Chat` | Chat | Stateful multi-turn session with **one ledger for the whole session**, defaulting to 10 × the agent's run budget (ADR-020). As it depletes, answers shorten before the chat ends. |
 | `as_tool(*, name=None, description=None) -> ToolSpec` | ToolSpec | Turns this agent into a subagent tool. |
 | `resume(transcript) -> Result` | Result | Continue an interrupted run. |
 | `with_(**overrides) -> Agent` | Agent | Returns a **new** agent. `Agent` is frozen; there are no setters. |
@@ -224,8 +224,15 @@ class Result:
 is safe: `print(result.text)` had identical exposure, and `Result` defines no `__add__`, so
 `"Answer: " + result` still raises rather than silently concatenating.
 
-`StopReason` is a closed enum: `COMPLETED`, `BUDGET_EXHAUSTED`, `STEP_LIMIT`, `TIMEOUT`,
-`DENIED_BY_POLICY`, `MODEL_REFUSAL`, `CANCELLED`, `ERROR`.
+`StopReason` is a closed enum: `COMPLETED`, `TRUNCATED`, `BUDGET_EXHAUSTED`, `STEP_LIMIT`,
+`TIMEOUT`, `DENIED_BY_POLICY`, `MODEL_REFUSAL`, `CANCELLED`, `ERROR`. Only `COMPLETED` sets
+`ok = True`.
+
+`TRUNCATED` was added in Round 18: the provider returns `stop_reason: "max_tokens"` when
+generation hits the ceiling, and without a value for it a cut-off answer was reported as
+success. It matters more since ADR-017, because a small budget now deliberately produces a
+small ceiling. An unmapped provider stop reason maps to `ERROR` carrying the raw string —
+never to a success (ADR-019).
 
 `MODEL_REFUSAL` exists because current Claude models return HTTP 200 with
 `stop_reason: "refusal"`. Code that reads `content` without checking would present a

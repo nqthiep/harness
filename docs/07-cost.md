@@ -153,6 +153,19 @@ prints realized cache hit rate and the money left on the table.
 | Serial execution of independent reads | Effect class decides; `read`/`external` run concurrently | derived |
 | Re-billing a full history to a subagent | Subagents get an explicit, minimal context — not the parent transcript | always |
 
+**Which limit binds first depends on the model** — the plan originally assumed one answer
+for all of them (Round 18):
+
+| model | context | tokens `$0.50` buys | 60 % of context | binds first |
+|---|---:|---:|---:|---|
+| `claude-opus-5` | 1 000 000 | 100 000 | 600 000 | **budget** |
+| `claude-sonnet-5` | 1 000 000 | 250 000 | 600 000 | **budget** |
+| `claude-haiku-4-5` | 200 000 | 500 000 | 120 000 | **context** |
+
+On the default model at the default budget, compaction never runs — the budget ends the run
+first. It is reached by large-budget agents and by cheap models, and Haiku reaches it
+soonest, so T-2.6's fixtures are specified per model rather than from the defaults.
+
 **Context growth policy** (`context/window.py`), in order:
 
 1. Under 60 % of the model's context: do nothing.

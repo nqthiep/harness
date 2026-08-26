@@ -1,6 +1,6 @@
 # 08 — Poka-Yoke Register
 
-Forty-five ways a competent developer could still get this wrong, and what in the design
+Forty-seven ways a competent developer could still get this wrong, and what in the design
 stops them. The ranking is deliberate:
 
 **Impossible** > **Import-time error** > **Construction-time error** > **First-run error** >
@@ -67,6 +67,8 @@ which is why they are grouped separately below.
 | 31 | Float rounding drift in money arithmetic | `Decimal` throughout; a lint rule bans `float` in `budget/` | Impossible |
 | 32 | Unknown model priced at zero, silently disabling the ceiling | `UnknownModelError` before any call | Impossible |
 | 33 | Pricing table quietly going stale | CI job fails when `as_of` is more than 90 days old | CI |
+| 46 | **A truncated answer reported as success** — the provider's `max_tokens` stop reason had no mapping, so `ok` was `True` for half a sentence | `StopReason.TRUNCATED` with `ok = False`; unmapped provider values map to `ERROR`, never success. P-9 tests the mapping against the protocol rather than against the design | Impossible |
+| 47 | **A chat costing N × the budget** because nobody defined whether a budget covers a turn or a session | One ledger per `Chat` (ADR-020). Answers shorten as it depletes, then it ends | Impossible |
 | 45 | **A budget too small to permit any call at all** — two independent knobs (`budget`, `max_tokens`) that multiply into one constraint | `max_tokens` is *derived* from the remaining budget (ADR-017), so the contradiction cannot be expressed. Below ~256 affordable output tokens the run stops rather than emitting a fragment. P-8 cross-validates every shipped numeric default against every other. | Impossible |
 
 ## Testing & operations

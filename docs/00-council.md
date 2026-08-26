@@ -595,6 +595,91 @@ oversight. → **ADR-018**.
 
 **Gate:** held at 16/16 after the fix. Cost was **No** for the duration of H17.1.
 
+
+---
+
+### Round 18 — Recursive review of Round 17
+
+Round 17's fix was correct and introduced a new exposure. That is the argument for
+recursive rounds in one sentence, so it is recorded rather than smoothed over.
+
+**H18.1 — CRITICAL: there is no stop reason for a truncated answer, and ADR-017 just made
+truncation common.**
+
+The API returns `stop_reason: "max_tokens"` when generation hits the ceiling. The
+`StopReason` enum has eight values and none of them is it — so a cut-off answer was mapped
+to `COMPLETED`. `result.ok` would be `True`. `run()` would not raise. The user gets half a
+sentence reported as success.
+
+This was survivable while `max_tokens` was a large constant nobody reached. **Round 17
+derived `max_tokens` from the budget, which means a small budget now deliberately produces
+a small ceiling** — the exact condition that makes truncation routine. The fix for one
+defect promoted a latent one to likely.
+
+**Resolved:** `StopReason.TRUNCATED`, `ok = False`, and a message that names the cause
+rather than the mechanism:
+
+```
+Your helper's answer got cut off because it reached its budget of $0.05.
+
+    "Why did the cat sit on the..."
+
+  To let it write more, change:  budget="$0.20"
+```
+
+The Poka-Yoke Reviewer required the message to distinguish the two cases that produce the
+same API stop reason — a budget-derived ceiling (raise the budget) and the model's own
+maximum output (the answer is genuinely enormous; ask for less). One `stop_reason` from the
+provider, two different things for the user to do.
+
+**The general finding, which is the more important half.** The `StopReason` enum was
+reviewed in Round 8 and passed. It was complete with respect to the *design*, and
+incomplete with respect to the *API*. **Every closed enum that mirrors an external
+protocol is now required to carry an exhaustiveness test against that protocol's values**,
+so a value the provider can emit cannot be silently absent. An unmapped value maps to
+`ERROR` with the raw string, never to a success. → **ADR-019**.
+
+**H18.2 — `Chat` budget semantics were never defined.**
+
+A `Budget` is per-run. A `Chat` is many turns. Nobody had said whether the budget covers a
+turn or the conversation — and the two readings differ by a factor of however long someone
+talks. Under the per-turn reading, `harness chat` with the scaffold's `$0.05` is unbounded
+across eighty turns; under the per-session reading, a chat dies after three.
+
+**Resolved:** a `Chat` holds **one ledger for the session**. `chat(budget=...)` sets it and
+defaults to **ten times** the agent's run budget, stated in the docs and shown in
+`harness chat`'s banner. Each turn draws from the shared ledger.
+
+This composes with ADR-017 rather than fighting it: as the session budget depletes, the
+derived `max_tokens` shrinks, so answers get shorter and *then* the chat ends with a clear
+message. It degrades instead of stopping dead. The Cost Engineer noted that ADR-017 turned
+out to be load-bearing for a feature it was not designed for — worth recording as evidence
+the derivation was the right shape. → **ADR-020**.
+
+**H18.3 — Which limit binds first depends on the model, and the plan assumed one answer.**
+
+The context-management thresholds (60 % / 80 %) were specified without checking against the
+budget, which also terminates long runs:
+
+| model | context | tokens `$0.50` buys | 60 % of context | binds first |
+|---|---:|---:|---:|---|
+| `claude-opus-5` | 1 000 000 | 100 000 | 600 000 | **budget** |
+| `claude-sonnet-5` | 1 000 000 | 250 000 | 600 000 | **budget** |
+| `claude-haiku-4-5` | 200 000 | 500 000 | 120 000 | **context** |
+
+So on the default model at the default budget, **compaction never runs** — T-2.6 would have
+been exercised by no default configuration and by no test written from these defaults. It
+is not dead code (large-budget agents and cheap models reach it, and Haiku reaches it
+first), but its fixtures were going to be built on an assumption that does not hold.
+
+**Resolved:** T-2.6's fixtures are specified per-model against this table, and
+[§07.3](07-cost.md#3-token-discipline) states which limit binds where. No design change —
+the numbers were simply never multiplied out, which is the same omission as H17.1 in a
+different place, and the reason ADR-017's arithmetic rule was made general.
+
+**Gate:** held at 16/16 after the fixes. Cost and Architecture were **No** for the duration
+of H18.1.
+
 ---
 
 ## 3. Implementation Readiness Gate — final

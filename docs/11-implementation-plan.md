@@ -115,7 +115,7 @@ right — before anything is built on top of it.
 - **Depends.** T-0.3, T-0.4
 - **Contract.** Invariants I-1…I-4 of [§02.3](02-architecture.md#3-the-run-loop).
 - **Failure.** A tool raising becomes an `is_error` result; the run continues. A missing `tool_result` is a bug, caught by P-3.
-- **Test.** Integration suite against `FakeModel`: single step, multi-step, parallel calls, tool error, unknown tool, `pause_turn` resume, refusal, `max_tokens` truncation. Property P-3.
+- **Test.** Integration suite against `FakeModel`: single step, multi-step, parallel calls, tool error, unknown tool, `pause_turn` resume, refusal, `max_tokens` truncation. Property P-3. **P-9: the provider→`StopReason` mapping is exhaustive over the protocol's value set, and an unrecognized value maps to `ERROR`, never to a success** (ADR-019).
 - **Done.** All eight integration scenarios pass; the module is under 250 lines. **If it exceeds 250 lines, that is a design signal — stop and raise it, do not refactor around it.**
 
 ### T-0.6 — `Agent` and `Result`
@@ -325,12 +325,12 @@ coverage.
 
 - **What.** Editing at 60 %, compaction at 80 %.
 - **Where.** `context/window.py`.
-- **How.** Editing clears old tool results, oldest first, preserving the last 3 steps. Compaction appends `response.content` back **verbatim**, including compaction blocks — extracting only the text silently loses the compaction state. Emit `context.managed`.
+- **How.** Editing clears old tool results, oldest first, preserving the last 3 steps. Compaction appends `response.content` back **verbatim**, including compaction blocks — extracting only the text silently loses the compaction state. Emit `context.managed`. **Fixtures are specified per model** ([§07.3](07-cost.md#3-token-discipline)): on Opus at the default budget the budget ends the run before compaction triggers, so a fixture built from the defaults would never exercise this code. Use a large-budget Opus fixture and a default-budget Haiku fixture.
 - **Depends.** T-2.2
 - **Contract.** Editing is always attempted before compaction.
 - **Failure.** If compaction fails, the run stops with a clear error rather than sending an over-length request.
 - **Test.** Fixture conversation crossing both thresholds; assert compaction blocks are preserved across turns.
-- **Done.** A 200-step fixture completes without exceeding the context window.
+- **Done.** Both fixtures complete without exceeding the context window, and each demonstrably reaches the code path it was built for.
 
 ### T-2.7 — Parallel tool scheduling
 
@@ -439,6 +439,18 @@ proven.
 - **Depends.** T-4.2
 - **Test.** Recall across two runs sharing a store. Assert the system prompt is unchanged by memory content.
 - **Done.** Cross-run recall works and the prefix is provably unaffected.
+
+### T-4.3b — `Chat` session ledger
+
+- **What.** `agent.chat(budget=...)` with **one ledger for the whole session**.
+- **Why.** ADR-020. Left undefined, `harness chat` is either unbounded across turns or dies after three.
+- **Where.** `agent.py`, `run.py`, `cli/chat.py`.
+- **How.** Default session budget is 10 × the agent's run budget, shown in the `harness chat` banner. Each turn draws from the shared ledger; ADR-017's derived `max_tokens` shrinks as it depletes, so answers shorten before the session ends.
+- **Depends.** T-1.5, T-0.8
+- **Contract.** [§03.3](03-public-api.md#3-agent--the-complete-signature).
+- **Failure.** Exhaustion ends the chat with a message naming the spend and how to raise it — never a silent stall.
+- **Test.** An 80-turn chat never exceeds the session budget (extends P-1). Answers demonstrably shorten as it depletes.
+- **Done.** `harness chat` shows the session budget and degrades gracefully.
 
 ### T-4.4 — Subagents ★
 

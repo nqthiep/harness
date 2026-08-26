@@ -28,7 +28,7 @@ requirement, it is a wish.
 | NFR-07 | Property P-6 | `tests/property/` | Blocks merge |
 | NFR-08 | Tool-raises integration test | `tests/integration/` | Blocks merge |
 | NFR-10 | Docstring examples executed | CI | Blocks merge |
-| ADR-001…018 | Architecture conformance tests (§4) | `tests/conformance/` | Blocks merge |
+| ADR-001…020 | Architecture conformance tests (§4) | `tests/conformance/` | Blocks merge |
 
 ## 2. SC-1 — Time to First Agent
 
@@ -130,6 +130,7 @@ against slow architectural drift, which no ordinary test catches.
 | AC-17 | The unfiltered traceback appears in the `error.raised` event whenever `run()` filtered one | ADR-015 |
 | AC-18 | Every credential-missing error string contains `harness setup` and none contains `ANTHROPIC_API_KEY` | ADR-013 |
 | AC-19 | `max_tokens` appears in no public signature and is assigned only by `Ledger.size_call` | ADR-017 |
+| AC-20 | Every closed enum mirroring a provider protocol has an exhaustiveness test; no unmapped value resolves to an `ok = True` outcome | ADR-019 |
 
 AC-13 deserves a note: it is the test that keeps ADR-015 honest. The friendly-traceback
 feature is exactly the kind of thing that gets "simplified" later into a global hook, and

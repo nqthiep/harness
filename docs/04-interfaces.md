@@ -153,6 +153,20 @@ class ModelProvider(Protocol):
   A zero price silently disables the budget ceiling — fail-safe, not fail-open.
 - `pause_turn` must be surfaced, not swallowed. The `RunEngine` re-sends to resume, capped
   at `max_pause_resumes = 5`.
+- **Every provider `stop_reason` maps to exactly one `StopReason`, and the mapping is
+  exhaustiveness-tested against the protocol's value set** (ADR-019):
+
+  | provider | `StopReason` | `ok` |
+  |---|---|:--:|
+  | `end_turn` | `COMPLETED` | ✅ |
+  | `tool_use` | *(loop continues — not terminal)* | — |
+  | `max_tokens` | `TRUNCATED` | ❌ |
+  | `refusal` | `MODEL_REFUSAL` | ❌ |
+  | `pause_turn` | *(resumed — not terminal)* | — |
+  | anything else | `ERROR`, carrying the raw string | ❌ |
+
+  The last row is the load-bearing one. A value the provider adds tomorrow must fail
+  visibly, never map to success.
 
 ---
 

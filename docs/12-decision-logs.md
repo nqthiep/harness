@@ -359,6 +359,46 @@ breakage. Streaming remains available explicitly via `run(..., stream=...)`.
 
 ---
 
+### ADR-019 — Closed enums that mirror an external protocol carry an exhaustiveness test
+**Status:** Accepted (Round 18) · **Fixes a defect in the Round 8 `StopReason` design**
+
+**Context.** The provider returns `stop_reason: "max_tokens"` when generation hits the
+ceiling. `StopReason` had eight values and none of them was it, so a truncated answer was
+reported as `COMPLETED` with `ok = True`. Survivable while `max_tokens` was a large
+constant; **ADR-017 made small ceilings normal, which made truncation routine.**
+
+**Decision.** Add `StopReason.TRUNCATED` (`ok = False`). More generally: every closed enum
+that mirrors an external protocol carries a test asserting it covers that protocol's value
+set. An unmapped value maps to `ERROR` carrying the raw string — **never to a success.**
+
+**Why the general rule matters more than the specific value.** `StopReason` was reviewed and
+approved in Round 8. It was complete with respect to the design and incomplete with respect
+to the API. A closed enum is a promise about someone else's protocol, and promises about
+other people's protocols need tests, not review.
+
+**Message requirement.** One provider `stop_reason`, two different user actions: a
+budget-derived ceiling (raise the budget) and the model's own maximum output (ask for less).
+The message distinguishes them.
+
+---
+
+### ADR-020 — A `Chat` has one ledger for the session
+**Status:** Accepted (Round 18)
+
+**Context.** `Budget` is per-run; a `Chat` is many turns. Which one the budget covered was
+never stated, and the two readings differ by however long someone talks. Per-turn makes
+`harness chat` unbounded across eighty turns; per-session kills a chat after three.
+
+**Decision.** One ledger per `Chat`. `chat(budget=...)` sets it; default is **10 ×** the
+agent's run budget, shown in the `harness chat` banner.
+
+**Why it composes.** As the session budget depletes, ADR-017's derived `max_tokens` shrinks,
+so answers get shorter and *then* the chat ends with a clear message — it degrades rather
+than stopping dead. ADR-017 turned out to be load-bearing for a feature it was not designed
+for, which is recorded as evidence that the derivation was the right shape.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
@@ -392,3 +432,5 @@ breakage. Streaming remains available explicitly via `run(..., stream=...)`.
 | IDL-27 | `max_tokens` is derived, never exposed | ADR-017. A parameter that cannot be set cannot contradict the budget |
 | IDL-28 | A derived `max_tokens` under 256 stops the run instead of calling | A 200-token ceiling produces a sentence fragment, which costs money and answers nothing |
 | IDL-29 | Numeric defaults are cross-validated by a test that multiplies them out | The Round 17 defect lived between two correct components, not inside either |
+| IDL-30 | An unrecognized provider `stop_reason` maps to `ERROR` with the raw value | Fail visible. Mapping an unknown outcome to success is how truncated answers ship as correct ones |
+| IDL-31 | Context-management fixtures are specified per model | Whether the budget or the context window binds first depends on the model's price and window ([§07.3](07-cost.md#3-token-discipline)) |
