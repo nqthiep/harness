@@ -26,7 +26,9 @@ requirement, it is a wish.
 | NFR-03 | Memory profile, 100-step run < 50 MB | `benchmarks/memory.py` | Blocks merge |
 | NFR-04 | `mypy --strict` | CI | Blocks merge |
 | NFR-05 | Dependency count assertion | CI | Blocks merge |
+| NFR-06 | CI matrix on 3.11 / 3.12 / 3.13 | CI | Blocks merge |
 | NFR-07 | Property P-6 | `tests/property/` | Blocks merge |
+| NFR-09 | Parallel tools bounded by `max_parallel_tools` (default 8) | `tests/integration/` | Blocks merge |
 | NFR-08 | Tool-raises integration test | `tests/integration/` | Blocks merge |
 | NFR-10 | Docstring examples executed | CI | Blocks merge |
 | ADR-001…023 | Architecture conformance tests (§4) | `tests/conformance/` | Blocks merge |
@@ -137,6 +139,11 @@ against slow architectural drift, which no ordinary test catches.
 | AC-23 | Every tool definition sent to a provider carries `strict: true` | ADR-022 |
 | AC-24 | `returns=` and `tools=` schemas come from the same generator — no second Python-type-to-schema path exists | ADR-022 |
 | AC-25 | **Every invariant in [§01](01-requirements.md) has at least one section, one decision-log entry and one test.** *Round 21 found invariant 4 had none of the three; nobody had counted.* | Round 21 |
+| AC-26 | **Every FR, NFR, RT and AC appears in the [§11 traceability matrix](11-implementation-plan.md#traceability-matrix) with an owning task.** A contiguous range (`AC-01…26`) counts as covering every id it spans; the check expands ranges and verifies none is skipped, so shorthand cannot hide a gap. *Round 22 found FR-18 — a `Must` — and 18 AC checks owned by nobody.* | Round 22 |
+
+**Every AC has a negative fixture** proving it fails when the property is violated. A
+conformance test that cannot be made to fail is not testing anything — and 18 of these were
+specified but built by nobody until Round 22 (T-3.6).
 
 AC-22 is written package-wide rather than for `Secret` alone. The Round 19 defect was a
 generic Python contract violation that happened to land on the security type; the next one

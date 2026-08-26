@@ -900,6 +900,77 @@ subagent delegation. **It does not make a weak model strong, and it does not cla
 That sentence is now in [§07.6](07-cost.md#6-intelligence-per-unit-of-cost) rather than
 implied by its absence.
 
+
+---
+
+### Round 22 — Traceability: what does no task own?
+
+Round 21's technique was *count coverage per requirement*. Round 22 applied it mechanically
+to everything the package numbers — requirements, red-team scenarios, conformance tests,
+properties — and asked one question of each: **which task builds this?**
+
+| Artifact | Total | Owned by a task | Orphaned |
+|---|---:|---:|---:|
+| Functional requirements (FR) | 25 | 9 | **16** |
+| Non-functional (NFR) | 10 | 8 | 2 |
+| Red-team scenarios (RT) | 17 | 14 | **3** |
+| Conformance tests (AC) | 25 | 7 | **18** |
+| Properties (P) | 9 | 9 | 0 |
+| Success criteria (SC) | 9 | 9 | 0 |
+
+Most of the orphans are labelling: T-1.5 obviously implements FR-06, T-3.3 obviously
+implements FR-11, nobody was going to be confused. But the sweep found the case that
+labelling would have caught and reading never did.
+
+**H22.1 — `FR-18` (cooperative cancellation) is a `Must` with no owning task.**
+
+Cancellation is specified in [§02.6](02-architecture.md#6-concurrency-model) — cancel the
+task, cancel in-flight tools, flush the transcript, return `StopReason.CANCELLED`. It is in
+the `StopReason` enum. It has a requirement marked **Must**.
+
+**No task in [§11](11-implementation-plan.md) builds it.** A team working the plan
+end to end would ship 1.0 without it, and nothing in the plan would have complained —
+including the Round 12 Day-1 simulation, which walked tasks and therefore saw only what
+tasks mentioned.
+
+`FR-17` (streaming) is the same, at `Should`. `DeltaFn` exists in the provider protocol and
+`stream=` exists in the API signature; nothing implements the path between them.
+
+**H22.2 — Eighteen conformance tests are specified and unassigned.**
+
+[§14.4](14-validation-plan.md#4-architecture-conformance-tests) defines 25 AC checks, and
+the council has been treating them as the executable half of this package — the thing that
+catches architectural drift when ordinary tests cannot. Seven are named in a task. The other
+eighteen, including **AC-04 and AC-05** (the AST assertions that every model call is preceded
+by a budget reservation and every tool execution by a policy verdict — the two invariants the
+entire safety and cost argument rests on), are specified in a document and built by nobody.
+
+A test that no task creates does not exist.
+
+**Resolved, three parts:**
+
+1. **T-0.10 — streaming and cancellation**, added to M0. Both touch the loop, so they belong
+   with the loop rather than bolted on at M5. Cancellation is a `Must` and is now owned.
+2. **T-3.6 — the conformance suite**, one task that builds all 25 AC checks, with AC-04 and
+   AC-05 called out as the two that cannot be deferred.
+3. **[§11 traceability matrix](11-implementation-plan.md#traceability-matrix)** — every FR,
+   NFR, RT and AC mapped to its owning task. An unowned row is now visible at a glance
+   instead of requiring the sweep that found this.
+
+**H22.3 — small orphans, fixed in place.** `RT-06` (10 000-call loop), `RT-07` (unknown tool
+requested), `RT-17` (a policy performing I/O) named in their tasks; `NFR-06` (Python version
+matrix) and `NFR-09` (parallelism bound) given validation rows; `ADR-012` cited from
+[§01](01-requirements.md) where it supersedes the original premise.
+
+**The lesson, which is the same one as Round 20 in a different costume.** Round 20 found
+types that no definition owned. Round 22 found requirements that no task owned. Both are the
+same failure: **this package numbers things, and a numbered thing with no owner silently
+becomes nobody's job.** The matrix is cheap; the sweep that produced it is now a CI check
+(AC-26), because it will drift the moment someone adds a requirement without a task.
+
+**Gate:** held at 16/16 after the fixes. Implementation Tasks was **No** for the duration of
+H22.1 and H22.2.
+
 ---
 
 ## 2.1 What the recursive rounds cost, and what they found
@@ -915,11 +986,12 @@ with a 16/16 gate. They found:
 | 19 | Approval violates the policy contract; `Secret` breaks Python's hash invariant | Contracts that read correctly and do not execute |
 | 20 | Two unhashable types being hashed; seven types never defined | Same, plus a gap the task-shaped walkthrough could not see |
 | 21 | One of five invariants had no section, no decision, no test | Nobody had counted |
+| 22 | A `Must` requirement and 18 conformance tests owned by no task | A numbered thing with no owner is nobody's job |
 
-**Every one of these passed a prior review.** The four techniques that found them — multiply
+**Every one of these passed a prior review.** The five techniques that found them — multiply
 the numbers out, execute the contract, traverse types rather than tasks, count coverage per
-requirement — are now walkthrough steps and CI checks ([§14](14-validation-plan.md)) rather
-than things a diligent reviewer might do.
+requirement, and check that every numbered artifact has an owner — are now walkthrough steps
+and CI checks ([§14](14-validation-plan.md)) rather than things a diligent reviewer might do.
 
 The council's position on its own Round 12 verdict: it was wrong, and it was wrong in a
 predictable way. **A gate that is assessed by the people who wrote the thing being gated
@@ -947,7 +1019,7 @@ every row; the rows that remain judgement calls are marked as such.
 | Developer experience | **Yes** | [§03](03-public-api.md) — disclosure ladder; ADR-014, 015 |
 | Beginner experience | **Yes** | [§15](15-first-agent.md) written as a demonstration; **SC-1b measured with real children** ([§14.2](14-validation-plan.md#2-sc-1--time-to-first-agent)) |
 | Documentation | **Yes** | M5 in [§11](11-implementation-plan.md), plus [§15](15-first-agent.md) as a separate deliverable |
-| Implementation tasks | **Yes** | [§11](11-implementation-plan.md) — every task has contract + DoD |
+| Implementation tasks | **Yes** | [§11](11-implementation-plan.md) — every task has contract + DoD, and the [traceability matrix](11-implementation-plan.md#traceability-matrix) shows every requirement has a task |
 
 ## 4. Standing verdict
 

@@ -172,6 +172,18 @@ right — before anything is built on top of it.
 - **Test.** AC-13, AC-14, AC-16, AC-17. Piped run produces zero progress bytes on stdout. Every message in the "When something goes wrong" section of [§15](15-first-agent.md) is asserted by a test against the rendered message body (the tutorial omits the exception class prefix, which is the only difference) — **the tutorial is the specification for these strings, not a paraphrase of them.**
 - **Done.** All six message fixtures match [§15](15-first-agent.md) exactly; AC-13 green.
 
+### T-0.10 — Streaming and cancellation ★
+
+- **What.** `run(..., stream=on_delta)` end to end, and cooperative cancellation.
+- **Why.** FR-17 and **FR-18 (a `Must`)**. Round 22 found neither had an owning task: cancellation was specified in [§02.6](02-architecture.md#6-concurrency-model), present in `StopReason`, and built by nobody. Both touch the loop, so they belong with the loop rather than bolted on at M5.
+- **Where.** `run.py`, `models/anthropic.py`, `models/fake.py`.
+- **How.** Streaming: the provider forwards text deltas to `DeltaFn`; **text only — never thinking, never tool input**. The callback is wrapped exactly as exporters are ([§04.6](04-interfaces.md#6-events--exporters)) so a raising callback cannot kill the run. Cancellation: `asyncio.CancelledError` propagates through the loop, cancels in-flight tool tasks, flushes the transcript, and returns `Result(stop_reason=CANCELLED)` with partial text. `CancelledError` is never converted into a tool error ([§04.1](04-interfaces.md#1-tools)).
+- **Depends.** T-0.5, T-0.4
+- **Contract.** [§03.3](03-public-api.md#3-agent--the-complete-signature); `DeltaFn` in [§04.0](04-interfaces.md#0-core-value-types).
+- **Failure.** Cancelling mid-tool must not leave a `tool_use` without a `tool_result` in the persisted messages (invariant I-3) — the transcript is flushed with the run marked cancelled, and `resume` treats an interrupted `write`/`danger` per [§05.3](05-data-and-state.md#3-resume-semantics).
+- **Test.** Cancel at each of 5 loop positions; every one returns `CANCELLED` with a valid transcript. A raising `on_delta` does not kill the run. Streamed text concatenates to `result.text` exactly.
+- **Done.** All 5 cancel positions produce a parseable transcript; streaming round-trips byte-identically.
+
 **M0 exit gate.** Example runs both ways · **four-command cold start works on a clean
 machine** · full CI green · `mypy --strict` clean · `run.py` ≤ 250 lines.
 
@@ -402,6 +414,18 @@ coverage.
 - **Test.** All 30 fixtures replay identically; an intentional loop change produces a readable diff.
 - **Done.** Fixtures committed and green.
 
+### T-3.6 — The conformance suite ★★
+
+- **What.** All 25 `AC-nn` checks in [§14.4](14-validation-plan.md#4-architecture-conformance-tests), plus AC-26.
+- **Why.** Round 22 found 18 of them specified and owned by nobody — including **AC-04 and AC-05**, the AST assertions that every model call is preceded by a budget reservation and every tool execution by a policy verdict. Those two are the executable form of the entire safety and cost argument. A test that no task creates does not exist.
+- **Where.** `tests/conformance/`.
+- **How.** Mostly AST analysis over `src/harness` plus an import-linter contract. AC-04 and AC-05 walk the call graph of `run.py` and assert the adjacency on **every** path, not only paths a behavioral test happens to exercise — which is exactly where a security check gets bypassed. **AC-26** re-runs the Round 22 sweep: every FR, NFR, RT and AC must appear in the traceability matrix below with an owning task.
+- **Depends.** T-1.5, T-1.2, T-2.2, T-0.9
+- **Contract.** [§14.4](14-validation-plan.md#4-architecture-conformance-tests).
+- **Failure.** A conformance failure blocks merge and is never skipped — these are the tests that catch architectural drift, which is by definition the thing no ordinary test notices.
+- **Test.** Each AC has a negative fixture proving it fails when the property is violated. **A conformance test that cannot be made to fail is not testing anything.**
+- **Done.** 26/26 green, each with a passing negative fixture.
+
 **M3 exit gate.** SC-7 (byte-identical replay) · 10/10 resume points · exporter isolation
 proven.
 
@@ -565,10 +589,62 @@ Trusted Publishing to PyPI, generated changelog, `1.0.0-rc1` → soak → `1.0.0
 | T-2.3 Cache linter | ★ | M2 | — |
 | T-4.4 Subagents | ★ | M4 | — |
 | T-0.8 First-run CLI | ★ | M0 | SC-1b |
+| T-0.10 Streaming & cancel | ★ | M0 | FR-17, FR-18 |
+| T-3.6 Conformance suite | ★★ | M3 | every ADR |
 | T-0.9 Feedback & errors | ★ | M0 | SC-1b |
 | T-5.2 Error messages | ★ | M5 | T-5.4 |
 | T-5.3 Docs, two audiences | ★ | M5 | T-5.4 |
 | T-5.4 Beginner validation | ★★ | M5 | 1.0 |
+
+## Traceability matrix
+
+Added in Round 22, after a sweep found a `Must` requirement and 18 conformance tests that no
+task owned. **A numbered thing with no owner is nobody's job.** AC-26 re-runs this check in
+CI, because it drifts the moment someone adds a requirement without a task.
+
+| Artifact | Owning task |
+|---|---|
+| FR-01, FR-02 | T-0.5, T-0.6 |
+| FR-03 | T-4.3b |
+| FR-04, FR-25 | T-0.2 |
+| FR-05 | T-1.1 |
+| FR-06 | T-1.5 |
+| FR-07 | T-1.2 |
+| FR-08 | T-1.3 |
+| FR-09 | T-1.2 (engine resolution — approval is not a policy, ADR-021) |
+| FR-10 | T-3.1, T-3.2 |
+| FR-11 | T-3.3 |
+| FR-12 | T-4.4 |
+| FR-13 | T-4.2, T-4.3 |
+| FR-14 | T-2.6 |
+| FR-15 | T-4.1 |
+| FR-16 | T-0.8, T-5.1 |
+| **FR-17, FR-18** | **T-0.10** *(unowned until Round 22; FR-18 is a `Must`)* |
+| FR-19, FR-22 | T-0.8 |
+| FR-20, FR-21 | T-0.9 |
+| FR-23 | T-1.5 |
+| FR-24 | T-0.2 |
+| NFR-01 | T-0.4 (lazy SDK import) |
+| NFR-02, NFR-03 | T-3.6 benchmarks |
+| NFR-04, NFR-05 | T-0.1 |
+| NFR-06 | T-0.1 (CI matrix 3.11 / 3.12 / 3.13) |
+| NFR-07 | T-3.5 |
+| NFR-08 | T-0.5 |
+| NFR-09 | T-2.7 (`max_parallel_tools`, default 8) |
+| NFR-10 | T-5.3 |
+| RT-01…04, RT-14 | T-1.3, T-1.4 |
+| RT-05 | T-2.5 |
+| **RT-06, RT-07** | **T-0.5** *(step limit; unknown tool requested)* |
+| RT-08, RT-09, RT-13, RT-15, RT-16 | T-1.6 |
+| RT-10 | T-4.1 |
+| RT-11 | T-1.2 |
+| RT-12 | T-2.1 |
+| **RT-17** | **T-1.2** *(policy performing I/O — timing assertion)* |
+| **AC-01…26** | **T-3.6** *(18 of them unowned until Round 22)* |
+| P-1…P-9 | T-1.5, T-1.2, T-0.5, T-0.2, T-0.3, T-3.5, T-2.5 |
+| SC-1a, SC-1b | T-5.4 |
+| SC-2 | T-1.5 · SC-3 | T-1.3 · SC-4 | T-2.4 |
+| SC-5 | T-0.7 · SC-6 | T-4.5 · SC-7 | T-3.5 · SC-8 | T-0.2, T-4.3c |
 
 ## Global Definition of Done
 
