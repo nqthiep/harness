@@ -223,3 +223,53 @@ seam, so a router can be added later without touching the loop.
 
 The token-counting call on the budget hot path is cached by request hash, so a multi-turn
 conversation does not pay a counting round trip per step for a prefix that has not changed.
+
+## 6. Intelligence per unit of cost
+
+Invariant 4 asks for *maximum intelligence per unit of cost and latency*. Round 21 found
+this package had one sentence on it, in the README, describing what the harness does not do.
+This section is the honest answer.
+
+**What the harness contributes:**
+
+| Mechanism | Effect on quality | Effect on cost |
+|---|---|---|
+| **Adaptive thinking on by default** | The model decides depth per request instead of a fixed budget | Neutral to positive — no thinking spent on trivial turns |
+| **`effort` exposed, `medium` default** | The one real quality/cost dial, in the user's hands | Directly controls token spend and tool-call consolidation |
+| **`strict: true` on every tool** | Tool arguments are guaranteed to validate against the schema | Removes an entire round trip per malformed call |
+| **`returns=` structured output** | The answer is the type you asked for, validated | Removes the parse-fail-and-re-prompt loop — a doubling of cost that buys no extra thinking |
+| **Tool errors returned to the model** | The model can recover instead of the run dying | One turn instead of a restart |
+| **Subagent delegation** | Reading-heavy work on a cheap model; synthesis on a strong one | Typically 5–10× on fan-out tasks |
+| **Cache-safe prefixes** | None | ~10× on multi-turn, which is budget that buys thinking elsewhere |
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class Order:
+    id: str
+    status: str
+    eta_days: int
+
+support = Agent(name="Support", job="Look up orders.", tools=[get_order],
+                returns=Order)
+
+order = support.run("Where is A-4471?").value    # an Order, validated — not a string
+```
+
+**What the harness deliberately does not do**, and why (ADR-023):
+
+- **No planner, no reflection pass, no self-critique loop.** Each is a second model call for
+  an unmeasured quality gain — the opposite of maximum intelligence per unit of cost, and
+  precisely the speculative capability that "not over-engineered" forbids. A user who wants
+  reflection writes an agent whose `job` says so and gives it a subagent. That is
+  expressible today, with no new machinery, and it is visible in their code rather than
+  hidden in ours.
+- **No automatic model routing** (ADR-006). No policy could be named that the council agreed
+  was correct.
+- **No prompt rewriting.** Silently editing what the user wrote is the least debuggable
+  thing a harness can do.
+
+**The claim, stated plainly:** the harness raises the quality of an answer per dollar by
+removing waste and by making the two real dials reachable. **It does not make a weak model
+strong, and it does not claim to.**

@@ -837,6 +837,95 @@ same package.
 
 **Gate:** held at 16/16 after the fixes. Interfaces was **No** for the duration of H20.2.
 
+
+---
+
+### Round 21 — Auditing the five invariants against the package itself
+
+Rounds 17–20 hunted defects. Round 21 asked a different question: **for each of the five
+invariants, what does this package actually contain?** Counting sections, ADRs,
+requirements and tests per invariant produced an uncomfortable result.
+
+| Invariant | Sections | ADRs | Requirements | Tests | Verdict |
+|---|:--:|:--:|:--:|:--:|---|
+| 1 Extensible | §02.4, §04 | 002, 008 | FR-15, SC-6 | AC-01, AC-08 | solid |
+| 2 Cost-efficient | §07 (whole) | 004, 005, 006, 016, 017, 020 | SC-2, SC-4 | P-1, P-8, AC-04 | solid |
+| 3 Safe by design | §06 (whole) | 003, 011, 013, 019, 021 | SC-3 | RT-01…17, AC-05 | solid |
+| 4 **Intelligent** | **none** | **none** | **none** | **none** | **one line in the README** |
+| 5 Efficient | §07.5, §02.6 | 007 | NFR-01…03, 09 | benchmarks | solid |
+
+**H21.1 — Invariant 4 has one sentence in the entire package**, and that sentence describes
+what the harness *doesn't* do ("not model-downgrade roulette"). Every other invariant has a
+section, several decisions and a measurable gate. The council had been treating "maximum
+intelligence per unit of cost" as satisfied by the cost work, which is half the phrase.
+
+Rather than invent a reasoning architecture to fill the hole, the council asked what the
+harness could contribute that is **not speculative** — mechanisms that raise the quality of
+an answer per dollar, that already exist in the provider, and that need no new concepts.
+Two were found; one was rejected.
+
+**H21.2 — `strict: true` is never set, although the schemas were built for it.**
+
+[§04.1](04-interfaces.md#1-tools) specifies tool schemas as "strict-ready" —
+`additionalProperties: false`, complete `required` — and then nothing ever turns strict mode
+on. Strict tool use guarantees `tool_use.input` validates exactly against the schema. Left
+off, malformed tool arguments reach the tool, raise, come back as an `is_error` result, and
+cost a round trip to rediscover something the API would have prevented for free.
+
+**Resolved: `strict: true` on every generated tool definition.** It costs nothing, removes a
+class of runtime failure, and the work to make it possible had already been done and then
+left unused — which is the most annoying kind of gap to find, and the easiest to close.
+
+**Structured output — accepted.** `Agent(returns=SomeType)` sets `output_config.format` and
+`result.value` is that type, validated. This is intelligence-per-cost in the literal sense:
+a constrained answer eliminates the parse-fail-and-re-prompt loop, which is a doubling of
+cost that produces no additional thinking. It is one optional parameter at Level 2 of the
+ladder, and it does not touch the beginner path.
+
+The council reversed OI-03 ("defer until a user asks") on the grounds that deferring a
+free, one-parameter provider feature while claiming Intelligent as an invariant is
+under-delivering against a stated requirement. → **ADR-022**.
+
+**Planning, reflection and self-critique loops — rejected.** Proposed as the obvious way to
+make agents smarter. Rejected on the invariant's own wording: a critique pass is a second
+model call for an unmeasured quality gain, which is the *opposite* of maximum intelligence
+per unit of cost. It is also exactly the speculative capability that "not over-engineered"
+forbids. If a user wants reflection, it is an agent whose job says so, calling a subagent —
+already expressible today with no new machinery. → **ADR-023**.
+
+**The honest statement, now in the package.** The harness's contribution to intelligence is:
+adaptive thinking on by default, exposed effort, strict tool arguments, optionally
+constrained output, tool errors returned to the model rather than swallowed, and explicit
+subagent delegation. **It does not make a weak model strong, and it does not claim to.**
+That sentence is now in [§07.6](07-cost.md#6-intelligence-per-unit-of-cost) rather than
+implied by its absence.
+
+---
+
+## 2.1 What the recursive rounds cost, and what they found
+
+Rounds 13–21 were opened after the council had already declared convergence at Round 12
+with a 16/16 gate. They found:
+
+| Round | Found | Class |
+|---|---|---|
+| 13–16 | Six beginner blockers, five of them outside the API | Wrong premise, then wrong scope of review |
+| 17 | Scaffold budget made every first run refuse to call | Two correct defaults that multiply into a contradiction |
+| 18 | Truncated answers reported as success; `Chat` budget undefined | A closed enum complete against the design, incomplete against the API |
+| 19 | Approval violates the policy contract; `Secret` breaks Python's hash invariant | Contracts that read correctly and do not execute |
+| 20 | Two unhashable types being hashed; seven types never defined | Same, plus a gap the task-shaped walkthrough could not see |
+| 21 | One of five invariants had no section, no decision, no test | Nobody had counted |
+
+**Every one of these passed a prior review.** The four techniques that found them — multiply
+the numbers out, execute the contract, traverse types rather than tasks, count coverage per
+requirement — are now walkthrough steps and CI checks ([§14](14-validation-plan.md)) rather
+than things a diligent reviewer might do.
+
+The council's position on its own Round 12 verdict: it was wrong, and it was wrong in a
+predictable way. **A gate that is assessed by the people who wrote the thing being gated
+measures agreement, not readiness.** The gate below is now backed by executable checks for
+every row; the rows that remain judgement calls are marked as such.
+
 ---
 
 ## 3. Implementation Readiness Gate — final
@@ -848,7 +937,7 @@ same package.
 | Interfaces | **Yes** | [§04](04-interfaces.md) — every signature pinned; contracts exercised in code, not read (Round 19) |
 | Data & state | **Yes** | [§05](05-data-and-state.md) — event taxonomy, transcript schema |
 | Security | **Yes** | [§06](06-safety.md) — threat model, ADR-003/008/011, red-team suite |
-| Cost | **Yes** | [§07](07-cost.md) — ADR-004/005/006/017; defaults validated by arithmetic, not review |
+| Cost | **Yes** | [§07](07-cost.md) — ADR-004/005/006/016/017/020; defaults validated by arithmetic, not review |
 | Performance | **Yes** | [§07.5](07-cost.md), parallel scheduling from effect classes |
 | Testing | **Yes** | [§09](09-testing.md) — pyramid, fakes, CI gates |
 | Observability | **Yes** | [§10](10-observability-ops.md) — closed taxonomy |

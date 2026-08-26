@@ -19,6 +19,7 @@ requirement, it is a wish.
 | G5 / SC-5 | `no_network()` autouse; suite runs offline | CI | Blocks merge |
 | G6 / SC-6 | 5 out-of-tree plugin examples | `examples/plugins/` | Blocks M4 |
 | G7 / SC-7 | Golden replay, byte-identical | `tests/golden/` | Blocks merge |
+| G8 / SC-8 | Zero malformed tool args and zero answer parse failures over the fixture set | `tests/integration/` | Blocks merge |
 | FR-01…23 | Named integration test per requirement | `tests/integration/` | Blocks merge |
 | NFR-01 | `python -X importtime` < 200 ms | CI | Blocks merge |
 | NFR-02 | Null-provider benchmark, < 15 ms p95 | `benchmarks/overhead.py` | Blocks merge |
@@ -28,7 +29,7 @@ requirement, it is a wish.
 | NFR-07 | Property P-6 | `tests/property/` | Blocks merge |
 | NFR-08 | Tool-raises integration test | `tests/integration/` | Blocks merge |
 | NFR-10 | Docstring examples executed | CI | Blocks merge |
-| ADR-001…021 | Architecture conformance tests (§4) | `tests/conformance/` | Blocks merge |
+| ADR-001…023 | Architecture conformance tests (§4) | `tests/conformance/` | Blocks merge |
 
 ## 2. SC-1 — Time to First Agent
 
@@ -133,6 +134,9 @@ against slow architectural drift, which no ordinary test catches.
 | AC-20 | Every closed enum mirroring a provider protocol has an exhaustiveness test; no unmapped value resolves to an `ok = True` outcome | ADR-019 |
 | AC-21 | No `Policy` implementation in the package is async or performs I/O; approval is resolved by the engine, not by a policy | ADR-021 |
 | AC-22 | Every type defining `__eq__` either defines a consistent `__hash__` or sets `__hash__ = None` — checked across the package, not just `Secret` | IDL-32 |
+| AC-23 | Every tool definition sent to a provider carries `strict: true` | ADR-022 |
+| AC-24 | `returns=` and `tools=` schemas come from the same generator — no second Python-type-to-schema path exists | ADR-022 |
+| AC-25 | **Every invariant in [§01](01-requirements.md) has at least one section, one decision-log entry and one test.** *Round 21 found invariant 4 had none of the three; nobody had counted.* | Round 21 |
 
 AC-22 is written package-wide rather than for `Secret` alone. The Round 19 defect was a
 generic Python contract violation that happened to land on the security type; the next one

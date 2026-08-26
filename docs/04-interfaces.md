@@ -164,7 +164,8 @@ class ToolSpec:
     __hash__ = None                    # holds a Mapping — see §0 Hashability
     name: str                          # ^[a-z][a-z0-9_]{0,63}$ — validated at decoration
     description: str                   # from the docstring summary; required, non-empty
-    input_schema: Mapping[str, object] # JSON Schema, additionalProperties:false, strict-ready
+    input_schema: Mapping[str, object] # JSON Schema; additionalProperties:false, complete
+                                       # `required`, and emitted with strict:true (ADR-022)
     effect: Effect
     fn: Callable[..., Awaitable[object]]  # always async; sync fns are wrapped at decoration
     accepts_tainted: bool = False      # only meaningful for DANGER
@@ -231,6 +232,7 @@ class ModelRequest:
     thinking: Mapping[str, object] | None
     stream: bool
     cache_breakpoints: tuple[int, ...]  # indices carrying cache_control
+    output_format: Mapping[str, object] | None   # from Agent(returns=...) — ADR-022
 
 @dataclass(frozen=True, slots=True)
 class ModelResponse:
@@ -274,6 +276,9 @@ class ModelProvider(Protocol):
   one definition of "the same request" in the system rather than two.
 - `price` must raise `UnknownModelError` for an unlisted model rather than return zero.
   A zero price silently disables the budget ceiling — fail-safe, not fail-open.
+- Every tool definition is sent with **`strict: true`** (ADR-022), which is why the schema
+  generator's `additionalProperties: false` and complete `required` list are mandatory
+  rather than stylistic.
 - `pause_turn` must be surfaced, not swallowed. The `RunEngine` re-sends to resume, capped
   at `max_pause_resumes = 5`.
 - **Every provider `stop_reason` maps to exactly one `StopReason`, and the mapping is

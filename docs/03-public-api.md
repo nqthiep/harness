@@ -106,6 +106,7 @@ class Agent:
         # --- commonly adjusted -------------------------------------------------
         model: str = "claude-opus-5",
         effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium",
+        returns: type | None = None,         # validated structured output — ADR-022
         budget: Budget | str | None = None,  # None → DEFAULT_BUDGET, never unlimited
         # --- safety ------------------------------------------------------------
         safety: Literal["standard", "strict"] = "standard",
@@ -125,7 +126,7 @@ class Agent:
     ) -> None: ...
 ```
 
-Nineteen parameters may look like a lot; **three are required-by-use and sixteen have
+Twenty parameters may look like a lot; **three are required-by-use and seventeen have
 defaults that are correct for a first agent.** The parameters are ordered by the level of
 the ladder at which a user meets them, and grouped with comments in the source so the
 grouping survives.
@@ -216,6 +217,7 @@ class Result:
     messages: list[Message]   # full conversation, for continuation
     run_id: str
     tainted: bool
+    value: object | None      # the `returns=` type, validated. None when returns= unset.
     def raise_for_status(self) -> None: ...
     def __str__(self) -> str: return self.text     # print(result) prints the answer
 ```

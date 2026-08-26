@@ -424,6 +424,56 @@ composition — the word was the defect, sitting in plain sight through two revi
 
 ---
 
+### ADR-022 — Strict tool arguments and optional structured output
+**Status:** Accepted (Round 21) · **Reverses OI-03**
+
+**Context.** Invariant 4 (Intelligent) had no section, no decision, no requirement and no
+test — one sentence in the README describing what the harness does not do. Separately, tool
+schemas were specified "strict-ready" (`additionalProperties: false`, complete `required`)
+and strict mode was never turned on.
+
+**Decision.** (1) `strict: true` on every generated tool definition. (2)
+`Agent(returns=SomeType)` sets `output_config.format`; `result.value` is that type,
+validated.
+
+**Why these two and nothing else.** Both are provider features that already exist, cost
+nothing extra, need no new concepts, and remove *waste* rather than adding machinery:
+
+- Without strict, malformed tool arguments reach the tool, raise, return as an `is_error`
+  result, and cost a round trip to rediscover what the API would have prevented.
+- Without structured output, a caller wanting typed data parses a string, fails sometimes,
+  and re-prompts — a doubling of cost that buys no additional thinking.
+
+**Reversal of OI-03** ("defer structured output until a user asks"). Deferring a free,
+one-parameter provider feature while claiming Intelligent as an invariant is
+under-delivering against a stated requirement. The not-over-engineering rule forbids
+building for a speculative future; it does not license leaving a stated requirement
+unaddressed.
+
+**Beginner impact: none.** `returns=` is one optional parameter at Level 2.
+
+---
+
+### ADR-023 — No planner, reflection, or self-critique loop
+**Status:** Rejected (Round 21) · *recorded so it is not re-proposed as an obvious omission*
+
+**Proposal.** Add a planning pass, or a critique-and-revise loop, as the obvious way to make
+agents smarter.
+
+**Rejected on the invariant's own wording.** A critique pass is a second model call for an
+unmeasured quality gain. "Maximum intelligence per unit of cost" argues against it, not for
+it. It is also the archetypal speculative capability — built because it sounds like what a
+smart harness would have, not because a requirement asked for it.
+
+**And it is already expressible.** A user who wants reflection writes an agent whose `job`
+says so and gives it a subagent. No new machinery, and the behavior is visible in their code
+instead of hidden in ours — which also means they can measure whether it helped.
+
+**What would change this.** A measurement on a real task showing a critique pass beats
+spending the same tokens on higher `effort`. Absent that number, this stays rejected.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |

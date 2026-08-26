@@ -1,6 +1,6 @@
 # 08 — Poka-Yoke Register
 
-Fifty-two ways a competent developer could still get this wrong, and what in the design
+Fifty-four ways a competent developer could still get this wrong, and what in the design
 stops them. The ranking is deliberate:
 
 **Impossible** > **Import-time error** > **Construction-time error** > **First-run error** >
@@ -40,6 +40,8 @@ which is why they are grouped separately below.
 | 12 | A tool parameter type that cannot be expressed as JSON Schema | `ToolSchemaError` at import naming the parameter and type; no best-effort fallback | Import |
 | 13 | Tool returns a non-serializable object; harness `str()`s it into garbage | `ToolContractError` at return, naming the field path | First run |
 | 14 | Missing docstring → the model cannot tell what the tool does | Required; empty docstring is a `ToolSchemaError` | Import |
+| 53 | **Malformed tool arguments discovered by the tool raising** — a round trip to learn what the API could have rejected | `strict: true` on every tool definition; the schema constraints that make it possible were already mandatory | Impossible |
+| 54 | **Answer parsed from a string, failing sometimes, re-prompted** | `returns=` constrains and validates the answer; a validation failure is an error, never a silent `None` | Impossible when `returns=` is set |
 | 15 | Tool returns 50 MB and poisons the context for the rest of the run | `max_result_tokens` (4 000) truncates with a marker the model can see | Impossible |
 | 16 | A hanging tool holds the run open forever | `timeout_s` (30 s) on every tool, no opt-out | Impossible |
 | 17 | A raising tool crashes the whole run and loses accumulated work | Caught, converted to `is_error` result; run continues | Impossible |

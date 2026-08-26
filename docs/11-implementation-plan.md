@@ -75,7 +75,7 @@ right — before anything is built on top of it.
 - **What.** `@tool(effect=...)` turning a plain function into a `ToolSpec`, with JSON Schema derived from type hints.
 - **Why.** The single most-used surface in the library. If this is awkward, nothing else matters.
 - **Where.** `tools/__init__.py`, `tools/schema.py`.
-- **How.** `inspect.signature` + `typing.get_type_hints(include_extras=True)`. Docstring summary → `description`; Google/NumPy-style `Args:` → per-property descriptions. Emit `additionalProperties: false` and a complete `required` list so the schema is `strict`-compatible. Sync functions wrapped so `ToolSpec.fn` is always awaitable. Record `source` as `file:line` for error messages.
+- **How.** `inspect.signature` + `typing.get_type_hints(include_extras=True)`. Docstring summary → `description`; Google/NumPy-style `Args:` → per-property descriptions. Emit `additionalProperties: false` and a complete `required` list, and send every tool with **`strict: true`** (ADR-022) — the schema constraints exist to make that possible, so leaving it off wastes the work and a round trip per malformed call. Sync functions wrapped so `ToolSpec.fn` is always awaitable. Record `source` as `file:line` for error messages.
 - **Depends.** T-0.1
 - **Contract.** [§04.1](04-interfaces.md#1-tools) verbatim.
 - **Failure.** Missing `effect` → `MissingEffectError` at decoration, with the four options and a name-based guess. Unsupported type → `ToolSchemaError` naming parameter and type. Bad name → `ToolSchemaError`. Missing/empty docstring → `ToolSchemaError`. **All at import; none at run time.**
@@ -451,6 +451,18 @@ proven.
 - **Failure.** Exhaustion ends the chat with a message naming the spend and how to raise it — never a silent stall.
 - **Test.** An 80-turn chat never exceeds the session budget (extends P-1). Answers demonstrably shorten as it depletes.
 - **Done.** `harness chat` shows the session budget and degrades gracefully.
+
+### T-4.3c — Structured output (`returns=`)
+
+- **What.** `Agent(returns=SomeType)` → `result.value` of that type, validated.
+- **Why.** ADR-022. Invariant 4 had no implementation; this and strict mode are the two non-speculative contributions to it. Removes the parse-fail-and-re-prompt loop.
+- **Where.** `agent.py`, `models/anthropic.py`, `context/assembler.py`.
+- **How.** Generate a JSON Schema from the type with the **same** generator as `tools/schema.py` — one definition of "Python type → schema" in the system. Set `output_config.format` on the request. Validate the response and populate `Result.value`.
+- **Depends.** T-0.2, T-0.4
+- **Contract.** [§03.5](03-public-api.md#5-result). `value` is `None` when `returns=` is unset.
+- **Failure.** An unsupported `returns=` type raises `ToolSchemaError` **at construction**, reusing T-0.2's messages. A response that fails validation is a `ProviderBadRequest`, not a silent `None`.
+- **Test.** Round-trip a dataclass, a `TypedDict` and a `pydantic.BaseModel`. Unsupported type raises at construction. SC-8.
+- **Done.** `result.value` is typed and validated; the schema generator is shared with tools, not duplicated.
 
 ### T-4.4 — Subagents ★
 

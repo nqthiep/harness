@@ -42,7 +42,7 @@ that would block was resolved during the rounds rather than parked here — stan
 |---|---|---|
 | OI-01 | Should `Store.search` eventually support vector similarity? | `Store` is a protocol. A vector implementation is additive and out-of-tree. Nothing in v1 needs deciding now. |
 | OI-02 | Should `harness chat` grow history persistence between sessions? | `Store` already exists; this is an additive CLI flag. Decide after SC-1b shows whether children reach for it. |
-| OI-03 | Structured outputs (`output_config.format`) as a first-class `Agent` parameter | The provider already supports it; exposing it is one optional parameter. Deferred until a user asks, per not-over-engineering. |
+| ~~OI-03~~ | ~~Structured outputs as a first-class `Agent` parameter~~ | **Closed in Round 21 — accepted, not deferred** (ADR-022). Deferring a free one-parameter provider feature while claiming Intelligent as an invariant was under-delivering against a stated requirement. Not-over-engineering forbids building for a speculative future; it does not license leaving a requirement unaddressed. |
 | OI-04 | Should `effort` default to `low` for subagents? | Plausible saving, unmeasured. Measure with the T-4.4 cost fixture, then decide with data. |
 | OI-05 | Windows support in CI | The library is pure Python and should work; the matrix costs CI minutes. Add if an issue is filed. |
 | OI-06 | Should `Budget` support a per-tool cost axis (e.g. paid APIs)? | Real need, but no user yet. `Policy` can already enforce it out-of-tree today. |

@@ -27,6 +27,7 @@ surface of Option A.
 | G5 | Agents are testable with zero API spend | SC-5 |
 | G6 | Third parties can ship tools, providers, stores, policies and exporters without forking | SC-6 |
 | G7 | Every run is fully explicable after the fact | SC-7 |
+| G8 | Quality per dollar is raised by removing waste, not by adding model calls | SC-8 |
 
 ## 3. Success criteria (all are executable)
 
@@ -40,6 +41,7 @@ surface of Option A.
 | SC-5 | **Zero-cost testing.** The full test suite runs green with no network access. | `no_network()` active in CI; 0 outbound calls | CI gate |
 | SC-6 | **Extension without forking.** Each of the 5 plugin types has a working out-of-tree example. | 5/5 in `examples/plugins/` | M4 DoD |
 | SC-7 | **Explicability.** From a transcript alone, `harness trace` reconstructs every model call, tool call, verdict and cost. | Byte-identical replay of a recorded run | Golden test |
+| SC-8 | **No wasted round trips.** Over the tool-use fixture set, malformed tool arguments and answer parse failures both reach zero once strict mode and `returns=` are enabled. | 0 of each | Integration, [§09](09-testing.md) |
 
 ## 4. Requirements
 
@@ -70,6 +72,8 @@ surface of Option A.
 | FR-21 | Errors render without harness or asyncio frames, without mutating global state | Must |
 | FR-22 | Scaffold a runnable agent file together with the `.gitignore` that protects its key | Must |
 | FR-23 | Warn once per process when cumulative spend across runs passes a session threshold | Should |
+| FR-24 | Send every tool definition with strict argument validation | Must |
+| FR-25 | Optionally constrain and validate the final answer to a caller-supplied type | Should |
 
 ### 4.2 Non-functional
 
