@@ -515,6 +515,86 @@ result cannot be rationalized afterwards.
 **Gate restored to 16/16**, now against the literal requirement rather than a
 reinterpretation of it.
 
+
+---
+
+### Round 17 — Recursive review of Rounds 13–16
+
+Round 15 reviewed the six fixes against the *existing* design. Round 17 reviewed the design
+against the fixes. It found one outright bug, one accessibility gap, and one proposal worth
+rejecting on the record.
+
+**H17.1 — CRITICAL: the scaffold budget and the pre-flight reservation contradict each
+other. Every first run would have failed before making a single call.**
+
+The Cost Engineer traced the numbers rather than assuming them:
+
+```
+Scaffold: budget="$0.05", default max_tokens=16000, model claude-opus-5 ($5 / $25 per MTok)
+
+worst-case reservation = 1200/1e6 × $5   (input)
+                       + 16000/1e6 × $25 (output)
+                       = $0.406
+
+$0.406 > $0.05  →  ledger.reserve() refuses  →  StopReason.BUDGET_EXHAUSTED at step 0
+```
+
+A beginner following [§15](15-first-agent.md) exactly would see their agent stop
+immediately, having said nothing, with a budget message — and the natural fix (raise the
+budget) is the opposite of the lesson the scaffold was trying to teach.
+
+Worse, the *default* budget only escapes by accident: `$0.406 < $0.50` clears by nine
+cents. The design had two independent knobs — `budget` and `max_tokens` — that silently
+contradict each other, and nobody had multiplied them out. **The council had reviewed the
+budget mechanism four times without ever computing a single number with it.**
+
+**Resolved — `max_tokens` is derived from the remaining budget, not configured beside it:**
+
+```
+max_tokens = clamp(
+    floor((remaining_usd − input_cost) / output_price_per_token),
+    lower = 256,                     # below this, stop instead: a truncated answer is not an answer
+    upper = model's maximum output,
+)
+```
+
+| budget | derived `max_tokens` |
+|---|---|
+| `$0.05` | ~1 760 |
+| `$0.10` | ~3 760 |
+| `$0.50` (default) | ~19 760 |
+
+Two knobs that could disagree become one that cannot. A small budget now produces a
+**short answer** instead of **no answer**, which is what a beginner expects and what the
+scaffold was trying to demonstrate. `max_tokens` is removed from the public surface
+entirely — it was never exposed, and now it never needs to be. → **ADR-017**.
+
+The Poka-Yoke Reviewer noted the shape of the miss for the record: the bug was not in any
+component. Every component was correct. It lived in the *interaction* between two defaults
+chosen in different rounds by different people — which is exactly the class of defect the
+recursive rounds exist to catch, and exactly the class that a table of components will
+never reveal. **The rule adopted: any numeric default is validated by arithmetic against
+every other numeric default it can meet, not by review.** T-1.5 now carries that test.
+
+**H17.2 — `UnsafeToolSetError` is reachable from the tutorial but not explained in it.**
+A child who adds `search` alongside a `danger` tool hits a construction-time error that
+[§15](15-first-agent.md) never mentions. The message itself is accessible, but meeting it
+unannounced is the kind of surprise that ends a session. → added to §15's error section, in
+the tutorial's own register.
+
+**H17.3 — Rejected: streaming the answer token by token on a TTY.**
+Proposed by the API/DX Designer as the single most delightful thing for a beginner — text
+appearing as it is written. Rejected on a concrete conflict: with `print(agent.run(...))`
+as the first example, streaming to the terminal prints the answer twice, and every fix for
+that (suppressing the final print, a magic "already streamed" flag on `Result`) adds hidden
+state to the simplest path in the library.
+
+The progress line from ADR-014 already solves the actual problem, which was silence reading
+as breakage. Recorded as considered-and-rejected so it is not re-proposed as an obvious
+oversight. → **ADR-018**.
+
+**Gate:** held at 16/16 after the fix. Cost was **No** for the duration of H17.1.
+
 ---
 
 ## 3. Implementation Readiness Gate — final
@@ -526,7 +606,7 @@ reinterpretation of it.
 | Interfaces | **Yes** | [§04](04-interfaces.md) — every signature pinned |
 | Data & state | **Yes** | [§05](05-data-and-state.md) — event taxonomy, transcript schema |
 | Security | **Yes** | [§06](06-safety.md) — threat model, ADR-003/008/011, red-team suite |
-| Cost | **Yes** | [§07](07-cost.md) — ADR-004/005/006, measurable gates |
+| Cost | **Yes** | [§07](07-cost.md) — ADR-004/005/006/017; defaults validated by arithmetic, not review |
 | Performance | **Yes** | [§07.5](07-cost.md), parallel scheduling from effect classes |
 | Testing | **Yes** | [§09](09-testing.md) — pyramid, fakes, CI gates |
 | Observability | **Yes** | [§10](10-observability-ops.md) — closed taxonomy |

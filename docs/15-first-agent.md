@@ -315,6 +315,26 @@ Agent needs you to label each part, like this:
   You wrote:  Agent("Helper", "tell jokes")
 ```
 
+**Your helper could look things up on the internet AND do something it can't undo:**
+
+```
+This helper can read things from the internet AND do something it can't undo.
+
+  search      can bring in words from a website
+  send_email  can't be undone
+
+  A website could trick your helper into emailing your stuff to a stranger.
+
+  Pick one:
+    1. Take one of them out, or make two separate helpers.  ← easiest
+    2. If send_email really is safe, say so on the tool:
+         @tool(effect="danger", accepts_tainted=True)
+```
+
+This one stops **before** your helper does anything, so nothing bad can happen. It is not
+you doing something wrong — it is Harness noticing that those two powers are risky
+together.
+
 **Your helper ran out of money:**
 
 ```
@@ -352,6 +372,10 @@ You now know everything you need to build helpers. When you want more, there is 
 in the scaffold rather than introduced later, because a child running a file eighty times
 is a real cost event (G13.6), and showing the guard is cheaper than explaining it after the
 fact.
+
+**The `UnsafeToolSetError` entry was added in Round 17.** A child combining `search` with a
+`danger` tool can reach it, and meeting an unannounced error is how a session ends. Every
+error a child can reach must appear in this document.
 
 **Concept count to a custom tool:** three more — the decorator line, one type hint, one
 docstring. Each is introduced *after* the child has already seen it work, never before.

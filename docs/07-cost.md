@@ -10,12 +10,31 @@ Most agent frameworks report cost after the fact. That is a dashboard, not a con
 harness checks **before** each model call:
 
 ```python
-estimate = (count_input_tokens(request) / 1e6) * price.input_per_mtok \
-         + (max_tokens                  / 1e6) * price.output_per_mtok
+max_tokens = ledger.size_call(input_tokens, price, model_max)   # derived — ADR-017
+
+estimate = (input_tokens / 1e6) * price.input_per_mtok \
+         + (max_tokens   / 1e6) * price.output_per_mtok
 
 if ledger.spent + estimate > budget.usd:
     return Result(stop_reason=BUDGET_EXHAUSTED, ...)   # graceful, with partial text
 ```
+
+**`max_tokens` is derived from what is left in the budget, not configured separately.**
+This is not a refinement; it fixes a defect found in Round 17. When the two were
+independent, a `$0.05` budget against the default `max_tokens=16000` reserved `$0.406` and
+therefore **refused to make any call at all** — a beginner's first run would stop having
+said nothing. The default `$0.50` budget cleared the same reservation by nine cents, by
+accident.
+
+Deriving one from the other makes the contradiction unrepresentable, and a small budget now
+produces a **short answer** rather than **no answer**:
+
+| budget | derived `max_tokens` | behavior |
+|---|---|---|
+| `$0.05` | ~1 760 | a few paragraphs |
+| `$0.10` | ~3 760 | a longer answer |
+| `$0.50` (default) | ~19 760 | effectively unconstrained |
+| below ~256 tokens affordable | — | stops instead; a truncated answer is not an answer |
 
 The estimate is deliberately the **worst case**: it assumes the model emits its full
 `max_tokens` and ignores the cache-read discount. Over-estimating stops a run slightly

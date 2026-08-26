@@ -235,12 +235,12 @@ adversarial runs.
 - **What.** `Budget`, `Budget.parse`, `Ledger`, `reserve`/`settle`.
 - **Why.** ADR-005. Invariant 2 lives here.
 - **Where.** `budget/ledger.py`.
-- **How.** `Decimal` throughout; a lint rule bans `float` in this package. `reserve()` uses the worst-case estimate of [§07.1](07-cost.md#1-the-budget-is-a-ceiling-not-an-alert) and runs immediately before `provider.complete`, with nothing between them. `settle()` corrects from `response.usage`. `Budget.parse` accepts `"$0.10"`, `"10 cents"`, `"5 steps"`, `"$1, 50 steps, 10m"`.
+- **How.** `Decimal` throughout; a lint rule bans `float` in this package. **`size_call()` derives `max_tokens` from the remaining budget (ADR-017)** — `max_tokens` is never user-supplied and never a constant. `reserve()` uses the worst-case estimate of [§07.1](07-cost.md#1-the-budget-is-a-ceiling-not-an-alert), computed from that derived figure, and runs immediately before `provider.complete` with nothing between them. `settle()` corrects from `response.usage`. `Budget.parse` accepts `"$0.10"`, `"10 cents"`, `"5 steps"`, `"$1, 50 steps, 10m"`.
 - **Depends.** T-0.4
 - **Contract.** [§04.4](04-interfaces.md#4-budget--ledger).
 - **Failure.** Insufficient budget → graceful `Result(BUDGET_EXHAUSTED)` with partial text; never an exception from `try_run`. Unparseable string → `InvalidBudgetError` at construction listing accepted forms. `Budget(usd=None)` warns every run.
-- **Test.** **Property P-1 over 1 000 adversarial runs — SC-2.** Parser table (12 cases). No `float` in the module (AST test). Reserve-before-call ordering asserted by an event-sequence test.
-- **Done.** P-1 green at 1 000 cases; `budget/` at 100 % coverage.
+- **Test.** **Property P-1 over 1 000 adversarial runs — SC-2.** Parser table (12 cases). No `float` in the module (AST test). Reserve-before-call ordering asserted by an event-sequence test. **P-8: for every (budget, model, input size) in the cross-product of shipped defaults and documented examples, `reserve()` succeeds and the derived `max_tokens` is ≥ 256** — the Round 17 regression test. A budget affording < 256 output tokens stops rather than calling.
+- **Done.** P-1 and P-8 green; `budget/` at 100 % coverage; **the [§15](15-first-agent.md) scaffold's `budget="$0.05"` demonstrably makes a call.**
 
 ### T-1.6 — `Secret` and redaction
 

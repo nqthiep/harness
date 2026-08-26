@@ -106,7 +106,7 @@ class ModelRequest:
     system: tuple[SystemBlock, ...]     # pre-rendered, immutable
     tools: tuple[Mapping[str, object], ...]  # name-sorted, canonically serialized
     messages: tuple[Message, ...]
-    max_tokens: int
+    max_tokens: int                     # derived by the ledger (ADR-017); never user-supplied
     effort: str
     thinking: Mapping[str, object] | None
     stream: bool
@@ -263,12 +263,34 @@ class Ledger:
     def check_deadline(self) -> None: ...
 ```
 
-**Worst-case estimate** (the value passed to `reserve`):
+**`max_tokens` is derived from the budget, not passed in** (ADR-017). The ledger sizes the
+call to what is affordable, so the reservation can never exceed the budget by construction:
+
+```python
+def size_call(self, input_tokens: int, price: Price, model_max: int) -> int:
+    input_cost = Decimal(input_tokens) / 1_000_000 * price.input_per_mtok
+    affordable = (self.remaining_usd - input_cost) / price.output_per_mtok * 1_000_000
+    if affordable < 256:
+        raise BudgetExceeded(...)          # a truncated answer is not an answer
+    return min(int(affordable), model_max)
+```
+
+| budget | derived `max_tokens` (Opus-tier: $5 / $25 per MTok) |
+|---|---|
+| `$0.05` | ~1 760 |
+| `$0.10` | ~3 760 |
+| `$0.50` (default) | ~19 760 |
+
+**Worst-case estimate** (the value passed to `reserve`), using that derived figure:
 
 ```
 estimate = count_input_tokens(request) / 1e6 * price.input_per_mtok
          + max_tokens                  / 1e6 * price.output_per_mtok
 ```
+
+Because `max_tokens` was chosen *from* the remaining budget, `estimate <= remaining` always
+holds. Before ADR-017 the two were independent and routinely contradicted: a `$0.05` budget
+against a default `max_tokens=16000` reserves `$0.406` and refuses to make any call at all.
 
 Cache reads are *not* subtracted from the estimate — over-estimating is safe, under-
 estimating breaks the ceiling. `settle` corrects to the true cost from `response.usage`,

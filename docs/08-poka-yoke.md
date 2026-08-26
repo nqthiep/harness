@@ -1,6 +1,6 @@
 # 08 — Poka-Yoke Register
 
-Forty-four ways a competent developer could still get this wrong, and what in the design
+Forty-five ways a competent developer could still get this wrong, and what in the design
 stops them. The ranking is deliberate:
 
 **Impossible** > **Import-time error** > **Construction-time error** > **First-run error** >
@@ -63,10 +63,11 @@ which is why they are grouped separately below.
 |---|---|---|---|
 | 28 | `datetime.now()` in the system prompt → 10× cost forever, silently | Cache linter double-renders and byte-compares at construction | Construction |
 | 29 | Unlimited default budget → the overnight five-figure invoice | Defaults finite on all four axes; unlimited requires typing `None` and warns every run | Impossible by default |
-| 30 | Budget checked after spending | `reserve()` before every call; worst-case estimate | Impossible |
+| 30 | Budget checked after spending | `reserve()` before every call; worst-case estimate computed from the derived `max_tokens` | Impossible |
 | 31 | Float rounding drift in money arithmetic | `Decimal` throughout; a lint rule bans `float` in `budget/` | Impossible |
 | 32 | Unknown model priced at zero, silently disabling the ceiling | `UnknownModelError` before any call | Impossible |
 | 33 | Pricing table quietly going stale | CI job fails when `as_of` is more than 90 days old | CI |
+| 45 | **A budget too small to permit any call at all** — two independent knobs (`budget`, `max_tokens`) that multiply into one constraint | `max_tokens` is *derived* from the remaining budget (ADR-017), so the contradiction cannot be expressed. Below ~256 affordable output tokens the run stops rather than emitting a fragment. P-8 cross-validates every shipped numeric default against every other. | Impossible |
 
 ## Testing & operations
 

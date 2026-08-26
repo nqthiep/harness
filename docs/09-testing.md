@@ -78,6 +78,7 @@ render all four required sections — what, where, the copy-pasteable fix, the d
 | P-5 | Serializing any `ToolSet` twice yields identical bytes. |
 | P-6 | Replaying any transcript reproduces the same event sequence. |
 | P-7 | Truncation never splits a UTF-8 character or produces invalid JSON. |
+| P-8 | **Every combination of shipped numeric defaults is internally consistent:** for each (budget, model, plausible input size) drawn from the defaults and from every documented example, `reserve()` succeeds and the derived `max_tokens` is ≥ 256. *The Round 17 defect lived between two individually correct defaults; this is the test that would have caught it.* |
 
 ### Integration
 

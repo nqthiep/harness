@@ -1,6 +1,6 @@
 # Harness — Implementation Design Package
 
-> **Status: READY FOR IMPLEMENT** (Council converged at Round 16)
+> **Status: READY FOR IMPLEMENT** (Council converged at Round 17)
 > This repository currently contains **no product code**. It contains the complete,
 > reviewed design and implementation plan that an engineering team can start coding from
 > on day one without making further architectural decisions.
@@ -50,13 +50,13 @@ council recorded the trade and the reasoning in the [Design Decision Log](docs/1
 | # | Invariant | How it is enforced, not merely intended |
 |---|---|---|
 | 1 | **Extensible** | Exactly five plugin boundaries, chosen by an explicit test (§2.4). Everything else is core. |
-| 2 | **Cost-efficient** | Budgets are checked *before* each model call, not after. Cache-safety is verified at agent construction time. |
+| 2 | **Cost-efficient** | Budgets are checked *before* each model call, not after, and `max_tokens` is derived from what the budget can afford so the two can never contradict. Cache-safety is verified at agent construction time. |
 | 3 | **Safe by design** | Every tool declares an effect class or fails at import. Untrusted content mechanically blocks irreversible actions. |
 | 4 | **Intelligent** | Effort control + subagent delegation, not model-downgrade roulette. |
 | 5 | **Efficient** | Async core, sync facade, one round-trip per step, truncation ceilings on every tool result. |
 
 Plus the sixth, which shaped the API more than any other: **Poka-Yoke** — see the
-[register of 44 failure modes and their design-level defenses](docs/08-poka-yoke.md).
+[register of 45 failure modes and their design-level defenses](docs/08-poka-yoke.md).
 Ten of those came from Round 13, and **five of the six worst beginner blockers turned out
 to be outside the API entirely** — credentials, feedback, error rendering, scaffolding and
 repeat-run cost.

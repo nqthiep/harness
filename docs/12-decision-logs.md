@@ -306,6 +306,59 @@ either is mentioned.
 
 ---
 
+### ADR-017 — `max_tokens` is derived from the remaining budget
+**Status:** Accepted (Round 17) · **Fixes a defect in ADR-005 as originally specified**
+
+**Context.** `budget` and `max_tokens` were independent. The pre-flight reservation
+multiplies `max_tokens` by the output price, so with the scaffold's `budget="$0.05"`, the
+default `max_tokens=16000` and Opus-tier pricing, the worst-case reservation was `$0.406` —
+eight times the budget. **Every first run would have refused to make a call.** The default
+`$0.50` budget cleared the same reservation by nine cents, by accident.
+
+**Decision.**
+
+```
+max_tokens = clamp(
+    floor((remaining_usd − input_cost) / output_price_per_token),
+    lower = 256,   # below this, stop with BUDGET_EXHAUSTED — a truncated answer is not an answer
+    upper = model's maximum output,
+)
+```
+
+`max_tokens` is not a public parameter and now never needs to be.
+
+**Why.** Two independent knobs that multiply into one constraint will contradict each
+other; the only question is when someone notices. Deriving one from the other makes the
+contradiction unrepresentable. A small budget now yields a short answer rather than no
+answer — which is what a user expects and what the scaffold was demonstrating.
+
+**Rejected alternatives.** Raise the scaffold budget (treats the symptom, and the same trap
+waits for anyone who sets a small budget deliberately). Loosen the worst-case estimate
+(breaks the ceiling guarantee, which is the point of ADR-005).
+
+**The general rule this produced.** Every numeric default is validated by **arithmetic
+against every other numeric default it can meet**, not by review. The council reviewed the
+budget mechanism four times without computing a single number with it. T-1.5 carries this
+test.
+
+---
+
+### ADR-018 — No token-by-token streaming to the terminal by default
+**Status:** Rejected (Round 17) · *recorded so it is not re-proposed as an oversight*
+
+**Proposal.** Stream the answer to the terminal as it is generated — the single most
+delightful behavior for a beginner.
+
+**Rejected because** the first example is `print(agent.run(...))`. Streaming to the
+terminal prints the answer, and then `print` prints it again. Every remedy — suppressing
+the final print, a hidden "already streamed" flag on `Result` — puts invisible state on the
+simplest path in the library, to solve a problem that is already solved.
+
+The progress line (ADR-014) addresses the real issue, which was silence reading as
+breakage. Streaming remains available explicitly via `run(..., stream=...)`.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
@@ -336,3 +389,6 @@ either is mentioned.
 | IDL-24 | Progress output goes to `stderr`, not `stdout` | Keeps `python agent.py > out.txt` clean even on a TTY |
 | IDL-25 | `harness setup` validates the key with a minimal call before storing | Converts a silent later failure into an immediate, obvious one |
 | IDL-26 | The scaffold includes `budget=` rather than introducing it later | Showing the guard costs one commented line; explaining it after a surprise bill costs trust |
+| IDL-27 | `max_tokens` is derived, never exposed | ADR-017. A parameter that cannot be set cannot contradict the budget |
+| IDL-28 | A derived `max_tokens` under 256 stops the run instead of calling | A 200-token ceiling produces a sentence fragment, which costs money and answers nothing |
+| IDL-29 | Numeric defaults are cross-validated by a test that multiplies them out | The Round 17 defect lived between two correct components, not inside either |

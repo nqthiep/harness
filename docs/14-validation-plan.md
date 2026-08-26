@@ -28,7 +28,7 @@ requirement, it is a wish.
 | NFR-07 | Property P-6 | `tests/property/` | Blocks merge |
 | NFR-08 | Tool-raises integration test | `tests/integration/` | Blocks merge |
 | NFR-10 | Docstring examples executed | CI | Blocks merge |
-| ADR-001…016 | Architecture conformance tests (§4) | `tests/conformance/` | Blocks merge |
+| ADR-001…018 | Architecture conformance tests (§4) | `tests/conformance/` | Blocks merge |
 
 ## 2. SC-1 — Time to First Agent
 
@@ -129,6 +129,7 @@ against slow architectural drift, which no ordinary test catches.
 | AC-16 | No `ToolSchemaError` path defaults an unannotated parameter to `str` | IDL-22 |
 | AC-17 | The unfiltered traceback appears in the `error.raised` event whenever `run()` filtered one | ADR-015 |
 | AC-18 | Every credential-missing error string contains `harness setup` and none contains `ANTHROPIC_API_KEY` | ADR-013 |
+| AC-19 | `max_tokens` appears in no public signature and is assigned only by `Ledger.size_call` | ADR-017 |
 
 AC-13 deserves a note: it is the test that keeps ADR-015 honest. The friendly-traceback
 feature is exactly the kind of thing that gets "simplified" later into a global hook, and
@@ -155,7 +156,7 @@ milestone; a step that stops working is a regression in the *plan*, not just the
 | 6. Add a tool with no `effect` | Import-time error listing four options | Register #9 |
 | 7. Add `datetime.now()` to `job=` | Construction-time error with byte offset | Register #28 |
 | 8. Build `Agent(tools=[search, send_email])` | `UnsafeToolSetError` naming both tools | RT-04 |
-| 9. Set `budget="$0.01"` on a long task | Graceful `BUDGET_EXHAUSTED` with partial text | SC-2 |
+| 9. Set `budget="$0.01"` on a long task | Makes a call with a small derived `max_tokens`, then stops gracefully with partial text — **not** a refusal to start | SC-2, ADR-017 |
 | 10. Inspect the transcript | Every model call, tool call, verdict and cost present; no secrets | SC-7 |
 | 11. `harness cost transcript.jsonl` | Reports spend and cache hit rate | T-5.1 |
 | 12. `kill -9` mid-run, then `resume` | Completes correctly; no `write` re-executed | T-3.3 |
