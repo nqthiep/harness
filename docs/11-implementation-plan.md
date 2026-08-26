@@ -199,7 +199,7 @@ adversarial runs.
 - **What.** `Verdict`, `Decision`, `Policy`, `PolicyEngine`.
 - **Why.** The only place tool execution is authorized. Restrict-only composition is what makes third-party policies safe to add.
 - **Where.** `policy/base.py`, `policy/engine.py`.
-- **How.** `Verdict(IntEnum)` composed with `max()`. Built-ins registered first and unremovable; user policies appended. Short-circuit on the first `DENY`. Emit `policy.decided` for **every** call including allows.
+- **How.** `Verdict(IntEnum)` composed with `max()`. Built-ins registered first and unremovable; user policies appended. Short-circuit on the first `DENY`. Emit `policy.decided` for **every** call including allows. **Approval is not a policy** (ADR-021): the engine awaits the `approve` callback after composition resolves to `ASK`, so `Policy.check` stays sync, pure and sub-millisecond.
 - **Depends.** T-1.1
 - **Contract.** [§04.3](04-interfaces.md#3-policy--verdicts).
 - **Failure.** A policy raising is treated as `DENY` and emits `error.raised` — fail closed. A policy exceeding 1 ms warns in debug mode.
@@ -208,10 +208,10 @@ adversarial runs.
 
 ### T-1.3 — Taint tracker and built-in policies ★★
 
-- **What.** `TaintTracker`; `EffectPolicy`, `TaintPolicy`, `EgressPolicy`, `ApprovalPolicy`.
+- **What.** `TaintTracker`; `EffectPolicy`, `TaintPolicy`, `EgressPolicy`; plus the engine's approval-resolution step (ADR-021 — *not* a policy).
 - **Why.** ADR-011 — the central safety mechanism.
 - **Where.** `policy/taint.py`, `policy/builtin.py`.
-- **How.** Taint is sticky per run, raised when an `external` tool result is appended, and emits `taint.raised` once. `TaintPolicy` denies `danger` unless `accepts_tainted`. `EgressPolicy` extracts host arguments by schema (any property whose name or format indicates a URL/host) and checks `allowed_hosts`. `ApprovalPolicy` is terminal and resolves surviving `ASK` verdicts.
+- **How.** Taint is sticky per run, raised when an `external` tool result is appended, and emits `taint.raised` once. `TaintPolicy` denies `danger` unless `accepts_tainted`. `EgressPolicy` extracts host arguments by schema (any property whose name or format indicates a URL/host) and checks `allowed_hosts`. Surviving `ASK` verdicts are resolved by the engine, which may await an async callback — a policy cannot, and must not.
 - **Depends.** T-1.2
 - **Contract.** [§06.3](06-safety.md#3-the-taint-lattice--the-designs-central-safety-idea).
 - **Failure.** Denial is not a crash: an `is_error` tool result goes back to the model so it can choose another route. With no `approve` callback, `ASK` on `danger` → `DENY` with a one-time warning.
@@ -246,11 +246,11 @@ adversarial runs.
 
 - **What.** `Secret` type; transcript redaction pass; entropy scan.
 - **Where.** `secrets.py`, `observe/redact.py`.
-- **How.** Override `__repr__`/`__str__`/`__format__`/`__reduce__`; raise on JSON encode; register the value with the redactor at construction. Redaction happens on write, before bytes exist. Entropy scan matches known key prefixes.
+- **How.** Override `__repr__`/`__str__`/`__format__`/`__reduce__`; raise on JSON encode. **`__hash__ = None`** (IDL-32). The redactor holds a **`WeakSet`** of live secrets (IDL-33) and reads values at redaction time. Redaction happens on write, before bytes exist. Entropy scan matches known key prefixes.
 - **Depends.** T-0.1
 - **Contract.** [§06.5](06-safety.md#5-secrets).
 - **Failure.** An unwrapped key detected in output → `error.raised` warning naming the event, value still redacted.
-- **Test.** RT-08, RT-09, RT-13. Render matrix: `repr`, `str`, f-string, `%`, `logging`, `pprint`, `json.dumps`, traceback.
+- **Test.** RT-08, RT-09, RT-13, RT-15, RT-16. Render matrix: `repr`, `str`, f-string, `%`, `logging`, `pprint`, `json.dumps`, traceback. Hash contract: `Secret` raises `TypeError` in a set, a dict key, and as an `lru_cache` argument. Registry: a secret that goes out of scope is no longer retained (garbage-collect and assert the `WeakSet` shrank).
 - **Done.** No render path emits the value.
 
 **M1 exit gate.** 14/14 red team · P-1 and P-2 green · `budget/` and `policy/` at 100 %

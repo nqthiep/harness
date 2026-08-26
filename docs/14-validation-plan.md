@@ -28,7 +28,7 @@ requirement, it is a wish.
 | NFR-07 | Property P-6 | `tests/property/` | Blocks merge |
 | NFR-08 | Tool-raises integration test | `tests/integration/` | Blocks merge |
 | NFR-10 | Docstring examples executed | CI | Blocks merge |
-| ADR-001…020 | Architecture conformance tests (§4) | `tests/conformance/` | Blocks merge |
+| ADR-001…021 | Architecture conformance tests (§4) | `tests/conformance/` | Blocks merge |
 
 ## 2. SC-1 — Time to First Agent
 
@@ -131,6 +131,12 @@ against slow architectural drift, which no ordinary test catches.
 | AC-18 | Every credential-missing error string contains `harness setup` and none contains `ANTHROPIC_API_KEY` | ADR-013 |
 | AC-19 | `max_tokens` appears in no public signature and is assigned only by `Ledger.size_call` | ADR-017 |
 | AC-20 | Every closed enum mirroring a provider protocol has an exhaustiveness test; no unmapped value resolves to an `ok = True` outcome | ADR-019 |
+| AC-21 | No `Policy` implementation in the package is async or performs I/O; approval is resolved by the engine, not by a policy | ADR-021 |
+| AC-22 | Every type defining `__eq__` either defines a consistent `__hash__` or sets `__hash__ = None` — checked across the package, not just `Secret` | IDL-32 |
+
+AC-22 is written package-wide rather than for `Secret` alone. The Round 19 defect was a
+generic Python contract violation that happened to land on the security type; the next one
+will land somewhere else.
 
 AC-13 deserves a note: it is the test that keeps ADR-015 honest. The friendly-traceback
 feature is exactly the kind of thing that gets "simplified" later into a global hook, and

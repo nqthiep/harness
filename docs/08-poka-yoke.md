@@ -1,6 +1,6 @@
 # 08 — Poka-Yoke Register
 
-Forty-seven ways a competent developer could still get this wrong, and what in the design
+Fifty ways a competent developer could still get this wrong, and what in the design
 stops them. The ranking is deliberate:
 
 **Impossible** > **Import-time error** > **Construction-time error** > **First-run error** >
@@ -56,6 +56,9 @@ which is why they are grouped separately below.
 | 25 | A tool reading the whole conversation and leaking it | `RunContext` has no message history, by design | Impossible |
 | 26 | A transitively installed package registering tools silently | Entry-point discovery is opt-in (`discover=True`) | Impossible by default |
 | 27 | A plugin registering a `danger` tool while declaring `read` | Declared capability ceiling enforced at registration | Registration |
+| 48 | **A `Secret` silently duplicated in a set or dict** because equal-by-value objects hashed by name | `__hash__ = None`. `TypeError`, never a silent duplicate | Impossible |
+| 49 | **A credential retained forever as an `lru_cache` key**, beyond the redactor's reach | Same — unhashable cannot be a cache key | Impossible |
+| 50 | **Every secret ever constructed retained until process exit** by the redaction registry | `WeakSet`; the redactor's reach ends with the secret's lifetime | Impossible |
 
 ## Cost
 

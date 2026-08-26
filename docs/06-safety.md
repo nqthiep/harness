@@ -133,8 +133,8 @@ class Secret:
     def __repr__(self) -> str: return f"Secret({self._name!r})"
     def __str__(self)  -> str: return f"<{self._name} hidden>"
     def __format__(self, spec: str) -> str: return str(self)
-    def __eq__(self, other: object) -> bool: ...   # constant-time
-    def __hash__(self) -> int: ...                 # of the name, not the value
+    def __eq__(self, other: object) -> bool: ...   # constant-time compare of the value
+    __hash__ = None                                # unhashable — see below
     @contextmanager
     def reveal(self) -> Iterator[str]: ...         # the only way out
 ```
@@ -144,6 +144,17 @@ class Secret:
 - Registered with the redactor at construction, so if the raw value appears anywhere in
   model output or a tool result it is replaced with `<name hidden>` **before the transcript
   is written**.
+- **Unhashable, deliberately.** Two secrets with the same value are equal, so hashing by
+  name would violate `a == b ⟹ hash(a) == hash(b)` and silently corrupt every set and dict
+  the type touches — the symptom is a duplicate entry, not an exception (Round 19). Hashing
+  a keyed digest of the value would also have fixed the contract; `__hash__ = None` was
+  chosen because it additionally **prevents a secret becoming a cache key**. An `lru_cache`
+  keyed on a credential retains that credential in a process-global cache for the life of
+  the process — a leak the redactor cannot reach.
+- **The registry holds weak references.** A `WeakSet` of live `Secret` objects, read at
+  redaction time. A process-global strong registry would retain every secret ever
+  constructed until exit, including per-request credentials in a long-running server. A
+  redactor that outlives what it protects is itself the exposure.
 - `reveal()` is a context manager rather than a property so that the unwrapping point is
   visible in code review and greppable in CI.
 
@@ -220,3 +231,6 @@ runs unbounded without the user having typed something explicit.
 | RT-12 | Provider returns a zero price for an unknown model | `UnknownModelError`; no call made |
 | RT-13 | Tool raises inside a `reveal()` block | Secret absent from the traceback event |
 | RT-14 | `external` tool called with a host outside `allowed_hosts` | DENY |
+| RT-15 | Two `Secret`s with the same value in one set or dict | `TypeError` — unhashable. Never a silent duplicate entry |
+| RT-16 | A `Secret` passed to an `lru_cache`-decorated function | `TypeError` — the credential never enters a process-global cache |
+| RT-17 | A third-party `Policy` that performs network I/O in `check` | Timing assertion fires in debug mode; the documented route is a tool wrapper. Approval — the one legitimate slow path — is not a policy at all (ADR-021) |

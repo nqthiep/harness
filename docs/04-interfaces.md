@@ -226,7 +226,8 @@ final = max(p.check(call, ctx) for p in policies)   # by Verdict value
   are appended. There is no "replace the policy chain" API.
 - `check` must be **pure and fast** (< 1 ms). It must not perform I/O or call a model. A
   policy needing I/O should be a tool wrapper instead. Enforced by a timing assertion in
-  debug mode.
+  debug mode. Human approval is not an exception to this rule — it is not a policy at all
+  (see below).
 
 ### Built-in policies (always on, in this order)
 
@@ -235,11 +236,34 @@ final = max(p.check(call, ctx) for p in policies)   # by Verdict value
 | `EffectPolicy` | Verdict from `EFFECT_PROFILES[spec.effect]` and `ctx.safety`. |
 | `TaintPolicy` | `ctx.tainted and spec.effect is DANGER and not spec.accepts_tainted` → **DENY**. |
 | `EgressPolicy` | `effect is EXTERNAL` and a host argument is outside `allowed_hosts` → **DENY**. Inactive when `allowed_hosts is None`. |
-| `ApprovalPolicy` | Terminal: converts a surviving `ASK` into `ALLOW`/`DENY` via the `approve` callback. With no callback: **DENY** in strict, **DENY** in standard for `danger`, `ALLOW` otherwise, and emits a warning event once per run. |
+*(There is no `ApprovalPolicy`. See below — approval is not a policy.)*
+
+### Approval is a resolution step, not a policy (ADR-021)
+
+`Policy.check` is synchronous, pure and sub-millisecond. A human approval is I/O, unbounded
+in time, and may be a coroutine. Those are incompatible, so approval sits **after**
+composition rather than inside it:
+
+```
+policies (sync, pure, fast)  →  composed verdict  →  if ASK: engine awaits approval
+```
 
 ```python
 ApprovalFn = Callable[[ToolCall, RunContext], bool | Awaitable[bool]]
 ```
+
+The engine — not a policy — resolves a surviving `ASK`:
+
+| `approve` callback | Verdict |
+|---|---|
+| provided | `ALLOW` / `DENY` from its return value |
+| absent, `safety="strict"` | **DENY** |
+| absent, effect is `danger` | **DENY** |
+| absent, otherwise | `ALLOW`, plus a one-time warning event |
+
+Relaxing `Policy.check` to async was the alternative and was rejected: purity is what makes
+policies cheap enough to evaluate on every call, and hidden I/O from a third-party policy on
+the hot path is exactly what the rule exists to prevent.
 
 ---
 

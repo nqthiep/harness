@@ -680,6 +680,92 @@ different place, and the reason ADR-017's arithmetic rule was made general.
 **Gate:** held at 16/16 after the fixes. Cost and Architecture were **No** for the duration
 of H18.1.
 
+
+---
+
+### Round 19 — Contract review of the interfaces
+
+Rounds 17 and 18 both found defects by *computing* rather than reading. Round 19 applied
+the same discipline to the type contracts in [§04](04-interfaces.md) — executing the
+specified semantics instead of reviewing them. Three contradictions surfaced, all of them
+inside interfaces that had been reviewed and approved in earlier rounds.
+
+**H19.1 — `ApprovalPolicy` violates the `Policy` contract it is listed under.**
+
+[§04.3](04-interfaces.md#3-policy--verdicts) specifies:
+
+- `Policy.check` is **synchronous**, **pure**, **< 1 ms**, and **must not perform I/O**.
+- `ApprovalPolicy` is listed as a built-in `Policy`, and its job is to call
+  `ApprovalFn = Callable[..., bool | Awaitable[bool]]` — **a human round trip**.
+
+A human pressing `y` is I/O, is unbounded in time, and may be a coroutine that a sync
+`check` cannot await. The two specifications are directly incompatible, and both were
+approved: the purity rule in Round 2, the approval policy in Round 5.
+
+**Resolved by separating the two ideas rather than loosening either.** Approval is not a
+policy — it is what happens *after* the policies have spoken:
+
+```
+policies (sync, pure, fast)  →  composed verdict  →  if ASK: engine awaits approval
+```
+
+`ApprovalPolicy` is deleted. The engine owns approval resolution. This is strictly better
+than relaxing `Policy.check` to async: the purity rule is what allows policies to be
+evaluated cheaply for every call, and third-party policies doing hidden I/O on the hot path
+is precisely what it exists to prevent. The word "terminal" in the original entry was the
+tell — a thing described as terminal within a composition step is not part of the
+composition.
+
+**H19.2 — `Secret` breaks Python's hash invariant, silently.**
+
+As specified: `__eq__` is a constant-time comparison of the value; `__hash__` is "of the
+name, not the value". Executed:
+
+```
+a = Secret("sk-ant-abc", name="prod_key")
+b = Secret("sk-ant-abc", name="backup_key")
+
+a == b             -> True
+hash(a) == hash(b) -> False
+len({a, b})        -> 2      # equal objects, both present
+```
+
+Python requires `a == b ⟹ hash(a) == hash(b)`. Violating it corrupts every set and dict the
+type touches, with no error — the failure mode is a duplicate entry, not an exception.
+
+**Resolved: `Secret.__hash__ = None`.** Unhashable, and the reasoning is not merely "it
+fixes the contract":
+
+- There is no real use case for a secret as a dict key or set member.
+- Unhashable **prevents a secret becoming a cache key** — an `lru_cache` keyed on a
+  credential retains that credential in a process-global cache for the life of the process,
+  which is a leak the redactor cannot reach.
+
+The Poka-Yoke Reviewer accepted it on the second reason rather than the first: fixing the
+contract by hashing a keyed digest of the value would also have been correct, and would
+have left the caching footgun open.
+
+**H19.3 — the redaction registry retains secret values for the life of the process.**
+
+[§06.5](06-safety.md#5-secrets) has each `Secret` "registered with the redactor at
+construction". As written that is a process-global strong reference: every secret ever
+constructed stays in memory until exit, including ones whose owning objects were discarded,
+and including short-lived per-request credentials in a long-running server.
+
+**Resolved:** the registry holds a `WeakSet` of `Secret` objects and reads values from live
+ones at redaction time. A secret that goes out of scope stops being retained. The redactor's
+reach shrinks with the secret's lifetime, which is the correct direction — a redactor that
+outlives what it protects is itself the exposure.
+
+**The pattern across all three.** Every one of these interfaces was reviewed and approved.
+None of the defects is visible by reading; all three are visible by executing. **The council
+adopts: a type contract is reviewed by writing the twenty lines that exercise it, not by
+reading the signature.** Rounds 17, 18 and 19 have now each found a defect this way, and
+none of the earlier rounds found one by inspection.
+
+**Gate:** held at 16/16 after the fixes. Security and Interfaces were **No** for the
+duration of H19.1 and H19.2.
+
 ---
 
 ## 3. Implementation Readiness Gate — final
@@ -688,7 +774,7 @@ of H18.1.
 |---|:--:|---|
 | Architecture | **Yes** | [§02](02-architecture.md); ADR-001, 002 |
 | Component design | **Yes** | [§02.5](02-architecture.md) module map, 1:1 with tasks |
-| Interfaces | **Yes** | [§04](04-interfaces.md) — every signature pinned |
+| Interfaces | **Yes** | [§04](04-interfaces.md) — every signature pinned; contracts exercised in code, not read (Round 19) |
 | Data & state | **Yes** | [§05](05-data-and-state.md) — event taxonomy, transcript schema |
 | Security | **Yes** | [§06](06-safety.md) — threat model, ADR-003/008/011, red-team suite |
 | Cost | **Yes** | [§07](07-cost.md) — ADR-004/005/006/017; defaults validated by arithmetic, not review |

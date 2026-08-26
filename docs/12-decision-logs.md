@@ -399,6 +399,31 @@ for, which is recorded as evidence that the derivation was the right shape.
 
 ---
 
+### ADR-021 — Approval is a resolution step, not a policy
+**Status:** Accepted (Round 19) · **Fixes a contradiction between the Round 2 and Round 5 specs**
+
+**Context.** `Policy.check` was specified synchronous, pure, sub-millisecond, no I/O
+(Round 2). `ApprovalPolicy` was specified as a built-in `Policy` whose job is a human round
+trip via a possibly-async callback (Round 5). Both were approved. They are incompatible.
+
+**Decision.** Delete `ApprovalPolicy`. Policies compose to a verdict; the **engine** then
+awaits approval if the verdict is `ASK`.
+
+```
+policies (sync, pure, fast)  →  composed verdict  →  if ASK: engine awaits approval
+```
+
+**Rejected alternative.** Relax `Policy.check` to async. Rejected: purity is what makes
+policies cheap enough to evaluate on every call, and hidden I/O from a third-party policy on
+the hot path is precisely what the rule exists to prevent. Loosening a rule to admit the one
+thing it was written to exclude is how a contract stops meaning anything.
+
+**The tell, recorded for next time.** The original entry described `ApprovalPolicy` as
+"terminal". A step described as terminal *within* a composition is not part of the
+composition — the word was the defect, sitting in plain sight through two reviews.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
@@ -433,4 +458,7 @@ for, which is recorded as evidence that the derivation was the right shape.
 | IDL-28 | A derived `max_tokens` under 256 stops the run instead of calling | A 200-token ceiling produces a sentence fragment, which costs money and answers nothing |
 | IDL-29 | Numeric defaults are cross-validated by a test that multiplies them out | The Round 17 defect lived between two correct components, not inside either |
 | IDL-30 | An unrecognized provider `stop_reason` maps to `ERROR` with the raw value | Fail visible. Mapping an unknown outcome to success is how truncated answers ship as correct ones |
+| IDL-32 | `Secret.__hash__ = None` | Equal-by-value secrets hashing by name violates Python's hash invariant and silently corrupts sets and dicts. Unhashable also prevents a credential becoming an `lru_cache` key, which the redactor cannot reach |
+| IDL-33 | The redaction registry is a `WeakSet` | A strong registry retains every secret ever constructed until process exit. A redactor that outlives what it protects is itself the exposure |
+| IDL-34 | Type contracts are reviewed by executing twenty lines, not by reading the signature | Rounds 17, 18 and 19 each found a defect this way; no earlier round found one by inspection |
 | IDL-31 | Context-management fixtures are specified per model | Whether the budget or the context window binds first depends on the model's price and window ([§07.3](07-cost.md#3-token-discipline)) |

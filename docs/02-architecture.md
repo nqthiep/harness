@@ -166,8 +166,10 @@ src/harness/
 
   policy/
     base.py             Policy protocol, Verdict lattice (ALLOW < ASK < DENY)
-    engine.py           Composition: max() of verdicts, short-circuit on DENY
-    builtin.py          EffectPolicy, TaintPolicy, EgressPolicy, ApprovalPolicy
+    engine.py           Composition: max() of verdicts, short-circuit on DENY,
+                        then approval resolution for a surviving ASK (ADR-021 —
+                        approval is the engine's job; a policy is sync and pure)
+    builtin.py          EffectPolicy, TaintPolicy, EgressPolicy
     taint.py            TaintTracker
 
   memory/
