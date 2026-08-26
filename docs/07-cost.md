@@ -49,7 +49,7 @@ available, requires typing `None`, and emits a warning event on every run.
 |---|---|---|
 | USD | `$0.50` | Before each model call |
 | Steps | 20 | Top of each loop iteration |
-| Wall clock | 300 s | Top of each iteration and before each tool |
+| Wall clock | 300 s | Top of each iteration, and it **clamps each tool's timeout** — `min(timeout_s, remaining)`, so the run cannot overshoot by a tool's timeout (Round 23) |
 | Tokens | none | Before each model call, when set |
 
 Budget exhaustion is a `StopReason`, not an exception, from `try_run` — an expected

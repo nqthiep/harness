@@ -192,7 +192,7 @@ def tool(
 | **Return value** | Any JSON-serializable value, or `str`. Serialized with `json.dumps(sort_keys=True, default=None)`. |
 | **Return violation** | `ToolContractError` raised at return, naming the offending field path. Not a silent `str()`. |
 | **Exceptions** | Any exception is caught by `invoke.py`, converted to `tool_result(is_error=True)` with `type(e).__name__: str(e)`. The traceback is emitted as an event, **never** to the model. |
-| **Timeout** | `timeout_s` enforced with `asyncio.timeout`. On expiry → `is_error` result "timed out after Ns". |
+| **Timeout** | Effective timeout is **`min(spec.timeout_s, remaining_wall_clock)`** — an unclamped tool timeout lets a run overshoot its wall-clock budget by up to `timeout_s`, and a ceiling that overshoots is not a ceiling (Round 23). On expiry → `is_error`, and the message names which term bound: `"timed out after 30s"` versus `"timed out: run wall-clock budget reached"`, because those call for different fixes. |
 | **Truncation** | Results exceeding `max_result_tokens` are cut at a token boundary and suffixed with `\n[truncated: N of M tokens shown]` so the model knows. |
 | **Cancellation** | `asyncio.CancelledError` propagates; it is not converted to a tool error. |
 | **Concurrency** | The harness may call a `read`/`external` tool concurrently with others. Tool authors must not assume serialization. Stated in the `@tool` docstring. |
@@ -280,7 +280,10 @@ class ModelProvider(Protocol):
   generator's `additionalProperties: false` and complete `required` list are mandatory
   rather than stylistic.
 - `pause_turn` must be surfaced, not swallowed. The `RunEngine` re-sends to resume, capped
-  at `max_pause_resumes = 5`.
+  at `max_pause_resumes = 5`. **A resume does not consume a step** — it continues one model
+  turn rather than starting a new one — but it **does** consume budget and wall clock.
+  Charging a step would let a server-tool-heavy turn exhaust `budget.steps` without the
+  agent making progress; charging nothing would leave the loop bounded only by the cap.
 - **Every provider `stop_reason` maps to exactly one `StopReason`, and the mapping is
   exhaustiveness-tested against the protocol's value set** (ADR-019):
 

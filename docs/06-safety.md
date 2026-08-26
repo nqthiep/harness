@@ -204,10 +204,10 @@ What the harness *does* provide:
 | `budget.steps` | 20 | The model calling tools forever |
 | `budget.wall_clock_s` | 300 | A hung tool holding a request open |
 | `budget.usd` | $0.50 | The overnight $4 000 invoice |
-| `timeout_s` per tool | 30 s | One tool stalling the run |
+| `timeout_s` per tool | 30 s, clamped to the remaining wall clock | One tool stalling the run — and, with the clamp, a tool pushing the run past its wall-clock ceiling |
 | `max_result_tokens` | 4 000 | A 2 MB result re-billed on every later turn |
 | `max_parallel_tools` | 8 | Fork-bombing a downstream service |
-| `max_pause_resumes` | 5 | A server-tool `pause_turn` loop |
+| `max_pause_resumes` | 5 | A server-tool `pause_turn` loop. A resume spends budget and wall clock but not a step |
 | Duplicate-call detection | on | The model calling the same tool with identical arguments in a loop; the second identical call within a step returns a cached result and emits a warning |
 
 Every one of these is finite by default. There is no configuration in which the harness

@@ -111,7 +111,7 @@ right — before anything is built on top of it.
 - **What.** The state machine of [§02.3](02-architecture.md#3-the-run-loop).
 - **Why.** The core of the product, and the only place invariants 2 and 3 can be enforced (ADR-001).
 - **Where.** `run.py`.
-- **How.** Follow the documented manual-loop shape exactly. Append `response.content` (not just text) to messages. Collect **all** `tool_result` blocks into **one** user message. Handle `pause_turn` by re-sending, capped at 5. Handle `refusal` as a terminal stop reason. In M0 the ledger and policy calls are present but stubbed to always-allow — the *call sites exist* so M1 fills in behavior, not structure.
+- **How.** Follow the documented manual-loop shape exactly. Append `response.content` (not just text) to messages. Collect **all** `tool_result` blocks into **one** user message. Handle `pause_turn` by re-sending, capped at 5; **a resume spends budget and wall clock but not a step**. Handle `refusal` as a terminal stop reason. In M0 the ledger and policy calls are present but stubbed to always-allow — the *call sites exist* so M1 fills in behavior, not structure.
 - **Depends.** T-0.3, T-0.4
 - **Contract.** Invariants I-1…I-4 of [§02.3](02-architecture.md#3-the-run-loop).
 - **Failure.** A tool raising becomes an `is_error` result; the run continues. A missing `tool_result` is a bug, caught by P-3.
@@ -247,11 +247,11 @@ adversarial runs.
 - **What.** `Budget`, `Budget.parse`, `Ledger`, `reserve`/`settle`.
 - **Why.** ADR-005. Invariant 2 lives here.
 - **Where.** `budget/ledger.py`.
-- **How.** `Decimal` throughout; a lint rule bans `float` in this package. **`size_call()` derives `max_tokens` from the remaining budget (ADR-017)** — `max_tokens` is never user-supplied and never a constant. `reserve()` uses the worst-case estimate of [§07.1](07-cost.md#1-the-budget-is-a-ceiling-not-an-alert), computed from that derived figure, and runs immediately before `provider.complete` with nothing between them. `settle()` corrects from `response.usage`. `Budget.parse` accepts `"$0.10"`, `"10 cents"`, `"5 steps"`, `"$1, 50 steps, 10m"`.
+- **How.** `Decimal` throughout; a lint rule bans `float` in this package. **`size_call()` derives `max_tokens` from the remaining budget (ADR-017)** — `max_tokens` is never user-supplied and never a constant. `reserve()` uses the worst-case estimate of [§07.1](07-cost.md#1-the-budget-is-a-ceiling-not-an-alert), computed from that derived figure, and runs immediately before `provider.complete` with nothing between them. `settle()` corrects from `response.usage`. **Tool timeouts are clamped to the remaining wall clock** so no axis can overshoot (Round 23). `Budget.parse` accepts `"$0.10"`, `"10 cents"`, `"5 steps"`, `"$1, 50 steps, 10m"`.
 - **Depends.** T-0.4
 - **Contract.** [§04.4](04-interfaces.md#4-budget--ledger).
 - **Failure.** Insufficient budget → graceful `Result(BUDGET_EXHAUSTED)` with partial text; never an exception from `try_run`. Unparseable string → `InvalidBudgetError` at construction listing accepted forms. `Budget(usd=None)` warns every run.
-- **Test.** **Property P-1 over 1 000 adversarial runs — SC-2.** Parser table (12 cases). No `float` in the module (AST test). Reserve-before-call ordering asserted by an event-sequence test. **P-8: for every (budget, model, input size) in the cross-product of shipped defaults and documented examples, `reserve()` succeeds and the derived `max_tokens` is ≥ 256** — the Round 17 regression test. A budget affording < 256 output tokens stops rather than calling.
+- **Test.** **Property P-1 over 1 000 adversarial runs — SC-2.** Parser table (12 cases). No `float` in the module (AST test). Reserve-before-call ordering asserted by an event-sequence test. **P-8: for every pair of shipped numeric defaults, multiply them out and assert the result is bounded** — `reserve()` succeeds with `max_tokens` ≥ 256 for every (budget, model, input size); no run exceeds `wall_clock_s` even with a tool that ignores its own timeout; `max_result_tokens × max_parallel_tools` stays inside the budget's reach. Rounds 17, 18 and 23 each found a defect in one of these products. A budget affording < 256 output tokens stops rather than calling.
 - **Done.** P-1 and P-8 green; `budget/` at 100 % coverage; **the [§15](15-first-agent.md) scaffold's `budget="$0.05"` demonstrably makes a call.**
 
 ### T-1.6 — `Secret` and redaction

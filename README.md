@@ -1,6 +1,6 @@
 # Harness — Implementation Design Package
 
-> **Status: READY FOR IMPLEMENT** (Council converged at Round 22)
+> **Status: READY FOR IMPLEMENT** (Council converged at Round 23)
 > This repository currently contains **no product code**. It contains the complete,
 > reviewed design and implementation plan that an engineering team can start coding from
 > on day one without making further architectural decisions.
@@ -56,7 +56,7 @@ council recorded the trade and the reasoning in the [Design Decision Log](docs/1
 | 5 | **Efficient** | Async core, sync facade, one round-trip per step, truncation ceilings on every tool result. |
 
 Plus the sixth, which shaped the API more than any other: **Poka-Yoke** — see the
-[register of 54 failure modes and their design-level defenses](docs/08-poka-yoke.md).
+[register of 55 failure modes and their design-level defenses](docs/08-poka-yoke.md).
 Ten of those came from Round 13, and **five of the six worst beginner blockers turned out
 to be outside the API entirely** — credentials, feedback, error rendering, scaffolding and
 repeat-run cost.

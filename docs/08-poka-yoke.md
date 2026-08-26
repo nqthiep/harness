@@ -1,6 +1,6 @@
 # 08 — Poka-Yoke Register
 
-Fifty-four ways a competent developer could still get this wrong, and what in the design
+Fifty-five ways a competent developer could still get this wrong, and what in the design
 stops them. The ranking is deliberate:
 
 **Impossible** > **Import-time error** > **Construction-time error** > **First-run error** >
@@ -44,6 +44,7 @@ which is why they are grouped separately below.
 | 54 | **Answer parsed from a string, failing sometimes, re-prompted** | `returns=` constrains and validates the answer; a validation failure is an error, never a silent `None` | Impossible when `returns=` is set |
 | 15 | Tool returns 50 MB and poisons the context for the rest of the run | `max_result_tokens` (4 000) truncates with a marker the model can see | Impossible |
 | 16 | A hanging tool holds the run open forever | `timeout_s` (30 s) on every tool, no opt-out | Impossible |
+| 55 | **A run overshooting its wall-clock ceiling by a tool's timeout** — the one budget axis whose limit did not actually hold | Effective timeout is `min(timeout_s, remaining_wall_clock)`; the error names which term bound. P-8 multiplies every pair of numeric defaults | Impossible |
 | 17 | A raising tool crashes the whole run and loses accumulated work | Caught, converted to `is_error` result; run continues | Impossible |
 | 18 | Tool assumes it is called serially and corrupts shared state | Concurrency is stated in the `@tool` docstring and derived from the effect the author chose | Documented — the harness cannot inspect a tool's internal state; the author's own `effect` choice is the control |
 

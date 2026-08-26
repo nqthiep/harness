@@ -971,6 +971,76 @@ becomes nobody's job.** The matrix is cheap; the sweep that produced it is now a
 **Gate:** held at 16/16 after the fixes. Implementation Tasks was **No** for the duration of
 H22.1 and H22.2.
 
+
+---
+
+### Round 23 — The last numeric cross-products, and convergence
+
+Round 17 established the rule that numeric defaults are validated by arithmetic against
+every other default they can meet. Rounds 17 and 18 applied it to budget × `max_tokens` and
+budget × context window. Round 23 finished the cross-product.
+
+| Pair | Result |
+|---|---|
+| `max_result_tokens` (4 000) × `max_parallel_tools` (8) | 32 000 tokens into context in one step, re-billed at ~$0.16/step thereafter. The default budget absorbs ~3 such steps and then stops. **Working as designed** — loud, bounded, and visible in `harness cost`. |
+| `timeout_s` (30 s) × `max_parallel_tools` × `budget.steps` vs `wall_clock_s` (300 s) | Worst serial step is 240 s, so the wall clock binds first. **But `timeout_s` is never clamped to the remaining wall clock** — a tool starting with 20 s left runs its full 30 s and the run overshoots its stated wall-clock budget. |
+| `max_pause_resumes` (5) vs `budget.steps` (20) | **Undefined**: nobody said whether a resumed `pause_turn` consumes a step. |
+
+**H23.1 — a run can exceed its wall-clock budget by up to `timeout_s`.**
+
+Small in magnitude, but it is a *ceiling* that does not hold, and this package makes a
+point of the difference between a ceiling and a warning ([§07.1.1](07-cost.md#11-what-the-budget-does-not-cover-and-where-that-gap-is-closed)).
+A budget axis that overshoots quietly is the thing ADR-005 exists to prevent, on a different
+axis than the one that got the attention.
+
+**Resolved:** the effective tool timeout is `min(spec.timeout_s, remaining_wall_clock)`. When
+the remaining clock is the binding term, the tool result says so — `timed out: run wall-clock
+budget reached` rather than `timed out after 30s`, because those call for different fixes.
+
+**H23.2 — `pause_turn` resumes and the step counter.**
+
+**Resolved:** a resume does **not** consume a step — it is a continuation of one model turn,
+not a new one — but it **does** consume budget and wall clock, and is capped at 5. Charging a
+step would let a server-tool-heavy turn exhaust `budget.steps` without the agent making any
+progress; charging nothing at all would leave a loop bounded only by the cap. Recorded
+because the two readings differ and both are defensible until someone writes one down.
+
+---
+
+## Convergence
+
+The council's position, stated with its limits rather than as a verdict.
+
+**What is settled.** Twenty-three rounds; twenty-three architectural decisions with their
+losing arguments recorded; 54 Poka-Yoke entries; 26 conformance checks; 9 properties; 17
+red-team scenarios; every requirement traced to an owning task. The five techniques that
+found every post-convergence defect are now CI checks rather than reviewer discipline.
+
+**What is not settled, and cannot be settled by more discussion:**
+
+1. **SC-1b has not been run.** The beginner claim is measured with real children before 1.0
+   and not before. The council believes [§15](15-first-agent.md) meets the bar; belief is
+   what Round 4 had, and Round 13 found it worthless. **This is the largest open risk in the
+   package** (R-05), and it is open by construction — no additional round can close it.
+2. **No code exists.** Rounds 17–22 each found a defect that survived every prior *reading*
+   and died to the first *execution*. That ratio is the strongest available evidence that
+   the next class of defect is waiting in M0, not in another round of review.
+
+**Why the council is stopping here rather than at Round 24.** The findings are getting
+smaller — Round 20 found seven undefined types and a `Must` requirement with no owner;
+Round 23 found a 30-second overshoot and an undefined interaction. The marginal round is now
+returning less than the marginal day of implementation would. **Continuing to review a
+package that no one has tried to build is how a design document becomes an artifact instead
+of a plan**, and this package's own supreme principle is *optimize for a plan that can
+actually be implemented*.
+
+The council reconvenes on the triggers in
+[§13.4](13-risk-register.md#4-what-would-make-the-council-reconvene) — five specific,
+falsifiable conditions, one of which has already fired once.
+
+**Gate:** 16/16, with every row backed by an executable check and the two judgement rows
+marked as such.
+
 ---
 
 ## 2.1 What the recursive rounds cost, and what they found
@@ -987,6 +1057,7 @@ with a 16/16 gate. They found:
 | 20 | Two unhashable types being hashed; seven types never defined | Same, plus a gap the task-shaped walkthrough could not see |
 | 21 | One of five invariants had no section, no decision, no test | Nobody had counted |
 | 22 | A `Must` requirement and 18 conformance tests owned by no task | A numbered thing with no owner is nobody's job |
+| 23 | A wall-clock ceiling that overshoots by up to 30 s; an undefined step/resume interaction | The last unmultiplied cross-products — and the point of diminishing returns |
 
 **Every one of these passed a prior review.** The five techniques that found them — multiply
 the numbers out, execute the contract, traverse types rather than tasks, count coverage per
