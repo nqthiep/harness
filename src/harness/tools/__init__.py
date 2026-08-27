@@ -11,11 +11,40 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Final, Mapping
 
+import re
+
 from ..errors import MissingEffectError, ToolSchemaError
 from ..policy.base import Verdict
 from . import schema as _schema
 
 _NAME_RE = r"^[a-z][a-z0-9_]{0,63}$"
+
+
+def slug(text: str, *, fallback: str = "tool") -> str:
+    """Turn any human name into a valid tool name.
+
+    Round 32: `as_tool()` built names by lowercasing the agent's name, so any agent named
+    in Vietnamese, Chinese, Japanese or Arabic produced an invalid tool name and the
+    library was unusable outside ASCII.  NFKD decomposition separates a Latin letter from
+    its diacritics, so "Chuyên gia" becomes "chuyen_gia" rather than being discarded.
+    """
+    import unicodedata
+    decomposed = unicodedata.normalize("NFKD", text)
+    ascii_only = "".join(c for c in decomposed if not unicodedata.combining(c))
+    out = "".join(c if c.isascii() and (c.isalnum() or c == "_") else "_"
+                  for c in ascii_only.lower())
+    out = re.sub(r"_+", "_", out).strip("_")
+
+    # A name written entirely in a non-Latin script (Chinese, Arabic, Thai) leaves
+    # nothing behind.  Two such agents would then collide on the same tool name, so a
+    # short deterministic digest of the ORIGINAL name keeps them distinct (Round 32).
+    if not out or out == fallback:
+        import hashlib
+        digest = hashlib.blake2b(text.encode("utf-8"), digest_size=3).hexdigest()
+        return f"{fallback}_{digest}"[:64]
+    if not out[0].isalpha():
+        out = f"{fallback}_{out}"
+    return out[:64]
 
 
 class Effect(str, Enum):
@@ -122,12 +151,11 @@ def tool(
                 "  -> docs/15-first-agent.md"
             ) from None
 
-        import re
         if not re.match(_NAME_RE, fname):
             raise ToolSchemaError(
                 f"{fname!r} does not work as a tool name.\n\n"
                 "  Use small letters, numbers and _ , starting with a letter.\n"
-                f"  Try: {'_'.join(c for c in fname.lower().split()) or 'my_tool'}\n\n"
+                f"  Try: {slug(fname, fallback='my_tool')}\n\n"
                 "  -> docs/15-first-agent.md"
             )
 

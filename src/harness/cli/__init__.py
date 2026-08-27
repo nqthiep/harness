@@ -35,7 +35,8 @@ def cmd_new(name: str, *, cwd: Path | None = None) -> list[Path]:
     gets skipped (register #36).
     """
     root = Path(cwd or Path.cwd())
-    var = "".join(c if c.isalnum() or c == "_" else "_" for c in name.lower()) or "helper"
+    from ..tools import slug
+    var = slug(name, fallback="helper")
     agent_file = root / f"{var}.py"
     agent_file.write_text(SCAFFOLD.format(var=var, name=name.capitalize()))
 

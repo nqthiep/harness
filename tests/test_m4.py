@@ -210,5 +210,57 @@ class SubagentBudget(unittest.TestCase):
                       "SC-2b's per-ledger bound composes with depth; the docs must say so")
 
 
+class NonAsciiNames(unittest.TestCase):
+    """Round 32: found by writing a realistic example in Vietnamese.
+
+    as_tool() built its name by lowercasing the agent's, so any agent named in
+    Vietnamese, Chinese, Japanese or Arabic produced an invalid tool name — the library
+    was unusable outside ASCII.  The error even suggested the name that had just failed.
+    """
+
+    NAMES = ["Chuyên gia chính sách", "Trợ lý CSKH", "客户支持", "客服助手",
+             "مساعد", "Ассистент", "Helper", "123 bot"]
+
+    def _agent(self, name):
+        return Agent(name=name, job="j", tools=[peek], provider=FakeModel([]), budget="$1")
+
+    def test_every_name_produces_a_valid_tool_name(self):
+        import re
+        for name in self.NAMES:
+            spec = self._agent(name).as_tool()
+            self.assertRegex(spec.name, r"^[a-z][a-z0-9_]{0,63}$",
+                             f"{name!r} produced an invalid tool name: {spec.name!r}")
+
+    def test_distinct_names_produce_distinct_tools(self):
+        names = [self._agent(n).as_tool().name for n in self.NAMES]
+        self.assertEqual(len(set(names)), len(self.NAMES),
+                         f"two agents collided on one tool name: {sorted(names)}")
+
+    def test_latin_diacritics_are_kept_as_letters_not_dropped(self):
+        self.assertEqual(self._agent("Chuyên gia chính sách").as_tool().name,
+                         "ask_chuyen_gia_chinh_sach")
+
+    def test_the_invalid_name_hint_is_itself_valid(self):
+        """The hint used to echo the name that had just been rejected."""
+        import re
+        from harness.errors import ToolSchemaError
+        with self.assertRaises(ToolSchemaError) as cm:
+            @tool(effect="read", name="Trợ Lý!")
+            def x(a: int) -> int:
+                """X."""
+        hint = re.search(r"Try: (\S+)", str(cm.exception)).group(1)
+        self.assertRegex(hint, r"^[a-z][a-z0-9_]{0,63}$",
+                         f"the suggested name is itself invalid: {hint!r}")
+
+    def test_the_scaffold_accepts_a_non_ascii_name(self):
+        import tempfile, pathlib as _p
+        from harness.cli import cmd_new
+        d = _p.Path(tempfile.mkdtemp())
+        files = cmd_new("Trợ lý", cwd=d)
+        agent_file = next(f for f in files if f.suffix == ".py")
+        self.assertRegex(agent_file.stem, r"^[a-z][a-z0-9_]*$")
+        compile(agent_file.read_text(), str(agent_file), "exec")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

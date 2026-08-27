@@ -23,7 +23,8 @@ from .policy.taint import TaintTracker
 from .result import Money, Result, StopReason, Usage
 from .run import RunEngine
 from .secrets import redaction_scope
-from .tools import EFFECT_PROFILES, Effect, ToolSpec, tool as _tool_decorator
+from .tools import (EFFECT_PROFILES, Effect, ToolSpec, slug,
+                    tool as _tool_decorator)
 from .tools.registry import ToolSet
 
 
@@ -197,7 +198,10 @@ class Agent:
             # budget and settles the child's spend into the parent's ledger (§06.4).
             raise AssertionError("subagent tools are dispatched, not called directly")
 
-        call_subagent.__name__ = name or f"ask_{child.name.lower().replace(' ', '_')}"
+        # Slug the NAME alone, then prefix.  Slugging "ask <name>" let the "ask" prefix
+        # survive a name written entirely in a non-Latin script, hiding the fact that the
+        # name itself had been lost — so two such agents collided (Round 32).
+        call_subagent.__name__ = name or f"ask_{slug(child.name, fallback='agent')}"
         call_subagent.__doc__ = (description
                                  or f"Ask {child.name} to do something. {child.job}")[:400]
         call_subagent.__annotations__ = {"task": str, "return": str}
