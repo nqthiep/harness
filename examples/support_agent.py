@@ -143,7 +143,9 @@ def main() -> None:
         FakeModel.tool_call("hoan_tien", {"ma_don": "A-4471", "so_tien": 1290000}, call_id="c4"),
         FakeModel.tool_call("luu_ghi_chu",
                             {"ma_don": "A-4471", "noi_dung": "Đã hoàn tiền đầy đủ"}, call_id="c5"),
-        FakeModel.text("Đã hoàn 1.290.000đ cho đơn A-4471 vì còn trong hạn 7 ngày."),
+        # Với returns=KetLuan, model trả về JSON đúng kiểu — harness kiểm tra và dựng lại
+        FakeModel.text('{"ma_don": "A-4471", "duoc_hoan_tien": true, '
+                       '"so_tien": 1290000, "ly_do": "Còn trong hạn đổi trả 7 ngày"}'),
     ])
 
     ts = Path(tempfile.mkdtemp()) / "run.jsonl"
@@ -156,7 +158,9 @@ def main() -> None:
     print("\nChạy:")
     kq = agent.try_run("Đơn A-4471 giao hôm 20/08 bị lỗi phím, tôi muốn hoàn tiền.")
 
-    print(f"\nTrả lời : {kq.text}")
+    print(f"\nTrả lời (có kiểu) : {kq.value}")
+    print(f"  .duoc_hoan_tien  : {kq.value.duoc_hoan_tien if kq.value else '—'}")
+    print(f"  .so_tien         : {kq.value.so_tien:,}đ" if kq.value else "")
     print(f"Kết thúc: {kq.stop_reason.value}  ·  {kq.steps} bước  ·  {kq.cost}")
 
     print("\nNhật ký (mọi quyết định đều được ghi):")

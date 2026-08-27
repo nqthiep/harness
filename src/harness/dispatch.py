@@ -127,7 +127,7 @@ class Dispatcher:
                 else:
                     value = await spec.fn(**kwargs)
             try:
-                payload = value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+                payload = value if isinstance(value, str) else json.dumps(value, sort_keys=True, ensure_ascii=False)
             except (TypeError, ValueError) as exc:
                 raise ToolContractError(
                     f"tool {spec.name!r} returned something that cannot be sent to a model: {exc}"

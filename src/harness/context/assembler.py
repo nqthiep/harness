@@ -17,7 +17,7 @@ _CHARS_PER_TOKEN = 4                 # rough, and only used to decide "is this w
 
 
 def canonical(obj: Any) -> str:
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
+    return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
 class ContextAssembler:

@@ -132,5 +132,44 @@ class M2(unittest.TestCase):
                                 "hit rate degrades as the conversation grows")
 
 
+class NonAsciiCost(unittest.TestCase):
+    """Round 33: every non-ASCII tool result was escaped to \\uXXXX before reaching the
+    model — 2.2x the characters in Vietnamese, 4.8x in Japanese, re-billed on every
+    later turn. A cost defect that only shows up outside English."""
+
+    def _payload(self, value):
+        @tool(effect="read")
+        def t_(x: int):
+            """T."""
+            return value
+        m = FakeModel([FakeModel.tool_call("t_", {"x": 1}), FakeModel.text("ok")])
+        r = Agent(name="T", job="j", tools=[t_], provider=m, budget="$5").run("go")
+        return r.messages[2]["content"][0]["content"]
+
+    def test_tool_results_keep_their_characters(self):
+        for sample in [{"mon": "Bàn phím cơ"}, {"x": "订单已送达"},
+                       {"x": "注文は配達されました"}, {"x": "تم التسليم"}]:
+            payload = self._payload(sample)
+            self.assertNotIn("\\u", payload,
+                             f"escaped to ASCII, inflating cost: {payload}")
+
+    def test_escaping_would_multiply_the_input_cost(self):
+        import json
+        vi = {"trang_thai": "Đơn hàng đã được giao thành công vào ngày 20 tháng 8"}
+        escaped = len(json.dumps(vi, sort_keys=True))
+        actual = len(self._payload(vi))
+        self.assertLess(actual, escaped * 0.75,
+                        "the result is still being escaped")
+
+    def test_the_prompt_prefix_is_not_escaped_either(self):
+        from harness.context.assembler import canonical
+        self.assertNotIn("\\u", canonical({"job": "Trợ lý chăm sóc khách hàng"}))
+
+    def test_serialization_is_still_byte_deterministic(self):
+        from harness.context.assembler import canonical
+        d = {"b": "đã giao", "a": "客户"}
+        self.assertEqual(canonical(d), canonical(dict(reversed(list(d.items())))))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

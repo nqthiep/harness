@@ -20,7 +20,7 @@ _ALWAYS_FSYNC = {EventKind.RUN_FINISHED, EventKind.ERROR_RAISED}
 
 
 def digest(value: Any) -> str:
-    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    payload = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
     return "sha256:" + hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 

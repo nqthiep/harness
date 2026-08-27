@@ -125,8 +125,41 @@ class RunEngine:
 
         self._bus.emit(EventKind.RUN_FINISHED, stop_reason=stop.value, steps=step,
                        cost_usd=str(self._l.spent), tainted=self._taint.tainted)
+        value = self._parse_returns(text) if (stop is StopReason.COMPLETED
+                                              and self._a.returns is not None) else None
         return Result(text, stop, step, self._l.spent, usage_total, run_id,
-                      self._taint.tainted, tuple(msgs), None, detail)
+                      self._taint.tainted, tuple(msgs), value, detail)
+
+    def _parse_returns(self, text: str):
+        """Turn the final answer into `Agent(returns=...)`, validated — ADR-022.
+
+        Round 33 found `returns=` reached the request and the response was never parsed,
+        so `Result.value` was always None: the parameter was accepted and half-honoured.
+        A response that does not fit is an error, never a silent None.
+        """
+        import dataclasses
+        want = self._a.returns
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ToolContractError(
+                f"this agent was asked for {want.__name__}, but the model replied with "
+                f"text that is not {want.__name__}:\n\n    {text[:120]!r}\n\n"
+                f"  ({exc})"
+            ) from None
+        if not dataclasses.is_dataclass(want):
+            return data
+        fields = {f.name for f in dataclasses.fields(want)}
+        missing = sorted(f.name for f in dataclasses.fields(want)
+                         if f.name not in data
+                         and f.default is dataclasses.MISSING
+                         and f.default_factory is dataclasses.MISSING)
+        if missing:
+            raise ToolContractError(
+                f"the model's answer is missing {', '.join(missing)} for "
+                f"{want.__name__}.\n\n  Got: {sorted(data)}"
+            )
+        return want(**{k: v for k, v in data.items() if k in fields})
 
     def _manage_context(self, msgs: list, _unused: int, step: int) -> list:
         """T-2.6, wired.  Round 27 found window.manage() was built, tested, and never
