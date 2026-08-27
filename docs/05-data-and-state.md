@@ -49,7 +49,7 @@ Append-only JSONL, one `Event` per line, written through a redaction pass.
 | Append-only | Never rewritten or truncated | An audit log you can edit is not an audit log |
 | Monotonic `seq` | Gap-free within a run | A gap proves loss, which is the point of having it |
 | `fsync` policy | On `run.finished`, on `error.raised`, and every 64 events | Crash-durable without an fsync per line |
-| Redaction | Applied at write, before the bytes exist | Redacting on read means the secret was already on disk |
+| Redaction | Applied at write, before the bytes exist — **and at the tool-result boundary**, because a tool error reaches the model, which the transcript boundary never sees (Round 25) | Redacting on read means the secret was already on disk |
 | Rotation | Caller's concern; the harness never deletes a transcript | Silent deletion of audit data is unacceptable |
 | Encoding | UTF-8, `ensure_ascii=False`, sorted keys | Diffable, greppable |
 

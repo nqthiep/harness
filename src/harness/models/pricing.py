@@ -1,6 +1,8 @@
 """Per-model prices — task T-2.1.  Never returns zero for an unknown model."""
 from __future__ import annotations
 
+from .._value import value
+
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
@@ -10,7 +12,7 @@ from ..errors import UnknownModelError
 AS_OF: Final = "2026-06-24"
 
 
-@dataclass(frozen=True, slots=True)
+@value
 class Price:
     input_per_mtok: Decimal
     output_per_mtok: Decimal

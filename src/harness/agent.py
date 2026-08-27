@@ -19,6 +19,7 @@ from .policy.engine import PolicyEngine
 from .policy.taint import TaintTracker
 from .result import Result
 from .run import RunEngine
+from .secrets import redaction_scope
 from .tools import Effect, ToolSpec
 from .tools.registry import ToolSet
 
@@ -117,8 +118,11 @@ class Agent:
         taint = TaintTracker()
         engine = PolicyEngine(
             (EffectPolicy(), TaintPolicy(), EgressPolicy(self.allowed_hosts)), self.policies)
-        return await RunEngine(self, provider, ledger, engine, taint, self._asm, bus,
-                               self._watch).run(message, on_delta=on_delta)
+        # Open for exactly the window in which a revealed secret can still be written
+        # out — wide enough to redact, narrow enough not to retain (Round 25, RT-13).
+        with redaction_scope():
+            return await RunEngine(self, provider, ledger, engine, taint, self._asm, bus,
+                                   self._watch).run(message, on_delta=on_delta)
 
     async def arun(self, message: str, *, on_delta=None) -> Result:
         r = await self.atry_run(message, on_delta=on_delta)

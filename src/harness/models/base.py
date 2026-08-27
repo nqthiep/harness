@@ -1,6 +1,8 @@
 """ModelProvider protocol and request/response types — docs/04-interfaces.md §0, §2."""
 from __future__ import annotations
 
+from .._value import value
+
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -13,7 +15,7 @@ SystemBlock = Mapping[str, Any]
 DeltaFn = Callable[[str], None]
 
 
-@dataclass(frozen=True, slots=True)
+@value
 class ModelRequest:
     __hash__ = None                      # holds Mappings — memoize on canonical bytes
     model: str
@@ -35,7 +37,7 @@ class ModelRequest:
         return hashlib.blake2b(payload.encode(), digest_size=16).hexdigest()
 
 
-@dataclass(frozen=True, slots=True)
+@value
 class ModelResponse:
     content: tuple[ContentBlock, ...]
     stop_reason: str

@@ -1,6 +1,6 @@
 # 08 — Poka-Yoke Register
 
-Fifty-five ways a competent developer could still get this wrong, and what in the design
+Fifty-seven ways a competent developer could still get this wrong, and what in the design
 stops them. The ranking is deliberate:
 
 **Impossible** > **Import-time error** > **Construction-time error** > **First-run error** >
@@ -28,6 +28,8 @@ which is why they are grouped separately below.
 | 7 | Typo in a parameter name silently ignored | Keyword-only + no `**kwargs` anywhere in the public API → `TypeError` | Impossible |
 | 51 | **A frozen dataclass with a dict field used as a set member or cache key** — `TypeError` only on the path that happens to hash it | `__hash__ = None` declared explicitly on every such type; ordered containers keyed by a scalar instead. AC-22 checks the eq/hash pairing package-wide | Impossible |
 | 52 | **A type used in a signature that nobody ever defined** — each implementer invents an incompatible version | Walkthrough step 2b traverses every capitalized name in [§04](04-interfaces.md) back to a definition | Plan review |
+| 56 | **A typo'd or new attribute on a value type** → `TypeError: super(type, obj): obj must be an instance or subtype of type` | `@value` replaces `__setattr__`/`__delattr__` with the type, the field list and a did-you-mean. *The bare `frozen=True, slots=True` form produces the `super()` message for exactly this case — ADR-027.* | Impossible |
+| 57 | **A short-lived secret reaching the model** because the weak registry dropped it before redaction ran | `reveal()` registers the value with the active run's redaction scope, cleared at run end. Retention scoped to the exposure window, never to the object (ADR-028). *RT-13 failed this way on first execution.* | Impossible |
 | 8 | Importing from a private path that later moves | `__all__` is the contract; a CI test fails if any example or doc imports outside it | CI |
 
 ## Tools

@@ -565,6 +565,53 @@ criterion.
 
 ---
 
+### ADR-027 — `@value` replaces bare `@dataclass(frozen=True, slots=True)`
+**Status:** Accepted (Round 25) · **Amends IDL-05**
+
+**Context.** IDL-05 mandates `frozen=True, slots=True` everywhere. Assigning a declared
+field raises `FrozenInstanceError`; assigning a **non-field** name — a typo, or attaching
+state — raises `TypeError: super(type, obj): obj must be an instance or subtype of type`.
+CPython's, not ours: `slots=True` rebuilds the class and the generated `__setattr__`'s
+zero-arg `super()` closes over the original.
+
+**Decision.** A single `@value` decorator that applies the dataclass options and replaces
+`__setattr__`/`__delattr__` with a message naming the type, the offending attribute, the
+field list, and a `difflib` did-you-mean.
+
+**Why it needed an entry.** [§03.8](03-public-api.md#8-error-message-standard) requires every
+error to say what happened, where, and the fix. A blanket rule was emitting a message about
+`super()` and types for the mistake people make most often. The standard existed; nothing
+checked that a *language-generated* error met it.
+
+---
+
+### ADR-028 — Redaction retention is scoped to the run
+**Status:** Accepted (Round 25) · **Fixes a security defect created by ADR-024 + IDL-33**
+
+**Context.** RT-13 failed on execution: a `Secret` constructed inside a tool, revealed, and
+named in an exception message reached **the model** in full. The registry holds weak
+references, so the secret died with the tool's frame — while the string it had been
+formatted into outlived it, leaving nothing to match against.
+
+**Decision.** `reveal()` registers the value with the **active run's** redaction scope,
+opened for the run and cleared when it ends. The weak registry continues to cover long-lived
+secrets.
+
+**Why this bound and not another.** Process-lifetime retention was rejected in Round 19 for
+good reasons that still stand. Object-lifetime retention loses exactly the short-lived,
+per-request secrets that dominate in a server. The run is the window in which anything
+derived from the value can still be written, so it is the smallest bound that works.
+
+**The principle, generalized:** *a redactor that forgets faster than the data it protects
+travels is not a redactor.* Retention must be scoped to the exposure window, never to the
+object.
+
+**Also fixed here.** Redaction was specified only "on transcript write". A tool error is
+returned to the **model** — a wider audience than a log file, and one the transcript
+boundary never sees. Redaction now applies at the tool-result boundary too.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
@@ -573,7 +620,7 @@ criterion.
 | IDL-02 | `Verdict` is an `IntEnum` | Makes `max()` the composition operator for free, which is what enforces restrict-only |
 | IDL-03 | ULID for `run_id` | Time-sortable, no coordination, no collisions |
 | IDL-04 | Canonical JSON everywhere (`sort_keys=True`, fixed separators) | Byte-stability is a cache correctness property, not a style preference |
-| IDL-05 | `frozen=True, slots=True` on every data class | Immutability + lower memory + attribute typo becomes `AttributeError` |
+| IDL-05 | `@value` on every data class (not bare `@dataclass(frozen=True, slots=True)`) | Immutability + lower memory + a readable `AttributeError`. **The bare form does not deliver the third**: a non-field assignment raises a `super()` TypeError (ADR-027) |
 | IDL-06 | Sync tools wrapped at decoration, not at call | One branch at import instead of one per invocation |
 | IDL-07 | Provider SDK imported lazily | NFR-01: keeps `import harness` under 200 ms |
 | IDL-08 | `no_network()` is an autouse fixture | A contributor cannot accidentally bill themselves (register #34) |

@@ -143,7 +143,9 @@ class Secret:
 - Not JSON-serializable: `json.dumps` raises rather than emitting the value.
 - Registered with the redactor at construction, so if the raw value appears anywhere in
   model output or a tool result it is replaced with `<name hidden>` **before the transcript
-  is written**.
+  is written** — and before a tool result reaches the model. Both boundaries matter: a tool
+  error goes to the model, which is a wider audience than a log file and one the transcript
+  boundary never sees (Round 25).
 - **Unhashable, deliberately.** Two secrets with the same value are equal, so hashing by
   name would violate `a == b ⟹ hash(a) == hash(b)` and silently corrupt every set and dict
   the type touches — the symptom is a duplicate entry, not an exception (Round 19). Hashing
@@ -151,10 +153,19 @@ class Secret:
   chosen because it additionally **prevents a secret becoming a cache key**. An `lru_cache`
   keyed on a credential retains that credential in a process-global cache for the life of
   the process — a leak the redactor cannot reach.
-- **The registry holds weak references.** A `WeakSet` of live `Secret` objects, read at
-  redaction time. A process-global strong registry would retain every secret ever
-  constructed until exit, including per-request credentials in a long-running server. A
-  redactor that outlives what it protects is itself the exposure.
+- **Retention is scoped to the run, not to the object** (ADR-028). Two registries, because
+  one bound does not cover both cases:
+  - **Long-lived secrets** — a weak, `id()`-keyed map of live `Secret` objects. A secret
+    that goes out of scope stops being retained. *A redactor that outlives what it protects
+    is itself the exposure.*
+  - **Short-lived secrets** — `reveal()` registers the value with the **active run's**
+    redaction scope, cleared when the run ends. Without this, a per-request secret dies with
+    its frame while the exception message it was formatted into survives, and redaction has
+    nothing left to match. RT-13 failed exactly this way on first execution (Round 25).
+    *A redactor that forgets faster than the data it protects travels is not a redactor.*
+
+  The run is the smallest bound that works: it is precisely the window in which anything
+  derived from the value can still be written out.
 - `reveal()` is a context manager rather than a property so that the unwrapping point is
   visible in code review and greppable in CI.
 

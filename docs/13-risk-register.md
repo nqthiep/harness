@@ -23,6 +23,8 @@ Scored **L**ikelihood × **I**mpact on 1–5. Anything at 12+ has a mitigation t
 | R-11 | **Two maintainers is a bus factor of two** | 3 | 3 | 9 | This design package *is* the mitigation: the reasoning is written down, including the losing arguments, so a new maintainer inherits the decisions rather than re-deriving them. | — |
 | R-12 | **Effort/thinking parameter semantics differ across models**, so a default that is right for one is wrong for another | 3 | 2 | 6 | The adapter owns the mapping and validates against the model before sending; unsupported combinations raise `ProviderBadRequest` at the adapter rather than reaching the API. | T-0.4 |
 
+| R-16 | **A safety control that is specified, reviewed, and never executed** | 4 | 5 | 20 | **Materialized in Round 25.** RT-13 had been specified since Round 7 and reviewed in Rounds 15, 19, 21 and 24 — including by the round whose subject was executing contracts — and failed on first execution. Every red-team scenario is now an executable test that blocks merge (T-1.3, T-1.6), and [§14.7](14-validation-plan.md#7-after-10--keeping-this-package-honest) makes "specified but never run" a standing review question rather than an anecdote. | T-1.3, T-1.6 |
+
 ## 2. Watch list (unscored, monitor)
 
 - **Tool-count growth.** Beyond ~50 tools, schemas dominate the prefix. Tool search is the

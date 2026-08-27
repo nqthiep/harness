@@ -140,6 +140,8 @@ against slow architectural drift, which no ordinary test catches.
 | AC-24 | `returns=` and `tools=` schemas come from the same generator — no second Python-type-to-schema path exists | ADR-022 |
 | AC-25 | **Every invariant in [§01](01-requirements.md) has at least one section, one decision-log entry and one test.** *Round 21 found invariant 4 had none of the three; nobody had counted.* | Round 21 |
 | AC-27 | No module-level constant sets a sleep in a construction path; `Agent(...)` costs < 5 ms | ADR-025 |
+| AC-29 | Every value type uses `@value`; none uses bare `@dataclass(frozen=True, ...)` | ADR-027 |
+| AC-30 | Redaction is applied at **both** the transcript boundary and the tool-result boundary | ADR-028 |
 | AC-28 | Every `Secret` guarantee (unhashable, unpicklable, weakly registered) is exercised, not just declared | ADR-024 |
 | AC-26 | **Every FR, NFR, RT and AC appears in the [§11 traceability matrix](11-implementation-plan.md#traceability-matrix) with an owning task.** A contiguous range (`AC-01…26`) counts as covering every id it spans; the check expands ranges and verifies none is skipped, so shorthand cannot hide a gap. *Round 22 found FR-18 — a `Must` — and 18 AC checks owned by nobody.* | Round 22 |
 
@@ -210,5 +212,15 @@ A design package rots the moment the code diverges from it. Three practices, all
    do not touch `docs/`.
 2. **The conformance tests in §4 are the executable half of this package.** They fail when
    the architecture drifts, which is the failure mode documentation alone cannot catch.
-3. **The decision logs are append-only.** Reversing a decision adds a superseding entry; it
+3. **A specified control is not a control until it has been run.** Rounds 24 and 25 found
+   ten defects between them; every one had passed multiple readings, and one was a live
+   secret leak to the model. Two of the three Round 25 findings were in decisions made by
+   Round 19 — the round whose subject was executing contracts rather than reading them.
+
+   So the standing review question is not "is this reviewed?" but **"has this been run?"**
+   Concretely: every red-team scenario, every conformance check and every property is an
+   executable test that blocks merge, and a PR adding a *specification* for a safety control
+   without the test that exercises it is incomplete.
+
+4. **The decision logs are append-only.** Reversing a decision adds a superseding entry; it
    never edits the original. Future maintainers need to see what was tried and why it lost.

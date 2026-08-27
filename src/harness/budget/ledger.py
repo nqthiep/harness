@@ -6,6 +6,8 @@ against a default max_tokens=16000 reserved $0.406 and refused to make any call.
 """
 from __future__ import annotations
 
+from .._value import value
+
 import re
 import time
 import uuid
@@ -23,7 +25,7 @@ MIN_USEFUL_OUTPUT_TOKENS: Final = 256      # IDL-28 — below this a truncated a
 INPUT_MARGIN: Final = Decimal("1.15")
 
 
-@dataclass(frozen=True, slots=True)
+@value
 class Budget:
     usd: Decimal | None = Decimal("0.50")
     steps: int = 20
@@ -70,7 +72,7 @@ class Budget:
 DEFAULT_BUDGET: Final = Budget()
 
 
-@dataclass(frozen=True, slots=True)
+@value
 class Reservation:
     id: str
     estimate: Money

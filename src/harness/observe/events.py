@@ -5,6 +5,8 @@ telemetry bug must never take down an agent.
 """
 from __future__ import annotations
 
+from .._value import value
+
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -22,7 +24,7 @@ class EventKind(str, Enum):
     ERROR_RAISED = "error.raised"
 
 
-@dataclass(frozen=True, slots=True)
+@value
 class Event:
     __hash__ = None                     # holds a Mapping
     seq: int

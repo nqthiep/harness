@@ -19,6 +19,7 @@ from .context.linter import PrefixWatcher
 from .observe.events import EventBus, EventKind
 from .policy.base import Decision, ToolCall, Verdict
 from .result import Money, Result, StopReason, Usage
+from .secrets import redact
 from .tools import EFFECT_PROFILES, Effect, ToolSpec
 
 
@@ -192,7 +193,7 @@ class RunEngine:
             self._bus.emit(EventKind.TOOL_FINISHED, step=step, tool=spec.name, call_id=b["id"],
                            duration_ms=(time.monotonic() - t0) * 1000, is_error=False,
                            truncated=truncated)
-            return {"type": "tool_result", "tool_use_id": b["id"], "content": payload}
+            return {"type": "tool_result", "tool_use_id": b["id"], "content": redact(payload)}
         except asyncio.CancelledError:
             raise                                                # never a tool error
         except TimeoutError:
@@ -216,7 +217,10 @@ def canonical_len(req) -> str:
 
 
 def _err(call_id: str, message: str) -> dict[str, Any]:
-    return {"type": "tool_result", "tool_use_id": call_id, "content": message, "is_error": True}
+    # Redacted here rather than only at the transcript: a tool error goes to the MODEL,
+    # which is a wider audience than a log file (Round 25, RT-13).
+    return {"type": "tool_result", "tool_use_id": call_id,
+            "content": redact(message), "is_error": True}
 
 
 #: Every provider stop reason maps to exactly one StopReason.  Unknown -> ERROR, never

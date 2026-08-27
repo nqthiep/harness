@@ -1129,6 +1129,93 @@ finished by more review. It is finished by building M1 and M2 the same way this 
 M0 — where the taint lattice, the policy composition and the caching benchmark will meet
 execution for the first time.
 
+
+---
+
+### Round 25 — Executing M1: the red-team suite meets code
+
+Round 24's standing recommendation was to build M1 the same way it built M0. The 17
+red-team scenarios of [§06.8](06-safety.md#8-red-team-suite-m1-deliverable-in-ci) were
+written as executable tests and run against the safety core. **Three defects, one of them
+a live security hole.**
+
+**H25.1 — The library's most likely mistake produces its least comprehensible error.**
+
+IDL-05 mandates `frozen=True, slots=True` on **every** data class. Assigning a declared
+field raises a clean `FrozenInstanceError`. Assigning a name that is *not* a field — a typo,
+or attaching state to a tool — raises:
+
+```
+TypeError: super(type, obj): obj must be an instance or subtype of type
+```
+
+That is CPython's: `slots=True` rebuilds the class, and the generated `__setattr__`'s
+zero-arg `super()` still closes over the original. It surfaced on the first line of the
+red-team file, where the test attached a call log to a tool.
+
+A package whose stated standard is that every error names what happened, where, and the fix
+([§03.8](03-public-api.md#8-error-message-standard)) shipped a blanket rule producing a
+message about `super()` and types for the mistake people make most. → **`@value`**, a
+one-place decorator replacing `__setattr__`/`__delattr__` with a readable message, the field
+list, and a did-you-mean. Applied everywhere IDL-05 applies. → **ADR-027**.
+
+**H25.2 — RT-13 fails: a secret reaches the model unredacted.**
+
+A `Secret` constructed inside a tool, revealed, and mentioned in an exception message
+arrived at the model in full:
+
+```
+RuntimeError: failed while holding sk-ant-INSIDE-TRACEBACK
+```
+
+The cause is ADR-024 (Round 24) interacting with IDL-33 (Round 19). The registry holds
+**weak** references, so a per-request secret dies with the tool's frame — but the *string it
+was formatted into* outlives it, and by the time `redact()` runs there is nothing left to
+match against. Round 19 chose weak retention for lifetime hygiene and did not notice it
+defeats redaction for exactly the short-lived, per-request secrets that dominate in a
+server. Round 24 reworked the registry's mechanism without revisiting the choice.
+
+The Security Engineer's framing: **a redactor that forgets faster than the data it protects
+travels is not a redactor.**
+
+**Resolved** — retention scoped to the *run*, not to the object and not to the process:
+`reveal()` registers the value with the active run's redaction scope, which is opened for
+the run and cleared when it ends. That is exactly the window in which anything derived from
+the value can still be written out. Demonstrated: identical code leaks outside the scope,
+redacts inside it, and releases retention after. → **ADR-028**.
+
+**H25.3 — Tool errors were redacted at the wrong boundary.**
+
+Redaction was specified "on transcript write, before the bytes exist"
+([§05.2](05-data-and-state.md#2-transcript-format)). But a tool error is returned **to the
+model**, which is a wider audience than a log file and one the transcript boundary never
+sees. Redaction moved to the tool-result boundary as well.
+
+**What passed, and why it is worth stating.** RT-01 and RT-02 pass by *construction-time
+rejection* rather than runtime denial — F9.1 working exactly as designed, a year of rounds
+later. RT-11's lattice, RT-14's egress check, and the approval path (sync callback, async
+callback, and no callback) all held on first execution.
+
+---
+
+## 2.3 Running score
+
+| Round | Built | Defects found | Security defects |
+|---|---|---|---|
+| 1–23 | nothing | 20 | 0 |
+| 24 | M0 slice | 7 | 0 |
+| 25 | M1 safety core | 3 | **1** |
+
+Twenty-five rounds in, **the only live security hole in the package was found by running the
+red-team suite, not by writing it.** It had been specified since Round 7, reviewed in Rounds
+15, 19, 21 and 24, and reworked in Round 24 — by the round whose subject was executing
+contracts.
+
+The council's position: this is no longer evidence about *this* design. It is evidence about
+design review in general, and it belongs in
+[§14.7](14-validation-plan.md#7-after-10--keeping-this-package-honest) as a practice rather
+than in the round log as an anecdote.
+
 ---
 
 ## Convergence
@@ -1183,6 +1270,7 @@ with a 16/16 gate. They found:
 | 22 | A `Must` requirement and 18 conformance tests owned by no task | A numbered thing with no owner is nobody's job |
 | 23 | A wall-clock ceiling that overshoots by up to 30 s; an undefined step/resume interaction | The last unmultiplied cross-products — and the point of diminishing returns |
 | **24** | **Seven defects in the built M0 slice, including one that falsified SC-2** | **Reading cannot find what only running finds** |
+| **25** | **Three defects in the built M1 safety core, including a live secret leak to the model** | **Writing a red-team suite is not running one** |
 
 **Every one of these passed a prior review.** The five techniques that found them — multiply
 the numbers out, execute the contract, traverse types rather than tasks, count coverage per

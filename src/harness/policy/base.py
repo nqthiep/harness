@@ -6,6 +6,8 @@ tools/__init__.py imports Verdict, so the reverse import would be a cycle.
 """
 from __future__ import annotations
 
+from .._value import value
+
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Mapping, Protocol
@@ -21,14 +23,14 @@ class Verdict(IntEnum):
     DENY  = 2
 
 
-@dataclass(frozen=True, slots=True)
+@value
 class Decision:
     verdict: Verdict
     reason: str
     policy: str
 
 
-@dataclass(frozen=True, slots=True)
+@value
 class ToolCall:
     id: str
     name: str

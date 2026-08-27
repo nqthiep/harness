@@ -1,6 +1,8 @@
 """Core value types — docs/04-interfaces.md §0."""
 from __future__ import annotations
 
+from ._value import value
+
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
@@ -41,7 +43,7 @@ class Money:
 Money.ZERO = Money(0)
 
 
-@dataclass(frozen=True, slots=True)
+@value
 class Usage:
     input_tokens: int = 0
     output_tokens: int = 0
@@ -67,7 +69,7 @@ class Usage:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@value
 class Step:
     index: int
     usage: Usage
@@ -88,7 +90,7 @@ class StopReason(str, Enum):
     ERROR            = "error"
 
 
-@dataclass(frozen=True, slots=True)
+@value
 class Result:
     text: str
     stop_reason: StopReason

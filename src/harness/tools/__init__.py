@@ -1,6 +1,8 @@
 """@tool, Effect, ToolSpec — docs/04-interfaces.md §1, tasks T-0.2 and T-1.1."""
 from __future__ import annotations
 
+from .._value import value
+
 import asyncio
 import difflib
 import functools
@@ -23,7 +25,7 @@ class Effect(str, Enum):
     DANGER   = "danger"
 
 
-@dataclass(frozen=True, slots=True)
+@value
 class EffectProfile:
     parallel_safe: bool
     retryable: bool
@@ -64,7 +66,7 @@ def _guess(name: str) -> str:
     return "read"
 
 
-@dataclass(frozen=True, slots=True)
+@value
 class ToolSpec:
     __hash__ = None                     # holds a Mapping — docs/04 §0 Hashability
     name: str
