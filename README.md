@@ -13,6 +13,7 @@
 > python3 tests/test_m2.py             # 9 tests  — scheduling, dedup, context growth
 > python3 tests/test_m3.py             # 18 tests — transcript, resume, exporters, events
 > python3 tests/test_m4.py             # 26 tests — stores, plugins, subagent budgets
+> python3 tests/test_m5.py             # 17 tests — scaffold, setup, §15 as a spec
 > python3 tests/bench_cache.py         # SC-4     — 95.3% cache reads on turns 3+
 > ```
 
@@ -67,7 +68,7 @@ council recorded the trade and the reasoning in the [Design Decision Log](docs/1
 | 5 | **Efficient** | Async core, sync facade, one round-trip per step, truncation ceilings on every tool result. |
 
 Plus the sixth, which shaped the API more than any other: **Poka-Yoke** — see the
-[register of 63 failure modes and their design-level defenses](docs/08-poka-yoke.md).
+[register of 64 failure modes and their design-level defenses](docs/08-poka-yoke.md).
 Ten of those came from Round 13, and **five of the six worst beginner blockers turned out
 to be outside the API entirely** — credentials, feedback, error rendering, scaffolding and
 repeat-run cost.

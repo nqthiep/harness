@@ -146,12 +146,22 @@ against slow architectural drift, which no ordinary test catches.
 | AC-32 | **Every `EventKind` has an emit site.** *A test that emitted kinds are in the taxonomy passes trivially; the inverse question found three kinds the code could never emit (Round 27).* | §05.1 |
 | AC-34 | No subagent tool runs on an unheld ledger; every `as_tool` call path holds and releases parent headroom | ADR-030 |
 | AC-35 | No `_`-prefixed parameter appears in any generated tool schema | ADR-031 |
+| AC-36 | **Every error message shown in [§15](15-first-agent.md) is asserted against the message the code produces.** The tutorial is the specification for those strings, not a paraphrase. | T-0.9, T-5.3 |
+| AC-37 | `harness new` emits the agent file and a `.gitignore` listing `.env`, or neither | Register #36 |
+| AC-38 | An invalid API key is never written to disk | IDL-25 |
 | AC-33 | Every conditional subsystem is either reachable from the shipped defaults or declares in the docs that it is not | P-10 |
 | AC-31 | **Every public parameter is read somewhere in the package.** *`max_parallel_tools` was accepted, stored and documented for two milestones without anything reading it (Round 26).* | NFR-09 |
 | AC-28 | Every `Secret` guarantee (unhashable, unpicklable, weakly registered) is exercised, not just declared | ADR-024 |
 | AC-26 | **Every FR, NFR, RT and AC appears in the [§11 traceability matrix](11-implementation-plan.md#traceability-matrix) with an owning task.** A contiguous range (`AC-01…26`) counts as covering every id it spans; the check expands ranges and verifies none is skipped, so shorthand cannot hide a gap. *Round 22 found FR-18 — a `Must` — and 18 AC checks owned by nobody.* | Round 22 |
 
-**Every AC has a negative fixture** proving it fails when the property is violated. A
+**Every AC has a negative fixture** proving it fails when the property is violated — and
+Round 29 added the converse caution: **a test that fails for its own reasons misleads as
+much as one that passes for none.** Nine red tests there were all harness bugs, including an
+exclusion (`if "Agent(" in block: continue`) written for convenience that silently skipped
+the tutorial's headline example while reporting a pass. When a new test goes red, establish
+that it is red for the reason it was written before treating it as a finding.
+
+ A
 conformance test that cannot be made to fail is not testing anything — and 18 of these were
 specified but built by nobody until Round 22 (T-3.6).
 

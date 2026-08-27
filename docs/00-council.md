@@ -1390,6 +1390,75 @@ model could set it. Now: **a parameter whose name starts with `_` is never model
 is stripped from the schema, and is filtered out of model-supplied arguments. The awkwardness
 was the signal; the fix is a rule.
 
+
+---
+
+### Round 29 — Executing M5: the tutorial becomes a test
+
+M5 built the scaffold, the credential flow, and — the point of the round — turned
+[§15](15-first-agent.md) from a document into an executable specification. Every error
+message it shows a child is now asserted against the message the code actually produces.
+
+**The result is not what the previous five rounds would predict: the tutorial held.** All
+six error messages matched. The concept budget held (the first agent introduces exactly
+`name`, `job`, `budget`). The jargon ban held across the child-facing body. Every complete
+program parses; every `@tool` it shows decorates.
+
+**H29.1 — But the first version of the test file failed nine times, and every failure was
+mine.**
+
+- The fence regex `` ```\n(.*?)``` `` matched the prose *between* a closing fence and the
+  next opening one, so "the error message block" was usually a paragraph.
+- It asserted every Python block is a standalone program. Several are deliberately
+  fragments — a line to change, a keyword argument to add. That is pedagogy, not a defect.
+- The jargon check scanned the reviewer preamble, which legitimately *names* the jargon the
+  tutorial avoids ("no `async`, no type hints") in order to promise avoiding it.
+- One needle (`"can't undo"`) matched two different error blocks.
+- It counted *blocks* containing tools rather than *tools*, and skipped the tutorial's
+  headline example because that block also builds an `Agent` — leaving the most important
+  code in the document untested while reporting a pass.
+
+Nine red tests, zero product defects. The Test Architect's note: **a test that fails for
+its own reasons is as misleading as one that passes for none.** Rounds 24–28 built
+confidence that a failing test means a real defect; this round is the counterexample, and
+it is recorded so that confidence stays calibrated.
+
+The last item is the one worth keeping. The filter `if "Agent(" in b: continue` was written
+to skip blocks that need a provider — and its effect was to skip the single most important
+example in the tutorial. **An exclusion written for convenience silently narrowed what was
+verified.** It now stubs the provider and executes the block instead.
+
+**H29.2 — `harness setup` validates before it stores, and that is testable without a key.**
+
+The credential flow is expressed as three injected functions (read, validate, write), so
+"an invalid key is never written to disk" is an ordinary offline test. IDL-25 asked for
+validation-before-storage; making it injectable is what made it verifiable.
+
+**H29.3 — `harness new` writes both files or neither.** Register #36 says the `.gitignore`
+must be written by the same command that creates the file needing it. Tested: an existing
+`.gitignore` is extended rather than clobbered, and the pair is always produced together.
+
+---
+
+## 2.4 What the five build rounds cost, and what they found
+
+| Round | Built | Defects | Security | Specified-but-unbuilt | Test-harness bugs |
+|---|---|---|---|---|---|
+| 24 | M0 walking skeleton | 7 | 0 | 0 | 0 |
+| 25 | M1 safety core | 3 | **1** | 0 | 0 |
+| 26 | M2 cost core | 4 | 0 | **3** | **1** (a benchmark that could not fail) |
+| 27 | M3 observability | 3 | 0 | **1** | 0 |
+| 28 | M4 memory · plugins · subagents | 4 | **1** | **2** | 0 |
+| 29 | M5 CLI · tutorial-as-test | 0 | 0 | 0 | **9** |
+
+**21 defects, 2 of them security, 6 features that were specified and never built.** Against
+20 defects and 0 security findings across the 23 rounds of review that preceded them.
+
+The trend across the last two rounds is the useful signal: Round 28 found four defects in
+new code, Round 29 found none. The product stopped producing findings at roughly the point
+the test harness started producing them — which is what convergence actually looks like,
+and is a better stopping argument than any of the ones the council made at Rounds 12 or 23.
+
 ---
 
 ## 2.3 Running score
@@ -1402,6 +1471,7 @@ was the signal; the fix is a rule.
 | 26 | M2 cost core | 4 | 0 | **3** |
 | 27 | M3 observability | 3 | 0 | **1** (+1 unreachable by arithmetic) |
 | 28 | M4 memory · plugins · subagents | 4 | **1** (budget ceiling leak) | **2** |
+| 29 | M5 CLI · tutorial-as-test | **0** | 0 | 0 |
 
 Twenty-five rounds in, **the only live security hole in the package was found by running the
 red-team suite, not by writing it.** It had been specified since Round 7, reviewed in Rounds
@@ -1471,6 +1541,7 @@ with a 16/16 gate. They found:
 | **26** | **Four defects in the built M2 cost core; three features were specified, owned by a task, and never implemented** | **Ownership is not implementation** |
 | **27** | **Three of fifteen event kinds had no emit site; context management was unreachable by arithmetic** | **Naming a failure class does not prevent it — only the inverse test does** |
 | **28** | **A $0.10 agent spent $30 through subagents while reporting $0.0000** | **A suite written by the feature's author tests the feature, not the promise** |
+| **29** | **Nine red tests, zero product defects — the tutorial held** | **A test that fails for its own reasons misleads as much as one that passes for none** |
 
 **Every one of these passed a prior review.** The five techniques that found them — multiply
 the numbers out, execute the contract, traverse types rather than tasks, count coverage per
