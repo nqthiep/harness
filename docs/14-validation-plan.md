@@ -19,6 +19,7 @@ requirement, it is a wish.
 | G5 / SC-5 | `no_network()` autouse; suite runs offline | CI | Blocks merge |
 | G6 / SC-6 | 5 out-of-tree plugin examples | `examples/plugins/` | Blocks M4 |
 | G7 / SC-7 | Golden replay, byte-identical | `tests/golden/` | Blocks merge |
+| NFR-10b / P-10 | Every conditional subsystem is default-reachable or declared | `tests/property/` | Blocks merge |
 | G8 / SC-8 | Zero malformed tool args and zero answer parse failures over the fixture set | `tests/integration/` | Blocks merge |
 | FR-01…23 | Named integration test per requirement | `tests/integration/` | Blocks merge |
 | NFR-01 | `python -X importtime` < 200 ms | CI | Blocks merge |
@@ -142,6 +143,8 @@ against slow architectural drift, which no ordinary test catches.
 | AC-27 | No module-level constant sets a sleep in a construction path; `Agent(...)` costs < 5 ms | ADR-025 |
 | AC-29 | Every value type uses `@value`; none uses bare `@dataclass(frozen=True, ...)` | ADR-027 |
 | AC-30 | Redaction is applied at **both** the transcript boundary and the tool-result boundary | ADR-028 |
+| AC-32 | **Every `EventKind` has an emit site.** *A test that emitted kinds are in the taxonomy passes trivially; the inverse question found three kinds the code could never emit (Round 27).* | §05.1 |
+| AC-33 | Every conditional subsystem is either reachable from the shipped defaults or declares in the docs that it is not | P-10 |
 | AC-31 | **Every public parameter is read somewhere in the package.** *`max_parallel_tools` was accepted, stored and documented for two milestones without anything reading it (Round 26).* | NFR-09 |
 | AC-28 | Every `Secret` guarantee (unhashable, unpicklable, weakly registered) is exercised, not just declared | ADR-024 |
 | AC-26 | **Every FR, NFR, RT and AC appears in the [§11 traceability matrix](11-implementation-plan.md#traceability-matrix) with an owning task.** A contiguous range (`AC-01…26`) counts as covering every id it spans; the check expands ranges and verifies none is skipped, so shorthand cannot hide a gap. *Round 22 found FR-18 — a `Must` — and 18 AC checks owned by nobody.* | Round 22 |

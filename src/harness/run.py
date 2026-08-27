@@ -16,6 +16,8 @@ from typing import Any, Mapping, Sequence
 from .errors import BudgetExceeded, ToolContractError
 from .context.assembler import canonical as _canonical
 from .context.linter import PrefixWatcher
+from .context.window import manage as manage_context
+from .models.pricing import MAX_CONTEXT
 from .observe.events import EventBus, EventKind
 from .policy.base import Decision, ToolCall, Verdict
 from .result import Money, Result, StopReason, Usage
@@ -60,7 +62,8 @@ class RunEngine:
         usage_total = Usage()
         text = ""
         self._bus.emit(EventKind.RUN_STARTED, agent=self._a.name, model=self._a.model,
-                       tool_names=[t.name for t in self._a.toolset], safety=self._a.safety)
+                       tool_names=[t.name for t in self._a.toolset], safety=self._a.safety,
+                       message=message)
 
         stop, detail = StopReason.COMPLETED, ""
         step = 0
@@ -115,9 +118,19 @@ class RunEngine:
                 if resp.stop_reason == "tool_use":
                     results = await self._run_tools(resp, step, run_id)
                     msgs.append({"role": "user", "content": results})   # I-4: one message
+                    msgs = self._manage_context(msgs, input_tokens, step)
+                    self._bus.emit(EventKind.STEP_FINISHED, step=step,
+                                   stop_reason=resp.stop_reason,
+                                   tool_calls=[b["name"] for b in resp.content
+                                               if b.get("type") == "tool_use"])
                     step += 1
                     continue
+                self._bus.emit(EventKind.STEP_FINISHED, step=step,
+                               stop_reason=resp.stop_reason, tool_calls=[])
                 if mapped is None:
+                    self._bus.emit(EventKind.ERROR_RAISED, step=step, where="provider",
+                                   type="unknown_stop_reason", message=resp.stop_reason,
+                                   retryable=False)
                     stop, detail = StopReason.ERROR, f"unknown stop reason {resp.stop_reason!r}"
                     break
                 stop = mapped
@@ -135,6 +148,24 @@ class RunEngine:
         return Result(text, stop, step, self._l.spent, usage_total, run_id,
                       self._taint.tainted, tuple(msgs), None, detail)
 
+    def _manage_context(self, msgs: list, _unused: int, step: int) -> list:
+        """T-2.6, wired.  Round 27 found window.manage() was built, tested, and never
+        called from the loop — so `context.managed` was one of three event kinds the
+        code could not emit.
+
+        The size is measured from the messages being managed, not from the token count of
+        the request already sent: that count predates the tool results just appended,
+        which are exactly what makes the window grow.
+        """
+        window = MAX_CONTEXT.get(self._a.model, 200_000)
+        used = sum(len(_canonical(m)) for m in msgs) // 4
+        out, action = manage_context(msgs, used_tokens=used, context_window=window)
+        if action == "none":
+            return msgs
+        self._bus.emit(EventKind.CONTEXT_MANAGED, step=step, strategy=action,
+                       tokens_before=used, messages=len(msgs))
+        return out
+
     # -- tools ------------------------------------------------------------
     async def _run_tools(self, resp, step: int, run_id: str) -> list[dict[str, Any]]:
         calls = [b for b in resp.content if b.get("type") == "tool_use"]
@@ -144,7 +175,8 @@ class RunEngine:
 
         for b in calls:
             spec = self._a.toolset.get(b["name"])
-            self._bus.emit(EventKind.TOOL_REQUESTED, step=step, tool=b["name"], call_id=b["id"])
+            self._bus.emit(EventKind.TOOL_REQUESTED, step=step, tool=b["name"],
+                           call_id=b["id"], arguments=b.get("input", {}))
             if spec is None:
                 planned.append((b, None, None)); continue
             call = ToolCall(b["id"], b["name"], b.get("input", {}), spec)
@@ -224,6 +256,8 @@ class RunEngine:
             return self._tool_error(b, spec, step, f"{type(exc).__name__}: {exc}", t0)
 
     def _tool_error(self, b, spec, step, msg, t0) -> dict[str, Any]:
+        self._bus.emit(EventKind.ERROR_RAISED, step=step, where="tool", type=spec.name,
+                       message=msg, retryable=EFFECT_PROFILES[spec.effect].retryable)
         self._bus.emit(EventKind.TOOL_FINISHED, step=step, tool=spec.name, call_id=b["id"],
                        duration_ms=(time.monotonic() - t0) * 1000, is_error=True, truncated=False)
         return _err(b["id"], msg)

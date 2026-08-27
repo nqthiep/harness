@@ -13,7 +13,9 @@ from .budget.ledger import Budget, Ledger
 from .context.assembler import ContextAssembler
 from .context.linter import PrefixWatcher, check_determinism
 from .errors import ConfigError, RunFailed, SyncInAsyncContextError, UnsafeToolSetError
+from .observe.console import ConsoleExporter
 from .observe.events import EventBus
+from .observe.transcript import TranscriptWriter, read as read_transcript
 from .policy.builtin import EffectPolicy, EgressPolicy, TaintPolicy
 from .policy.engine import PolicyEngine
 from .policy.taint import TaintTracker
@@ -30,7 +32,7 @@ _MISSING: Any = object()
 class Agent:
     __slots__ = ("name", "job", "toolset", "model", "effort", "budget", "safety",
                  "approve", "policies", "allowed_hosts", "provider", "returns",
-                 "max_parallel_tools", "_asm", "_watch")
+                 "max_parallel_tools", "transcript", "exporters", "_asm", "_watch")
 
     def __init__(
         self,
@@ -49,6 +51,8 @@ class Agent:
         policies: Sequence[Any] = (),
         allowed_hosts: Sequence[str] | None = None,
         provider: Any | None = None,
+        transcript: Any | None = None,
+        exporters: Sequence[Any] = (),
         max_parallel_tools: int = 8,
     ) -> None:
         if args:
@@ -88,6 +92,8 @@ class Agent:
         object.__setattr__(self, "allowed_hosts",
                            tuple(allowed_hosts) if allowed_hosts is not None else None)
         object.__setattr__(self, "provider", provider)
+        object.__setattr__(self, "transcript", transcript)
+        object.__setattr__(self, "exporters", tuple(exporters))
         object.__setattr__(self, "max_parallel_tools", max_parallel_tools)
 
         asm = ContextAssembler(model=model, job=job, tools=toolset, effort=effort)
@@ -113,17 +119,28 @@ class Agent:
                 "  -> docs/15-first-agent.md"
             )
         run_id = "r_" + uuid.uuid4().hex[:16]
-        bus = EventBus(run_id)
+        exporters = list(self.exporters)
+        writer = None
+        if self.transcript is not None:
+            writer = TranscriptWriter(self.transcript)
+            exporters.append(writer)
+        if ConsoleExporter.should_attach():          # ADR-014: TTY only, stderr only
+            exporters.append(ConsoleExporter(self.name))
+        bus = EventBus(run_id, exporters)
         ledger = Ledger(self.budget)
         taint = TaintTracker()
         engine = PolicyEngine(
             (EffectPolicy(), TaintPolicy(), EgressPolicy(self.allowed_hosts)), self.policies)
         # Open for exactly the window in which a revealed secret can still be written
         # out — wide enough to redact, narrow enough not to retain (Round 25, RT-13).
-        with redaction_scope():
-            return await RunEngine(self, provider, ledger, engine, taint, self._asm, bus,
-                                   self._watch).run(message, messages=_history,
-                                                    on_delta=on_delta)
+        try:
+            with redaction_scope():
+                return await RunEngine(self, provider, ledger, engine, taint, self._asm, bus,
+                                       self._watch).run(message, messages=_history,
+                                                        on_delta=on_delta)
+        finally:
+            if writer is not None:
+                writer.close()
 
     async def arun(self, message: str, *, on_delta=None) -> Result:
         r = await self.atry_run(message, on_delta=on_delta)
@@ -138,6 +155,40 @@ class Agent:
         r = self.try_run(message, on_delta=on_delta)
         r.raise_for_status()
         return r
+
+    def resume(self, transcript: Any) -> Result:
+        """Continue an interrupted run from its transcript — task T-3.3.
+
+        `read`/`external` calls interrupted mid-flight are re-executed (idempotent by
+        their effect class).  `write`/`danger` are **never** re-executed: a library
+        cannot know whether the side effect landed, so the model is told instead
+        ([§05.3](../../docs/05-data-and-state.md#3-resume-semantics)).
+        """
+        _guard_sync()
+        return asyncio.run(self.aresume(transcript))
+
+    async def aresume(self, transcript: Any) -> Result:
+        from .tools import EFFECT_PROFILES
+        started: dict[str, str] = {}
+        finished: set[str] = set()
+        message = ""
+        for ev in read_transcript(transcript):
+            kind, data = ev["kind"], ev.get("data", {})
+            if kind == "run.started":
+                message = data.get("message", "")
+            elif kind == "tool.started":
+                started[data["call_id"]] = data["tool"]
+            elif kind == "tool.finished":
+                finished.add(data["call_id"])
+        interrupted = {cid: name for cid, name in started.items() if cid not in finished}
+        unsafe = [n for n in interrupted.values()
+                  if (s := self.toolset.get(n)) and not EFFECT_PROFILES[s.effect].retryable]
+        note = ""
+        if unsafe:
+            note = ("\n[resumed] These were interrupted and were NOT retried automatically, "
+                    "because they cannot be undone: " + ", ".join(sorted(set(unsafe))) +
+                    ". Check whether they took effect before relying on them.")
+        return await self.atry_run((message or "continue") + note)
 
     def with_(self, **overrides: Any) -> "Agent":
         base = {k: getattr(self, k) for k in

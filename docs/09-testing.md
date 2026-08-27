@@ -79,6 +79,7 @@ render all four required sections — what, where, the copy-pasteable fix, the d
 | P-6 | Replaying any transcript reproduces the same event sequence. |
 | P-7 | Truncation never splits a UTF-8 character or produces invalid JSON. |
 | P-8 | **Every combination of shipped numeric defaults is internally consistent:** for each (budget, model, plausible input size) drawn from the defaults and from every documented example, `reserve()` succeeds and the derived `max_tokens` is ≥ 256. *The Round 17 defect lived between two individually correct defaults; this is the test that would have caught it.* |
+| P-10 | **Every conditional subsystem is reachable from the shipped defaults, or declares in the docs that it is not.** *P-8 checks the defaults are mutually consistent; it never asked whether they suffice to reach a feature. Context management was specified, built, tested and wired, and could not fire under any default configuration (Round 27).* |
 | P-9 | **Every closed enum mirroring an external protocol covers that protocol's value set**, and an unrecognized value maps to a failure outcome, never a success. *`StopReason` passed a Round 8 review while missing `max_tokens`; review does not catch this class, tests do.* |
 
 ### Integration

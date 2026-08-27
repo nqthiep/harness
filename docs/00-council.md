@@ -1263,6 +1263,70 @@ plan — and both were unimplemented.
 Only running the behavior can. AC-31 now asserts that every public parameter is read
 somewhere in the package, which is the cheap mechanical half of that gap.
 
+
+---
+
+### Round 27 — Executing M3: three of fifteen events could never be emitted
+
+M3 built the transcript, resume, the console exporter, and the observability wiring. The
+transcript and resume tests passed on first run — the first milestone to do so. The
+observability audit did not.
+
+**H27.1 — Three of the fifteen event kinds have no emit site.**
+
+A test that every *emitted* kind is in the closed taxonomy passed easily, because it can
+only check what is emitted. Asking the inverse question — **which kinds does the code never
+emit?** — returned three:
+
+| kind | why |
+|---|---|
+| `step.finished` | The loop emitted `step.started` and never its pair. Anything deriving step duration from the stream could not. |
+| `error.raised` | Emitted only by the event bus's exporter-failure path. Never by the loop for a tool failure or a provider error — the two cases anyone reading a transcript is looking for. |
+| `context.managed` | **`window.manage()` was built, unit-tested and never called from the run loop.** |
+
+The third is Round 26's own finding — *ownership is not implementation* — recurring one
+round after being named, in code the council itself had just written. **Naming a failure
+class does not prevent it.** What prevents it is the inverse test, which is now AC-32: every
+`EventKind` must have an emit site.
+
+**H27.2 — And then the wiring was still wrong.** With `window.manage()` called, it still
+never fired. It was passed the token count of the request *already sent* — a number that
+predates the tool results just appended, which are exactly what makes the window grow.
+
+**H27.3 — Then the arithmetic said it can never fire at all.**
+
+With the wiring corrected it still did not trigger, and multiplying the defaults out
+explained why:
+
+```
+max_result_tokens (4 000)  x  budget.steps (20)   =  80 000 tokens, maximum
+editing threshold          =  0.60 x 200 000      = 120 000 tokens, smallest window
+```
+
+**Context management cannot trigger under any default configuration.** It is dead by
+arithmetic — a documented, wired, tested subsystem that nothing shipped can reach.
+
+This is Round 17's own rule (*numeric defaults are validated by arithmetic, not by review*)
+applied to a triple nobody had multiplied. P-8 checks that shipped defaults are mutually
+**consistent**; it never asked whether they are sufficient to **reach** each conditional
+feature.
+
+**Resolved, honestly rather than by deleting or by inflating a threshold:**
+
+- The feature is genuinely useful at raised limits — a research agent at
+  `budget="$50, 200 steps"` with `max_result_tokens=20_000` reaches it — so it stays.
+- [§07.3](07-cost.md#3-token-discipline) now states plainly that it is **not reachable on
+  the shipped defaults**, and why that ordering is correct: the budget and step limits are
+  cheaper limits to hit, and they should bind first.
+- Its test exercises a reachable configuration instead of pretending a default one reaches
+  it.
+- **Property P-10** fails the build if the arithmetic and that documentation ever disagree.
+
+**The general rule, added to the package.** A conditional subsystem must either be
+reachable from the shipped defaults, or declare in the documentation that it is not. A
+feature that no configuration can reach, described as if it were active, is worse than no
+feature: it is a claim.
+
 ---
 
 ## 2.3 Running score
@@ -1273,6 +1337,7 @@ somewhere in the package, which is the cheap mechanical half of that gap.
 | 24 | M0 slice | 7 | 0 | 0 |
 | 25 | M1 safety core | 3 | **1** | 0 |
 | 26 | M2 cost core | 4 | 0 | **3** |
+| 27 | M3 observability | 3 | 0 | **1** (+1 unreachable by arithmetic) |
 
 Twenty-five rounds in, **the only live security hole in the package was found by running the
 red-team suite, not by writing it.** It had been specified since Round 7, reviewed in Rounds
@@ -1340,6 +1405,7 @@ with a 16/16 gate. They found:
 | **24** | **Seven defects in the built M0 slice, including one that falsified SC-2** | **Reading cannot find what only running finds** |
 | **25** | **Three defects in the built M1 safety core, including a live secret leak to the model** | **Writing a red-team suite is not running one** |
 | **26** | **Four defects in the built M2 cost core; three features were specified, owned by a task, and never implemented** | **Ownership is not implementation** |
+| **27** | **Three of fifteen event kinds had no emit site; context management was unreachable by arithmetic** | **Naming a failure class does not prevent it — only the inverse test does** |
 
 **Every one of these passed a prior review.** The five techniques that found them — multiply
 the numbers out, execute the contract, traverse types rather than tasks, count coverage per

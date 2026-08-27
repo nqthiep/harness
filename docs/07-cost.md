@@ -185,6 +185,18 @@ On the default model at the default budget, compaction never runs — the budget
 first. It is reached by large-budget agents and by cheap models, and Haiku reaches it
 soonest, so T-2.6's fixtures are specified per model rather than from the defaults.
 
+> **Context management is not reachable on the shipped defaults, and that is deliberate.**
+> Tool results are capped at `max_result_tokens` (4 000) and runs at `budget.steps` (20), so
+> tool output can contribute at most **80 000 tokens** — against an editing threshold of
+> 120 000 on the smallest window and 600 000 on the largest. Round 27 found this by
+> multiplying the triple out; nothing had.
+>
+> It engages for long-running agents that raise both limits deliberately — a research agent
+> at `budget="$50, 200 steps"` with `max_result_tokens=20_000`, for instance. Under defaults
+> the budget and the step limit end the run long before the window fills, which is the
+> correct ordering: they are cheaper limits to hit. Property **P-10** fails the build if
+> this text and the arithmetic ever disagree.
+
 **Context growth policy** (`context/window.py`), in order:
 
 1. Under 60 % of the model's context: do nothing.

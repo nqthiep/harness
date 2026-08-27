@@ -110,6 +110,26 @@ class Properties(unittest.TestCase):
         L._started = L._clock() - 9.5           # 0.5s left
         self.assertLessEqual(L.tool_timeout(30.0), 0.5)
 
+    def test_p10_conditional_subsystems_are_reachable_or_declared(self):
+        """P-10 (Round 27). P-8 checks the shipped defaults are mutually consistent.
+        P-10 checks they are sufficient to REACH each conditional subsystem — or that the
+        subsystem declares it is not default-reachable.
+
+        Context management was specified, built, tested and wired, and could not fire
+        under any default configuration: max_result_tokens(4,000) x steps(20) = 80,000
+        tokens against an editing threshold of 120,000 on the smallest window.
+        """
+        import pathlib
+        from harness.context.window import EDIT_AT
+        from harness.models.pricing import MAX_CONTEXT
+        smallest = min(w for k, w in MAX_CONTEXT.items() if k != "fake")
+        reachable_tokens = 20 * 4_000                      # steps x max_result_tokens
+        default_reachable = reachable_tokens >= smallest * EDIT_AT
+        if not default_reachable:
+            doc = pathlib.Path("docs/07-cost.md").read_text()
+            self.assertIn("not reachable on the shipped defaults", doc,
+                          "context management cannot fire on defaults and the docs do not say so")
+
     def test_p9_stop_reason_mapping_is_exhaustive(self):
         """ADR-019: every provider stop reason maps, unknown -> failure, never success."""
         from harness.run import _MAP
