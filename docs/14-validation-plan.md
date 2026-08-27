@@ -142,6 +142,7 @@ against slow architectural drift, which no ordinary test catches.
 | AC-27 | No module-level constant sets a sleep in a construction path; `Agent(...)` costs < 5 ms | ADR-025 |
 | AC-29 | Every value type uses `@value`; none uses bare `@dataclass(frozen=True, ...)` | ADR-027 |
 | AC-30 | Redaction is applied at **both** the transcript boundary and the tool-result boundary | ADR-028 |
+| AC-31 | **Every public parameter is read somewhere in the package.** *`max_parallel_tools` was accepted, stored and documented for two milestones without anything reading it (Round 26).* | NFR-09 |
 | AC-28 | Every `Secret` guarantee (unhashable, unpicklable, weakly registered) is exercised, not just declared | ADR-024 |
 | AC-26 | **Every FR, NFR, RT and AC appears in the [§11 traceability matrix](11-implementation-plan.md#traceability-matrix) with an owning task.** A contiguous range (`AC-01…26`) counts as covering every id it spans; the check expands ranges and verifies none is skipped, so shorthand cannot hide a gap. *Round 22 found FR-18 — a `Must` — and 18 AC checks owned by nobody.* | Round 22 |
 
@@ -216,6 +217,11 @@ A design package rots the moment the code diverges from it. Three practices, all
    ten defects between them; every one had passed multiple readings, and one was a live
    secret leak to the model. Two of the three Round 25 findings were in decisions made by
    Round 19 — the round whose subject was executing contracts rather than reading them.
+
+   Round 26 sharpened it further. Its three worst findings were features that **had** an
+   owning task in the traceability matrix and were simply never implemented — `max_parallel_tools`
+   (NFR-09 → T-2.7), duplicate suppression (T-2.5), the multi-turn breakpoint (§07.2.2).
+   **Ownership is not implementation, and a matrix cannot tell the difference.**
 
    So the standing review question is not "is this reviewed?" but **"has this been run?"**
    Concretely: every red-team scenario, every conformance check and every property is an

@@ -38,7 +38,7 @@ surface of Option A.
 | SC-2a | **Authorization ceiling (exact).** The harness never authorizes a call whose estimate exceeds the remaining budget, and authorizes nothing further once spend crosses it. | 0 violations | Property P-1, [§09](09-testing.md) |
 | SC-2b | **Spend ceiling (bounded).** Actual spend may exceed the budget only by one call's input-count error. *Restated by ADR-026 after Round 24 measured 380 violations against the original "never exceeds" wording — a library cannot know the true input cost before the call.* | ≤ 1.05× over 3 000 adversarial runs | Property P-1, [§09](09-testing.md) |
 | SC-3 | **Taint containment.** The red-team suite's exfiltration scenarios are blocked. | 100 % of RT-01…RT-12 blocked | Red-team suite, [§09.5](09-testing.md) |
-| SC-4 | **Cache effectiveness.** On the 10-turn conversation fixture, cache reads on turns 3+. | ≥ 90 % of input tokens read from cache | Benchmark, [§14.3](14-validation-plan.md) |
+| SC-4 | **Cache effectiveness.** On the 10-turn conversation fixture — a **growing** conversation, where turn N carries turns 0..N−1 — cache reads on turns 3+. | ≥ 90 % **and not degrading with conversation length** | Benchmark, [§14.3](14-validation-plan.md) |
 | SC-5 | **Zero-cost testing.** The full test suite runs green with no network access. | `no_network()` active in CI; 0 outbound calls | CI gate |
 | SC-6 | **Extension without forking.** Each of the 5 plugin types has a working out-of-tree example. | 5/5 in `examples/plugins/` | M4 DoD |
 | SC-7 | **Explicability.** From a transcript alone, `harness trace` reconstructs every model call, tool call, verdict and cost. | Byte-identical replay of a recorded run | Golden test |

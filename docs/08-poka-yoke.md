@@ -1,6 +1,6 @@
 # 08 — Poka-Yoke Register
 
-Fifty-seven ways a competent developer could still get this wrong, and what in the design
+Fifty-nine ways a competent developer could still get this wrong, and what in the design
 stops them. The ranking is deliberate:
 
 **Impossible** > **Import-time error** > **Construction-time error** > **First-run error** >
@@ -76,6 +76,8 @@ which is why they are grouped separately below.
 | 30 | Budget checked after spending | `reserve()` before every call. Worst case on output; margin, upward calibration and a hard character bound on input (ADR-026) | Exact on authorization; bounded on spend |
 | 31 | Float rounding drift in money arithmetic | `Decimal` throughout; a lint rule bans `float` in `budget/` | Impossible |
 | 32 | Unknown model priced at zero, silently disabling the ceiling | `UnknownModelError` before any call | Impossible |
+| 58 | **A public parameter that silently does nothing** — `max_parallel_tools` was accepted, stored, documented and never read; measured peak concurrency 30 against a limit of 4 | AC-31: every public parameter must be read somewhere in the package. *A parameter that does nothing is worse than one that does not exist, because people rely on it* | CI |
+| 59 | **A benchmark that cannot fail** — the first SC-4 benchmark measured a constant prompt and reported 99.4 % | Every benchmark asserts the *shape* of the failure it guards, not only a threshold: SC-4 pins both the 90 % floor and that the hit rate must not degrade with length | CI |
 | 33 | Pricing table quietly going stale | CI job fails when `as_of` is more than 90 days old | CI |
 | 46 | **A truncated answer reported as success** — the provider's `max_tokens` stop reason had no mapping, so `ok` was `True` for half a sentence | `StopReason.TRUNCATED` with `ok = False`; unmapped provider values map to `ERROR`, never success. P-9 tests the mapping against the protocol rather than against the design | Impossible |
 | 47 | **A chat costing N × the budget** because nobody defined whether a budget covers a turn or a session | One ledger per `Chat` (ADR-020). Answers shorten as it depletes, then it ends | Impossible |

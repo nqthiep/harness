@@ -104,7 +104,7 @@ class Agent:
         return f"Agent(name={self.name!r}, tools={[t.name for t in self.toolset]})"
 
     # -- running ----------------------------------------------------------
-    async def atry_run(self, message: str, *, on_delta=None) -> Result:
+    async def atry_run(self, message: str, *, on_delta=None, _history=()) -> Result:
         provider = self.provider
         if provider is None:
             raise ConfigError(
@@ -122,16 +122,17 @@ class Agent:
         # out — wide enough to redact, narrow enough not to retain (Round 25, RT-13).
         with redaction_scope():
             return await RunEngine(self, provider, ledger, engine, taint, self._asm, bus,
-                                   self._watch).run(message, on_delta=on_delta)
+                                   self._watch).run(message, messages=_history,
+                                                    on_delta=on_delta)
 
     async def arun(self, message: str, *, on_delta=None) -> Result:
         r = await self.atry_run(message, on_delta=on_delta)
         r.raise_for_status()
         return r
 
-    def try_run(self, message: str, *, on_delta=None) -> Result:
+    def try_run(self, message: str, *, on_delta=None, _history=()) -> Result:
         _guard_sync()
-        return asyncio.run(self.atry_run(message, on_delta=on_delta))
+        return asyncio.run(self.atry_run(message, on_delta=on_delta, _history=_history))
 
     def run(self, message: str, *, on_delta=None) -> Result:
         r = self.try_run(message, on_delta=on_delta)

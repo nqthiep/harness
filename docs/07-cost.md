@@ -147,7 +147,7 @@ maintain.
 | Situation | Placement |
 |---|---|
 | Any agent with tools or a non-trivial job | One breakpoint on the last system block — caches `tools` + `system` together, since tools render first |
-| Multi-turn conversation | One additional breakpoint on the last content block of the most recent turn; earlier breakpoints stay valid, so hits accrue as the conversation grows |
+| Multi-turn conversation | One breakpoint on the last content block of the most recent turn, **plus a rolling read point at the position the previous request marked**. A cache entry is only *read* at a breakpoint present in the current request, so marking only the newest message writes an entry nothing reads back — measured at 71.5 % (ADR-029). |
 | Prefix under ~1 024 tokens | **No breakpoint at all.** Below the minimum cacheable prefix, a marker only pays the write premium with zero reads. The assembler counts and omits it. |
 
 Maximum 4 breakpoints; the assembler never emits more.

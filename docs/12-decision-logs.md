@@ -612,6 +612,32 @@ boundary never sees. Redaction now applies at the tool-result boundary too.
 
 ---
 
+### ADR-029 — Cache breakpoints keep a rolling read point
+**Status:** Accepted (Round 26) · **Completes §07.2.2, which was specified and unbuilt**
+
+**Context.** The assembler placed a breakpoint on the system block only, so the whole
+conversation was re-billed every turn: SC-4 measured **71.8 %** against a 90 % floor,
+degrading to 61.7 % by turn 10.
+
+Adding the specified breakpoint on the newest message did not help — still 71.5 %. **A cache
+entry is only read at a breakpoint present in the current request.** Marking only the newest
+message writes an entry that nothing ever reads back.
+
+**Decision.** Mark the last content block of the current final message **and** the position
+the previous request marked (index −3 in a user/assistant/user pattern). With the system
+breakpoint that is three, inside the provider's limit of four.
+
+**Result:** 95.3 % on turns 3+, and the hit rate now *improves* with length (94.1 % → 96.0 %)
+rather than degrading. Input tokens per turn are flat instead of unbounded.
+
+**What the benchmark taught.** The first version of it called `run()` ten times with no
+history — a constant prompt — and reported 99.4 %. **A benchmark that cannot fail is
+indistinguishable from one that passes.** It now asserts two things: the 90 % floor, and that
+the hit rate does not *degrade* with conversation length, because that was the shape of the
+real failure and a floor alone would accept a design that merely stayed flat.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
@@ -647,6 +673,8 @@ boundary never sees. Redaction now applies at the tool-result boundary too.
 | IDL-29 | Numeric defaults are cross-validated by a test that multiplies them out | The Round 17 defect lived between two correct components, not inside either |
 | IDL-35 | `Verdict` lives in `policy/base.py`; `policy` imports `ToolSpec` only under `TYPE_CHECKING` | `EFFECT_PROFILES` needs `Verdict` and `Policy` needs `ToolSpec` — a cycle the module map showed without noting |
 | IDL-36 | `size_call` returns `model_max` when the output price is zero | A free provider has nothing to divide by. Without it, SC-5's zero-cost testing crashes on ADR-017's division |
+| IDL-38 | Duplicate calls within a step run once, but each `tool_use` still gets its own `tool_result` | Invariant I-3 does not bend for an optimization; a missing result corrupts the conversation |
+| IDL-39 | The parallelism semaphore is created in `RunEngine.__init__` from `agent.max_parallel_tools` | The parameter existed and was stored for two milestones without anything reading it. Peak concurrency measured at 30 against a limit of 4 |
 | IDL-37 | Calibration ratchets upward only | An input under-count overspends; an over-count only wastes headroom. The two errors are not symmetric |
 | IDL-30 | An unrecognized provider `stop_reason` maps to `ERROR` with the raw value | Fail visible. Mapping an unknown outcome to success is how truncated answers ship as correct ones |
 | IDL-32 | `Secret.__hash__ = None` | Equal-by-value secrets hashing by name violates Python's hash invariant and silently corrupts sets and dicts. Unhashable also prevents a credential becoming an `lru_cache` key, which the redactor cannot reach |

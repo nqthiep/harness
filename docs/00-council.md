@@ -1196,15 +1196,83 @@ rejection* rather than runtime denial — F9.1 working exactly as designed, a ye
 later. RT-11's lattice, RT-14's egress check, and the approval path (sync callback, async
 callback, and no callback) all held on first execution.
 
+
+---
+
+### Round 26 — Executing M2: every cost claim meets a measurement
+
+M2 is where the package's cost argument stops being prose. Four defects, and the first one
+is about the benchmark rather than the code.
+
+**H26.1 — The first version of the SC-4 benchmark reported 95 % while testing nothing.**
+
+Written as ten `run()` calls against the same agent, it reported **99.4 %** and passed. It
+was measuring a *constant prompt*: each call started with no history, so the bytes were
+identical every turn and the cache hit trivially. SC-4 says *10-turn conversation*, and a
+conversation **grows** — that growth is the entire difficulty.
+
+Rewritten to carry turns 0..N-1 forward, the real number was **71.8 %, degrading 90.8 % →
+61.7 %** as the conversation lengthened. The threshold is 90 %.
+
+The Test Architect's note, which the council accepted as the round's main lesson: **a
+benchmark that cannot fail is indistinguishable from one that passes.** The first version
+had no way to report a bad result. It is now pinned by a second assertion — the hit rate
+must not *degrade* with conversation length — because that is the shape the real failure had,
+and a single threshold would not have caught a design that merely stayed flat at 90 %.
+
+**H26.2 — Only the system prefix was cached; §07.2.2's multi-turn breakpoint was never built.**
+
+The design specifies a breakpoint on the last content block of the most recent turn, so hits
+accrue as the conversation grows. The assembler placed one on the system block and nothing
+else, so the entire conversation was re-billed every turn.
+
+Implementing it naively still failed, at 71.5 %. **A cache entry is only *read* at a
+breakpoint present in the current request** — marking only the newest message writes an
+entry that nothing ever reads back. The fix keeps a rolling read point at the position the
+previous request marked. Two message breakpoints plus the system one stays inside the
+provider's limit of four.
+
+| | hit rate on turns 3+ | trend |
+|---|---|---|
+| system breakpoint only | 71.8 % | degrades to 61.7 % |
+| + newest-message breakpoint | 71.5 % | still degrades |
+| + rolling read point | **95.3 %** | **improves to 96.0 %** |
+
+Input tokens per turn went from growing without bound to flat at ~153.
+
+**H26.3 — `max_parallel_tools` is accepted, stored, documented, and never read.**
+
+Measured peak concurrency: **30, against a configured limit of 4.** The parameter is on
+`Agent`, NFR-09 states the bound, [§06.7](06-safety.md#7-loop-and-resource-control) lists it
+as the control preventing "fork-bombing a downstream service", and Round 22's traceability
+matrix shows NFR-09 owned by T-2.7.
+
+**A configuration parameter that silently does nothing is worse than one that does not
+exist**: it is a protection people will rely on.
+
+**H26.4 — Duplicate-call suppression (T-2.5) was specified and never implemented.** Five
+identical calls in one step executed five times. Now run once, with every `tool_use` still
+receiving its own `tool_result` (invariant I-3 does not bend for an optimization).
+
+**The finding that generalizes.** Round 22 swept for numbered artifacts that no task owned
+and fixed every orphan. Both H26.3 and H26.4 were **owned** — NFR-09 → T-2.7, T-2.5 in the
+plan — and both were unimplemented.
+
+> **Ownership is not implementation, and a traceability matrix cannot tell the difference.**
+
+Only running the behavior can. AC-31 now asserts that every public parameter is read
+somewhere in the package, which is the cheap mechanical half of that gap.
+
 ---
 
 ## 2.3 Running score
 
-| Round | Built | Defects found | Security defects |
-|---|---|---|---|
-| 1–23 | nothing | 20 | 0 |
-| 24 | M0 slice | 7 | 0 |
-| 25 | M1 safety core | 3 | **1** |
+| Round | Built | Defects found | Security defects | Specified-but-never-built |
+|---|---|---|---|---|
+| 1–23 | nothing | 20 | 0 | — |
+| 24 | M0 slice | 7 | 0 | 0 |
+| 25 | M1 safety core | 3 | **1** | 0 |
+| 26 | M2 cost core | 4 | 0 | **3** |
 
 Twenty-five rounds in, **the only live security hole in the package was found by running the
 red-team suite, not by writing it.** It had been specified since Round 7, reviewed in Rounds
@@ -1271,6 +1339,7 @@ with a 16/16 gate. They found:
 | 23 | A wall-clock ceiling that overshoots by up to 30 s; an undefined step/resume interaction | The last unmultiplied cross-products — and the point of diminishing returns |
 | **24** | **Seven defects in the built M0 slice, including one that falsified SC-2** | **Reading cannot find what only running finds** |
 | **25** | **Three defects in the built M1 safety core, including a live secret leak to the model** | **Writing a red-team suite is not running one** |
+| **26** | **Four defects in the built M2 cost core; three features were specified, owned by a task, and never implemented** | **Ownership is not implementation** |
 
 **Every one of these passed a prior review.** The five techniques that found them — multiply
 the numbers out, execute the contract, traverse types rather than tasks, count coverage per

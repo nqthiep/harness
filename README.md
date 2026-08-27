@@ -10,6 +10,8 @@
 > python3 tests/test_walkthrough.py    # 20 tests — the §14.5 acceptance walkthrough
 > python3 tests/test_properties.py     # P-1, P-8, P-9 — the budget and mapping invariants
 > python3 tests/test_redteam.py        # 21 tests — the §06.8 red-team scenarios
+> python3 tests/test_m2.py             # 9 tests  — scheduling, dedup, context growth
+> python3 tests/bench_cache.py         # SC-4     — 95.3% cache reads on turns 3+
 > ```
 
 **Harness** is a Python library for building AI agents that are *cheap to run, hard to
@@ -63,7 +65,7 @@ council recorded the trade and the reasoning in the [Design Decision Log](docs/1
 | 5 | **Efficient** | Async core, sync facade, one round-trip per step, truncation ceilings on every tool result. |
 
 Plus the sixth, which shaped the API more than any other: **Poka-Yoke** — see the
-[register of 57 failure modes and their design-level defenses](docs/08-poka-yoke.md).
+[register of 59 failure modes and their design-level defenses](docs/08-poka-yoke.md).
 Ten of those came from Round 13, and **five of the six worst beginner blockers turned out
 to be outside the API entirely** — credentials, feedback, error rendering, scaffolding and
 repeat-run cost.

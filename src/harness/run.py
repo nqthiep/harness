@@ -51,6 +51,7 @@ class RunEngine:
         self._a, self._p, self._l = agent, provider, ledger
         self._engine, self._taint, self._asm, self._bus = engine, taint, assembler, bus
         self._watch = watcher
+        self._sem = asyncio.Semaphore(max(1, getattr(agent, "max_parallel_tools", 8)))
 
     async def run(self, message: str, *, messages: Sequence[Mapping[str, Any]] = (),
                   on_delta=None) -> Result:
@@ -157,22 +158,41 @@ class RunEngine:
         # I-3: every tool_use gets exactly one tool_result, in the model's call order.
         out: list[dict[str, Any]] = [None] * len(planned)      # type: ignore[list-item]
         parallel, serial = [], []
+        seen: dict[str, int] = {}          # (name, canonical args) -> index that runs it
+        dupes: list[tuple[int, int]] = []  # (duplicate index, original index)
         for i, (b, spec, d) in enumerate(planned):
             if spec is None:
                 out[i] = _err(b["id"], f"no tool called {b['name']!r} is available"); continue
             if d is None or d.verdict is Verdict.DENY:
                 out[i] = _err(b["id"], f"denied by policy: {d.reason if d else 'unknown'}"); continue
+            key = f"{b['name']}:{_canonical(b.get('input', {}))}"
+            if key in seen:
+                # T-2.5: run it once, but still return a result per tool_use (I-3).
+                dupes.append((i, seen[key]))
+                self._bus.emit(EventKind.TOOL_REQUESTED, step=step, tool=b["name"],
+                               call_id=b["id"], duplicate_of=planned[seen[key]][0]["id"])
+                continue
+            seen[key] = i
             (parallel if EFFECT_PROFILES[spec.effect].parallel_safe else serial).append((i, b, spec))
 
         if parallel:
             done = await asyncio.gather(
-                *(self._invoke(b, spec, step) for _, b, spec in parallel),
+                *(self._bounded(b, spec, step) for _, b, spec in parallel),
                 return_exceptions=False)
             for (i, _, _), r in zip(parallel, done):
                 out[i] = r
         for i, b, spec in serial:
             out[i] = await self._invoke(b, spec, step)
+        for i, origin in dupes:
+            out[i] = {**out[origin], "tool_use_id": planned[i][0]["id"]}
         return out
+
+    async def _bounded(self, b: Mapping[str, Any], spec: ToolSpec, step: int) -> dict[str, Any]:
+        """NFR-09: parallelism is bounded, so a fan-out cannot fork-bomb a downstream
+        service.  The semaphore was specified and the parameter stored, but nothing read
+        it until Round 26 measured peak concurrency at 30 against a limit of 4."""
+        async with self._sem:
+            return await self._invoke(b, spec, step)
 
     async def _invoke(self, b: Mapping[str, Any], spec: ToolSpec, step: int) -> dict[str, Any]:
         self._bus.emit(EventKind.TOOL_STARTED, step=step, tool=spec.name, call_id=b["id"])
