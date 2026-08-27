@@ -56,7 +56,7 @@ def _schema_for(annotation: Any, *, fn_name: str, param: str) -> dict[str, Any]:
         f"described to a model.\n\n"
         f"  Supported: {_TYPE_WORDS}\n"
         f"             plus list, dict, list[T], dict[str, T], Literal[...], Enum, T | None\n\n"
-        f"  -> docs/04-interfaces.md#1-tools"
+        "  -> docs/15-first-agent.md"
     )
 
 
@@ -71,7 +71,7 @@ def build(fn: Any) -> tuple[str, dict[str, Any]]:
             f"decide when to use the tool.\n\n"
             f'      def {name}(...):\n'
             f'          """Say what this does in one line."""\n\n'
-            f"  -> docs/04-interfaces.md#1-tools"
+            "  -> docs/15-first-agent.md"
         )
 
     sig = inspect.signature(fn)

@@ -67,7 +67,7 @@ class Agent:
                 "Agent needs you to label each part, like this:\n\n"
                 f"    Agent(\n{guess}\n    )\n\n"
                 f"  You wrote:  Agent({shown})\n\n"
-                "  -> docs/03-public-api.md#3-agent--the-complete-signature"
+                "  -> docs/15-first-agent.md"
             )
         missing = [k for k, v in (("name", name), ("job", job)) if v is _MISSING]
         if missing:
@@ -75,7 +75,7 @@ class Agent:
                 f"Agent needs {' and '.join(missing)}.\n\n"
                 '    Agent(\n        name="Helper",       # what it is called\n'
                 '        job="tell jokes",   # what you want it to do\n    )\n\n'
-                "  -> docs/03-public-api.md#3-agent--the-complete-signature"
+                "  -> docs/15-first-agent.md"
             )
 
         toolset = ToolSet(tools)
@@ -321,7 +321,7 @@ def _guard_sync() -> None:
     raise SyncInAsyncContextError(
         "you called .run() from inside async code, which would deadlock.\n\n"
         "    result = await agent.arun(...)     ← use this instead\n\n"
-        "  -> docs/03-public-api.md#3-agent--the-complete-signature"
+        "  -> docs/15-first-agent.md"
     )
 
 
@@ -359,14 +359,14 @@ def _check_tool_set(toolset: ToolSet) -> None:
         return
     e, d = external[0].name, danger[0].name
     raise UnsafeToolSetError(
-        "this agent can read untrusted content AND take an action it cannot undo.\n\n"
-        f"  external: {e}  → can pull in text an attacker controls\n"
-        f"  danger:   {d}  → cannot be undone\n\n"
-        f"  A page {e!r} reads could tell the agent to run {d!r} on your data.\n\n"
+        "This helper can read things from the internet AND do something it can't undo.\n\n"
+        f"  {e:<11} can bring in words from a website\n"
+        f"  {d:<11} can't be undone\n\n"
+        f"  A website could trick your helper into using {d} on your stuff.\n\n"
         "  Pick one:\n"
-        "    1. Remove one of them, or split into two agents (recommended).\n"
-        f"    2. If {d} is genuinely safe to run on untrusted input, say so at the tool:\n"
-        f'         @tool(effect="danger", accepts_tainted=True)\n'
+        "    1. Take one of them out, or make two separate helpers.  ← easiest\n"
+        f"    2. If {d} really is safe, say so on the tool:\n"
+        '         @tool(effect="danger", accepts_tainted=True)\n'
         f"         def {d}(...):\n\n"
-        "  -> docs/06-safety.md#3-the-taint-lattice--the-designs-central-safety-idea"
+        "  -> docs/15-first-agent.md"
     )

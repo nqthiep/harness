@@ -323,12 +323,13 @@ This helper can read things from the internet AND do something it can't undo.
   search      can bring in words from a website
   send_email  can't be undone
 
-  A website could trick your helper into emailing your stuff to a stranger.
+  A website could trick your helper into using send_email on your stuff.
 
   Pick one:
     1. Take one of them out, or make two separate helpers.  ← easiest
     2. If send_email really is safe, say so on the tool:
          @tool(effect="danger", accepts_tainted=True)
+         def send_email(...):
 ```
 
 This one stops **before** your helper does anything, so nothing bad can happen. It is not
@@ -388,6 +389,13 @@ fact.
 **The `UnsafeToolSetError` entry was added in Round 17.** A child combining `search` with a
 `danger` tool can reach it, and meeting an unannounced error is how a session ends. Every
 error a child can reach must appear in this document.
+
+**§15 has been corrected by the code once** (Round 31). This document was written before
+the messages existed, and it imagined one that said "emailing your stuff to a stranger" —
+wording the real message cannot use, because it does not know the tool is an emailer. The
+tutorial is the specification for *tone, structure and vocabulary*; where it guessed at a
+detail the code knows better, the code wins and this file is updated. The whole-message
+comparison in `tests/test_m5.py` is what makes that visible instead of silent.
 
 **Concept count to a custom tool:** three more — the decorator line, one type hint, one
 docstring. Each is introduced *after* the child has already seen it work, never before.

@@ -119,6 +119,22 @@ class Setup(unittest.TestCase):
 class TutorialPromises(unittest.TestCase):
     """§15 shows exact error text.  The tutorial is the specification for these strings."""
 
+    @staticmethod
+    def _norm(text):
+        """Compare the message a child sees.  The `-> docs/...` pointer is a link, not
+        prose, and §15 omits it; everything else must match line for line."""
+        lines = [re.sub(r"\s+", " ", l).strip() for l in text.strip().splitlines()]
+        return [l for l in lines if l and not l.startswith("->")]
+
+    def assertMessageMatches(self, actual, shown):
+        """Round 31: the earlier version asserted a handful of substrings, so the code
+        could emit a completely different (grade-12.5) message and still pass."""
+        a, s = self._norm(actual), self._norm(shown)
+        if a != s:
+            diff = "\n".join(f"  code: {x}\n  §15 : {y}"
+                              for x, y in zip(a + [""] * len(s), s + [""] * len(a)) if x != y)
+            self.fail(f"§15 and the code emit different messages:\n{diff}")
+
     def _fenced(self, needle):
         for b in blocks(DOC, ""):
             if needle in b:
@@ -130,23 +146,14 @@ class TutorialPromises(unittest.TestCase):
             @tool()
             def send_email(to: str) -> str:
                 """Send an email."""
-        actual = str(cm.exception)
-        shown = self._fenced("does in the world")
-        for phrase in ("read", "write", "external", "danger", 'effect="danger"'):
-            self.assertIn(phrase, actual, f"the real message omits {phrase!r}")
-            self.assertIn(phrase, shown, f"§15 shows a message omitting {phrase!r}")
+        self.assertMessageMatches(str(cm.exception), self._fenced("does in the world"))
 
     def test_missing_type_hint_message_matches_the_tutorial(self):
         with self.assertRaises(ToolSchemaError) as cm:
             @tool(effect="read")
             def add(a, b):
                 """Add."""
-        actual = str(cm.exception)
-        shown = self._fenced("what kind of thing")
-        for phrase in ("what kind of thing", "int = whole number",
-                       "def add(a, b):", "def add(a: int, b: int):"):
-            self.assertIn(phrase, actual, f"the real message omits {phrase!r}")
-            self.assertIn(phrase, shown, f"§15 shows a message omitting {phrase!r}")
+        self.assertMessageMatches(str(cm.exception), self._fenced("what kind of thing"))
 
     def test_effect_typo_message_matches_the_tutorial(self):
         with self.assertRaises(MissingEffectError) as cm:
@@ -178,11 +185,8 @@ class TutorialPromises(unittest.TestCase):
 
         with self.assertRaises(UnsafeToolSetError) as cm:
             Agent(name="T", job="j", tools=[search, send_email])
-        actual = str(cm.exception)
-        shown = self._fenced("read things from the internet")
-        for phrase in ("search", "send_email", "Pick one", "accepts_tainted=True"):
-            self.assertIn(phrase, actual, f"the real message omits {phrase!r}")
-            self.assertIn(phrase, shown, f"§15 shows a message omitting {phrase!r}")
+        self.assertMessageMatches(str(cm.exception),
+                                  self._fenced("read things from the internet"))
 
     def test_every_complete_program_in_the_tutorial_parses(self):
         checked = 0
@@ -222,6 +226,89 @@ class TutorialPromises(unittest.TestCase):
         self.assertEqual(defined, expected,
                          f"exercised {defined} of {expected} tools shown in §15")
         self.assertGreaterEqual(expected, 4)
+
+
+class Readability(unittest.TestCase):
+    """SC-1c (Round 31): the half of SC-1b that is mechanical.
+
+    A child study cannot succeed if the text is unreadable, and that is measurable today.
+    Flesch-Kincaid grade 5.0 is the reading level of a typical ten-year-old.
+    """
+
+    LIMIT = 5.0
+
+    def _errors(self):
+        from harness import (Agent, tool, ConfigError, MissingEffectError,
+                             ToolSchemaError, UnsafeToolSetError)
+        out = {}
+
+        def cap(label, fn, exc):
+            try:
+                fn()
+            except exc as e:
+                out[label] = str(e)
+            else:
+                self.fail(f"{label}: expected {exc.__name__}")
+
+        def missing_effect():
+            @tool()
+            def send_email(to: str) -> str:
+                """Send an email."""
+
+        def missing_hint():
+            @tool(effect="read")
+            def add(a, b):
+                """Add."""
+
+        def typo():
+            @tool(effect="reed")
+            def look(x: str) -> str:
+                """Look."""
+
+        def unsafe():
+            from harness.tools.web import search
+
+            @tool(effect="danger")
+            def send(to: str) -> str:
+                """Send."""
+            Agent(name="T", job="j", tools=[search, send])
+
+        cap("missing effect", missing_effect, MissingEffectError)
+        cap("missing type hint", missing_hint, ToolSchemaError)
+        cap("effect typo", typo, MissingEffectError)
+        cap("unsafe tool set", unsafe, UnsafeToolSetError)
+        cap("positional args", lambda: Agent("Helper", "tell jokes"), ConfigError)
+        cap("no api key", lambda: Agent(name="T", job="j").run("hi"), ConfigError)
+        return out
+
+    def test_every_child_facing_error_reads_at_age_ten(self):
+        sys.path.insert(0, "tests")
+        from readability import grade
+        too_hard = {k: grade(v, line_oriented=True)[0] for k, v in self._errors().items()}
+        too_hard = {k: g for k, g in too_hard.items() if g > self.LIMIT}
+        self.assertEqual(too_hard, {},
+                         f"messages a ten-year-old cannot read: {too_hard}")
+
+    def test_the_tutorial_reads_at_age_ten(self):
+        sys.path.insert(0, "tests")
+        from readability import grade
+        body = DOC[DOC.index("# Make your own AI helper"):DOC.index("## Reviewer notes")]
+        g = grade(body)[0]
+        self.assertLessEqual(g, self.LIMIT, f"§15 reads at grade {g}")
+
+    def test_no_child_facing_error_uses_internal_vocabulary(self):
+        """Prose only.  `accepts_tainted=True` is a parameter name a child copies, not a
+        word they have to understand — scanning code for vocabulary flags the wrong thing
+        (Round 31)."""
+        sys.path.insert(0, "tests")
+        from readability import strip_markup
+        banned = ["parallel", "retryable", "serial", "untrusted", "reversibly",
+                  "auto-allowed", "taint", "ledger", "schema", "protocol", "invariant"]
+        for label, msg in self._errors().items():
+            prose = strip_markup(msg).lower()
+            for word in banned:
+                self.assertNotIn(word, prose,
+                                 f"the {label!r} message uses internal vocabulary: {word!r}")
 
 
 class ConceptBudget(unittest.TestCase):

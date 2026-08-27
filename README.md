@@ -68,7 +68,7 @@ council recorded the trade and the reasoning in the [Design Decision Log](docs/1
 | 5 | **Efficient** | Async core, sync facade, one round-trip per step, truncation ceilings on every tool result. |
 
 Plus the sixth, which shaped the API more than any other: **Poka-Yoke** — see the
-[register of 66 failure modes and their design-level defenses](docs/08-poka-yoke.md).
+[register of 68 failure modes and their design-level defenses](docs/08-poka-yoke.md).
 Ten of those came from Round 13, and **five of the six worst beginner blockers turned out
 to be outside the API entirely** — credentials, feedback, error rendering, scaffolding and
 repeat-run cost.
@@ -97,6 +97,7 @@ Read in order if you are new. Jump straight to §11 if you are picking up a task
 | 13 | [Risk register & open issues](docs/13-risk-register.md) | What could still go wrong, and what is explicitly deferred |
 | 14 | [Validation plan](docs/14-validation-plan.md) | How we prove the implementation actually matches this design |
 | 15 | [**Your First Agent**](docs/15-first-agent.md) | The child-facing tutorial, written out in full as evidence rather than described |
+| 16 | [SC-1b field kit](docs/16-sc1b-field-kit.md) | The runnable study protocol — consent, script, observation sheet, scoring, and what it cannot tell you |
 
 ---
 

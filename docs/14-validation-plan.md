@@ -12,7 +12,8 @@ requirement, it is a wish.
 | Req | Check | Where | Gate |
 |---|---|---|---|
 | G1 / SC-1a | Beginner study, 5 developers | T-5.4 | Blocks 1.0 |
-| G1 / SC-1b | **Beginner study, 3 children aged 10–12** | T-5.4 | Blocks 1.0 |
+| G1 / SC-1b | **Beginner study, 3 children aged 10–12** — protocol in [§16](16-sc1b-field-kit.md) | T-5.4 | Blocks 1.0 |
+| G1 / SC-1c | Reading grade ≤ 5.0 on §15 and every child-reachable error; no internal vocabulary in error prose | `tests/test_m5.py` | Blocks merge |
 | G2 / SC-2a, SC-2b | Property P-1, 3 000 adversarial runs with injected count drift | `tests/property/test_budget.py` | Blocks merge |
 | G3 / SC-3 | Red-team suite, 14 scenarios | `tests/redteam/` | Blocks merge |
 | G4 / SC-4 | Cache benchmark, 10-turn fixture | `benchmarks/cache.py` | Blocks merge |
@@ -152,6 +153,7 @@ against slow architectural drift, which no ordinary test catches.
 | AC-39 | **Every `import harness…` appearing in the documentation actually imports.** *§15 told children to import `harness.tools.web`, which did not exist (Round 30).* | Round 30 |
 | AC-40 | **Every `harness <command>` named in the documentation is implemented.** *Five of seven were not.* | Round 30 |
 | AC-41 | No tool evaluates model-supplied text with `eval`/`exec` | Round 30 |
+| AC-42 | **Every error §15 shows is compared to the code's message line for line**, not by substring. *A substring check let the code emit a grade-12.5 message while green (Round 31).* | SC-1c |
 | AC-33 | Every conditional subsystem is either reachable from the shipped defaults or declares in the docs that it is not | P-10 |
 | AC-31 | **Every public parameter is read somewhere in the package.** *`max_parallel_tools` was accepted, stored and documented for two milestones without anything reading it (Round 26).* | NFR-09 |
 | AC-28 | Every `Secret` guarantee (unhashable, unpicklable, weakly registered) is exercised, not just declared | ADR-024 |

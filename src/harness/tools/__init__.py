@@ -44,11 +44,14 @@ EFFECT_PROFILES: Final[Mapping[Effect, EffectProfile]] = {
     Effect.DANGER:   EffectProfile(False, False, False, Verdict.ASK,   Verdict.ASK,   "warning"),
 }
 
+#: The exact text §15 shows a child.  The parentheticals this used to carry — "parallel,
+#: retryable, auto-allowed" — re-exposed the five behaviours ADR-003 derives so the author
+#: never has to think about them, and pushed the message to reading grade 12.5 (Round 31).
 _EFFECT_HELP = (
-    "  read      only looks at things          (parallel, retryable, auto-allowed)\n"
-    "  write     changes something reversibly  (serial, not retried)\n"
-    "  external  brings in outside content     (output treated as untrusted)\n"
-    "  danger    cannot be undone              (always asks; blocked after untrusted input)\n"
+    "  read      only looks at things\n"
+    "  write     changes something you could undo\n"
+    "  external  brings in stuff from the internet\n"
+    "  danger    does something you can't undo\n"
 )
 
 _DANGER_WORDS = ("send", "delete", "remove", "drop", "pay", "charge", "post", "publish",
@@ -102,12 +105,12 @@ def tool(
 
         if effect is None:
             raise MissingEffectError(
-                f"tool {fn.__name__!r} must declare what it does to the world.\n\n"
+                "Your tool needs to say what it does in the world.\n\n"
                 f'    @tool(effect="{_guess(fn.__name__)}")     '
-                f"← likely, based on the name\n"
+                "← probably this one, from the name\n"
                 f"    def {fn.__name__}(...):\n\n"
                 f"{_EFFECT_HELP}\n"
-                f"  -> docs/06-safety.md#effects"
+                "  -> docs/15-first-agent.md"
             )
         try:
             eff = Effect(effect)
@@ -116,15 +119,16 @@ def tool(
             hint = f' Did you mean "{close[0]}"?' if close else ""
             raise MissingEffectError(
                 f"{effect!r} is not one of the four choices.{hint}\n\n{_EFFECT_HELP}\n"
-                f"  -> docs/06-safety.md#effects"
+                "  -> docs/15-first-agent.md"
             ) from None
 
         import re
         if not re.match(_NAME_RE, fname):
             raise ToolSchemaError(
-                f"tool name {fname!r} is not usable: it must be lowercase letters, digits\n"
-                f"and underscores, starting with a letter, at most 64 characters.\n\n"
-                f"  -> docs/04-interfaces.md#1-tools"
+                f"{fname!r} does not work as a tool name.\n\n"
+                "  Use small letters, numbers and _ , starting with a letter.\n"
+                f"  Try: {'_'.join(c for c in fname.lower().split()) or 'my_tool'}\n\n"
+                "  -> docs/15-first-agent.md"
             )
 
         description, input_schema = _schema.build(fn)

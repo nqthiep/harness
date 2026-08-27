@@ -1497,6 +1497,94 @@ verifies what was assigned. **Neither reads the documentation as a promise.** So
 documentation is now a test input: its imports, its commands, and its error messages are all
 asserted against the code.
 
+
+---
+
+### Round 31 — Measuring the half of SC-1b that does not need children
+
+SC-1b has been the package's one open criterion since Round 16, described each round as
+"cannot be closed by code". Round 31 asked whether that was entirely true. **It was not.**
+
+A child study cannot succeed if the text is unreadable, and readability is measurable
+today. Flesch–Kincaid grade level over §15 and over every error a child can reach:
+
+| | before | after |
+|---|---|---|
+| §15 child-facing body | grade **4.2** | 4.2 |
+| missing `effect=` | grade **12.5** | 3.3 |
+| `effect=` typo | grade **11.2** | 3.1 |
+| positional `Agent(...)` | grade **14.9** | 3.1 |
+| unsafe tool set | grade **7.7** | 4.9 |
+| worst case | **14.9** | **4.9** |
+
+The tutorial read at age nine. **The messages a child actually hits read at university
+level.**
+
+**H31.1 — And the reason was that the code emitted different text from what §15 promises.**
+
+§15 shows:
+
+```
+  read      only looks at things
+  write     changes something you could undo
+```
+
+The code emitted:
+
+```
+  read      only looks at things          (parallel, retryable, auto-allowed)
+  write     changes something reversibly  (serial, not retried)
+```
+
+Those parentheticals are **the five behaviours ADR-003 derives precisely so the author never
+has to think about them**. Putting them in the error re-exposes the complexity the effect
+classes exist to hide — to the one audience least able to use it.
+
+**The Round 29 lesson recurring, one round after being recorded.** M5's tutorial-as-spec
+test passed because it asserted that the words `read`, `write`, `external` and `danger`
+appear in both texts. **A substring check verifies vocabulary, not the message**, so the
+code could emit a completely different, grade-12.5 error and stay green. The test now
+compares the whole message line for line, ignoring only the `-> docs/…` pointer.
+
+**H31.2 — §15 was corrected by the code, for the first time.** The whole-message comparison
+found the tutorial promising *"emailing your stuff to a stranger"* — wording the real
+message cannot use, because it does not know the danger tool is an emailer. §15 is the
+specification for **tone, structure and vocabulary**; where it guessed at a detail the code
+knows better, the code wins. Recorded because it inverts the rule the council had been
+applying, and because the comparison is what made it visible rather than silent.
+
+**H31.3 — Two measurement artifacts, found by disbelieving a number.** The first grades were
+inflated by counting indented code examples as prose, and by treating a four-row list with
+no full stops as one enormous sentence. Both were fixed before the numbers were trusted. A
+metric that has not been argued with is not evidence — the same caution Round 26 applied to
+a benchmark that could not fail.
+
+---
+
+### The instrument: [§16 — SC-1b Field Kit](16-sc1b-field-kit.md)
+
+**A study nobody can run is not a gate, it is a wish.** SC-1b has been cited as blocking in
+fifteen rounds without anyone being able to execute it, so this round produced the runnable
+instrument: consent and assent, a facilitator script with an explicit *may / may not* table,
+a two-minute stall rule, an observation sheet that captures questions **verbatim**, scoring,
+and the mapping from each observation to a decision.
+
+Three details the council insisted on:
+
+- **The adult performs the API-key step**, and it is excluded from the timing. It needs an
+  account and a payment method, it is the one acknowledged gap in the child-facing path, and
+  pretending otherwise would measure the wrong thing.
+- **The facilitator wants it to work.** That bias is why the script forbids explaining, why
+  the stall rule is a full two minutes of silence, and why questions are recorded verbatim —
+  a paraphrase loses the vocabulary mismatch, which is usually the actual finding.
+- **§7 states what the kit cannot tell you.** n = 3 detects gross failures and cannot rank
+  two designs. A pass means *this did not fail badly for three children* — the honest claim,
+  and the one the council will record.
+
+**SC-1c** is added as the mechanical half, blocking in CI: §15 and every child-reachable
+error must read at grade ≤ 5.0, and no error may use internal vocabulary (`parallel`,
+`retryable`, `untrusted`, `taint`, `ledger`, `schema`) in its prose.
+
 ---
 
 ## 2.4 What the five build rounds cost, and what they found
@@ -1536,6 +1624,7 @@ never looked at.**
 | 28 | M4 memory · plugins · subagents | 4 | **1** (budget ceiling leak) | **2** |
 | 29 | M5 CLI · tutorial-as-test | **0** | 0 | 0 |
 | 30 | promise-vs-implementation audit | **6** | 0 | **6** (incl. the whole provider) |
+| 31 | readability & the SC-1b instrument | **3** | 0 | 0 |
 
 Twenty-five rounds in, **the only live security hole in the package was found by running the
 red-team suite, not by writing it.** It had been specified since Round 7, reviewed in Rounds
@@ -1607,6 +1696,7 @@ with a 16/16 gate. They found:
 | **28** | **A $0.10 agent spent $30 through subagents while reporting $0.0000** | **A suite written by the feature's author tests the feature, not the promise** |
 | **29** | **Nine red tests, zero product defects — the tutorial held** | **A test that fails for its own reasons misleads as much as one that passes for none** |
 | **30** | **The library had no model provider, and §15 told children to import a module that did not exist** | **Neither a test suite nor a traceability matrix reads the docs as a promise** |
+| **31** | **The tutorial read at age 9; the errors a child hits read at university level** | **A substring check verifies vocabulary, not the message** |
 
 **Every one of these passed a prior review.** The five techniques that found them — multiply
 the numbers out, execute the contract, traverse types rather than tasks, count coverage per

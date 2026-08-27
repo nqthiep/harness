@@ -1,6 +1,6 @@
 # 08 — Poka-Yoke Register
 
-Sixty-six ways a competent developer could still get this wrong, and what in the design
+Sixty-eight ways a competent developer could still get this wrong, and what in the design
 stops them. The ranking is deliberate:
 
 **Impossible** > **Import-time error** > **Construction-time error** > **First-run error** >
@@ -32,6 +32,8 @@ which is why they are grouped separately below.
 | 57 | **A short-lived secret reaching the model** because the weak registry dropped it before redaction ran | `reveal()` registers the value with the active run's redaction scope, cleared at run end. Retention scoped to the exposure window, never to the object (ADR-028). *RT-13 failed this way on first execution.* | Impossible |
 | 65 | **Documentation promising a module, command or parameter that does not exist** — §15 told a child to import `harness.tools.web`, and the library had no model provider at all | AC-39/AC-40 read the docs as a test input: every documented import must import, every documented command must exist. *A test suite verifies what was built; a matrix verifies what was assigned; neither reads prose as a promise* | CI |
 | 66 | **A `read`-labelled tool that is really `danger`** — `eval` on model-supplied text is arbitrary code execution | AC-41 bans `eval`/`exec` on tool input; `calculate` walks an AST over numbers and seven operators | CI |
+| 67 | **An error message a child cannot read** — the worst measured grade 14.9 against a tutorial at 4.2 | SC-1c: Flesch–Kincaid ≤ 5.0 on every child-reachable message, checked in CI, plus a ban on internal vocabulary in error prose | CI |
+| 68 | **A documentation-conformance test that checks substrings** — it verifies vocabulary, not the message, so the code can emit something entirely different and stay green | Whole-message comparison, line for line, ignoring only the `-> docs/…` pointer (AC-42) | CI |
 | 8 | Importing from a private path that later moves | `__all__` is the contract; a CI test fails if any example or doc imports outside it | CI |
 
 ## Tools
