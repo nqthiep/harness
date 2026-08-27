@@ -21,7 +21,7 @@ surface of Option A.
 | # | Goal | Measured by |
 |---|---|---|
 | G1 | A working agent in ≤ 5 lines and ≤ 3 concepts, reachable by a child who knows basic Python | SC-1a, SC-1b |
-| G2 | A runaway agent cannot exceed its budget | SC-2 |
+| G2 | A runaway agent cannot exceed its budget | SC-2a, SC-2b |
 | G3 | Untrusted content cannot trigger irreversible actions | SC-3 |
 | G4 | Prompt caching works by default, without the author thinking about it | SC-4 |
 | G5 | Agents are testable with zero API spend | SC-5 |
@@ -35,7 +35,8 @@ surface of Option A.
 |---|---|---|---|
 | SC-1a | **Time to first agent (developers).** Five people who have never seen the library, given only the README, produce a working agent. | Median ≤ 10 min; ≥ 4/5 succeed without asking a question | [§14.2](14-validation-plan.md) |
 | SC-1b | **Time to first agent (children).** Three children aged 10–12 who have completed a basic Python course, given only [§15](15-first-agent.md). An adult may read words aloud but may not explain, debug, or type. | ≥ 2/3 reach a working agent in ≤ 20 min **and** ≥ 2/3 add a tool of their own | [§14.2](14-validation-plan.md) |
-| SC-2 | **Budget is a ceiling.** Over 1 000 randomized adversarial runs (tool loops, huge results, retries), actual spend never exceeds the declared budget. | 0 violations | Property test, [§09](09-testing.md) |
+| SC-2a | **Authorization ceiling (exact).** The harness never authorizes a call whose estimate exceeds the remaining budget, and authorizes nothing further once spend crosses it. | 0 violations | Property P-1, [§09](09-testing.md) |
+| SC-2b | **Spend ceiling (bounded).** Actual spend may exceed the budget only by one call's input-count error. *Restated by ADR-026 after Round 24 measured 380 violations against the original "never exceeds" wording — a library cannot know the true input cost before the call.* | ≤ 1.05× over 3 000 adversarial runs | Property P-1, [§09](09-testing.md) |
 | SC-3 | **Taint containment.** The red-team suite's exfiltration scenarios are blocked. | 100 % of RT-01…RT-12 blocked | Red-team suite, [§09.5](09-testing.md) |
 | SC-4 | **Cache effectiveness.** On the 10-turn conversation fixture, cache reads on turns 3+. | ≥ 90 % of input tokens read from cache | Benchmark, [§14.3](14-validation-plan.md) |
 | SC-5 | **Zero-cost testing.** The full test suite runs green with no network access. | `no_network()` active in CI; 0 outbound calls | CI gate |

@@ -160,6 +160,7 @@ right — before anything is built on top of it.
 - **Why.** ADR-014, ADR-015. G13.2–G13.5. Individually small; together they are the difference between "it works" and "I gave up".
 - **Where.** `observe/console.py`, `result.py`, `run.py`, `agent.py`, `tools/schema.py`.
 - **How.**
+  - Cache determinism: free double render at construction **plus** a `PrefixWatcher` on the **Agent** (not the run — time drift appears between calls) comparing the prefix actually sent on the first two calls. No sleep anywhere (ADR-025).
   - Progress: `ConsoleExporter` auto-attached when `sys.stdout.isatty()`. Writes to **stderr** (IDL-24) so redirecting stdout stays clean. Tool **names** only, never arguments.
   - `Result.__str__` returns `self.text`. No `__add__`.
   - Tracebacks: `run()` catches, drops harness-internal and `asyncio` frames from `__traceback__`, sets `__suppress_context__`, re-raises. **No global hook of any kind.** `HARNESS_FULL_TRACEBACK=1` restores. The unfiltered traceback still goes to the `error.raised` event.
@@ -251,7 +252,7 @@ adversarial runs.
 - **Depends.** T-0.4
 - **Contract.** [§04.4](04-interfaces.md#4-budget--ledger).
 - **Failure.** Insufficient budget → graceful `Result(BUDGET_EXHAUSTED)` with partial text; never an exception from `try_run`. Unparseable string → `InvalidBudgetError` at construction listing accepted forms. `Budget(usd=None)` warns every run.
-- **Test.** **Property P-1 over 1 000 adversarial runs — SC-2.** Parser table (12 cases). No `float` in the module (AST test). Reserve-before-call ordering asserted by an event-sequence test. **P-8: for every pair of shipped numeric defaults, multiply them out and assert the result is bounded** — `reserve()` succeeds with `max_tokens` ≥ 256 for every (budget, model, input size); no run exceeds `wall_clock_s` even with a tool that ignores its own timeout; `max_result_tokens × max_parallel_tools` stays inside the budget's reach. Rounds 17, 18 and 23 each found a defect in one of these products. A budget affording < 256 output tokens stops rather than calling.
+- **Test.** **Property P-1 over 3 000 adversarial runs with injected token-count drift — SC-2a exact, SC-2b within 1.05×.** ADR-026's three mechanisms (input margin, upward-ratcheting calibration, hard character bound) are each covered by a negative fixture showing the violation rate without it. Parser table (12 cases). No `float` in the module (AST test). Reserve-before-call ordering asserted by an event-sequence test. **P-8: for every pair of shipped numeric defaults, multiply them out and assert the result is bounded** — `reserve()` succeeds with `max_tokens` ≥ 256 for every (budget, model, input size); no run exceeds `wall_clock_s` even with a tool that ignores its own timeout; `max_result_tokens × max_parallel_tools` stays inside the budget's reach. Rounds 17, 18 and 23 each found a defect in one of these products. A budget affording < 256 output tokens stops rather than calling.
 - **Done.** P-1 and P-8 green; `budget/` at 100 % coverage; **the [§15](15-first-agent.md) scaffold's `budget="$0.05"` demonstrably makes a call.**
 
 ### T-1.6 — `Secret` and redaction

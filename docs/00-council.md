@@ -1005,6 +1005,130 @@ step would let a server-tool-heavy turn exhaust `budget.steps` without the agent
 progress; charging nothing at all would leave a loop bounded only by the cap. Recorded
 because the two readings differ and both are defensible until someone writes one down.
 
+
+---
+
+### Round 24 — Executing the design
+
+Round 23 stopped reviewing on the argument that "the next class of defect is waiting in
+M0, not in another round of review." Round 24 tested that claim by building the M0 slice —
+`@tool`, `ToolSet`, `Ledger`, the policy engine, the taint tracker, `Secret`, the run loop,
+`Agent` — and running the [§14.5](14-validation-plan.md#5-acceptance-walkthrough-day-1--first-deployment)
+walkthrough against it.
+
+**The claim held. Six defects, every one of which had survived every prior reading.**
+
+**H24.1 — Two Round 19 fixes are mutually incompatible.**
+IDL-32 set `Secret.__hash__ = None`. IDL-33 put secrets in a `WeakSet`. A `WeakSet` hashes
+its members. The first line of the first test raised `TypeError: unhashable type: 'Secret'`.
+Both decisions were made in the same round, by the round whose entire subject was executing
+contracts instead of reading them. → **ADR-024**: an `id()`-keyed dict of `weakref.ref` with
+a finalizer callback. Same lifetime guarantee, never hashes the referent.
+
+**H24.2 — The friendly positional-argument error never fires.**
+IDL-21 accepts `*args` in order to reject them readably. Python validates required
+keyword-only parameters **before** the body runs, so `Agent("Helper", "tell jokes")` raised
+`TypeError: __init__() missing 2 required keyword-only arguments` — Python's message, not
+ours. Register entry #39 documented a defense that did not exist. → sentinel defaults plus
+explicit checks, giving a distinct message for the positional case and for genuinely
+missing arguments.
+
+**H24.3 — Zero-cost testing and ADR-017 contradict each other.**
+`FakeModel` is priced at zero (SC-5). ADR-017 derives `max_tokens` by dividing by the output
+price. Every test using the fake died on `decimal.DivisionByZero`. The library's own
+testing story could not run against the library's own budget mechanism.
+
+**H24.4 — The cache linter is expensive and misses the common case.**
+T-2.3's contract says it "adds < 5 ms when the prompt is static". IDL-17 mandates a 150 ms
+sleep between renders. Both were approved. Measured: 150 ms on **every** construction —
+150 seconds across P-1's thousand runs, which is what made the property suite time out.
+
+Then the worse half. What a 150 ms sleep actually detects:
+
+| pattern | caught |
+|---|:--:|
+| `uuid4()` | ✅ |
+| `time.time()` | ✅ |
+| `datetime.now()` to seconds | ❌ |
+| `date.today()` | ❌ |
+
+It costs 150 ms and **misses the two most likely cases**, because 150 ms rarely crosses a
+second boundary and never crosses midnight. → **ADR-025**: render twice back-to-back at
+construction (free; catches everything that changes per call) **plus** compare the prefix
+actually sent across the first two real calls (free; catches time drift with a real gap).
+Construction went from 150 ms to 0.02 ms — 7 500× — and the coverage went up.
+
+**H24.5 — SC-2 is false as written, and RISK-03's mitigation is wrong.**
+
+The property test found **380 budget violations in 1 000 runs**, one at **27× the limit**.
+
+The pre-flight ceiling is only as good as `count_input_tokens`. RISK-03 anticipated this and
+recorded it as mitigated because "worst-case estimation over-counts by construction". That
+sentence is false: the worst case over-counts **output** (`max_tokens`), and does nothing
+about an **input** under-count. Nobody had separated the two terms.
+
+A library cannot know the true input cost before making the call, so **"actual spend never
+exceeds the budget" is not achievable** and should never have been written as a success
+criterion. → **ADR-026**, three parts:
+
+1. A 15 % margin on counted input.
+2. Calibration from the previous response's real input, ratcheting **upward only** — an
+   under-count is the dangerous direction; an over-count only wastes headroom.
+3. A **hard local upper bound**: no tokenizer emits more tokens than the prompt has
+   characters. When even that bound fits the remaining budget, the reservation uses it and
+   the ceiling is **exact** for that call. Most real calls qualify.
+
+And SC-2 restated honestly as two claims:
+
+- **SC-2a (exact):** the harness never *authorizes* a call whose estimate exceeds the
+  remaining budget, and authorizes nothing further once spend crosses it.
+- **SC-2b (bounded):** actual spend may exceed the budget only by one call's input-count
+  error.
+
+| | violations | worst overshoot |
+|---|---|---|
+| As designed | 380 / 1 000 | 27× |
+| + margin and calibration | 115 / 1 000 | 8.4× |
+| + hard character bound | **3 / 3 000** | **1.008×** |
+
+Measured with adversarial 10× token-count drift injected. Against a real provider's own
+counting endpoint the error is a few per cent, not 10×.
+
+**H24.6 — the prefix watcher must span runs.** Written per-run, it compared a prefix only
+against itself. Time-based drift appears *between* calls, so it lives on the `Agent`.
+
+**H24.7 — `tools` and `policy` import each other.** `EFFECT_PROFILES` needs `Verdict`;
+`Policy` needs `ToolSpec`. The module map showed both without noting the cycle. Resolved by
+keeping `Verdict` in `policy/base.py` and guarding the reverse import with `TYPE_CHECKING`.
+
+---
+
+## 2.2 What executing the design proved
+
+The M0 slice is ~1 200 lines. Both suites run **offline, with no API key, no pytest, in
+under a second** — SC-5 demonstrated rather than asserted.
+
+| | Rounds 1–23 (reading) | Round 24 (executing) |
+|---|---|---|
+| Rounds spent | 23 | 1 |
+| Defects found | 20 | 7 |
+| Defects that falsified a stated success criterion | 0 | **1 (SC-2)** |
+| Defects in decisions made by the round about executing contracts | — | **2 (both from Round 19)** |
+
+The two Round 19 findings are the most useful thing in this table. Round 19 adopted the rule
+"a type contract is reviewed by writing the twenty lines that exercise it" — and then made
+two decisions without writing them, and both were wrong. **A rule that is adopted but not
+applied is indistinguishable from one that was never adopted.**
+
+The council's Round 23 reasoning for stopping was correct in direction and wrong in
+magnitude: it expected the next defects in M0, and there were seven of them, including one
+that falsified the package's central cost guarantee.
+
+**Standing recommendation, replacing the Round 23 convergence note.** The design is not
+finished by more review. It is finished by building M1 and M2 the same way this round built
+M0 — where the taint lattice, the policy composition and the caching benchmark will meet
+execution for the first time.
+
 ---
 
 ## Convergence
@@ -1058,6 +1182,7 @@ with a 16/16 gate. They found:
 | 21 | One of five invariants had no section, no decision, no test | Nobody had counted |
 | 22 | A `Must` requirement and 18 conformance tests owned by no task | A numbered thing with no owner is nobody's job |
 | 23 | A wall-clock ceiling that overshoots by up to 30 s; an undefined step/resume interaction | The last unmultiplied cross-products — and the point of diminishing returns |
+| **24** | **Seven defects in the built M0 slice, including one that falsified SC-2** | **Reading cannot find what only running finds** |
 
 **Every one of these passed a prior review.** The five techniques that found them — multiply
 the numbers out, execute the contract, traverse types rather than tasks, count coverage per

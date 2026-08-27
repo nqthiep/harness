@@ -1,9 +1,15 @@
 # Harness — Implementation Design Package
 
 > **Status: READY FOR IMPLEMENT** (Council converged at Round 23)
-> This repository currently contains **no product code**. It contains the complete,
-> reviewed design and implementation plan that an engineering team can start coding from
-> on day one without making further architectural decisions.
+> The complete, reviewed design and implementation plan an engineering team can start from
+> without making further architectural decisions — plus the **M0 walking skeleton**
+> (`src/harness/`, `tests/`) built in Round 24 to prove the design executes. Both test
+> suites run **offline, with no API key and no third-party packages, in under a second**.
+>
+> ```
+> python3 tests/test_walkthrough.py    # 20 tests — the §14.5 acceptance walkthrough
+> python3 tests/test_properties.py     # P-1, P-8, P-9 — the budget and mapping invariants
+> ```
 
 **Harness** is a Python library for building AI agents that are *cheap to run, hard to
 misuse, and easy to start with*.
@@ -50,7 +56,7 @@ council recorded the trade and the reasoning in the [Design Decision Log](docs/1
 | # | Invariant | How it is enforced, not merely intended |
 |---|---|---|
 | 1 | **Extensible** | Exactly five plugin boundaries, chosen by an explicit test (§2.4). Everything else is core. |
-| 2 | **Cost-efficient** | Budgets are checked *before* each model call, not after, and `max_tokens` is derived from what the budget can afford so the two can never contradict. Cache-safety is verified at agent construction time. |
+| 2 | **Cost-efficient** | Budgets are checked *before* each model call, and `max_tokens` is derived from what the budget can afford so the two cannot contradict. The ceiling is **exact on authorization** and **bounded on spend** — measured at 3 violations in 3 000 adversarial runs, worst case 1.008× ([§07.1](docs/07-cost.md#1-the-budget-is-a-ceiling-not-an-alert)). |
 | 3 | **Safe by design** | Every tool declares an effect class or fails at import. Untrusted content mechanically blocks irreversible actions. |
 | 4 | **Intelligent** | Waste removed, not model calls added: strict tool arguments, optionally typed answers, adaptive thinking, exposed effort, explicit subagents. No planner, no reflection loop — see [§07.6](docs/07-cost.md#6-intelligence-per-unit-of-cost). |
 | 5 | **Efficient** | Async core, sync facade, one round-trip per step, truncation ceilings on every tool result. |

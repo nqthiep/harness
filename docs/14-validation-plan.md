@@ -13,7 +13,7 @@ requirement, it is a wish.
 |---|---|---|---|
 | G1 / SC-1a | Beginner study, 5 developers | T-5.4 | Blocks 1.0 |
 | G1 / SC-1b | **Beginner study, 3 children aged 10–12** | T-5.4 | Blocks 1.0 |
-| G2 / SC-2 | Property P-1, 1 000 adversarial runs | `tests/property/test_budget.py` | Blocks merge |
+| G2 / SC-2a, SC-2b | Property P-1, 3 000 adversarial runs with injected count drift | `tests/property/test_budget.py` | Blocks merge |
 | G3 / SC-3 | Red-team suite, 14 scenarios | `tests/redteam/` | Blocks merge |
 | G4 / SC-4 | Cache benchmark, 10-turn fixture | `benchmarks/cache.py` | Blocks merge |
 | G5 / SC-5 | `no_network()` autouse; suite runs offline | CI | Blocks merge |
@@ -31,7 +31,7 @@ requirement, it is a wish.
 | NFR-09 | Parallel tools bounded by `max_parallel_tools` (default 8) | `tests/integration/` | Blocks merge |
 | NFR-08 | Tool-raises integration test | `tests/integration/` | Blocks merge |
 | NFR-10 | Docstring examples executed | CI | Blocks merge |
-| ADR-001…023 | Architecture conformance tests (§4) | `tests/conformance/` | Blocks merge |
+| ADR-001…026 | Architecture conformance tests (§4) | `tests/conformance/` | Blocks merge |
 
 ## 2. SC-1 — Time to First Agent
 
@@ -139,6 +139,8 @@ against slow architectural drift, which no ordinary test catches.
 | AC-23 | Every tool definition sent to a provider carries `strict: true` | ADR-022 |
 | AC-24 | `returns=` and `tools=` schemas come from the same generator — no second Python-type-to-schema path exists | ADR-022 |
 | AC-25 | **Every invariant in [§01](01-requirements.md) has at least one section, one decision-log entry and one test.** *Round 21 found invariant 4 had none of the three; nobody had counted.* | Round 21 |
+| AC-27 | No module-level constant sets a sleep in a construction path; `Agent(...)` costs < 5 ms | ADR-025 |
+| AC-28 | Every `Secret` guarantee (unhashable, unpicklable, weakly registered) is exercised, not just declared | ADR-024 |
 | AC-26 | **Every FR, NFR, RT and AC appears in the [§11 traceability matrix](11-implementation-plan.md#traceability-matrix) with an owning task.** A contiguous range (`AC-01…26`) counts as covering every id it spans; the check expands ranges and verifies none is skipped, so shorthand cannot hide a gap. *Round 22 found FR-18 — a `Must` — and 18 AC checks owned by nobody.* | Round 22 |
 
 **Every AC has a negative fixture** proving it fails when the property is violated. A
@@ -175,7 +177,7 @@ milestone; a step that stops working is a regression in the *plan*, not just the
 | 6. Add a tool with no `effect` | Import-time error listing four options | Register #9 |
 | 7. Add `datetime.now()` to `job=` | Construction-time error with byte offset | Register #28 |
 | 8. Build `Agent(tools=[search, send_email])` | `UnsafeToolSetError` naming both tools | RT-04 |
-| 9. Set `budget="$0.01"` on a long task | Makes a call with a small derived `max_tokens`, then stops gracefully with partial text — **not** a refusal to start | SC-2, ADR-017 |
+| 9. Set `budget="$0.01"` on a long task | Makes a call with a small derived `max_tokens`, then stops gracefully with partial text — **not** a refusal to start | SC-2a, ADR-017 |
 | 10. Inspect the transcript | Every model call, tool call, verdict and cost present; no secrets | SC-7 |
 | 11. `harness cost transcript.jsonl` | Reports spend and cache hit rate | T-5.1 |
 | 12. `kill -9` mid-run, then `resume` | Completes correctly; no `write` re-executed | T-3.3 |
@@ -193,7 +195,7 @@ release.
 - [ ] SC-1a thresholds met with real developers
 - [ ] **SC-1b thresholds met with real children, including the add-your-own-tool half**
 - [ ] 14/14 red team
-- [ ] P-1 green at 1 000 cases
+- [ ] P-1 green: SC-2a exact, SC-2b within 1.05× over 3 000 adversarial runs
 - [ ] Cache benchmark ≥ 90 %
 - [ ] All 13 walkthrough steps in §5 pass on a clean machine
 - [ ] Documentation builds with zero broken links; every docstring example executes

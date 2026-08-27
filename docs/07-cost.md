@@ -36,10 +36,29 @@ produces a **short answer** rather than **no answer**:
 | `$0.50` (default) | ~19 760 | effectively unconstrained |
 | below ~256 tokens affordable | — | stops instead; a truncated answer is not an answer |
 
-The estimate is deliberately the **worst case**: it assumes the model emits its full
-`max_tokens` and ignores the cache-read discount. Over-estimating stops a run slightly
-early; under-estimating breaks the ceiling. After the call, `settle()` records the true
-cost from `response.usage`, so the ledger tracks reality while the gate stays conservative.
+The estimate is the worst case **on the output term** — it assumes the model emits its full
+`max_tokens`. It cannot be the worst case on the **input** term, because a library does not
+know the true input cost until the call returns. Round 24 measured what that gap costs: with
+`count_input_tokens` under-reporting, **380 of 1 000 runs exceeded their budget, one by 27×.**
+
+Three mechanisms close it (ADR-026): a 15 % margin on counted input; calibration from the
+previous response's real input, ratcheting **upward only**; and a **hard local upper bound** —
+no tokenizer emits more tokens than the prompt has characters, so when even that bound fits
+the remaining budget the reservation uses it and the ceiling is **exact** for that call.
+
+| | violations | worst overshoot |
+|---|---|---|
+| pre-flight estimate alone | 380 / 1 000 | 27× |
+| + margin and calibration | 115 / 1 000 | 8.4× |
+| + hard character bound | **3 / 3 000** | **1.008×** |
+
+So the guarantee is two claims, not one:
+
+- **Exact:** the harness never *authorizes* a call whose estimate exceeds what is left, and
+  authorizes nothing further once spend crosses the budget.
+- **Bounded:** actual spend may exceed the budget only by one call's input-count error.
+
+"Never exceeds" was the original wording. It was not achievable and is not claimed.
 
 **Defaults are finite on every axis** — `$0.50`, 20 steps, 300 s. An unlimited default is
 fail-open, and the failure it opens onto is a five-figure invoice. `Budget(usd=None)` is

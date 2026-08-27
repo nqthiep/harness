@@ -71,7 +71,7 @@ render all four required sections — what, where, the copy-pasteable fix, the d
 
 | Property | Statement |
 |---|---|
-| P-1 | For any budget and any sequence of fake responses, `result.cost <= budget.usd`. **1 000 cases. SC-2.** |
+| P-1 | **SC-2a:** the harness never authorizes a call whose estimate exceeds the remaining budget. **SC-2b:** actual spend exceeds the budget by at most one call's input-count error (≤ 1.05× over 3 000 adversarial runs with 10× count drift injected). *The original wording — `result.cost <= budget.usd`, 1 000 cases, 0 violations — was falsified in Round 24: 380 violations, worst 27×. See ADR-026.* |
 | P-2 | Adding any policy to any policy list never lowers any verdict. |
 | P-3 | Every `tool_use` block produces exactly one `tool_result` with a matching id (invariant I-3). |
 | P-4 | For any tool-argument shape, the generated schema validates the arguments the model would produce. |

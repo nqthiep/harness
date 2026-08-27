@@ -69,9 +69,9 @@ which is why they are grouped separately below.
 
 | # | Failure mode | Defense | Rank |
 |---|---|---|---|
-| 28 | `datetime.now()` in the system prompt → 10× cost forever, silently | Cache linter double-renders and byte-compares at construction | Construction |
+| 28 | `datetime.now()` in the system prompt → 10× cost forever, silently | Double render at construction (catches per-call drift) **plus** prefix comparison across the first two real calls (catches time drift). Both free. *The original 150 ms-sleep design caught neither `datetime.now()` to seconds nor `date.today()` — ADR-025.* | Construction or first two calls |
 | 29 | Unlimited default budget → the overnight five-figure invoice | Defaults finite on all four axes; unlimited requires typing `None` and warns every run | Impossible by default |
-| 30 | Budget checked after spending | `reserve()` before every call; worst-case estimate computed from the derived `max_tokens` | Impossible |
+| 30 | Budget checked after spending | `reserve()` before every call. Worst case on output; margin, upward calibration and a hard character bound on input (ADR-026) | Exact on authorization; bounded on spend |
 | 31 | Float rounding drift in money arithmetic | `Decimal` throughout; a lint rule bans `float` in `budget/` | Impossible |
 | 32 | Unknown model priced at zero, silently disabling the ceiling | `UnknownModelError` before any call | Impossible |
 | 33 | Pricing table quietly going stale | CI job fails when `as_of` is more than 90 days old | CI |
@@ -95,7 +95,7 @@ The failures that stop someone before they reach the API at all.
 | 36 | **Beginner commits their API key to GitHub** | `harness new` writes `.gitignore` containing `.env` **in the same command** as the file that needs it — never a separate step to skip | Impossible via the scaffold |
 | 37 | Fifteen seconds of silence reads as "broken"; user hits Ctrl-C | Live progress whenever `stdout` is a TTY; silent when piped, so production logs are unaffected | Impossible on a terminal |
 | 38 | A 40-line traceback full of `asyncio` frames ends the session | Frames filtered locally in `run()`; `__suppress_context__` set. Full traceback still in the transcript and the `error.raised` event | First run |
-| 39 | `Agent("Helper", "tell jokes")` → `TypeError: takes 0 positional arguments` | `*args` accepted **only** to reject them with the corrected call printed | First run |
+| 39 | `Agent("Helper", "tell jokes")` → `TypeError: takes 0 positional arguments` | `*args` accepted **and `name`/`job` given sentinel defaults**, only to reject them with the corrected call printed. *The sentinels are load-bearing: Python validates required keyword-only parameters before the body runs, so without them this defense never executes — Round 24.* | Construction |
 | 40 | Tool written without type hints returns `"34"` for `add(3, 4)` | Unannotated parameter is a `ToolSchemaError` showing the exact edit. **Never** defaulted to `str` — a silently wrong answer is worse than an error, because there is nothing to search for | Import |
 | 41 | `effect="reed"` — a typo in a four-word vocabulary | Did-you-mean by edit distance, naming the intended value | Import |
 | 42 | A curious user runs the script 80 times; per-run budget does nothing | Scaffold ships with `budget=`; one warning per process past `$5` cumulative; `harness setup` points at the provider's **hard** limit | Warning + provider-side ceiling |

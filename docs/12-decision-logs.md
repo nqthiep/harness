@@ -474,6 +474,97 @@ spending the same tokens on higher `effort`. Absent that number, this stays reje
 
 ---
 
+### ADR-024 — The secret registry is an id-keyed weakref map, not a WeakSet
+**Status:** Accepted (Round 24) · **Fixes an incompatibility between IDL-32 and IDL-33**
+
+**Context.** Round 19 set `Secret.__hash__ = None` and, in the same round, specified the
+redaction registry as a `WeakSet`. A `WeakSet` hashes its members. The first line of the
+first test that constructed a `Secret` raised `TypeError: unhashable type: 'Secret'`.
+
+**Decision.** `dict[int, weakref.ref[Secret]]` keyed by `id()`, with a finalizer callback
+removing the entry. Same lifetime guarantee; never hashes the referent.
+
+**Why it is worth an entry.** Both halves were made by the round whose subject was executing
+contracts rather than reading them, and neither was executed. A rule adopted but not applied
+is indistinguishable from one never adopted.
+
+---
+
+### ADR-025 — Cache determinism is checked free, in two places
+**Status:** Accepted (Round 24) · **Supersedes IDL-17**
+
+**Context.** T-2.3's contract said the linter "adds < 5 ms when the prompt is static".
+IDL-17 mandated a 150 ms sleep between renders. Both were approved. Measured, the sleep cost
+150 ms on every construction — 150 s across P-1's thousand runs, which is what made the
+property suite time out.
+
+Worse, what it detects:
+
+| pattern | caught by a 150 ms sleep |
+|---|:--:|
+| `uuid4()` | ✅ |
+| `time.time()` | ✅ |
+| `datetime.now()` to seconds | ❌ |
+| `date.today()` | ❌ |
+
+It cost 150 ms and missed the two most likely cases.
+
+**Decision.** Two free checks. At construction, render twice back-to-back — catches
+everything that changes on every call. At run time, compare the prefix actually sent across
+the first two calls — catches time-based drift with a real inter-call gap, and the watcher
+lives on the `Agent` so it spans runs. Construction: 150 ms → 0.02 ms.
+
+**Rank change.** Register #28 moves from "Construction" to "Construction **or** first two
+calls", which is honest: the datetime case was never caught at construction, it was only
+claimed to be.
+
+---
+
+### ADR-026 — The budget has two guarantees, not one
+**Status:** Accepted (Round 24) · **Restates SC-2; corrects RISK-03's mitigation**
+
+**Context.** P-1 found **380 budget violations in 1 000 runs, one at 27× the limit.**
+
+The pre-flight ceiling is only as good as `count_input_tokens`. RISK-03 recorded this risk
+as mitigated because "worst-case estimation over-counts by construction". **That is false.**
+The worst case over-counts `max_tokens` — the *output* term. It does nothing about an
+*input* under-count. The two terms were never separated.
+
+**Decision — three mechanisms:**
+
+1. A 15 % margin on counted input.
+2. Calibration from the previous response's real input, **ratcheting upward only**: an
+   under-count is the dangerous direction, an over-count merely wastes headroom.
+3. A **hard local upper bound** — no tokenizer emits more tokens than the prompt has
+   characters. When even that bound fits the remaining budget, the reservation uses it and
+   the ceiling is **exact** for that call. Most real calls qualify.
+
+**And SC-2 restated as two claims, because one was not true:**
+
+- **SC-2a (exact):** the harness never *authorizes* a call whose estimate exceeds the
+  remaining budget, and authorizes nothing further once spend crosses it.
+- **SC-2b (bounded):** actual spend may exceed the budget only by one call's input-count
+  error.
+
+| | violations | worst |
+|---|---|---|
+| as designed | 380 / 1 000 | 27× |
+| + margin, calibration | 115 / 1 000 | 8.4× |
+| + hard character bound | **3 / 3 000** | **1.008×** |
+
+Measured with adversarial 10× count drift. A real provider's counting endpoint errs by a few
+per cent.
+
+**Why not simply reserve the hard bound always.** It is typically ~4× the true count, so
+small budgets would refuse to fire — Round 17's defect, reintroduced. The bound is used when
+it fits and the estimate when it does not, and the transcript records which applied.
+
+**The honest statement, now in the docs.** A library cannot know the true input cost before
+the call. "Never exceeds" was not achievable and should not have been written as a success
+criterion.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
@@ -494,11 +585,11 @@ spending the same tokens on higher `effort`. Absent that number, this stays reje
 | IDL-14 | `EFFECT_PROFILES` is a module constant, not configuration | A user who could edit it could disable the taint rule |
 | IDL-15 | `RunContext` excludes message history | The transcript is the largest available exfiltration surface |
 | IDL-16 | SQLite `STRICT` tables + WAL + busy timeout | Type affinity silently accepts wrong types; WAL avoids `database is locked` |
-| IDL-17 | Cache linter waits 150 ms between renders | Long enough to catch second-resolution timestamps, short enough not to be noticed |
+| ~~IDL-17~~ | ~~Cache linter waits 150 ms between renders~~ | **Superseded by ADR-025.** Measured at 150 ms per construction, and it caught neither `datetime.now()` to seconds nor `date.today()` — the two most likely cases. Expensive and ineffective. |
 | IDL-18 | Breakpoints omitted below the minimum cacheable prefix | Below it, a marker pays the write premium and never reads |
 | IDL-19 | Server-side refusal fallbacks enabled by default | A routine refusal should route to a fallback, not surface as a dead end |
 | IDL-20 | Parallel results reassembled in the model's call order | Order-dependent behavior in a model's reading of results is real; determinism is cheap |
-| IDL-21 | `Agent.__init__` takes `*args` solely to reject them | Keeps keyword-only enforcement while replacing Python's unreadable `TypeError` (G13.4) |
+| IDL-21 | `Agent.__init__` takes `*args` **and gives `name`/`job` sentinel defaults** solely to reject them | Keeps keyword-only enforcement while replacing Python's `TypeError`. The sentinels are load-bearing: Python validates required keyword-only parameters **before** the body runs, so without them this check never executes (Round 24) |
 | IDL-22 | Unannotated tool parameters are an error, never defaulted to `str` | `def add(a, b)` would receive `"3"`/`"4"` and return `"34"` — a silently wrong answer a learner cannot search for |
 | IDL-23 | `effect=` misspellings get a did-you-mean via edit distance | A typo in a four-word vocabulary is the single likeliest mistake with it |
 | IDL-24 | Progress output goes to `stderr`, not `stdout` | Keeps `python agent.py > out.txt` clean even on a TTY |
@@ -507,8 +598,11 @@ spending the same tokens on higher `effort`. Absent that number, this stays reje
 | IDL-27 | `max_tokens` is derived, never exposed | ADR-017. A parameter that cannot be set cannot contradict the budget |
 | IDL-28 | A derived `max_tokens` under 256 stops the run instead of calling | A 200-token ceiling produces a sentence fragment, which costs money and answers nothing |
 | IDL-29 | Numeric defaults are cross-validated by a test that multiplies them out | The Round 17 defect lived between two correct components, not inside either |
+| IDL-35 | `Verdict` lives in `policy/base.py`; `policy` imports `ToolSpec` only under `TYPE_CHECKING` | `EFFECT_PROFILES` needs `Verdict` and `Policy` needs `ToolSpec` — a cycle the module map showed without noting |
+| IDL-36 | `size_call` returns `model_max` when the output price is zero | A free provider has nothing to divide by. Without it, SC-5's zero-cost testing crashes on ADR-017's division |
+| IDL-37 | Calibration ratchets upward only | An input under-count overspends; an over-count only wastes headroom. The two errors are not symmetric |
 | IDL-30 | An unrecognized provider `stop_reason` maps to `ERROR` with the raw value | Fail visible. Mapping an unknown outcome to success is how truncated answers ship as correct ones |
 | IDL-32 | `Secret.__hash__ = None` | Equal-by-value secrets hashing by name violates Python's hash invariant and silently corrupts sets and dicts. Unhashable also prevents a credential becoming an `lru_cache` key, which the redactor cannot reach |
-| IDL-33 | The redaction registry is a `WeakSet` | A strong registry retains every secret ever constructed until process exit. A redactor that outlives what it protects is itself the exposure |
+| IDL-33 | The redaction registry holds weak references keyed by `id()` | A strong registry retains every secret ever constructed until process exit. **Not a `WeakSet`** — that hashes its members, and `Secret` is deliberately unhashable (ADR-024) |
 | IDL-34 | Type contracts are reviewed by executing twenty lines, not by reading the signature | Rounds 17, 18 and 19 each found a defect this way; no earlier round found one by inspection |
 | IDL-31 | Context-management fixtures are specified per model | Whether the budget or the context window binds first depends on the model's price and window ([§07.3](07-cost.md#3-token-discipline)) |
