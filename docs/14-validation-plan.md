@@ -154,6 +154,11 @@ against slow architectural drift, which no ordinary test catches.
 | AC-40 | **Every `harness <command>` named in the documentation is implemented.** *Five of seven were not.* | Round 30 |
 | AC-41 | No tool evaluates model-supplied text with `eval`/`exec` | Round 30 |
 | AC-42 | **Every error §15 shows is compared to the code's message line for line**, not by substring. *A substring check let the code emit a grade-12.5 message while green (Round 31).* | SC-1c |
+| AC-43 | **`unguarded_paths()` is empty for every compiled graph** — no path reaches `model` without `budget`, `tools` without `policy`, or `END` without `finish`. Supersedes AC-04/AC-05 on the graph backend: a reachability proof over the real structure, not an AST test over our own source. | ADR-032, 033 |
+| AC-44 | **Every state key a node returns is declared in `AgentState`.** *LangGraph silently discards undeclared keys; the first port lost `_pending` and ran no tools at all (IDL-41).* | IDL-41 |
+| AC-45 | **The whole graph state serializes with the real checkpoint serializer**, and holds no callable. *Durability is what the platform is for, and it failed on a `ToolSpec` in state (IDL-40).* | IDL-40 |
+| AC-46 | **`import harness` pulls in no `langgraph`, `langchain_core` or `pydantic` module**, and `pyproject` declares the graph backend as an extra. | NFR-05, R-18 |
+| AC-47 | **Every rule in the parity table produces the same outcome on both backends** — tools run, denials, taint, construction refusals, secret redaction, step and USD ceilings, and the set of event kinds actually emitted. *A differing row is a defect, never a documented difference.* | R-17 |
 | AC-33 | Every conditional subsystem is either reachable from the shipped defaults or declares in the docs that it is not | P-10 |
 | AC-31 | **Every public parameter is read somewhere in the package.** *`max_parallel_tools` was accepted, stored and documented for two milestones without anything reading it (Round 26).* | NFR-09 |
 | AC-28 | Every `Secret` guarantee (unhashable, unpicklable, weakly registered) is exercised, not just declared | ADR-024 |
@@ -181,6 +186,25 @@ nothing else in the suite would notice.
 AC-04 and AC-05 are the important two. They are AST tests rather than behavioral tests
 because they must hold on *every* path, including ones no test exercises — that is exactly
 where a security check gets accidentally bypassed.
+
+### 4.1 The parity table is the unit of protection
+
+AC-47 is worded as *every rule in the parity table* rather than *the parity suite passes*,
+because the suite passing says nothing about a rule that has no row. R-17 is scored 25 —
+the highest in the register — and the only thing that moves it is rows. When a rule is
+added to one backend, the same change adds its parity row, or the rule is unprotected in
+the other backend and nothing will say so.
+
+Rules with a row today: read-tool execution, danger refused without an approver, an
+approver admitting a call, taint raised by `external` output with `accepts_tainted`
+passing, construction-time refusal of the unsafe pair, per-request secret redaction
+(RT-13), the step ceiling, the USD ceiling, plain completion, and the emitted event set.
+
+**Not yet covered, and therefore not yet protected on the graph backend:** `returns=`
+parsing, transcripts and resume, streaming deltas, subagent budget holds, parallel tool
+scheduling and the `max_parallel_tools` ceiling, per-tool timeouts, and cache-prefix
+stability (SC-4). Each is a capability the hand-written backend has and the graph backend
+either lacks or has not been measured on — listed here rather than discovered later.
 
 ## 5. Acceptance walkthrough (Day 1 → first deployment)
 

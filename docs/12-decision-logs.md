@@ -680,6 +680,65 @@ rule rather than an annotation.
 
 ---
 
+### ADR-032 — LangGraph is the loop, and it is an optional extra
+
+**Context.** The user mandated building on LangChain/LangGraph. ADR-001 held that the
+harness owns the loop, because the loop is the only place a budget check can precede a
+model call and a permission check can precede a tool call.
+
+**Decision.** The graph backend (`harness.lg`) is the mandated implementation, and it is
+installed as `harness[graph]`. `import harness` must not import LangChain.
+
+**Why the extra, and not the core.** Measured, not estimated: `langgraph` resolves to
+**36 transitive packages** against NFR-05's budget of three. That is a twelve-fold
+overrun, and it is not negotiable away by wanting it less. Making it an extra is what
+lets both statements be true — the mandate is satisfied for anyone who wants durability
+and the graph, and a user who wants an agent in one `pip install` still gets a 90 ms
+import with three dependencies. **The council does not consider the dependency cost
+"paid for" by the mandate; it considers it deferred to the people who choose it.**
+
+**What survives from ADR-001 and what changes.** The reasoning survives intact; only its
+mechanism changes. **The choke point becomes a graph edge instead of a line of code**, and
+that is stronger: `unguarded_paths()` walks the compiled graph refusing to traverse a gate
+and reports any guarded node still reachable — a reachability proof that holds for paths
+no test walks. `build_agent` refuses to return a graph for which it is non-empty.
+
+**Cost.** Two implementations of one set of rules, which is the defect class Round 35 spent
+itself on. That cost is bounded by `tests/test_parity.py`, not by care.
+
+---
+
+### ADR-033 — Every exit routes through one `finish` node
+
+**Context.** Round 35 found six of fifteen event kinds unemittable on the graph.
+`run.finished` was missing because each branch routed straight to `END` and each branch
+had to remember to emit it — the Round 27 defect in new code.
+
+**Decision.** All exits route to a single `finish` node, and `END` joins `model` and
+`tools` in the `GUARDED` table, so the reachability proof covers the closing event.
+
+**Why.** A closing event that depends on every branch remembering is a **Documented**
+defense on §08's ladder. One node that every path must traverse is **Impossible-to-omit**.
+Adding a branch later cannot silently drop the event, because the branch has nowhere else
+to go.
+
+---
+
+### ADR-034 — Redaction is scoped at the write boundary, never around the caller
+
+**Context.** The graph port dropped `redaction_scope()` and RT-13 returned: a per-request
+secret reached the model in cleartext (H35.1).
+
+**Decision.** `redaction_scope()` opens inside the tools node, around the code that turns
+a tool's return value into bytes — not around `invoke()`.
+
+**Why not around the run.** The caller drives a compiled graph directly; there is no
+harness-owned function wrapping it. A rule that requires the caller to remember a context
+manager is not a rule. The tools node is the one place a tool's value becomes an outgoing
+message, so scoping it there is both sufficient for the leak and bounded to exactly the
+window in which the value can still be written.
+
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
@@ -722,4 +781,8 @@ rule rather than an annotation.
 | IDL-32 | `Secret.__hash__ = None` | Equal-by-value secrets hashing by name violates Python's hash invariant and silently corrupts sets and dicts. Unhashable also prevents a credential becoming an `lru_cache` key, which the redactor cannot reach |
 | IDL-33 | The redaction registry holds weak references keyed by `id()` | A strong registry retains every secret ever constructed until process exit. **Not a `WeakSet`** — that hashes its members, and `Secret` is deliberately unhashable (ADR-024) |
 | IDL-34 | Type contracts are reviewed by executing twenty lines, not by reading the signature | Rounds 17, 18 and 19 each found a defect this way; no earlier round found one by inspection |
+| IDL-40 | Graph state stores a tool **name**, never a `ToolSpec` | Everything in state is checkpointed, and a spec holds a callable no serializer can write. Durability is what this platform is for, so it failed at exactly its own feature (H35.5) |
+| IDL-41 | Every key a node returns must be declared in `AgentState` | LangGraph **silently discards** an undeclared key. The first port lost `_pending`, so no tool ran at all — and the test asserting a denied tool had not run passed for that reason (H35.6) |
+| IDL-42 | `Decimal` crosses graph state as a string, never a float | State is JSON-checkpointed; a float here would reintroduce the rounding class IDL-01 exists to exclude |
+| IDL-43 | The graph delegates ASK resolution to `PolicyEngine.resolve` | One implementation of the rule. The port had written a second one, with a different callback signature and a different no-callback behaviour (H35.4) |
 | IDL-31 | Context-management fixtures are specified per model | Whether the budget or the context window binds first depends on the model's price and window ([§07.3](07-cost.md#3-token-discipline)) |

@@ -6,6 +6,9 @@ requires-python = ">=3.11"
 dependencies = ["anthropic", "typing-extensions", "jsonschema"]
 
 [project.optional-dependencies]
+# 36 transitive packages against NFR-05's budget of three, measured — which is why it is
+# an extra and not a dependency (ADR-032).  `import harness` must never import LangChain.
+graph = ["langgraph>=1.0", "langchain-core>=1.0"]
 otel = ["opentelemetry-api", "opentelemetry-sdk"]
 dev  = ["pytest", "mypy", "ruff", "hypothesis"]
 

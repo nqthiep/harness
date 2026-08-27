@@ -85,7 +85,7 @@ surface of Option A.
 | NFR-02 | **Harness overhead** — wall-clock added per step, excluding model and tool time | < 15 ms p95 |
 | NFR-03 | **Memory** — retained bytes for a 100-step run | < 50 MB excluding tool payloads |
 | NFR-04 | **Type safety** — `mypy --strict` on the whole package | 0 errors, no `Any` in public signatures |
-| NFR-05 | **Dependency weight** — required runtime dependencies | ≤ 3 (`anthropic`, `typing-extensions`, `jsonschema`); everything else optional extras |
+| NFR-05 | **Dependency weight** — required runtime dependencies | ≤ 3 (`anthropic`, `typing-extensions`, `jsonschema`); everything else optional extras. **The LangGraph backend is an extra, and measured**: `pip install harness[graph]` pulls **36 transitive packages**, twelve times the core budget (ADR-032) |
 | NFR-06 | **Python support** | 3.11, 3.12, 3.13 |
 | NFR-07 | **Determinism** — same transcript + same fake model ⇒ same events | Byte-identical |
 | NFR-08 | **Failure containment** — a tool raising must never crash the run | Converted to `is_error` tool result |

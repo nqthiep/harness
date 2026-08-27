@@ -118,6 +118,28 @@ The failures that stop someone before they reach the API at all.
 
 ---
 
+## Second-backend failure modes (Round 35)
+
+A second implementation of the same rules is itself a failure mode, and it is the one that
+actually fired: three of the six defects below were defects the council had **already found,
+fixed and written down** in the first backend.
+
+| # | Failure | Grade | Defense |
+|---|---|---|---|
+| 70 | A branch reaches the model without a budget reservation | **Impossible** | Topology. `unguarded_paths()` is a reachability proof; `build_agent` refuses a graph for which it is non-empty |
+| 71 | A branch reaches a tool without a verdict | **Impossible** | Same |
+| 72 | A branch exits without emitting `run.finished` | **Impossible** | One `finish` node; `END` is in the `GUARDED` table (ADR-033) |
+| 73 | A per-request secret is written out unredacted | **Import/first-run** | `redaction_scope()` at the tool-result boundary, inside the node — not around the caller's `invoke()` (ADR-034) |
+| 74 | An `external`+irreversible tool set reaches a run | **Construction-time** | `build_agent` runs the same `_check_tool_set` as `Agent`. Round 35 found it did not, which was a demotion from Prevent to Detect |
+| 75 | A state key a node returns is silently discarded | **First-run** | Declared in `AgentState`; a test enumerates every key each node returns against the schema (IDL-41) |
+| 76 | Graph state holds something no checkpointer can write | **First-run** | Names, not specs (IDL-40); a test serializes the whole state with the real serializer |
+| 77 | A rule drifts between the two backends | **Loud, on every CI run** | `tests/test_parity.py` — one scenario, both backends, and a differing row fails the build |
+
+Mode 77 is the honest one: it is **Detect**, not Prevent, and it cannot be raised while two
+backends exist. The council's position is that it is the price of the platform mandate, that
+it is stated rather than hidden, and that the ten rows of the parity table are the thing
+keeping it survivable.
+
 ## The five items that only reach "Documented", and why
 
 | # | Why it cannot be raised |

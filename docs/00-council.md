@@ -1587,6 +1587,160 @@ error must read at grade ≤ 5.0, and no error may use internal vocabulary (`par
 
 ---
 
+### Round 32 — `as_tool()` was unusable outside ASCII
+
+The subagent name `'ask_chuyên_gia_chính_sách'` fails the tool-name pattern the providers
+accept, so **any council of Vietnamese-, Chinese- or Arabic-named subagents could not be
+built at all** — a library that ships a Vietnamese tutorial and refuses Vietnamese names.
+
+**H32.1 — The error suggested the name that had just failed.** It read *"use
+name='ask_chuyên_gia_chính_sách'"*, which fails identically. An error whose remedy
+reproduces the error is worse than no error: it sends the reader looking for a second
+cause that does not exist.
+
+**H32.2 — The first fix was wrong, and the test that caught it was an inverse question.**
+Slugging the composed string `"ask <name>"` kept the ASCII prefix and dropped everything
+else, so `客户支持` and `客服助手` both became `ask` — two different subagents, one name,
+silently. `slug()` now normalises (NFKD) the name **alone** and appends a digest when the
+result is empty or collides. The question that found it was not *"does slugging work?"*
+but *"what two different inputs can produce one output?"*
+
+---
+
+### Round 33 — `returns=` was accepted and never parsed
+
+`Agent(returns=KetLuan)` reached the request, shaped the model's output format, and
+**`Result.value` was `None` on every run.** A parameter that is accepted, documented and
+half-honoured is worse than one that raises: the caller writes code against a value that
+is always absent and reads it as the model's failure.
+
+**H33.1 — Non-ASCII tool results cost 2.2× to 4.8× more than they should.**
+`json.dumps` defaults to `ensure_ascii=True`, so `"đã giao"` went to the model as
+`"\u0111\u00e3 giao"` — every Vietnamese character billed as six ASCII ones, and every
+Japanese one worse. Measured: **2.2× for Vietnamese, 4.8× for Japanese**, on the cost
+invariant, in a library whose tutorial is Vietnamese. Three call sites had the same
+default (`dispatch.py`, `transcript.py`, `assembler.py`); all three now pass
+`ensure_ascii=False`. Found by asking what a default does to an audience the defaults
+were not chosen for.
+
+---
+
+### Round 34 — A workflow state machine leaked between customers
+
+§04.3 says a policy's `check` is pure. §10.5 shows policies constructed at module scope.
+Both were written by the council; together they mean **one `QuyTrinhHoanTien` instance
+serves every customer, and customer B inherits customer A's position in the refund
+workflow.** Two documents, each correct, contradicting each other in production.
+
+Policies may now be passed as a class (a factory, constructed per run); a shared instance
+that mutates during a run raises rather than leaking.
+
+**H34.1 — The first fix was wrong for a reason worth recording.** The discriminator
+`hasattr(p, "check")` is true of a *class* as well as an instance, so every factory was
+treated as an already-built policy and nothing changed. `inspect.ismethod` is the correct
+test: it is true only of a bound method, which only an instance has.
+
+---
+
+### Round 35 — The LangGraph mandate, and what porting the loop cost
+
+The user mandated building on LangChain/LangGraph, reversing the council's Round-34
+recommendation. The council recorded the reversal in one sentence and did not re-litigate
+it. The engineering question was the only one left: **ADR-001 says the harness owns the
+loop because it is the only place a budget check can precede a model call and a permission
+check can precede a tool call. What happens to that argument when someone else owns the
+loop?**
+
+**The resolution preserves the reasoning and strengthens the guarantee: the choke point
+becomes a graph edge instead of a line of code.** `unguarded_paths()` walks the compiled
+graph from `__start__` refusing to traverse a gate, and reports any guarded node still
+reachable. That is a reachability proof over the real execution structure — it holds for
+paths no test walks, which the AST tests over our own source never could.
+
+```
+node             : ['budget', 'model', 'policy', 'approve', 'tools', 'finish']
+vào 'model' từ   : ['budget']
+vào 'tools' từ   : ['approve', 'policy']
+cổng bị đi vòng  : KHÔNG
+```
+
+**H35.1 — The port reintroduced RT-13: a per-request secret reached the model in
+cleartext.** `redaction_scope()` was never opened on the graph, so a tool that builds a
+short-lived `Secret`, reveals it and returns text derived from it sent that text
+unredacted — the exact Round-25 defect, in new code, five rounds later. The scope now
+opens at the tool-result boundary, inside the node, **not around the caller's `invoke()`**:
+a caller drives a compiled graph directly, and a guarantee that depends on the caller
+remembering something is not a guarantee.
+
+**H35.2 — `build_agent` accepted a tool set `Agent` refuses.** `external` + irreversible
+in one tool set is refused at construction by the hand-written backend (F9.1). The graph
+accepted it and relied on the taint policy to catch it mid-run — a demotion from **Prevent**
+to **Detect** on the Poka-Yoke ladder, which is exactly the trade §08 exists to forbid.
+
+**H35.3 — Six of fifteen event kinds could never be emitted.** `run.started`,
+`run.finished`, `step.started`, `step.finished`, `tool.requested` and `context.managed`
+had no reachable emit site on the graph — Round 27's defect, in a new backend. `run.finished`
+was missing because every exit routed straight to `END`, so each branch had to remember to
+emit it. The fix is structural rather than diligent: **one `finish` node that every exit
+routes through**, added to the `GUARDED` table alongside the two gates, so the reachability
+proof covers the closing event too.
+
+**H35.4 — Three silent divergences in the public API.** The approval callback took
+`(question)` on the graph against the documented `(ToolCall, RunContext)`; a missing
+callback blocked on `interrupt()` where the loop applies the safety rule; and the
+observability seam was spelled `bus=` on one backend and `exporters=` on the other. The
+ASK resolution is now delegated to `PolicyEngine.resolve` — **one implementation of the
+rule, not two** — and `approve=INTERRUPT` is an additional mode, not a different rule.
+
+**H35.5 — The durable state could not be written.** `_pending` carried a `ToolSpec`, which
+holds a callable; the checkpointer raised *"Type is not msgpack serializable"*. Durability
+is the main thing this platform buys, so it failed at exactly the feature it was adopted
+for. State now carries the tool **name**, and the spec is looked up from the frozen tool
+set — which also means a resumed run whose tool set has changed gets a clean error instead
+of a stale closure.
+
+**H35.6 — And the test that was supposed to catch the first of these passed for the wrong
+reason.** `_pending` was not declared in `AgentState`, and LangGraph **silently discards**
+any state key absent from the schema — so no tool ran at all, and the assertion that a
+denied tool did not run was true because nothing ran. A green test asserting an absence is
+worth nothing until you have also seen the presence.
+
+---
+
+### The instrument: `tests/test_parity.py`
+
+Every one of H35.1–H35.4 is the same defect class: **two implementations of one rule, each
+with its own tests, drifting invisibly.** Naming the class does not prevent it — Round 27
+established that only the inverse test does. So the scenarios now live once and run against
+both backends, and a row that differs is a defect in whichever backend is wrong, never a
+difference to document:
+
+| rule | loop | graph |
+|---|:--:|:--:|
+| a read tool runs | ✓ | ✓ |
+| a danger tool is refused without an approver | ✓ | ✓ |
+| an approver lets it through | ✓ | ✓ |
+| external output taints the run, `accepts_tainted` passes | ✓ | ✓ |
+| the unsafe pair is refused **at construction** | ✓ | ✓ |
+| a short-lived secret is redacted (RT-13) | ✓ | ✓ |
+| the step limit stops the run | ✓ | ✓ |
+| the USD budget stops the run | ✓ | ✓ |
+| the same event kinds are emitted — **observed, not grepped** | ✓ | ✓ |
+
+Two fixture defects in the suite itself are recorded because they would have made it
+report agreement it had not measured: `FakeModel` prices everything at zero, so the loop
+could never exhaust a USD budget with it (the shipped `PricedFake` is the right fixture);
+and the two backends were being given different model prices, so the budget row was
+comparing fixtures rather than rules.
+
+**The count: eleven build rounds, thirty-plus defects, four of them security.** Three of
+Round 35's six were defects the council had already found, fixed, and written down — in
+Rounds 25, 27 and 19. **A defect class that has been named and fixed in one implementation
+is not fixed in the next one**, and the only thing that catches it is a test that runs
+against both.
+
+---
+
 ## 2.4 What the five build rounds cost, and what they found
 
 | Round | Built | Defects | Security | Specified-but-unbuilt | Test-harness bugs |
@@ -1697,6 +1851,10 @@ with a 16/16 gate. They found:
 | **29** | **Nine red tests, zero product defects — the tutorial held** | **A test that fails for its own reasons misleads as much as one that passes for none** |
 | **30** | **The library had no model provider, and §15 told children to import a module that did not exist** | **Neither a test suite nor a traceability matrix reads the docs as a promise** |
 | **31** | **The tutorial read at age 9; the errors a child hits read at university level** | **A substring check verifies vocabulary, not the message** |
+| **32** | **`as_tool()` could not name a subagent outside ASCII, and the fix collided two names into one** | **Ask what two inputs produce one output, not whether the happy path works** |
+| **33** | **`returns=` was accepted and never parsed; non-ASCII tool results cost 2.2×–4.8×** | **A default is chosen for an audience; ask what it does to the others** |
+| **34** | **A workflow state machine leaked one customer's position to the next** | **Two documents can each be correct and contradict each other in production** |
+| **35** | **Porting to LangGraph reintroduced three defects the council had already fixed, one of them a live secret leak** | **A defect class fixed in one implementation is not fixed in the next one** |
 
 **Every one of these passed a prior review.** The five techniques that found them — multiply
 the numbers out, execute the contract, traverse types rather than tasks, count coverage per

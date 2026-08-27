@@ -261,6 +261,29 @@ What the harness *does* provide:
 Every one of these is finite by default. There is no configuration in which the harness
 runs unbounded without the user having typed something explicit.
 
+## 7.1 The same guarantees on the graph backend
+
+Every rule in this section holds on `harness.lg` as well, and that is asserted rather than
+claimed: `tests/test_parity.py` runs the safety scenarios against both backends and fails
+the build on any difference.
+
+Two findings from the port are recorded here because they are the reason the parity suite
+exists:
+
+- **RT-13 came back.** The port did not open `redaction_scope()`, so a tool that builds a
+  short-lived `Secret`, reveals it, and returns text derived from it sent that text to the
+  model in cleartext. Fixed at the tool-result boundary (ADR-034) and now a parity test.
+- **The construction-time refusal was missing.** `external` + irreversible in one tool set
+  was accepted by `build_agent` and left to the taint policy to catch mid-run. The layered
+  defense still held, but a Prevent had silently become a Detect.
+
+**Where the runtime taint denial is actually reachable.** Construction refuses the static
+pair outright, so within a single flat agent the runtime rule is unreachable by design —
+it exists for the cases the construction check cannot see: a resumed run whose tool set
+changed, and a plugin registering a tool after construction. The parity test stages exactly
+that path rather than pretending an end-to-end route exists, which is the same honesty
+Round 27 applied to `context.managed`.
+
 ## 8. Red-team suite (M1 deliverable, in CI)
 
 | ID | Scenario | Required outcome |

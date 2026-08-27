@@ -88,6 +88,44 @@ Four invariants of the loop, each with a test in [§09](09-testing.md):
   the conversation.
 - **I-4** All `tool_result` blocks for one assistant turn go in **one** user message.
 
+## 3.1 Two backends, one set of rules
+
+The loop above is the default. `harness[graph]` supplies a second backend
+(`harness.lg`) in which **LangGraph** owns the loop and the rules are expressed as
+topology (ADR-032):
+
+```
+START → budget → model → policy → approve → tools ┐
+          │        │                              │
+          └────────┴──────────→ finish → END      └──→ budget
+```
+
+There is no edge into `model` that does not pass `budget`, none into `tools` that does not
+pass `policy`, and none into `END` that does not pass `finish`. `unguarded_paths()` proves
+it by walking the compiled graph from `__start__` refusing to traverse a gate;
+`build_agent()` refuses to return a graph for which it is non-empty:
+
+```python
+>>> graph, runtime = build_agent(model=chat, tools=[...], budget="$0.20, 15 steps")
+>>> unguarded_paths(graph)
+[]
+```
+
+**This is a stronger statement than the hand-written loop could make.** A compiled graph is
+introspectable, so "every path to the model passes the budget gate" stops being an AST test
+over our own source and becomes a reachability proof over the real execution structure —
+one that holds for paths no test happens to walk.
+
+**What the graph backend adds:** durable checkpointing (a run survives a process restart
+mid-flight), `approve=INTERRUPT` for a human decision that outlives the process, and the
+LangChain model ecosystem.
+
+**What it costs:** 36 transitive packages, and a second implementation of one set of rules.
+The second cost is the dangerous one — Round 35 found three defects in it that the council
+had already found and fixed in the first. It is bounded by `tests/test_parity.py`, which
+states each rule once and runs it against both backends; a row that differs is a defect,
+never a documented difference.
+
 ## 4. What is a plugin — the test
 
 The council's answer to "pluginable does not mean everything is a plugin". An extension

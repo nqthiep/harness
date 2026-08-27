@@ -24,6 +24,15 @@ Scored **L**ikelihood × **I**mpact on 1–5. Anything at 12+ has a mitigation t
 | R-12 | **Effort/thinking parameter semantics differ across models**, so a default that is right for one is wrong for another | 3 | 2 | 6 | The adapter owns the mapping and validates against the model before sending; unsupported combinations raise `ProviderBadRequest` at the adapter rather than reaching the API. | T-0.4 |
 
 | R-16 | **A safety control that is specified, reviewed, and never executed** | 4 | 5 | 20 | **Materialized in Round 25.** RT-13 had been specified since Round 7 and reviewed in Rounds 15, 19, 21 and 24 — including by the round whose subject was executing contracts — and failed on first execution. Every red-team scenario is now an executable test that blocks merge (T-1.3, T-1.6), and [§14.7](14-validation-plan.md#7-after-10--keeping-this-package-honest) makes "specified but never run" a standing review question rather than an anecdote. | T-1.3, T-1.6 |
+| R-17 | **The two backends drift, and one enforces a rule the other does not** | **5** | **5** | **25** | **Materialized on the day the second backend was written.** Round 35 found four divergences in the first port, three of them defects the council had already fixed in the first backend — including a live secret leak. Not reducible by care: two implementations of one rule always drift. `tests/test_parity.py` states each rule once and runs it against both, and a differing row fails the build. **The count of parity rules, not the existence of the file, is the mitigation** — a rule with no parity row is unprotected. | ADR-032 |
+| R-18 | **A user installs `harness[graph]` for durability and inherits 36 packages of supply chain** | 3 | 3 | 9 | Measured and stated in NFR-05 and ADR-032 rather than discovered at install time. The core stays at three dependencies and a 90 ms import; nothing in `harness` imports LangChain, asserted by a test. | ADR-032 |
+
+## 1.1 What Round 35 changes about how risks are read
+
+R-16 was *"a safety control that is specified, reviewed, and never executed."* R-17 is its
+successor and it is worse, because the control **was** executed — in the other backend.
+The register's standing question is no longer only *"has this been run?"* but **"has this
+been run in every implementation that claims it?"**
 
 ## 2. Watch list (unscored, monitor)
 
@@ -36,6 +45,16 @@ Scored **L**ikelihood × **I**mpact on 1–5. Anything at 12+ has a mitigation t
   revisit the thread-pool bridge — not the async core.
 
 ## 3. Open Issues
+
+**OI-9 — `openvikking` (mandated, unidentified).** The user's mandate named three
+platform components: LangChain, LangGraph, and `openvikking`. The first two are built on
+and shipped. **`openvikking` does not resolve on PyPI** (`Could not find a version that
+satisfies the requirement openvikking (from versions: none)`) and the council could not
+identify it from the name. It is recorded here rather than guessed at: substituting a
+similarly-named package into a design whose subject is safety would be exactly the kind of
+confident wrong answer this package exists to prevent. **Blocking only for whatever
+`openvikking` was meant to supply**; nothing else in the design waits on it.
+
 
 Kept deliberately short. Each states why it does **not** block implementation. Anything
 that would block was resolved during the rounds rather than parked here — standing rule R1.
