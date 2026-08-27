@@ -1438,6 +1438,65 @@ validation-before-storage; making it injectable is what made it verifiable.
 must be written by the same command that creates the file needing it. Tested: an existing
 `.gitignore` is extended rather than clobbered, and the pair is always produced together.
 
+
+---
+
+### Round 30 — Auditing promises against the implementation
+
+Round 29 reported zero product defects and the council took that as convergence. Round 30
+asked a question none of the build rounds had: **not "does what we built work?" but "does
+everything the package promises exist at all?"**
+
+A mechanical sweep — every `import harness…` in the docs, every `` `harness <cmd>` `` in
+the docs, every `Agent` parameter — against the code:
+
+| Promised | Reality |
+|---|---|
+| `from harness.tools.web import search` — **§15 tells a child to type this** | `ModuleNotFoundError` |
+| `harness chat` · `run` · `trace` · `cost` · `doctor` | **5 of 7 CLI commands unimplemented** |
+| `models/anthropic.py` | **did not exist** |
+| `harness.testing` | an empty namespace package |
+| `Agent(returns=...)` (ADR-022) | accepted and ignored — never reached the request |
+| OTel exporter | did not exist |
+
+**The library could not talk to a real model.** Every one of the 111 tests ran against
+`FakeModel`, all seven suites were green, and there was no provider. The four-command cold
+start — the thing SC-1b measures — would have failed at the fourth command.
+
+And the first item is the worst: §15's "a tool that comes with Harness" section, the step
+where a child gives their agent its first real ability, imported a module that was never
+written.
+
+**Why five build rounds missed all of it.** Each round built a milestone and tested what it
+built. Nothing tested what the *documents* said users could rely on. Round 26 named
+*ownership is not implementation*; Round 27 found the same class recurring; both were about
+features with an owning task. **This is the class below that: things with no task at all,
+promised only in prose.** The traceability matrix could not catch them because they were
+never numbered.
+
+**Resolved by building them**, not by trimming the docs: the built-in tool packs
+(`web`, `files`, `calc` — pre-classified so the beginner path never writes `@tool`), the
+Anthropic provider, the testing kit, `Chat` with its session ledger, `returns=` wired
+through to `output_format`, and the five CLI commands.
+
+Two details worth keeping:
+
+- **`calculate` does not use `eval`.** Evaluating model-supplied text is arbitrary code
+  execution, which would make it a `danger` tool wearing a `read` label — precisely the
+  mislabelling the effect classes exist to prevent. It walks an AST over numbers and seven
+  operators instead.
+- **The Anthropic adapter never fails a run on a token-count call.** If counting errors, it
+  falls back to a character-derived over-estimate, which is a hard upper bound on tokens
+  (ADR-026), so the budget ceiling stays safe rather than becoming unenforceable.
+
+**AC-39 and AC-40** now run this sweep in CI: every module the docs import must import, and
+every CLI command the docs name must exist.
+
+**The rule this produced.** A test suite verifies what was built. A traceability matrix
+verifies what was assigned. **Neither reads the documentation as a promise.** So the
+documentation is now a test input: its imports, its commands, and its error messages are all
+asserted against the code.
+
 ---
 
 ## 2.4 What the five build rounds cost, and what they found
@@ -1450,14 +1509,18 @@ must be written by the same command that creates the file needing it. Tested: an
 | 27 | M3 observability | 3 | 0 | **1** | 0 |
 | 28 | M4 memory · plugins · subagents | 4 | **1** | **2** | 0 |
 | 29 | M5 CLI · tutorial-as-test | 0 | 0 | 0 | **9** |
+| 30 | promise-vs-implementation audit | **6** | 0 | **6** | 2 |
 
-**21 defects, 2 of them security, 6 features that were specified and never built.** Against
-20 defects and 0 security findings across the 23 rounds of review that preceded them.
+**27 defects, 2 of them security, 12 features specified and never built** — including the
+model provider itself. Against 20 defects and 0 security findings across the 23 rounds of
+review that preceded them.
 
-The trend across the last two rounds is the useful signal: Round 28 found four defects in
-new code, Round 29 found none. The product stopped producing findings at roughly the point
-the test harness started producing them — which is what convergence actually looks like,
-and is a better stopping argument than any of the ones the council made at Rounds 12 or 23.
+Round 28 found four defects in new code and Round 29 found none, which the council read as
+convergence. **Round 30 then found six, including the absence of the model provider.** The
+lesson is not that the trend was wrong but that it measured the wrong surface: findings were
+falling because the *tests* had run out of things to ask, not because the *package* had run
+out of gaps. A convergence claim needs to name what it has stopped finding **and what it
+never looked at.**
 
 ---
 
@@ -1472,6 +1535,7 @@ and is a better stopping argument than any of the ones the council made at Round
 | 27 | M3 observability | 3 | 0 | **1** (+1 unreachable by arithmetic) |
 | 28 | M4 memory · plugins · subagents | 4 | **1** (budget ceiling leak) | **2** |
 | 29 | M5 CLI · tutorial-as-test | **0** | 0 | 0 |
+| 30 | promise-vs-implementation audit | **6** | 0 | **6** (incl. the whole provider) |
 
 Twenty-five rounds in, **the only live security hole in the package was found by running the
 red-team suite, not by writing it.** It had been specified since Round 7, reviewed in Rounds
@@ -1542,6 +1606,7 @@ with a 16/16 gate. They found:
 | **27** | **Three of fifteen event kinds had no emit site; context management was unreachable by arithmetic** | **Naming a failure class does not prevent it — only the inverse test does** |
 | **28** | **A $0.10 agent spent $30 through subagents while reporting $0.0000** | **A suite written by the feature's author tests the feature, not the promise** |
 | **29** | **Nine red tests, zero product defects — the tutorial held** | **A test that fails for its own reasons misleads as much as one that passes for none** |
+| **30** | **The library had no model provider, and §15 told children to import a module that did not exist** | **Neither a test suite nor a traceability matrix reads the docs as a promise** |
 
 **Every one of these passed a prior review.** The five techniques that found them — multiply
 the numbers out, execute the contract, traverse types rather than tasks, count coverage per

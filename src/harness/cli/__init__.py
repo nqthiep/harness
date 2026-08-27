@@ -84,15 +84,131 @@ def cmd_setup(read_key, write_env, validate) -> str:
             "  Tip: set a spend limit on your account so nothing can surprise you.")
 
 
+def load_agent(path: str):
+    """Import a scaffold file and return the single Agent it defines."""
+    import importlib.util
+    from ..agent import Agent
+    spec = importlib.util.spec_from_file_location("_harness_agent_file", path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"could not read {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    agents = [v for v in vars(mod).values() if isinstance(v, Agent)]
+    if not agents:
+        raise SystemExit(f"{path} does not create an Agent")
+    return agents[0]
+
+
+def cmd_chat(path: str, *, inputs=None, out=print) -> int:
+    """Talk to your agent.  One ledger for the whole session (ADR-020)."""
+    agent = load_agent(path)
+    session = agent.chat()
+    out(f"Talking to {agent.name}. Budget for this conversation: "
+        f"{_money(session.budget)}.  Press Ctrl-C to stop.")
+    stream = iter(inputs) if inputs is not None else None
+    while True:
+        try:
+            line = next(stream) if stream is not None else input("You: ")
+        except (StopIteration, EOFError, KeyboardInterrupt):
+            out("\nBye!")
+            return 0
+        if not line.strip():
+            continue
+        r = session.say(line)
+        out(f"{agent.name}: {r.text or r.detail}")
+        if not r.ok:
+            out(f"({r.detail})")
+            return 0
+
+
+def cmd_run(path: str, message: str, *, out=print) -> int:
+    r = load_agent(path).try_run(message)
+    out(str(r) if r.ok else f"{r.stop_reason.value}: {r.detail}")
+    return 0 if r.ok else 1
+
+
+def cmd_trace(path: str, *, out=print) -> int:
+    """Render a transcript: every model call, tool call, verdict and cost."""
+    from ..observe.transcript import read
+    for e in read(path):
+        step = "" if e["step"] is None else f"step {e['step']} "
+        data = e.get("data", {})
+        bits = " ".join(f"{k}={v}" for k, v in sorted(data.items())
+                        if k in ("tool", "verdict", "reason", "stop_reason", "cost_usd",
+                                 "strategy", "message", "is_error"))
+        out(f"{e['seq']:>4}  {step}{e['kind']:<18} {bits}")
+    return 0
+
+
+def cmd_cost(path: str, *, out=print) -> int:
+    """Spend and realized cache hit rate — the two numbers a cost regression shows up in."""
+    from ..observe.transcript import read
+    events = list(read(path))
+    finished = [e for e in events if e["kind"] == "run.finished"]
+    reads = writes = fresh = 0
+    for e in events:
+        if e["kind"] == "model.response":
+            u = e["data"].get("usage", {})
+            reads += u.get("cache_read_input_tokens", 0)
+            fresh += u.get("input_tokens", 0)
+            writes += u.get("cache_creation_input_tokens", 0)
+    total = reads + fresh
+    out(f"runs        : {len(finished)}")
+    out(f"spent       : {finished[-1]['data'].get('cost_usd', '?') if finished else '?'}")
+    out(f"cache reads : {reads:,} of {total:,} input tokens"
+        + (f"  ({reads/total:.1%})" if total else ""))
+    if total and reads / total < 0.5:
+        out("  Low. Something in job= or the tool list may be changing between calls.")
+        out("  -> docs/07-cost.md#21-the-cache-linter")
+    return 0
+
+
+def cmd_doctor(*, out=print) -> int:
+    """The first thing to run when something is wrong, and to attach to a bug report."""
+    from .. import __version__
+    from ..models import pricing
+    import datetime
+    ok = True
+    out(f"harness       {__version__}")
+    out(f"python        {sys.version.split()[0]}")
+    have, source = key_status()
+    out(f"api key       {'found (' + source + ')' if have else 'MISSING — run: harness setup'}")
+    ok &= have
+    age = (datetime.date.today() - datetime.date.fromisoformat(pricing.AS_OF)).days
+    out(f"price table   as of {pricing.AS_OF} ({age} days old)"
+        + ("  STALE — budgets may be wrong" if age > 90 else ""))
+    ok &= age <= 90
+    try:
+        import anthropic
+        out(f"anthropic sdk {anthropic.__version__}")
+    except ImportError:
+        out("anthropic sdk NOT INSTALLED — run: pip install harness"); ok = False
+    return 0 if ok else 1
+
+
+def _money(budget) -> str:
+    from ..result import Money
+    return str(Money(budget.usd)) if budget.usd is not None else "unlimited"
+
+
 def main(argv: list[str] | None = None) -> int:                 # pragma: no cover
     argv = argv if argv is not None else sys.argv[1:]
     if not argv or argv[0] in ("-h", "--help"):
-        print("harness setup | new <name> | chat <file> | run <file> | doctor")
+        print("harness setup | new <name> | chat <file> | run <file> <message> | "
+              "trace <transcript> | cost <transcript> | doctor")
         return 0
     cmd, *rest = argv
-    if cmd == "new":
-        for p in cmd_new(rest[0] if rest else "helper"):
-            print(f"wrote {p.name}")
-        return 0
+    try:
+        if cmd == "new":
+            for p in cmd_new(rest[0] if rest else "helper"):
+                print(f"wrote {p.name}")
+            return 0
+        if cmd == "chat":   return cmd_chat(rest[0])
+        if cmd == "run":    return cmd_run(rest[0], " ".join(rest[1:]))
+        if cmd == "trace":  return cmd_trace(rest[0])
+        if cmd == "cost":   return cmd_cost(rest[0])
+        if cmd == "doctor": return cmd_doctor()
+    except IndexError:
+        print(f"harness {cmd} needs an argument"); return 1
     print(f"unknown command {cmd!r}")
     return 1

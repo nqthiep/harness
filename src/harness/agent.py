@@ -20,7 +20,7 @@ from .observe.transcript import TranscriptWriter, read as read_transcript
 from .policy.builtin import EffectPolicy, EgressPolicy, TaintPolicy
 from .policy.engine import PolicyEngine
 from .policy.taint import TaintTracker
-from .result import Result
+from .result import Money, Result, StopReason, Usage
 from .run import RunEngine
 from .secrets import redaction_scope
 from .tools import EFFECT_PROFILES, Effect, ToolSpec, tool as _tool_decorator
@@ -99,7 +99,9 @@ class Agent:
         object.__setattr__(self, "exporters", tuple(exporters))
         object.__setattr__(self, "max_parallel_tools", max_parallel_tools)
 
-        asm = ContextAssembler(model=model, job=job, tools=toolset, effort=effort)
+        output_format = _output_format(returns) if returns is not None else None
+        asm = ContextAssembler(model=model, job=job, tools=toolset, effort=effort,
+                               output_format=output_format)
         check_determinism(asm)                        # T-2.3, before a token is spent
         object.__setattr__(self, "_asm", asm)
         # Spans runs, not just one run: time-based drift shows up between calls, and a
@@ -116,6 +118,11 @@ class Agent:
     # -- running ----------------------------------------------------------
     async def atry_run(self, message: str, *, on_delta=None, _history=()) -> Result:
         provider = self.provider
+        if provider is None:
+            from .cli import key_status
+            if key_status()[0]:
+                from .models.anthropic import AnthropicProvider
+                provider = AnthropicProvider()
         if provider is None:
             raise ConfigError(
                 "this agent has no way to reach a model yet.\n\n"
@@ -159,6 +166,15 @@ class Agent:
         r = self.try_run(message, on_delta=on_delta)
         r.raise_for_status()
         return r
+
+    def chat(self, *, budget: Any | None = None) -> "Chat":
+        """A stateful conversation with ONE ledger for the whole session (ADR-020).
+
+        Left undefined, `harness chat` is either unbounded across turns or dies after
+        three.  The default is 10x the run budget; as it depletes, ADR-017's derived
+        max_tokens shrinks, so answers shorten before the session ends.
+        """
+        return Chat(self, budget=budget)
 
     def as_tool(self, *, name: str | None = None, description: str | None = None,
                 budget: Any | None = None) -> ToolSpec:
@@ -228,6 +244,70 @@ class Agent:
         base["tools"] = list(self.toolset)
         base.update(overrides)
         return Agent(**base)
+
+
+class Chat:
+    """A multi-turn session.  History lives here, never on the frozen Agent — which is
+    what lets one Agent serve many concurrent conversations (§05.4)."""
+
+    __slots__ = ("_agent", "_messages", "_spent", "_budget")
+
+    def __init__(self, agent: "Agent", *, budget: Any | None = None) -> None:
+        from decimal import Decimal
+        self._agent = agent
+        self._messages: list = []
+        self._spent = Money.ZERO
+        if budget is not None:
+            self._budget = Budget.parse(budget)
+        elif agent.budget.usd is not None:
+            self._budget = replace(agent.budget, usd=agent.budget.usd * Decimal(10))
+        else:
+            self._budget = agent.budget
+
+    @property
+    def spent(self) -> Money: return self._spent
+    @property
+    def budget(self) -> Budget: return self._budget
+    @property
+    def messages(self) -> list: return list(self._messages)
+
+    def say(self, message: str, *, on_delta=None) -> Result:
+        remaining = (Money(self._budget.usd) - self._spent
+                     if self._budget.usd is not None else None)
+        if remaining is not None and remaining.decimal <= 0:
+            return Result("", StopReason.BUDGET_EXHAUSTED, 0, self._spent, Usage(),
+                          "chat", False, (), None,
+                          f"this conversation reached its budget of {Money(self._budget.usd)}")
+        turn = self._agent
+        if remaining is not None:
+            turn = self._agent.with_(budget=replace(self._agent.budget,
+                                                    usd=remaining.decimal))
+        r = turn.try_run(message, _history=self._messages, on_delta=on_delta)
+        self._messages = list(r.messages)
+        self._spent = self._spent + r.cost
+        return r
+
+
+def _output_format(returns: type) -> dict:
+    """Build the response schema from `returns=`, using the SAME generator as tools so
+    "Python type -> schema" has one definition in the system (ADR-022, AC-24)."""
+    import dataclasses
+    from .tools.schema import _schema_for
+
+    if dataclasses.is_dataclass(returns):
+        props, required = {}, []
+        import typing
+        hints = typing.get_type_hints(returns)
+        for f in dataclasses.fields(returns):
+            props[f.name] = _schema_for(hints[f.name], fn_name=returns.__name__,
+                                        param=f.name)
+            if f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING:
+                required.append(f.name)
+        schema = {"type": "object", "properties": props, "required": required,
+                  "additionalProperties": False}
+    else:
+        schema = _schema_for(returns, fn_name="returns", param="value")
+    return {"type": "json_schema", "schema": schema, "name": getattr(returns, "__name__", "answer")}
 
 
 _EFFECT_RANK = {Effect.READ: 0, Effect.WRITE: 1, Effect.EXTERNAL: 2, Effect.DANGER: 3}

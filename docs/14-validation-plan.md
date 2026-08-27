@@ -149,6 +149,9 @@ against slow architectural drift, which no ordinary test catches.
 | AC-36 | **Every error message shown in [§15](15-first-agent.md) is asserted against the message the code produces.** The tutorial is the specification for those strings, not a paraphrase. | T-0.9, T-5.3 |
 | AC-37 | `harness new` emits the agent file and a `.gitignore` listing `.env`, or neither | Register #36 |
 | AC-38 | An invalid API key is never written to disk | IDL-25 |
+| AC-39 | **Every `import harness…` appearing in the documentation actually imports.** *§15 told children to import `harness.tools.web`, which did not exist (Round 30).* | Round 30 |
+| AC-40 | **Every `harness <command>` named in the documentation is implemented.** *Five of seven were not.* | Round 30 |
+| AC-41 | No tool evaluates model-supplied text with `eval`/`exec` | Round 30 |
 | AC-33 | Every conditional subsystem is either reachable from the shipped defaults or declares in the docs that it is not | P-10 |
 | AC-31 | **Every public parameter is read somewhere in the package.** *`max_parallel_tools` was accepted, stored and documented for two milestones without anything reading it (Round 26).* | NFR-09 |
 | AC-28 | Every `Secret` guarantee (unhashable, unpicklable, weakly registered) is exercised, not just declared | ADR-024 |

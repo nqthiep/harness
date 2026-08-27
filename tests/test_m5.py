@@ -239,5 +239,136 @@ class ConceptBudget(unittest.TestCase):
             self.assertNotIn(word, body, f"§15 uses jargon it promised to avoid: {word!r}")
 
 
+
+
+class Round30Promises(unittest.TestCase):
+    """Round 30: what the docs promise must exist, not merely be described."""
+
+    def test_every_harness_module_the_docs_import_exists(self):
+        import importlib
+        alldocs = "\n".join(p.read_text() for p in pathlib.Path("docs").glob("*.md"))
+        alldocs += pathlib.Path("README.md").read_text()
+        mods = set(re.findall(r"^\s*(?:from|import)\s+(harness[\w.]*)", alldocs, re.M))
+        missing = []
+        for m in sorted(mods):
+            try:
+                importlib.import_module(m)
+            except Exception as e:
+                missing.append(f"{m} ({type(e).__name__})")
+        self.assertEqual(missing, [], f"the docs import modules that do not exist: {missing}")
+
+    def test_every_cli_command_the_docs_promise_is_implemented(self):
+        from harness import cli
+        alldocs = "\n".join(p.read_text() for p in pathlib.Path("docs").glob("*.md"))
+        promised = set(re.findall(r"`harness (\w+)", alldocs))
+        have = {n[4:] for n in dir(cli) if n.startswith("cmd_")}
+        self.assertEqual(promised - have, set(),
+                         f"documented but unimplemented: {sorted(promised - have)}")
+
+    def test_the_tutorials_builtin_tool_import_works(self):
+        from harness.tools.web import search
+        self.assertEqual(search.effect.value, "external",
+                         "a web tool must taint the run (ADR-011)")
+
+    def test_returns_reaches_the_request(self):
+        import dataclasses
+        @dataclasses.dataclass
+        class Order:
+            id: str
+            eta_days: int
+        a = Agent(name="S", job="j", returns=Order,
+                  provider=FakeModel([FakeModel.text("{}")]), budget="$1")
+        fmt = a._asm.build([], max_tokens=10).output_format
+        self.assertIsNotNone(fmt, "returns= was accepted and ignored")
+        self.assertEqual(fmt["schema"]["required"], ["id", "eta_days"])
+
+    def test_returns_and_tools_share_one_schema_generator(self):
+        """AC-24: no second Python-type-to-schema path may exist."""
+        src = pathlib.Path("src/harness/agent.py").read_text()
+        self.assertIn("from .tools.schema import _schema_for", src)
+
+    def test_calculate_never_evals_model_supplied_text(self):
+        import asyncio
+        from harness.tools.calc import calculate
+        with self.assertRaises(ValueError):
+            asyncio.run(calculate.fn(expression="__import__('os').system('id')"))
+        self.assertEqual(asyncio.run(calculate.fn(expression="2 ** 10")), 1024)
+
+    def test_chat_holds_one_ledger_for_the_session(self):
+        a = Agent(name="T", job="j", budget="$0.10",
+                  provider=FakeModel([FakeModel.text("hi")] * 50))
+        c = a.chat()
+        self.assertEqual(c.budget.usd, a.budget.usd * 10, "ADR-020: 10x the run budget")
+        for _ in range(3):
+            c.say("hello")
+        self.assertGreater(len(c.messages), 3, "the conversation did not accumulate")
+
+    def test_chat_ends_gracefully_when_the_session_budget_is_spent(self):
+        """FakeModel is free by design (IDL-36), so a budget test needs a priced one —
+        otherwise it passes for the wrong reason."""
+        from harness.models.base import ModelResponse
+        from harness.models.pricing import MAX_OUTPUT, price
+        from harness.result import Usage
+
+        class Priced(FakeModel):
+            def price(s, m): return price("claude-opus-5")
+            def max_output(s, m): return MAX_OUTPUT["claude-opus-5"]
+            async def complete(s, req, *, on_delta=None):
+                r = await FakeModel.complete(s, req, on_delta=on_delta)
+                return ModelResponse(r.content, r.stop_reason, Usage(2_000, 2_000), r.model)
+
+        a = Agent(name="T", job="j", budget="$1",
+                  provider=Priced([FakeModel.text("hi")] * 50, input_tokens=2_000))
+        c = a.chat(budget="$0.30")
+        outcomes = [c.say("hello") for _ in range(8)]
+        self.assertLessEqual(float(c.spent.decimal), 0.35,
+                             "the session ledger did not bound the conversation")
+        self.assertFalse(outcomes[-1].ok, "the chat never ended despite a spent budget")
+
+    def test_chat_command_runs_a_scripted_conversation(self):
+        d = pathlib.Path(tempfile.mkdtemp())
+        cmd_new("bot", cwd=d)
+        # point the scaffold at a fake provider
+        f = d / "bot.py"
+        f.write_text(f"import sys; sys.path.insert(0, {os.path.abspath('src')!r})\n"
+                     "from harness import Agent\n"
+                     "from harness.models.fake import FakeModel\n"
+                     "bot = Agent(name='Bot', job='chat', budget='$1',\n"
+                     "            provider=FakeModel([FakeModel.text('hello back')] * 10))\n")
+        from harness.cli import cmd_chat
+        out = []
+        cmd_chat(str(f), inputs=["hi", "again"], out=out.append)
+        joined = "\n".join(out)
+        self.assertIn("Bot: hello back", joined)
+        self.assertIn("Budget for this conversation", joined)
+
+    def test_doctor_reports_a_missing_key_and_a_stale_price_table(self):
+        from harness.cli import cmd_doctor
+        out = []
+        cmd_doctor(out=out.append)
+        joined = "\n".join(out)
+        self.assertIn("harness", joined)
+        self.assertIn("price table", joined)
+
+    def test_trace_and_cost_read_a_real_transcript(self):
+        from harness.cli import cmd_cost, cmd_trace
+        d = pathlib.Path(tempfile.mkdtemp()); tpath = d / "t.jsonl"
+        Agent(name="T", job="j", budget="$1", transcript=str(tpath),
+              provider=FakeModel([FakeModel.text("done")])).run("go")
+        out = []
+        cmd_trace(str(tpath), out=out.append)
+        self.assertTrue(any("run.started" in l for l in out))
+        out2 = []
+        cmd_cost(str(tpath), out=out2.append)
+        self.assertTrue(any("spent" in l for l in out2))
+
+    def test_no_network_blocks_a_real_call(self):
+        from harness.testing import NetworkAccessInTest, no_network
+        import socket
+        with no_network():
+            with self.assertRaises(NetworkAccessInTest):
+                socket.socket()
+        socket.socket()          # restored
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
