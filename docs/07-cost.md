@@ -60,6 +60,17 @@ So the guarantee is two claims, not one:
 
 "Never exceeds" was the original wording. It was not achievable and is not claimed.
 
+**And the bound compounds one level per delegation.** SC-2b is a property of *one* ledger.
+A subagent runs on its own ledger — held against the parent's remaining budget and settled
+back into it (§06.4) — so a parent's worst case is its own one-call error *plus* each
+child's. Measured at depth 1: ≤ 1.25×. Delegation depth is naturally bounded because an
+`Agent` is frozen before it can be wrapped, so a cycle cannot be constructed.
+
+Round 28 found both halves of §06.4's budget claim unenforced: children kept independent
+ledgers, so a `$0.10` parent spent **$30** through six of them while reporting `$0.0000`;
+and parallel children each *read* the same remaining budget and each claimed all of it — a
+TOCTOU the hold now prevents.
+
 **Defaults are finite on every axis** — `$0.50`, 20 steps, 300 s. An unlimited default is
 fail-open, and the failure it opens onto is a five-figure invoice. `Budget(usd=None)` is
 available, requires typing `None`, and emits a warning event on every run.

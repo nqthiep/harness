@@ -78,6 +78,7 @@ class ToolSpec:
     timeout_s: float = 30.0
     max_result_tokens: int = 4_000
     source: str = ""
+    subagent: Any = None            # the child Agent, when this tool wraps one
 
     def to_api(self) -> dict[str, Any]:
         """Provider tool definition.  strict:true — ADR-022."""
@@ -88,6 +89,7 @@ class ToolSpec:
 def tool(
     *,
     effect: "Effect | str | None" = None,
+    subagent: Any = None,
     name: str | None = None,
     accepts_tainted: bool = False,
     timeout_s: float = 30.0,
@@ -140,6 +142,6 @@ def tool(
             src = "<unknown>"
 
         return ToolSpec(fname, description, input_schema, eff, afn,
-                        accepts_tainted, timeout_s, max_result_tokens, src)
+                        accepts_tainted, timeout_s, max_result_tokens, src, subagent)
 
     return decorate

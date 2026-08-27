@@ -1327,6 +1327,69 @@ reachable from the shipped defaults, or declare in the documentation that it is 
 feature that no configuration can reach, described as if it were active, is worse than no
 feature: it is a claim.
 
+
+---
+
+### Round 28 — Executing M4: the budget ceiling leaked through a documented feature
+
+M4 built the two `Store` implementations, the plugin registry and subagents. Memory and
+plugins passed on first run. Subagents did not — and the first suite written for them
+passed too, which is the more useful half of this round.
+
+**H28.1 — The subagent tests passed while the two claims that matter went untested.**
+
+Twenty-three tests covered effect maximization, delegation, and graceful child failure. All
+green. None of them asked the two things [§06.4](06-safety.md#4-least-privilege) actually
+*claims*:
+
+> *the child's budget is capped by the parent's remaining budget · the child's safety level
+> cannot be lower than the parent's*
+
+Asked directly, both were false. A parent with a **$0.10** budget called a **$5** child six
+times, spent **$30**, and reported `cost = $0.0000` — each child kept an independent ledger
+and nothing settled back. **SC-2a's ceiling leaked entirely through a documented feature.**
+And a `safety="strict"` parent could wrap a `safety="standard"` child, silently dropping
+the safety level for exactly the work it delegated.
+
+This is the third consecutive milestone where a documented guarantee turned out to be
+prose. The pattern is now specific enough to name: **a test suite written by whoever wrote
+the feature tests what the feature does, not what the document promises.** M5's checklist
+adds the inverse pass — read the guarantee, then write the test that would falsify it.
+
+**H28.2 — Then the cap was read instead of held.**
+
+With capping added, parallel children each *read* the same remaining budget and each claimed
+all of it — a TOCTOU on the ledger. `$0.50` became `$0.54`. Fixed by **holding** the
+headroom before the child runs and releasing it against the child's actual spend, so
+parallel children divide the budget instead of multiplying it.
+
+**H28.3 — The residual bound compounds with delegation depth, and nobody had said so.**
+
+SC-2b bounds overshoot by *one call's* input-count error — on **one** ledger. A subagent
+runs on its own, so a parent's worst case is its own error plus each child's. Measured ≤
+1.25× at depth 1. Now stated in [§07.1](07-cost.md#1-the-budget-is-a-ceiling-not-an-alert)
+rather than discovered, with the note that delegation cannot cycle: an `Agent` is frozen
+before it can be wrapped.
+
+**H28.4 — `run.py` crossed IDL-13's ceiling, and the ceiling did its job.**
+
+Subagent budget binding pushed it past 250 code lines. IDL-13 says an overrun is a **design
+signal**, not something to refactor around, so the signal was taken rather than the limit
+raised: tool execution moved to `dispatch.py`. `run.py` is now the state machine at **137**
+lines; `dispatch.py` owns policy resolution, scheduling, timeouts, truncation, taint and
+subagent binding at **163**.
+
+This is the first round where a rule written early prevented a decision rather than
+diagnosing one afterwards — worth recording, because most of this package's rules have so
+far only ever explained damage.
+
+**A smaller finding worth keeping.** Passing the parent's remaining budget into the subagent
+closure made it a tool parameter, and the schema builder demanded an annotation for it —
+which would have put a harness-internal field in the schema the *model* sees, where the
+model could set it. Now: **a parameter whose name starts with `_` is never model-facing**,
+is stripped from the schema, and is filtered out of model-supplied arguments. The awkwardness
+was the signal; the fix is a rule.
+
 ---
 
 ## 2.3 Running score
@@ -1338,6 +1401,7 @@ feature: it is a claim.
 | 25 | M1 safety core | 3 | **1** | 0 |
 | 26 | M2 cost core | 4 | 0 | **3** |
 | 27 | M3 observability | 3 | 0 | **1** (+1 unreachable by arithmetic) |
+| 28 | M4 memory · plugins · subagents | 4 | **1** (budget ceiling leak) | **2** |
 
 Twenty-five rounds in, **the only live security hole in the package was found by running the
 red-team suite, not by writing it.** It had been specified since Round 7, reviewed in Rounds
@@ -1406,6 +1470,7 @@ with a 16/16 gate. They found:
 | **25** | **Three defects in the built M1 safety core, including a live secret leak to the model** | **Writing a red-team suite is not running one** |
 | **26** | **Four defects in the built M2 cost core; three features were specified, owned by a task, and never implemented** | **Ownership is not implementation** |
 | **27** | **Three of fifteen event kinds had no emit site; context management was unreachable by arithmetic** | **Naming a failure class does not prevent it — only the inverse test does** |
+| **28** | **A $0.10 agent spent $30 through subagents while reporting $0.0000** | **A suite written by the feature's author tests the feature, not the promise** |
 
 **Every one of these passed a prior review.** The five techniques that found them — multiply
 the numbers out, execute the contract, traverse types rather than tasks, count coverage per

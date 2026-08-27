@@ -638,6 +638,48 @@ real failure and a floor alone would accept a design that merely stayed flat.
 
 ---
 
+### ADR-030 — A subagent holds parent headroom; it does not read it
+**Status:** Accepted (Round 28) · **Fixes an unenforced claim in §06.4**
+
+**Context.** §06.4 has claimed since Round 7 that a subagent's budget is capped by the
+parent's remaining budget and that a child cannot be less safe than its parent. Executed in
+Round 28, neither was true: a `$0.10` parent spent **$30** through six `$5` children and
+reported `$0.0000`, because each child ran on an independent ledger that never settled back.
+SC-2a's ceiling leaked entirely through a documented feature.
+
+**Decision.** The dispatcher — not the tool closure — owns a subagent call. It **holds**
+headroom from the parent ledger, runs the child against that cap, and **releases** the hold
+against the child's actual spend. The safety floor is checked at parent construction.
+
+**Why a hold and not a read.** Capping by reading `remaining_usd()` left parallel children
+each seeing the same headroom and each claiming all of it — a TOCTOU that turned `$0.50`
+into `$0.54`. A hold makes them divide the budget instead of multiplying it.
+
+**What is still bounded rather than exact.** SC-2b bounds overshoot by one call's
+input-count error **on one ledger**; delegation composes ledgers, so the bound **compounds
+one level per delegation** (≤ 1.25× measured at depth 1). Stated in
+[§07.1](07-cost.md#1-the-budget-is-a-ceiling-not-an-alert). Cycles are impossible: an
+`Agent` is frozen before it can be wrapped.
+
+---
+
+### ADR-031 — Underscore-prefixed tool parameters are never model-facing
+**Status:** Accepted (Round 28)
+
+**Context.** Plumbing the parent's remaining budget into a subagent made it a parameter of
+the tool function, and the schema builder demanded an annotation — which would have placed
+a harness-internal field in the schema the **model** sees, and therefore can set.
+
+**Decision.** A parameter whose name starts with `_` is harness-internal: excluded from the
+generated schema, exempt from the annotation requirement, and stripped from model-supplied
+arguments before invocation.
+
+**The general point.** The awkwardness was the signal. A mechanism that forces internal
+state through a model-facing surface is telling you the surface is wrong, and the fix is a
+rule rather than an annotation.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
@@ -654,7 +696,7 @@ real failure and a floor alone would accept a design that merely stayed flat.
 | IDL-10 | Exporter exceptions disable that exporter for the run | Telemetry must never cause an outage |
 | IDL-11 | `run()` raises, `try_run()` returns | Serves beginners (loud) and production (explicit) without an options flag |
 | IDL-12 | `RunFailed.partial` carries the `Result` | Raising must not destroy accumulated work |
-| IDL-13 | 250-line ceiling on `run.py`, treated as a design signal | The loop staying boring is the property that keeps it auditable |
+| IDL-13 | 250-line ceiling on `run.py`, treated as a design signal. **Fired in Round 28**: subagent binding crossed it, and the response was to split tool execution into `dispatch.py` rather than raise the limit — run.py 137, dispatch.py 163 | The loop staying boring is the property that keeps it auditable |
 | IDL-14 | `EFFECT_PROFILES` is a module constant, not configuration | A user who could edit it could disable the taint rule |
 | IDL-15 | `RunContext` excludes message history | The transcript is the largest available exfiltration surface |
 | IDL-16 | SQLite `STRICT` tables + WAL + busy timeout | Type affinity silently accepts wrong types; WAL avoids `database is locked` |

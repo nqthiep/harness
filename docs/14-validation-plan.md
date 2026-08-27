@@ -144,6 +144,8 @@ against slow architectural drift, which no ordinary test catches.
 | AC-29 | Every value type uses `@value`; none uses bare `@dataclass(frozen=True, ...)` | ADR-027 |
 | AC-30 | Redaction is applied at **both** the transcript boundary and the tool-result boundary | ADR-028 |
 | AC-32 | **Every `EventKind` has an emit site.** *A test that emitted kinds are in the taxonomy passes trivially; the inverse question found three kinds the code could never emit (Round 27).* | §05.1 |
+| AC-34 | No subagent tool runs on an unheld ledger; every `as_tool` call path holds and releases parent headroom | ADR-030 |
+| AC-35 | No `_`-prefixed parameter appears in any generated tool schema | ADR-031 |
 | AC-33 | Every conditional subsystem is either reachable from the shipped defaults or declares in the docs that it is not | P-10 |
 | AC-31 | **Every public parameter is read somewhere in the package.** *`max_parallel_tools` was accepted, stored and documented for two milestones without anything reading it (Round 26).* | NFR-09 |
 | AC-28 | Every `Secret` guarantee (unhashable, unpicklable, weakly registered) is exercised, not just declared | ADR-024 |
@@ -225,6 +227,12 @@ A design package rots the moment the code diverges from it. Three practices, all
    owning task in the traceability matrix and were simply never implemented — `max_parallel_tools`
    (NFR-09 → T-2.7), duplicate suppression (T-2.5), the multi-turn breakpoint (§07.2.2).
    **Ownership is not implementation, and a matrix cannot tell the difference.**
+
+   Round 28 added the third form. Its subagent suite — 23 tests, all green — never asked
+   the two things [§06.4](06-safety.md#4-least-privilege) actually *claims*, and both were
+   false. **A suite written by whoever wrote the feature tests what the feature does, not
+   what the document promises.** So every guarantee stated in prose gets an inverse pass:
+   read the sentence, then write the test that would falsify it.
 
    So the standing review question is not "is this reviewed?" but **"has this been run?"**
    Concretely: every red-team scenario, every conformance check and every property is an

@@ -209,6 +209,41 @@ class Ledger:
             self._blocked = True
         return actual
 
+    def hold(self, amount: Money) -> Money:
+        """Claim headroom up front for work that will spend on another ledger.
+
+        Parallel subagents each READ the same remaining budget and each claimed all of
+        it — a TOCTOU on the ledger that let N children spend N x the headroom
+        (Round 28).  A hold makes them divide it instead.  Returns the amount actually
+        held, which may be less than requested.
+        """
+        remaining = self.remaining_usd()
+        if remaining is None:
+            return amount
+        held = Money(min(amount.decimal, max(remaining.decimal, 0)))
+        self._spent = self._spent + held
+        return held
+
+    def release(self, held: Money, actual: Money) -> None:
+        """Replace a hold with what was really spent."""
+        self._spent = self._spent - held + actual
+        if self._b.usd is not None and self._spent.decimal > self._b.usd:
+            self._overshoot = Money(self._spent.decimal - self._b.usd)
+            self._blocked = True
+
+    def charge(self, amount: Money) -> None:
+        """Record spend that happened on another ledger — a subagent's run.
+
+        Without this a subagent's cost is invisible to its parent: the parent reports
+        $0.0000 and each successive child call sees the full remaining budget (Round 28).
+        """
+        if amount.decimal <= 0:
+            return
+        self._spent = self._spent + amount
+        if self._b.usd is not None and self._spent.decimal > self._b.usd:
+            self._overshoot = Money(self._spent.decimal - self._b.usd)
+            self._blocked = True
+
     def tool_timeout(self, spec_timeout_s: float) -> float:
         """Round 23: clamp to the wall clock, or the ceiling overshoots by timeout_s."""
         return min(spec_timeout_s, self.remaining_wall_clock())

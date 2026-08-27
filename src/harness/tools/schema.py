@@ -75,6 +75,11 @@ def build(fn: Any) -> tuple[str, dict[str, Any]]:
         )
 
     sig = inspect.signature(fn)
+    # A parameter whose name starts with "_" is harness-internal (the parent's remaining
+    # budget passed to a subagent, for instance).  It is never described to the model and
+    # never requires an annotation — the model must not be able to set it.
+    sig = sig.replace(parameters=[p for n, p in sig.parameters.items()
+                                  if not n.startswith("_")])
     try:
         hints = typing.get_type_hints(fn)
     except Exception as exc:                                        # pragma: no cover

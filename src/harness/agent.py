@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from dataclasses import replace
 from typing import Any, Callable, Literal, Sequence
 
 from .budget.ledger import Budget, Ledger
@@ -22,7 +23,7 @@ from .policy.taint import TaintTracker
 from .result import Result
 from .run import RunEngine
 from .secrets import redaction_scope
-from .tools import Effect, ToolSpec
+from .tools import EFFECT_PROFILES, Effect, ToolSpec, tool as _tool_decorator
 from .tools.registry import ToolSet
 
 
@@ -32,7 +33,8 @@ _MISSING: Any = object()
 class Agent:
     __slots__ = ("name", "job", "toolset", "model", "effort", "budget", "safety",
                  "approve", "policies", "allowed_hosts", "provider", "returns",
-                 "max_parallel_tools", "transcript", "exporters", "_asm", "_watch")
+                 "max_parallel_tools", "transcript", "exporters", "_asm", "_watch",
+                 "_as_tool_budget")
 
     def __init__(
         self,
@@ -78,6 +80,7 @@ class Agent:
 
         toolset = ToolSet(tools)
         _check_tool_set(toolset)                      # T-1.4, before anything is spent
+        _check_subagent_safety(toolset, safety)       # §06.4, before anything is spent
 
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "job", job)
@@ -102,6 +105,7 @@ class Agent:
         # Spans runs, not just one run: time-based drift shows up between calls, and a
         # per-run watcher would compare a prefix only against itself (Round 24).
         object.__setattr__(self, "_watch", PrefixWatcher())
+        object.__setattr__(self, "_as_tool_budget", None)
 
     def __setattr__(self, *a: Any) -> None:
         raise AttributeError("Agent is frozen — use agent.with_(...) to make a changed copy")
@@ -156,6 +160,33 @@ class Agent:
         r.raise_for_status()
         return r
 
+    def as_tool(self, *, name: str | None = None, description: str | None = None,
+                budget: Any | None = None) -> ToolSpec:
+        """Turn this agent into a tool another agent can call — task T-4.4.
+
+        Subagents inherit restriction only ([§06.4](../../docs/06-safety.md#4-least-privilege)):
+
+        * the child's effect is the **maximum** of its own tools' effects, so a parent
+          cannot gain a capability by wrapping it;
+        * the child's safety level cannot be lower than the parent's — that is checked
+          here, at construction, not at run time;
+        * the child gets an explicit task string, never the parent's transcript.
+        """
+        child = self
+        effects = [t.effect for t in child.toolset]
+        worst = max(effects, key=lambda e: _EFFECT_RANK[e]) if effects else Effect.READ
+
+        async def call_subagent(task: str) -> str:
+            # The dispatcher owns this call: it caps the child at the parent's remaining
+            # budget and settles the child's spend into the parent's ledger (§06.4).
+            raise AssertionError("subagent tools are dispatched, not called directly")
+
+        call_subagent.__name__ = name or f"ask_{child.name.lower().replace(' ', '_')}"
+        call_subagent.__doc__ = (description
+                                 or f"Ask {child.name} to do something. {child.job}")[:400]
+        call_subagent.__annotations__ = {"task": str, "return": str}
+        return _tool_decorator(effect=worst, subagent=child)(call_subagent)
+
     def resume(self, transcript: Any) -> Result:
         """Continue an interrupted run from its transcript — task T-3.3.
 
@@ -199,6 +230,9 @@ class Agent:
         return Agent(**base)
 
 
+_EFFECT_RANK = {Effect.READ: 0, Effect.WRITE: 1, Effect.EXTERNAL: 2, Effect.DANGER: 3}
+
+
 def _guard_sync() -> None:
     try:
         asyncio.get_running_loop()
@@ -209,6 +243,32 @@ def _guard_sync() -> None:
         "    result = await agent.arun(...)     ← use this instead\n\n"
         "  -> docs/03-public-api.md#3-agent--the-complete-signature"
     )
+
+
+_SAFETY_RANK = {"standard": 0, "strict": 1}
+
+
+def _check_subagent_safety(toolset: ToolSet, parent_safety: str) -> None:
+    """A subagent inherits restriction only: it may never be laxer than its parent.
+
+    Documented in §06.4 since Round 7 and unenforced until Round 28 executed it — a
+    strict parent could delegate to a standard child and silently drop the safety level
+    for exactly the work it delegated.
+    """
+    for spec in toolset:
+        child = spec.subagent
+        if child is None:
+            continue
+        if _SAFETY_RANK[child.safety] < _SAFETY_RANK[parent_safety]:
+            raise UnsafeToolSetError(
+                f"{child.name!r} runs at safety={child.safety!r} but you are wrapping it "
+                f"in an agent at safety={parent_safety!r}.\n\n"
+                f"  A subagent can only ever be MORE restricted than its parent, never "
+                f"less —\n  otherwise delegating work is a way to escape the safety "
+                f"level you chose.\n\n"
+                f'  Fix: Agent(name={child.name!r}, ..., safety="{parent_safety}")\n\n'
+                f"  -> docs/06-safety.md#4-least-privilege"
+            )
 
 
 def _check_tool_set(toolset: ToolSet) -> None:

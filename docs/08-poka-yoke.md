@@ -1,6 +1,6 @@
 # 08 — Poka-Yoke Register
 
-Sixty-one ways a competent developer could still get this wrong, and what in the design
+Sixty-three ways a competent developer could still get this wrong, and what in the design
 stops them. The ranking is deliberate:
 
 **Impossible** > **Import-time error** > **Construction-time error** > **First-run error** >
@@ -75,6 +75,8 @@ which is why they are grouped separately below.
 | 29 | Unlimited default budget → the overnight five-figure invoice | Defaults finite on all four axes; unlimited requires typing `None` and warns every run | Impossible by default |
 | 30 | Budget checked after spending | `reserve()` before every call. Worst case on output; margin, upward calibration and a hard character bound on input (ADR-026) | Exact on authorization; bounded on spend |
 | 31 | Float rounding drift in money arithmetic | `Decimal` throughout; a lint rule bans `float` in `budget/` | Impossible |
+| 62 | **Delegated spend invisible to the parent** — a $0.10 agent spending $30 through subagents and reporting $0.0000 | The dispatcher **holds** parent headroom before a child runs and releases it against actual spend (ADR-030). Parallel children divide the budget rather than each claiming it | Impossible |
+| 63 | **A harness-internal field appearing in the schema the model can set** | A parameter starting with `_` is stripped from the generated schema and from model-supplied arguments (ADR-031) | Impossible |
 | 32 | Unknown model priced at zero, silently disabling the ceiling | `UnknownModelError` before any call | Impossible |
 | 58 | **A public parameter that silently does nothing** — `max_parallel_tools` was accepted, stored, documented and never read; measured peak concurrency 30 against a limit of 4 | AC-31: every public parameter must be read somewhere in the package. *A parameter that does nothing is worse than one that does not exist, because people rely on it* | CI |
 | 60 | **An event kind the code can never emit** — a taxonomy test can only check what *is* emitted | AC-32 asks the inverse question: every `EventKind` must have an emit site. *Three of fifteen had none, including one whose whole subsystem was never called (Round 27)* | CI |
