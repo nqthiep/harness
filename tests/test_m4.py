@@ -262,5 +262,76 @@ class NonAsciiNames(unittest.TestCase):
         compile(agent_file.read_text(), str(agent_file), "exec")
 
 
+class StatefulPolicy(unittest.TestCase):
+    """Round 34: a workflow state machine is the obvious business use of `Policy`, and
+    it collided with two documented rules — §04.3 says check() is pure, §10.5 says keep
+    the Agent at module scope. Together: one customer's workflow state leaked into the
+    next request."""
+
+    class Counter:
+        name = "counter"
+        def __init__(self, start=0):
+            self.n = start
+        def check(self, call, ctx):
+            from harness import Decision, Verdict
+            self.n += 1
+            return Decision(Verdict.ALLOW, f"n={self.n}", self.name)
+
+    def _agent(self, policy):
+        return Agent(name="T", job="j", tools=[peek], policies=[policy], budget="$5",
+                     provider=FakeModel([FakeModel.tool_call("peek", {"x": 1}),
+                                         FakeModel.text("ok")] * 4))
+
+    def test_a_shared_stateful_policy_is_refused(self):
+        with self.assertRaises(ConfigError) as cm:
+            self._agent(self.Counter()).try_run("go")
+        msg = str(cm.exception)
+        self.assertIn("changed while it ran", msg)
+        self.assertIn("policies=[Counter]", msg, "the fix must be shown, not described")
+
+    def test_a_class_is_treated_as_a_factory(self):
+        """A class has a `check` attribute too, so `hasattr(p, 'check')` misidentifies
+        it as an instance — the first version of the guard did exactly that."""
+        a = self._agent(self.Counter)
+        self.assertTrue(a.try_run("khách A").ok)
+        self.assertTrue(a.try_run("khách B").ok)
+
+    def test_each_run_gets_a_fresh_instance(self):
+        seen = []
+        def factory():
+            p = StatefulPolicy.Counter()
+            seen.append(p)
+            return p
+        a = self._agent(factory)
+        a.try_run("A"); a.try_run("B")
+        self.assertEqual(len(seen), 2)
+        self.assertIsNot(seen[0], seen[1], "two runs shared one policy instance")
+        self.assertEqual([p.n for p in seen], [1, 1], "state carried between runs")
+
+    def test_a_stateless_policy_is_still_shareable(self):
+        """EgressPolicy holds configuration, not state — it must not trip the guard."""
+        from harness.policy.builtin import EgressPolicy
+        a = self._agent(EgressPolicy(["example.com"]))
+        self.assertTrue(a.try_run("go").ok)
+
+    def test_a_state_machine_cannot_loosen_an_earlier_denial(self):
+        """Verdicts compose with max(), so a workflow can only ever restrict further."""
+        from harness import Decision, Verdict
+        class AlwaysAllow:
+            name = "workflow"
+            def check(self, call, ctx): return Decision(Verdict.ALLOW, "", self.name)
+        ran = []
+        @tool(effect="danger")
+        def wipe(x: int) -> str:
+            """Wipe."""
+            ran.append(x); return "gone"
+        a = Agent(name="T", job="j", tools=[wipe], policies=[AlwaysAllow],
+                  approve=lambda c, x: False, budget="$5",
+                  provider=FakeModel([FakeModel.tool_call("wipe", {"x": 1}),
+                                      FakeModel.text("ok")]))
+        a.try_run("go")
+        self.assertEqual(ran, [], "a policy overrode the approval callback")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

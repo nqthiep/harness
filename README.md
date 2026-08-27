@@ -68,7 +68,7 @@ council recorded the trade and the reasoning in the [Design Decision Log](docs/1
 | 5 | **Efficient** | Async core, sync facade, one round-trip per step, truncation ceilings on every tool result. |
 
 Plus the sixth, which shaped the API more than any other: **Poka-Yoke** — see the
-[register of 68 failure modes and their design-level defenses](docs/08-poka-yoke.md).
+[register of 69 failure modes and their design-level defenses](docs/08-poka-yoke.md).
 Ten of those came from Round 13, and **five of the six worst beginner blockers turned out
 to be outside the API entirely** — credentials, feedback, error rendering, scaffolding and
 repeat-run cost.

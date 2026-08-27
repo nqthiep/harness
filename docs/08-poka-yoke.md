@@ -1,6 +1,6 @@
 # 08 — Poka-Yoke Register
 
-Sixty-eight ways a competent developer could still get this wrong, and what in the design
+Sixty-nine ways a competent developer could still get this wrong, and what in the design
 stops them. The ranking is deliberate:
 
 **Impossible** > **Import-time error** > **Construction-time error** > **First-run error** >
@@ -66,6 +66,7 @@ which is why they are grouped separately below.
 | 24 | Tool arguments containing PII recorded by default | `tool.requested` stores a sha256 digest, not the arguments | Impossible by default |
 | 25 | A tool reading the whole conversation and leaking it | `RunContext` has no message history, by design | Impossible |
 | 26 | A transitively installed package registering tools silently | Entry-point discovery is opt-in (`discover=True`) | Impossible by default |
+| 69 | **A stateful policy shared across runs** — a workflow state machine on a module-scope agent carries one customer's progress into the next request | Policies may be passed as factories; the first run that mutates a shared instance raises and prints `policies=[TheClass]`. Detected by comparing state before and after, so configuration-holding policies like `EgressPolicy` do not false-positive | First run |
 | 27 | A plugin registering a `danger` tool while declaring `read` | Declared capability ceiling enforced at registration | Registration |
 | 48 | **A `Secret` silently duplicated in a set or dict** because equal-by-value objects hashed by name | `__hash__ = None`. `TypeError`, never a silent duplicate | Impossible |
 | 49 | **A credential retained forever as an `lru_cache` key**, beyond the redactor's reach | Same — unhashable cannot be a cache key | Impossible |

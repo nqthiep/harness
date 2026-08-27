@@ -125,6 +125,43 @@ believes they have bought immunity.
   remaining budget, its safety level cannot be lower than the parent's, and it cannot hold
   a tool the parent's policies would deny. Checked at `as_tool()`.
 
+### 4.1 Business workflows: the state machine governs, the model navigates
+
+The harness has no workflow engine, and that is a design position rather than a gap
+([§01.5](01-requirements.md#5-non-goals)). But a real business process — verify, check
+policy, approve, execute, record — genuinely needs order enforced, and prompt text does
+not enforce anything.
+
+**A state machine is a `Policy`.** The seam already fits: `check()` runs before every tool
+call, it is a table lookup (pure and fast, as §04.3 requires), and verdicts compose with
+`max()` so a workflow can only ever *restrict*. `examples/refund_workflow.py` is a working
+one in 40 lines, and no core change was needed.
+
+The split that matters:
+
+| | Decided by |
+|---|---|
+| Which steps are **legal** right now | The state machine |
+| Which tool to call, with what arguments, and what the customer meant | The model |
+
+What a policy **cannot** do is force the model to take step A. It can only refuse B until
+A has happened — and that is the correct primitive, because an LLM cannot be forced, only
+constrained. A denial carries its reason back to the model, which is what steers it.
+
+**Stateful policies must be factories.** Pass the class or a lambda, never an instance:
+
+```python
+policies=[RefundWorkflow]                       # fresh per run
+policies=[lambda: RefundWorkflow(start=CHECKED)]  # fresh, configured
+```
+
+An instance is shared across every run of that agent, and [§10.5](10-observability-ops.md#5-running-in-production)
+tells people to keep the `Agent` at module scope for caching — so a shared workflow would
+carry one customer's progress into the next request. Round 34 found this collision between
+two documented rules; the first run that mutates a shared policy now raises and names the
+fix. Workflow state does **not** survive a process restart: persist it yourself, or rebuild
+it from the transcript.
+
 ## 5. Secrets
 
 ```python

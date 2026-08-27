@@ -141,15 +141,23 @@ class Agent:
         bus = EventBus(run_id, exporters)
         ledger = Ledger(self.budget)
         taint = TaintTracker()
+        # A policy given as a callable is a FACTORY: a fresh instance per run.  A
+        # stateful policy shared across runs — a workflow state machine, say — would
+        # otherwise carry one customer's progress into the next request, because §10.5
+        # tells people to keep the Agent at module scope for caching (Round 34).
+        user_policies = tuple(p() if _is_factory(p) else p for p in self.policies)
+        before = _policy_state(user_policies)
         engine = PolicyEngine(
-            (EffectPolicy(), TaintPolicy(), EgressPolicy(self.allowed_hosts)), self.policies)
+            (EffectPolicy(), TaintPolicy(), EgressPolicy(self.allowed_hosts)), user_policies)
         # Open for exactly the window in which a revealed secret can still be written
         # out — wide enough to redact, narrow enough not to retain (Round 25, RT-13).
         try:
             with redaction_scope():
-                return await RunEngine(self, provider, ledger, engine, taint, self._asm, bus,
-                                       self._watch).run(message, messages=_history,
-                                                        on_delta=on_delta)
+                result = await RunEngine(self, provider, ledger, engine, taint, self._asm,
+                                         bus, self._watch).run(message, messages=_history,
+                                                               on_delta=on_delta)
+            _check_shared_policy_state(self.policies, user_policies, before)
+            return result
         finally:
             if writer is not None:
                 writer.close()
@@ -327,6 +335,49 @@ def _guard_sync() -> None:
         "    result = await agent.arun(...)     ← use this instead\n\n"
         "  -> docs/15-first-agent.md"
     )
+
+
+def _is_factory(p) -> bool:
+    """A Policy *instance* carries `check` as a bound method; a class or a lambda does
+    not.  Testing `hasattr(p, "check")` treats the class itself as an instance, because a
+    class has the attribute too — the first version of this check did exactly that."""
+    import inspect
+    return not inspect.ismethod(getattr(p, "check", None))
+
+
+def _policy_state(policies) -> dict[int, str]:
+    """A cheap snapshot of each policy's mutable attributes."""
+    out = {}
+    for p in policies:
+        d = getattr(p, "__dict__", None)
+        if d is None:
+            d = {s: getattr(p, s, None) for s in getattr(type(p), "__slots__", ())}
+        out[id(p)] = repr(sorted((k, repr(v)) for k, v in d.items()))
+    return out
+
+
+def _check_shared_policy_state(declared, used, before) -> None:
+    """A shared policy that mutated during a run carries state into the next one.
+
+    Detected here rather than guessed at construction: `EgressPolicy` holds configuration
+    and would trip any static "has attributes" heuristic, while a genuine state machine
+    only reveals itself by changing.  The first run that mutates one says so (Round 34).
+    """
+    after = _policy_state(used)
+    for original, live in zip(declared, used):
+        if _is_factory(original):
+            continue                      # a factory: fresh each run, nothing to share
+        if before.get(id(live)) != after.get(id(live)):
+            raise ConfigError(
+                f"the policy {type(live).__name__!r} changed while it ran, and this agent "
+                f"reuses the same instance on every run.\n\n"
+                f"  The next request would inherit this one's progress — one customer's "
+                f"workflow\n  state leaking into another's.\n\n"
+                f"  Pass the class instead of an instance, so each run gets a fresh one:\n\n"
+                f"      policies=[{type(live).__name__}]        ← not "
+                f"{type(live).__name__}()\n\n"
+                f"  -> docs/06-safety.md#4-least-privilege"
+            )
 
 
 _SAFETY_RANK = {"standard": 0, "strict": 1}
