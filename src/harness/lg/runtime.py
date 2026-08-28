@@ -19,6 +19,7 @@ from ..budget.ledger import Ledger
 from ..errors import BudgetExceeded
 from ..observe.events import EventKind
 from ..policy.base import Decision, ToolCall, Verdict
+from ..policy.taint import TaintTracker
 from ..result import Money, Usage
 from ..secrets import redact, redaction_scope
 from ..context.window import CLEARED, EDIT_AT, KEEP_RECENT_STEPS
@@ -33,51 +34,90 @@ class Runtime:
                  bus=None, approve=None) -> None:
         self._model, self._tools = model, toolset
         self._model_name, self._started = model_name, False
-        self._l, self._engine, self._taint = ledger, engine, taint
+        self._budget = ledger.budget          # the spec; the spend lives per turn
+        self._engine = engine
         self._price, self._max_output = price, max_output
         self._bus, self._approve = bus, approve
 
+    # ── everything mutable is derived from graph state ───────────────────────
+    #
+    # Nothing about a run may live on this object.  LangGraph runs every node in its own
+    # copied context, so an attribute set in one node is not there in the next; and a
+    # Runtime is built once per compiled graph, so anything it does hold is shared by
+    # every conversation that graph serves.  Round 37 found all three consequences at
+    # once: a shared ledger billed customer B for customer A's tokens, a shared taint
+    # tracker leaked A's taint to B and lost it across a restart, and a checkpointed
+    # `stop_reason` made every turn after the first do nothing at all.
+    #
+    # The rule this replaced them with: **the thread's state is the only memory.**
+    def _ledger(self, state) -> Ledger:
+        """This conversation's ledger, rebuilt from state on every node.
+
+        Parity with `Chat` (docs/03): USD accumulates across the conversation, the step
+        ceiling is per turn — accumulating steps too would kill a long conversation
+        permanently, every later turn starting already over the limit.
+        """
+        snap = dict(state.get("ledger") or {})
+        if _is_new_turn(state):
+            snap["steps"] = 0
+        return Ledger(self._budget).restore(snap)
+
+    def _tainter(self, state) -> TaintTracker:
+        t = TaintTracker()
+        if state.get("tainted"):
+            t.raise_taint("restored from checkpoint")
+        return t
+
     # ── gate 1: nothing reaches the model without a reservation ──────────────
     def budget_gate(self, state) -> dict:
+        led = self._ledger(state)
         if state.get("step", 0) == 0 and not self._started:
             self._started = True
             self._emit(EventKind.RUN_STARTED, model=self._model_name,
                        tool_names=[t.name for t in self._tools],
                        safety=self._safety(state))
         self._emit(EventKind.STEP_STARTED, step=state.get("step", 0))
-        if self._l.remaining_steps() <= 0:
-            return {"stop_reason": "step_limit", "detail": "reached the step limit"}
-        if self._l.remaining_wall_clock() <= 0:
-            return {"stop_reason": "timeout", "detail": "ran out of time"}
+        if led.remaining_steps() <= 0:
+            return {"stop_reason": "step_limit", "detail": "reached the step limit",
+                    "ledger": led.snapshot()}
+        if led.remaining_wall_clock() <= 0:
+            return {"stop_reason": "timeout", "detail": "ran out of time",
+                    "ledger": led.snapshot()}
         text = json.dumps([m.content for m in state["messages"]],
                           ensure_ascii=False, default=str)
         input_tokens = max(1, len(text) // 4)
         try:
-            max_tokens = self._l.size_call(input_tokens, self._price, self._max_output)
-            res = self._l.reserve(input_tokens, max_tokens, self._price,
-                                  hard_max_input=len(text))
+            max_tokens = led.size_call(input_tokens, self._price, self._max_output)
+            res = led.reserve(input_tokens, max_tokens, self._price,
+                              hard_max_input=len(text))
         except BudgetExceeded as exc:
-            self._emit(EventKind.BUDGET_EXHAUSTED, axis="usd", spent=str(self._l.spent))
-            return {"stop_reason": "budget_exhausted", "detail": str(exc)}
-        self._reservation, self._max_tokens = res, max_tokens
+            self._emit(EventKind.BUDGET_EXHAUSTED, axis="usd", spent=str(led.spent))
+            return {"stop_reason": "budget_exhausted", "detail": str(exc),
+                    "ledger": led.snapshot()}
         self._emit(EventKind.BUDGET_RESERVED, estimate_usd=str(res.estimate),
-                   spent_usd=str(self._l.spent))
-        return {"spent_usd": str(self._l.spent.decimal)}
+                   spent_usd=str(led.spent))
+        # `stop_reason` is cleared here, and only here.  It is checkpointed like every
+        # other state key, so a thread that finished a turn came back carrying
+        # "completed" — and `_after_budget` routed the next turn straight to `finish`.
+        # Multi-turn was silently dead: the model was called once per thread, ever, and
+        # the caller got their own message echoed back (Round 37).
+        return {"spent_usd": str(led.spent.decimal), "ledger": led.snapshot(),
+                "max_tokens": max_tokens, "stop_reason": None, "detail": ""}
 
     def call_model(self, state) -> dict:
-        self._emit(EventKind.MODEL_REQUEST, max_tokens=self._max_tokens)
+        led = self._ledger(state)
+        self._emit(EventKind.MODEL_REQUEST, max_tokens=state.get("max_tokens", 0))
         msg = self._model.invoke(state["messages"])
-        usage = _usage_of(msg)
-        self._l.settle(self._reservation, usage, self._price)
-        self._l.count_step()
-        self._emit(EventKind.MODEL_RESPONSE, cost_usd=str(self._l.spent))
+        led.settle(_RESERVED(state.get("max_tokens", 0)), _usage_of(msg), self._price)
+        led.count_step()
+        self._emit(EventKind.MODEL_RESPONSE, cost_usd=str(led.spent))
         return {"messages": [msg], "step": state.get("step", 0) + 1,
-                "spent_usd": str(self._l.spent.decimal)}
+                "spent_usd": str(led.spent.decimal), "ledger": led.snapshot()}
 
     # ── gate 2: nothing reaches a tool without a verdict ─────────────────────
     def policy_gate(self, state) -> dict:
         calls = getattr(state["messages"][-1], "tool_calls", []) or []
-        ctx = _Ctx(tainted=self._taint.tainted, safety=self._safety(state))
+        ctx = _Ctx(tainted=self._tainter(state).tainted, safety=self._safety(state))
         pending, denied = [], []
         for c in calls:
             self._emit(EventKind.TOOL_REQUESTED, tool=c["name"], call_id=c["id"])
@@ -118,7 +158,7 @@ class Runtime:
                 out.append(p); continue
             spec = self._tools.get(p["tool"])
             call = ToolCall(p["call"]["id"], p["tool"], p["call"].get("args", {}), spec)
-            ctx = _Ctx(tainted=self._taint.tainted, safety=self._safety(state))
+            ctx = _Ctx(tainted=self._tainter(state).tainted, safety=self._safety(state))
             if self._approve is INTERRUPT:
                 ok = bool(interrupt({"tool": p["tool"],
                                      "arguments": p["call"].get("args", {}),
@@ -151,6 +191,7 @@ class Runtime:
             return self._run_tools(state)
 
     def _run_tools(self, state) -> dict:
+        tainter = self._tainter(state)
         msgs, tainted = [], False
         for p in state.get("_pending", []):
             call = p["call"]
@@ -167,7 +208,7 @@ class Runtime:
                 limit = spec.max_result_tokens * 4
                 if len(payload) > limit:
                     payload = payload[:limit] + "\n[truncated]"
-                if EFFECT_PROFILES[spec.effect].taints_output and self._taint.raise_taint(spec.name):
+                if EFFECT_PROFILES[spec.effect].taints_output and tainter.raise_taint(spec.name):
                     tainted = True
                     self._emit(EventKind.TAINT_RAISED, source_tool=spec.name)
                 msgs.append(ToolMessage(content=redact(payload), tool_call_id=call["id"]))
@@ -189,9 +230,10 @@ class Runtime:
         stop = state.get("stop_reason") or "completed"
         self._emit(EventKind.STEP_FINISHED, step=state.get("step", 0),
                    stop_reason=stop, tool_calls=[])
+        led = self._ledger(state)
         self._emit(EventKind.RUN_FINISHED, stop_reason=stop, steps=state.get("step", 0),
-                   cost_usd=str(self._l.spent), tainted=bool(state.get("tainted")))
-        return {"stop_reason": stop, "spent_usd": str(self._l.spent.decimal)}
+                   cost_usd=str(led.spent), tainted=bool(state.get("tainted")))
+        return {"stop_reason": stop, "spent_usd": str(led.spent.decimal)}
 
     def _manage(self, messages, state) -> list:
         """Context growth, ported from T-2.6 (docs/07-cost.md §3).
@@ -223,6 +265,21 @@ class Runtime:
     def _emit(self, kind, **data) -> None:
         if self._bus is not None:
             self._bus.emit(kind, **data)
+
+
+def _is_new_turn(state) -> bool:
+    """True when the newest message came from the caller rather than from the loop."""
+    msgs = state.get("messages") or []
+    return bool(msgs) and type(msgs[-1]).__name__ == "HumanMessage"
+
+
+def _RESERVED(max_tokens: int):
+    """`settle` needs a reservation's id only, to close it on the ledger it was opened
+    on.  Here every node builds its own ledger, so the open set is always empty and the
+    id is free — the accounting that matters is the snapshot in state."""
+    from ..budget.ledger import Reservation
+    from ..result import Money as _M
+    return Reservation("state", _M.ZERO, 0, max_tokens, 0.0)
 
 
 class _Ctx:

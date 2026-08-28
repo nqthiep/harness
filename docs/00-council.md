@@ -1827,6 +1827,67 @@ executed failed on first execution.
 
 ---
 
+### Round 37 — Writing the quickstart found that multi-turn had never worked
+
+The round began as documentation: an example of building an agent on the graph backend,
+written as a five-step ladder. Step 4 demonstrates the durability the platform was adopted
+for — ask twice on one `thread_id`. **The second question cost $0.00.**
+
+**H37.1 — The model was called once per thread, ever, and the caller got their own message
+echoed back.** `stop_reason` is checkpointed like every other state key, so a thread that
+finished a turn came back carrying `"completed"`, and `_after_budget` routed the next turn
+straight to `finish`. No error, no event, no cost — the agent simply stopped answering.
+**Silent, and on the primary use case for a checkpointer.**
+
+Round 35 added the `finish` node to make `run.finished` structural, and in doing so made
+`stop_reason` load-bearing for routing. The defect is the cost of that fix, and nothing
+caught it because every graph test invoked once.
+
+**H37.2 — Two customers shared a budget, and a third had already read the first one's
+taint.** The `Ledger` and `TaintTracker` were constructed once in `build_agent` and held on
+the `Runtime`. A compiled graph serves every conversation, so:
+
+| | leak |
+|---|---|
+| spend | customer B's first message reported customer A's spend; a `$0.20` ceiling was consumed by every customer collectively |
+| taint | customer A's tainted run denied customer B's `danger` tools — over-restrictive, and the enforcement disagreed with the `tainted` the same run reported |
+| taint, across a restart | **under-restrictive**: a tainted conversation resumed in a fresh process came back untainted, so a run that had already read a web page **regained its `danger` tools** — in exactly the durability case the platform was adopted for |
+
+**This is Round 34's defect for the third time, in the third place.** Round 34 was a policy
+instance shared across runs leaking one customer's workflow position to the next. The
+council fixed it in the hand-written backend, wrote it down, scored it, and then built a
+new backend that did the same thing with two different objects.
+
+**H37.3 — And the first fix was wrong, for a reason worth writing down.** The obvious repair
+is a `ContextVar` holding per-turn state, which is what `redaction_scope` already uses. It
+does not work here: **LangGraph runs every node in its own copied context**
+(`context.run(step.invoke, …)`), so a variable set in the budget gate is gone by the time
+the model node reads it. The failure was loud — `AttributeError: 'NoneType' has no
+attribute 'id'` — which is the only reason it did not become the next silent defect.
+
+The rule that replaced it is the one the platform was telling us all along:
+
+> **The thread's state is the only memory.** Nothing about a run may live on the `Runtime`.
+
+`Ledger` grew `snapshot()`/`restore()`, and the ledger is now rebuilt from state on every
+node — which keeps spend, the step count and ADR-026's upward-ratcheting calibration
+per-conversation *and* across restarts, rather than per-process.
+
+**Semantics, settled by parity rather than by taste.** `Chat` in the hand-written backend
+has answered this since M4: **USD accumulates across a conversation; the step ceiling is
+per turn.** Accumulating steps too would kill a long conversation permanently — every later
+turn starting already over the limit. The graph backend now matches, because the question
+had an answer already and inventing a second one is how two backends drift.
+
+**What this says about the parity suite.** R-17 was scored 25 and the suite was built to
+hold it — and none of these three defects were caught, because every parity scenario
+invokes once. **A suite that covers the rules can still miss the shape of use.** Multi-turn,
+concurrent threads and restart are now covered; the honest lesson is that the parity table
+protects the rules it lists against drift, and protects nothing against a case neither
+backend was ever asked to handle.
+
+---
+
 ## 2.4 What the five build rounds cost, and what they found
 
 | Round | Built | Defects | Security | Specified-but-unbuilt | Test-harness bugs |
@@ -1942,6 +2003,7 @@ with a 16/16 gate. They found:
 | **34** | **A workflow state machine leaked one customer's position to the next** | **Two documents can each be correct and contradict each other in production** |
 | **35** | **Porting to LangGraph reintroduced three defects the council had already fixed, one of them a live secret leak** | **A defect class fixed in one implementation is not fixed in the next one** |
 | **36** | **A memory system classified as `read` puts a hole in the taint lattice the size of the memory system; and the parse tests were green against an envelope the server never sends** | **Retrieved memory is untrusted input, and a fixture you invented cannot falsify what you believe** |
+| **37** | **Multi-turn had never worked: the model was called once per thread, ever. Two customers shared one budget, and taint was lost across a restart** | **A suite that covers the rules can still miss the shape of use — every graph test had invoked exactly once** |
 
 **Every one of these passed a prior review.** The five techniques that found them — multiply
 the numbers out, execute the contract, traverse types rather than tasks, count coverage per

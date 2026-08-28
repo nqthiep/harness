@@ -96,6 +96,31 @@ class Ledger:
         self._blocked = False
         self._last_exact = False
 
+    # -- serialisable state ------------------------------------------------
+    #
+    # A ledger's accumulated state is four numbers, and on a checkpointed backend it has
+    # to live in graph state rather than in memory: LangGraph runs every node in its own
+    # copied context, so nothing an object holds survives from one node to the next, and
+    # a ledger held on a long-lived object is shared by every conversation it serves
+    # (Round 37).  Round-tripping through these two methods keeps spend, the step count
+    # and ADR-026's upward-ratcheting calibration per conversation and across restarts.
+    def snapshot(self) -> dict:
+        return {"spent": str(self._spent.decimal), "steps": self._steps,
+                "calibration": str(self._calibration),
+                "overshoot": str(self._overshoot.decimal)}
+
+    def restore(self, snap: dict | None) -> "Ledger":
+        if not snap:
+            return self
+        try:
+            self._spent = Money(Decimal(str(snap.get("spent", "0"))))
+            self._steps = int(snap.get("steps", 0))
+            self._calibration = max(Decimal(1), Decimal(str(snap.get("calibration", "1"))))
+            self._overshoot = Money(Decimal(str(snap.get("overshoot", "0"))))
+        except (ArithmeticError, TypeError, ValueError):
+            pass                    # a corrupt checkpoint starts clean rather than crashing
+        return self
+
     # -- state ------------------------------------------------------------
     @property
     def spent(self) -> Money: return self._spent

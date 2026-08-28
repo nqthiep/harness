@@ -59,7 +59,7 @@ graph, runtime = build_agent(
 )
 
 cfg = {"configurable": {"thread_id": "khach-01"}}
-ket_qua = graph.invoke({"messages": [HumanMessage("hoàn tiền đơn A-4471")], "step": 0}, cfg)
+ket_qua = graph.invoke({"messages": [HumanMessage("hoàn tiền đơn A-4471")]}, cfg)
 
 print("\nHội thoại")
 print("─" * 62)

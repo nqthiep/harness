@@ -782,6 +782,47 @@ radius. The `Store` seam is the boundary; widening an integration because the ve
 offers more is how a library acquires a second architecture.
 
 
+### ADR-036 — On a checkpointed backend, the thread's state is the only memory
+
+**Context.** Round 37 found three defects with one cause: `Ledger`, `TaintTracker` and the
+open reservation lived on the `Runtime`, which is built once per compiled graph and serves
+every conversation that graph ever handles.
+
+**Decision.** Nothing about a run lives on the `Runtime`. The ledger is rebuilt from graph
+state on every node via `Ledger.snapshot()`/`restore()`; taint is restored from
+`state["tainted"]`; the reservation hand-off from the budget gate to the model node goes
+through `state["max_tokens"]`.
+
+**Why not a `ContextVar`.** It was tried first, and it does not work: **LangGraph runs each
+node in its own copied context**, so a value set in one node is not there in the next. This
+is worth stating because `redaction_scope` *does* use a `ContextVar` correctly — within a
+single node, which is exactly the scope that survives.
+
+**What it buys beyond the fix.** Per-conversation accounting that survives a process
+restart, including ADR-026's calibration, which was previously per-process and lost on
+every deploy.
+
+**Semantics.** USD accumulates across a conversation, the step ceiling is per turn —
+parity with `Chat`, which settled this in M4. A conversation-wide step ceiling would kill a
+long conversation permanently.
+
+---
+
+### ADR-037 — `stop_reason` is cleared by the budget gate, and only there
+
+**Context.** `stop_reason` is checkpointed, and Round 35 made it load-bearing for routing
+when every exit was moved through the `finish` node. A finished thread therefore came back
+carrying `"completed"` and the next turn routed straight to `finish`: multi-turn was
+silently dead.
+
+**Decision.** The budget gate clears `stop_reason` on its success path. It is the entry
+node of every run — proven by the same reachability check that guards the model — so the
+clearing cannot be missed by a branch, and it happens before any routing decision reads it.
+
+**Why not clear it in `finish`.** The caller reads `stop_reason` off the returned state;
+clearing it there would answer every run with `None`.
+
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
@@ -831,4 +872,6 @@ offers more is how a library acquires a second architecture.
 | IDL-44 | A store key is validated against a strict pattern, never escaped | A key becomes part of a `viking://` URI; `../../resources` reads another namespace. Escaping is a thing you can get subtly wrong, refusing is not |
 | IDL-45 | The store's client capabilities are a fixed set, enforced on every call | `SyncHTTPClient` exposes `admin_*`, `rm` and `delete_session`. A model-facing tool holding those is a prompt injection with administrative reach |
 | IDL-46 | Integration tests drive the vendor SDK over a stub transport, never a hand-written fake of it | The first fixtures invented an envelope the server never sends, and every parse test was green against it (H36.2) |
+| IDL-47 | No run state lives on the `Runtime`; the ledger round-trips through graph state | A Runtime is per-graph and serves every conversation. Holding a ledger billed one customer for another's tokens (ADR-036) |
+| IDL-48 | Graph tests must invoke more than once | All three Round 37 defects were invisible to a suite where every scenario called `invoke()` exactly one time |
 | IDL-31 | Context-management fixtures are specified per model | Whether the budget or the context window binds first depends on the model's price and window ([§07.3](07-cost.md#3-token-discipline)) |

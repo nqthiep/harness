@@ -25,3 +25,11 @@ class AgentState(TypedDict, total=False):
     #: ran, and a test asserting that a *denied* tool did not run passed for the wrong
     #: reason (Round 35).
     _pending: list[dict[str, Any]]
+    #: The ledger's accumulated state — spend, steps, ADR-026's calibration. It lives
+    #: here, not on the Runtime: a Runtime is built once per compiled graph and serves
+    #: every conversation, so a ledger it held billed one customer for another's tokens
+    #: (Round 37). In state it is per-thread and survives a restart.
+    ledger: dict[str, Any]
+    #: Handed from the budget gate to the model node. Also state rather than an
+    #: attribute: LangGraph runs each node in its own copied context.
+    max_tokens: int

@@ -164,6 +164,9 @@ against slow architectural drift, which no ordinary test catches.
 | AC-50 | **The store calls nothing outside its capability list**, and `delete` never calls `rm`. | IDL-45 |
 | AC-51 | **An unrecognised vendor error code raises rather than returning an empty result.** | ADR-035, IDL-30 |
 | AC-52 | **`pyproject` depends on `openviking-sdk`, never on `openviking`.** | ADR-035 |
+| AC-53 | **A second turn on one `thread_id` calls the model**, and spend accumulates across turns while the step ceiling resets. | ADR-036, 037 |
+| AC-54 | **Two `thread_id`s on one compiled graph do not share a budget or a taint state.** | ADR-036, R-21 |
+| AC-55 | **Taint survives a process restart**: a tainted conversation resumed by a fresh Runtime over the same checkpoint does not regain its `danger` tools. | ADR-036 |
 | AC-33 | Every conditional subsystem is either reachable from the shipped defaults or declares in the docs that it is not | P-10 |
 | AC-31 | **Every public parameter is read somewhere in the package.** *`max_parallel_tools` was accepted, stored and documented for two milestones without anything reading it (Round 26).* | NFR-09 |
 | AC-28 | Every `Secret` guarantee (unhashable, unpicklable, weakly registered) is exercised, not just declared | ADR-024 |
@@ -204,6 +207,10 @@ Rules with a row today: read-tool execution, danger refused without an approver,
 approver admitting a call, taint raised by `external` output with `accepts_tainted`
 passing, construction-time refusal of the unsafe pair, per-request secret redaction
 (RT-13), the step ceiling, the USD ceiling, plain completion, and the emitted event set.
+
+Added in Round 37 after all three of its defects slipped through: multi-turn on one
+thread, two threads on one graph, and restart. **Every scenario in the suite had invoked
+exactly once**, so the rules were covered and the shape of use was not.
 
 **Not yet covered, and therefore not yet protected on the graph backend:** `returns=`
 parsing, transcripts and resume, streaming deltas, subagent budget holds, parallel tool

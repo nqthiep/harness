@@ -5,6 +5,7 @@ convention. That is why the first three tests read the compiled topology rather 
 observing behaviour — they hold for paths no test walks.
 """
 import sys, unittest
+from decimal import Decimal
 sys.path.insert(0, "src"); sys.path.insert(0, "tests")
 
 from fake_chat import FakeChat
@@ -219,6 +220,77 @@ class Durability(unittest.TestCase):
         b = graph.get_state({"configurable": {"thread_id": "khach-2"}})
         self.assertNotEqual(a.values["messages"][0].content,
                             b.values["messages"][0].content)
+
+
+class MultiTurn(unittest.TestCase):
+    """A checkpointer exists so a conversation can continue. Round 37 found it could not."""
+
+    def setUp(self): RAN.clear()
+
+    def test_a_second_turn_actually_calls_the_model(self):
+        """`stop_reason` is checkpointed like any other key, so a finished thread came
+        back carrying 'completed' and routed straight to `finish`. The model was called
+        once per thread, ever, and the caller got their own message echoed back."""
+        graph, rt = mk([FakeChat.text(f"lượt {i}") for i in range(1, 5)],
+                       budget="$5, 50 steps", checkpointer=MemorySaver())
+        cfg = {"configurable": {"thread_id": "t"}}
+        outs = [graph.invoke({"messages": [HumanMessage(f"câu {i}")]}, cfg)
+                for i in (1, 2, 3)]
+        self.assertEqual(len(rt._model.seen), 3, "later turns never reached the model")
+        self.assertEqual([o["messages"][-1].content for o in outs],
+                         ["lượt 1", "lượt 2", "lượt 3"])
+
+    def test_spend_accumulates_across_turns_on_one_thread(self):
+        """Parity with `Chat`: USD accumulates across the conversation."""
+        graph, _ = mk([FakeChat.text("x")] * 5, budget="$5, 50 steps",
+                      checkpointer=MemorySaver())
+        cfg = {"configurable": {"thread_id": "t"}}
+        spends = [Decimal(graph.invoke({"messages": [HumanMessage("hi")]}, cfg)["spent_usd"])
+                  for _ in range(3)]
+        self.assertEqual(spends, sorted(spends))
+        self.assertGreater(spends[-1], spends[0], "spend did not accumulate")
+
+    def test_two_threads_do_not_share_a_budget(self):
+        """A Runtime is built once per graph and serves every conversation. A ledger held
+        on it billed customer B for customer A's tokens — Round 34's defect class, third
+        occurrence, third place."""
+        graph, _ = mk([FakeChat.text("x")] * 10, budget="$5, 50 steps",
+                      checkpointer=MemorySaver())
+        a = graph.invoke({"messages": [HumanMessage("hi")]},
+                         {"configurable": {"thread_id": "A"}})
+        b = graph.invoke({"messages": [HumanMessage("hi")]},
+                         {"configurable": {"thread_id": "B"}})
+        self.assertEqual(Decimal(a["spent_usd"]), Decimal(b["spent_usd"]),
+                         "customer B was billed for customer A's tokens")
+
+    def test_the_step_ceiling_is_per_turn_not_per_conversation(self):
+        """Accumulating steps would kill a long conversation permanently: every later
+        turn would start already over the limit."""
+        graph, _ = mk([FakeChat.text("x")] * 20, budget="$50, 3 steps",
+                      checkpointer=MemorySaver())
+        cfg = {"configurable": {"thread_id": "t"}}
+        for _ in range(4):
+            out = graph.invoke({"messages": [HumanMessage("hi")]}, cfg)
+        self.assertEqual(out["stop_reason"], "completed",
+                         "a long conversation died of accumulated steps")
+
+    def test_taint_survives_a_process_restart(self):
+        """The dangerous direction. A tainted conversation resumed in a fresh process
+        came back untainted, so a run that had already read a web page regained its
+        `danger` tools — in exactly the durability case this platform was adopted for."""
+        from harness.tools.registry import ToolSet
+        saver, cfg = MemorySaver(), {"configurable": {"thread_id": "tt"}}
+        g1, _ = mk([FakeChat.call("fetch", {"url": "http://e"}), FakeChat.text("ok")],
+                   tools=[fetch], checkpointer=saver)
+        self.assertTrue(g1.invoke({"messages": [HumanMessage("đọc")]}, cfg)["tainted"])
+
+        # a new process: a brand-new Runtime over the same checkpoint
+        g2, rt2 = mk([FakeChat.call("wipe", {"x": 1}, "c2"), FakeChat.text("ok")],
+                     tools=[fetch], checkpointer=saver, approve=lambda c, x: True)
+        rt2._tools = ToolSet([fetch, wipe])
+        out = g2.invoke({"messages": [HumanMessage("xoá")]}, cfg)
+        self.assertTrue(out["tainted"], "taint was lost across the restart")
+        self.assertNotIn(("wipe", 1), RAN, "a tainted run regained its danger tools")
 
 
 class Checkpointable(unittest.TestCase):

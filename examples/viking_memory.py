@@ -85,7 +85,7 @@ graph, runtime = build_agent(
     approve=lambda call, ctx: True,
 )
 
-ket_qua = graph.invoke({"messages": [HumanMessage("xử lý đơn A-4471")], "step": 0})
+ket_qua = graph.invoke({"messages": [HumanMessage("xử lý đơn A-4471")]})
 
 print("\nHội thoại")
 print("─" * 66)
