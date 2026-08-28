@@ -1,21 +1,39 @@
 # Harness — Implementation Design Package
 
-> **Status: READY FOR IMPLEMENT** (Council converged at Round 23)
-> The complete, reviewed design and implementation plan an engineering team can start from
-> without making further architectural decisions — plus the **M0 walking skeleton**
-> (`src/harness/`, `tests/`) built in Round 24 to prove the design executes. Both test
-> suites run **offline, with no API key and no third-party packages, in under a second**.
+> **Status: READY FOR IMPLEMENT**, with two open items stated plainly in
+> [`HARNESS.md §XIX`](HARNESS.md). The council ran **Round 0 → Round 37**: 23 rounds of
+> review, then 14 of building — which found more defects than the reading did, including
+> every security defect.
+>
+> **[`HARNESS.md`](HARNESS.md) — what the project owner asked for**, verbatim, with each
+> requirement pointing at where it is met. Start there to judge the design against its
+> brief rather than against itself.
+>
+> The design lives in [`docs/`](docs/); the implementation in `src/harness/`, including
+> the mandated LangGraph backend (`src/harness/lg/`) and the OpenViking store
+> (`src/harness/memory/viking.py`). The core test suites run **offline, with no API key,
+> in under a second**:
 >
 > ```
-> python3 tests/test_walkthrough.py    # 20 tests — the §14.5 acceptance walkthrough
-> python3 tests/test_properties.py     # P-1, P-8, P-9 — the budget and mapping invariants
-> python3 tests/test_redteam.py        # 21 tests — the §06.8 red-team scenarios
-> python3 tests/test_m2.py             # 9 tests  — scheduling, dedup, context growth
-> python3 tests/test_m3.py             # 18 tests — transcript, resume, exporters, events
-> python3 tests/test_m4.py             # 26 tests — stores, plugins, subagent budgets
-> python3 tests/test_m5.py             # 17 tests — scaffold, setup, §15 as a spec
-> python3 tests/bench_cache.py         # SC-4     — 95.3% cache reads on turns 3+
+> python3 tests/test_walkthrough.py    # 20 — the §14.5 acceptance walkthrough
+> python3 tests/test_redteam.py        # 21 — the §06.8 red-team scenarios
+> python3 tests/test_properties.py     #  5 — the budget and mapping invariants
+> python3 tests/test_m2.py             # 13 — scheduling, dedup, context growth
+> python3 tests/test_m3.py             # 18 — transcript, resume, exporters, events
+> python3 tests/test_m4.py             # 36 — stores, plugins, subagent budgets
+> python3 tests/test_m5.py             # 32 — scaffold, setup, §15 as a spec
+> python3 tests/bench_cache.py         # SC-4 — 95.3% cache reads on turns 3+
 > ```
+>
+> These need `pip install 'harness[graph]'` / `'harness[viking]'`:
+>
+> ```
+> python3 tests/test_lg.py             # 25 — graph topology, durability, multi-turn
+> python3 tests/test_parity.py         # 13 — every rule, on BOTH backends
+> python3 tests/test_viking.py         # 22 — the OpenViking store
+> ```
+>
+> Start here to build an agent: [`examples/langgraph_quickstart.py`](examples/langgraph_quickstart.py).
 
 **Harness** is a Python library for building AI agents that are *cheap to run, hard to
 misuse, and easy to start with*.
