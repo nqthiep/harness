@@ -62,6 +62,7 @@ MODEL = "claude-opus-5"
 
 # -- one scenario language, two translations ------------------------------------
 def T(s): return ("text", s)
+def S(reason): return ("stop", reason)      # the provider's own stop_reason
 def C(name, args, cid="c1"): return ("call", name, args, cid)
 
 
@@ -74,6 +75,11 @@ class Collector:
 
 def on_old(script, *, tools, budget, approve=None):
     def one(s):
+        if s[0] == "stop":
+            from harness.models.base import ModelResponse
+            from harness.result import Usage
+            return ModelResponse(({"type": "text", "text": "một nửa"},), s[1],
+                                 Usage(100, 20), "fake")
         return FakeModel.text(s[1]) if s[0] == "text" else FakeModel.tool_call(s[1], s[2], call_id=s[3])
     a = Agent(name="p", job="parity", model=MODEL,
               provider=PricedFake([one(s) for s in script], MODEL),
@@ -90,10 +96,27 @@ def on_old(script, *, tools, budget, approve=None):
             "written": [str(w) for w in written], "events": list(COLLECTOR.kinds)}
 
 
+class StoppingChat(FakeChat):
+    """FakeChat that also carries a provider stop reason, the way langchain_anthropic does."""
+    stops: list = []
+
+    def _generate(self, messages, stop=None, run_manager=None, **kw):
+        i = self.i
+        r = super()._generate(messages, stop, run_manager, **kw)
+        r.generations[0].message.response_metadata = {
+            "stop_reason": self.stops[i] if i < len(self.stops) else "end_turn"}
+        return r
+
+
 def on_graph(script, *, tools, budget, approve=None):
     def one(s):
+        if s[0] == "stop":
+            return FakeChat.text("một nửa")
         return FakeChat.text(s[1]) if s[0] == "text" else FakeChat.call(s[1], s[2], s[3])
-    g, _ = build_agent(model=FakeChat(script=[one(s) for s in script]), model_name=MODEL,
+    stops = [s[1] if s[0] == "stop" else ("tool_use" if s[0] == "call" else "end_turn")
+             for s in script]
+    chat = StoppingChat(script=[one(s) for s in script], stops=stops)
+    g, _ = build_agent(model=chat, model_name=MODEL,
                        tools=[TOOLS[t] for t in tools], budget=budget, approve=approve,
                        exporters=[COLLECTOR])
     out = g.invoke({"messages": [HumanMessage("go")], "step": 0})
@@ -179,6 +202,33 @@ class Parity(unittest.TestCase):
         self.assertEqual(sets["loop"], sets["graph"],
                          f"only one backend emits {sets['loop'] ^ sets['graph']}")
         self.assertGreaterEqual(len(sets["loop"]), 10)
+
+    def test_a_refusal_is_not_reported_as_success_on_either_backend(self):
+        """A safety decline arrives as HTTP 200 with no tool calls. The graph backend
+        never read the stop reason at all, so it routed to `finish` and answered
+        `completed` — half an answer labelled as a whole one (Round 38). IDL-30 forbids
+        mapping an *unrecognised* stop reason to success; this mapped a recognised
+        failure to success."""
+        got = self.both([S("refusal")], tools=["look"])
+        self.assertEqual(self.assertSame(got, "stop"), "model_refusal")
+
+    def test_a_truncated_answer_is_not_reported_as_success_on_either_backend(self):
+        got = self.both([S("max_tokens")], tools=["look"])
+        self.assertEqual(self.assertSame(got, "stop"), "truncated")
+
+    def test_an_unknown_stop_reason_is_an_error_on_both(self):
+        got = self.both([S("con_meo_bay")], tools=["look"])
+        self.assertEqual(self.assertSame(got, "stop"), "error")
+
+    def test_a_paused_turn_resumes_on_both(self):
+        """`pause_turn` means resumable. One backend called it a fatal error, the other
+        called it done."""
+        got = self.both([S("pause_turn"), S("pause_turn"), T("xong")], tools=["look"])
+        self.assertEqual(self.assertSame(got, "stop"), "completed")
+
+    def test_an_endless_pause_is_bounded_and_loud_on_both(self):
+        got = self.both([S("pause_turn")] * 20, tools=["look"])
+        self.assertEqual(self.assertSame(got, "stop"), "error")
 
     def test_a_plain_answer_completes_on_both(self):
         got = self.both([T("xin chào")], tools=["look"])

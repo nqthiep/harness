@@ -26,7 +26,18 @@ _STATUS = {401: ProviderAuthError, 403: ProviderAuthError,
 class AnthropicProvider:
     name = "anthropic"
 
-    def __init__(self, *, api_key: str | None = None) -> None:
+    #: Server-side refusal fallbacks.  A routine safety decline (HTTP 200,
+    #: `stop_reason: "refusal"`) is re-run on a fallback model inside the same call,
+    #: instead of surfacing as a dead end.  IDL-19 has said "enabled by default" since
+    #: Round 7; Round 38 found the payload had never carried it — the claim stood in
+    #: three documents and nothing in the code.
+    #:
+    #: `"default"` routes by refusal category, so there is no model list to maintain.
+    #: It requires the beta messages endpoint and this exact beta id; the two must match
+    #: (the older array form pairs with `-2026-06-01` and mixing them is a 400).
+    FALLBACK_BETA = "server-side-fallback-2026-07-01"
+
+    def __init__(self, *, api_key: str | None = None, fallbacks: bool = True) -> None:
         try:
             import anthropic                       # lazy: NFR-01
         except ImportError as exc:                 # pragma: no cover
@@ -38,6 +49,7 @@ class AnthropicProvider:
         self._sdk = anthropic
         self._client = anthropic.AsyncAnthropic(**({"api_key": api_key} if api_key else {}))
         self._counts: dict[str, int] = {}
+        self._fallbacks = fallbacks
 
     # -- protocol ---------------------------------------------------------
     def price(self, model: str): return pricing.price(model)
@@ -75,15 +87,22 @@ class AnthropicProvider:
         if request.output_format:
             kwargs["output_config"]["format"] = dict(request.output_format)
 
+        # The beta endpoint carries the fallbacks parameter; everything else is identical.
+        api = self._client.messages
+        if self._fallbacks:
+            kwargs["betas"] = [self.FALLBACK_BETA]
+            kwargs["fallbacks"] = "default"
+            api = self._client.beta.messages
+
         try:
             if request.stream or on_delta is not None:
-                async with self._client.messages.stream(**kwargs) as stream:
+                async with api.stream(**kwargs) as stream:
                     if on_delta is not None:
                         async for text in stream.text_stream:
                             on_delta(text)
                     msg = await stream.get_final_message()
             else:
-                msg = await self._client.messages.create(**kwargs)
+                msg = await api.create(**kwargs)
         except Exception as exc:
             raise self._map(exc) from exc
 

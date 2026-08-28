@@ -823,6 +823,44 @@ clearing cannot be missed by a branch, and it happens before any routing decisio
 clearing it there would answer every run with `None`.
 
 
+### ADR-038 — One stop-reason table, imported by both backends
+
+**Context.** Round 38 found the graph backend never read the provider's stop reason: a
+refusal and a `max_tokens` truncation both have no tool calls, so both were reported as
+`completed`.
+
+**Decision.** `run._MAP` and `run.CONTINUE` are the single table. The graph imports them.
+`pause_turn` joins `tool_use` as a reason that continues the loop rather than ending it,
+bounded at `MAX_PAUSES = 5` and loud at the bound on both backends.
+
+**Why imported and not re-listed.** R-17 is scored 25 because two implementations of one
+rule drift. A stop-reason table is exactly the kind of thing that gets copied "just for
+now" and then diverges on the next model release.
+
+**What `pause_turn` means.** The provider says the turn is resumable — it is what a server
+tool returns when the model pauses mid-turn. Treating it as a terminal error was not
+conservative, it was wrong: it failed the one feature that produces it.
+
+---
+
+### ADR-039 — Refusal fallbacks are on by default, and off by one flag
+
+**Context.** IDL-19 has said "server-side refusal fallbacks enabled by default" since
+Round 7, in three documents. The payload had never carried them (H38.2).
+
+**Decision.** `AnthropicProvider(fallbacks=True)` is the default and sends
+`betas=["server-side-fallback-2026-07-01"]` with `fallbacks="default"` on the beta
+messages endpoint. `fallbacks=False` restores the plain endpoint.
+
+**Why `"default"` and not a model list.** It routes by refusal category, so there is no
+list to maintain as models change — the failure mode of a hard-coded fallback list is that
+it silently names a retired model.
+
+**Care required.** The scalar form pairs with `-2026-07-01` and the array form with
+`-2026-06-01`; mixing them is a 400. Asserted by a test rather than trusted to memory.
+
+**Still unverified against the live API** — like the rest of this provider (OI-11).
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
@@ -874,4 +912,6 @@ clearing it there would answer every run with `None`.
 | IDL-46 | Integration tests drive the vendor SDK over a stub transport, never a hand-written fake of it | The first fixtures invented an envelope the server never sends, and every parse test was green against it (H36.2) |
 | IDL-47 | No run state lives on the `Runtime`; the ledger round-trips through graph state | A Runtime is per-graph and serves every conversation. Holding a ledger billed one customer for another's tokens (ADR-036) |
 | IDL-48 | Graph tests must invoke more than once | All three Round 37 defects were invisible to a suite where every scenario called `invoke()` exactly one time |
+| IDL-49 | `Result.tools_run` records what EXECUTED, written where execution is decided | The test helpers read `tool_use` blocks — the model's requests — so a tool policy blocked counted as called, and `assert_no_tool` failed on the exact case it exists to prove (H38.4) |
+| IDL-50 | A provider payload is asserted offline against the vendor's current documented parameter shapes | This provider has never run against the live API, so "it looks right" was the only check it had. Three of its claims were wrong or absent |
 | IDL-31 | Context-management fixtures are specified per model | Whether the budget or the context window binds first depends on the model's price and window ([§07.3](07-cost.md#3-token-discipline)) |

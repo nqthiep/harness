@@ -102,6 +102,11 @@ class Result:
     messages: tuple[Any, ...] = ()
     value: object | None = None             # ADR-022
     detail: str = ""
+    #: Tools that actually EXECUTED, in order.  Round 38: `harness.testing` read
+    #: `tool_use` blocks instead — the model's requests — so a tool that policy blocked
+    #: still counted as called.  In a library whose safety story is "dangerous tools get
+    #: blocked", the shipped helper could not tell a blocked tool from an executed one.
+    tools_run: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:

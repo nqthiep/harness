@@ -1,8 +1,8 @@
 # Harness — Implementation Design Package
 
 > **Status: READY FOR IMPLEMENT**, with two open items stated plainly in
-> [`HARNESS.md §XIX`](HARNESS.md). The council ran **Round 0 → Round 37**: 23 rounds of
-> review, then 14 of building — which found more defects than the reading did, including
+> [`HARNESS.md §XIX`](HARNESS.md). The council ran **Round 0 → Round 38**: 23 rounds of
+> review, then 15 of building — which found more defects than the reading did, including
 > every security defect.
 >
 > **[`HARNESS.md`](HARNESS.md) — what the project owner asked for**, verbatim, with each
@@ -15,6 +15,7 @@
 > in under a second**:
 >
 > ```
+> python3 tests/test_conformance.py    # 15 — the code against HARNESS.md's claims
 > python3 tests/test_walkthrough.py    # 20 — the §14.5 acceptance walkthrough
 > python3 tests/test_redteam.py        # 21 — the §06.8 red-team scenarios
 > python3 tests/test_properties.py     #  5 — the budget and mapping invariants
@@ -29,7 +30,7 @@
 >
 > ```
 > python3 tests/test_lg.py             # 25 — graph topology, durability, multi-turn
-> python3 tests/test_parity.py         # 13 — every rule, on BOTH backends
+> python3 tests/test_parity.py         # 18 — every rule, on BOTH backends
 > python3 tests/test_viking.py         # 22 — the OpenViking store
 > ```
 >

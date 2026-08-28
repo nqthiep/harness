@@ -50,22 +50,25 @@ def deny_all():
 
 
 def _tools_called(result) -> list[str]:
-    out = []
-    for m in result.messages:
-        content = m.get("content") if isinstance(m, dict) else None
-        if isinstance(content, list):
-            out += [b.get("name") for b in content
-                    if isinstance(b, dict) and b.get("type") == "tool_use"]
-    return [n for n in out if n]
+    """Tools that RAN — not tools the model asked for.
+
+    Round 38: this read `tool_use` blocks, which are the model's *requests*.  A tool that
+    policy blocked still counted as called, so `assert_no_tool` failed on exactly the
+    case it exists to prove: a dangerous tool that was successfully refused.  §09 calls
+    these "assertions on behaviour"; they were assertions on intent.
+    """
+    return list(getattr(result, "tools_run", ()) or ())
 
 
 def assert_tool_called(result, name: str) -> None:
     called = _tools_called(result)
     if name not in called:
-        raise AssertionError(f"expected {name!r} to be called; called: {called or 'nothing'}")
+        raise AssertionError(
+            f"expected {name!r} to run; what ran: {', '.join(called) or 'nothing'}"
+            "\n\n  (a tool the model asked for but policy blocked did NOT run)")
 
 
 def assert_no_tool(result, name: str) -> None:
     called = _tools_called(result)
     if name in called:
-        raise AssertionError(f"expected {name!r} NOT to be called, but it was")
+        raise AssertionError(f"expected {name!r} NOT to run, but it did")

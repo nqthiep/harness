@@ -47,6 +47,7 @@ class RunEngine:
 
         stop, detail = StopReason.COMPLETED, ""
         step = 0
+        pauses = 0
         try:
             while True:
                 if self._l.remaining_steps() <= 0:
@@ -94,6 +95,18 @@ class RunEngine:
                 text = "".join(b.get("text", "") for b in resp.content if b.get("type") == "text") or text
                 msgs.append({"role": "assistant", "content": list(resp.content)})
 
+                if resp.stop_reason in CONTINUE:
+                    pauses += 1
+                    self._bus.emit(EventKind.STEP_FINISHED, step=step,
+                                   stop_reason=resp.stop_reason, tool_calls=[])
+                    if pauses > MAX_PAUSES:
+                        stop = StopReason.ERROR
+                        detail = (f"the model paused {pauses} times in a row without "
+                                  f"finishing; stopping rather than paying for a loop")
+                        break
+                    step += 1
+                    continue
+
                 mapped = _MAP.get(resp.stop_reason)
                 if resp.stop_reason == "tool_use":
                     results = await self._dispatch._run_tools(resp, step, run_id)
@@ -128,7 +141,8 @@ class RunEngine:
         value = self._parse_returns(text) if (stop is StopReason.COMPLETED
                                               and self._a.returns is not None) else None
         return Result(text, stop, step, self._l.spent, usage_total, run_id,
-                      self._taint.tainted, tuple(msgs), value, detail)
+                      self._taint.tainted, tuple(msgs), value, detail,
+                      tuple(self._dispatch.ran))
 
     def _parse_returns(self, text: str):
         """Turn the final answer into `Agent(returns=...)`, validated — ADR-022.
@@ -188,6 +202,17 @@ def canonical_len(req) -> str:
 
 
 #: Every provider stop reason maps to exactly one StopReason.  Unknown -> ERROR, never
-#: to a success (ADR-019).  "tool_use" is absent because it continues the loop.
+#: to a success (ADR-019).  "tool_use" is absent because it continues the loop, and so is
+#: "pause_turn" — see CONTINUE below.
 _MAP = {"end_turn": StopReason.COMPLETED, "max_tokens": StopReason.TRUNCATED,
         "refusal": StopReason.MODEL_REFUSAL}
+
+#: Stop reasons that mean "not finished, send it back".  `pause_turn` is what a server
+#: tool (web search, web fetch) returns when the model pauses mid-turn; T-0.4 said
+#: "surface pause_turn rather than swallowing it" and the code had never heard of it, so
+#: it fell through to ERROR — the API says *resumable* and the harness said *dead* (Round 38).
+CONTINUE = frozenset({"pause_turn"})
+
+#: A model that pauses forever is a loop the budget would pay for.  Bounded, and the
+#: bound is loud rather than silent.
+MAX_PAUSES = 5

@@ -55,7 +55,8 @@ def build(runtime) -> StateGraph:
 
     g.add_edge(START, BUDGET)
     g.add_conditional_edges(BUDGET, _after_budget, {MODEL: MODEL, FINISH: FINISH})
-    g.add_conditional_edges(MODEL, _after_model, {POLICY: POLICY, FINISH: FINISH})
+    g.add_conditional_edges(MODEL, _after_model,
+                            {POLICY: POLICY, BUDGET: BUDGET, FINISH: FINISH})
     g.add_conditional_edges(POLICY, _after_policy,
                             {APPROVE: APPROVE, TOOLS: TOOLS, BUDGET: BUDGET})
     g.add_conditional_edges(APPROVE, _after_approval, {TOOLS: TOOLS, BUDGET: BUDGET})
@@ -69,11 +70,22 @@ def _after_budget(state: AgentState) -> str:
     return FINISH if state.get("stop_reason") else MODEL
 
 
+#: A model that pauses forever is a loop the budget would pay for.  Same bound as the
+#: hand-written loop, and loud rather than silent.
+MAX_PAUSES = 5
+
+
 def _after_model(state: AgentState) -> str:
     if state.get("stop_reason"):
         return FINISH
     last = state["messages"][-1]
-    return POLICY if getattr(last, "tool_calls", None) else FINISH
+    if getattr(last, "tool_calls", None):
+        return POLICY
+    # `pause_turn`: the provider says resumable, so resume — through the budget gate,
+    # which is the only way back to the model and is what bounds the cost (Round 38).
+    if 0 < state.get("paused", 0) <= MAX_PAUSES:
+        return BUDGET
+    return FINISH
 
 
 def _after_policy(state: AgentState) -> str:

@@ -33,3 +33,7 @@ class AgentState(TypedDict, total=False):
     #: Handed from the budget gate to the model node. Also state rather than an
     #: attribute: LangGraph runs each node in its own copied context.
     max_tokens: int
+    #: Consecutive `pause_turn` responses this turn. Declared, not implicit: LangGraph
+    #: silently discards an undeclared key (IDL-41), and an undiscarded counter is what
+    #: keeps a paused model from becoming an unbounded loop.
+    paused: int

@@ -20,12 +20,13 @@ from ..errors import BudgetExceeded
 from ..observe.events import EventKind
 from ..policy.base import Decision, ToolCall, Verdict
 from ..policy.taint import TaintTracker
-from ..result import Money, Usage
+from ..result import Money, StopReason, Usage
+from ..run import CONTINUE, _MAP
 from ..secrets import redact, redaction_scope
 from ..context.window import CLEARED, EDIT_AT, KEEP_RECENT_STEPS
 from ..models.pricing import MAX_CONTEXT
 from ..tools import EFFECT_PROFILES
-from .graph import BUDGET, INTERRUPT, MODEL, POLICY, TOOLS
+from .graph import BUDGET, INTERRUPT, MAX_PAUSES, MODEL, POLICY, TOOLS
 
 
 class Runtime:
@@ -110,9 +111,13 @@ class Runtime:
         msg = self._model.invoke(state["messages"])
         led.settle(_RESERVED(state.get("max_tokens", 0)), _usage_of(msg), self._price)
         led.count_step()
-        self._emit(EventKind.MODEL_RESPONSE, cost_usd=str(led.spent))
-        return {"messages": [msg], "step": state.get("step", 0) + 1,
-                "spent_usd": str(led.spent.decimal), "ledger": led.snapshot()}
+        raw = _provider_stop(msg)
+        self._emit(EventKind.MODEL_RESPONSE, stop_reason=raw, cost_usd=str(led.spent))
+        out = {"messages": [msg], "step": state.get("step", 0) + 1,
+               "spent_usd": str(led.spent.decimal), "ledger": led.snapshot()}
+        out.update(_classify(raw, bool(getattr(msg, "tool_calls", None)),
+                             state.get("paused", 0)))
+        return out
 
     # ── gate 2: nothing reaches a tool without a verdict ─────────────────────
     def policy_gate(self, state) -> dict:
@@ -271,6 +276,44 @@ def _is_new_turn(state) -> bool:
     """True when the newest message came from the caller rather than from the loop."""
     msgs = state.get("messages") or []
     return bool(msgs) and type(msgs[-1]).__name__ == "HumanMessage"
+
+
+def _provider_stop(msg) -> str:
+    """The provider's own stop reason, as LangChain hands it back."""
+    meta = getattr(msg, "response_metadata", None) or {}
+    return str(meta.get("stop_reason") or meta.get("finish_reason") or "")
+
+
+def _classify(raw: str, has_tool_calls: bool, paused: int = 0) -> dict:
+    """Map the provider's stop reason with the SAME table the hand-written loop uses.
+
+    Round 38: this node never looked at the stop reason at all — it only checked whether
+    the message carried tool calls.  A `refusal` (HTTP 200) and a `max_tokens` truncation
+    both have no tool calls, so both routed to `finish` and were reported as
+    **completed**: the caller got half an answer labelled as a whole one, on the mandated
+    backend.  IDL-30 says an unrecognised stop reason maps to ERROR and never to a
+    success; here two *recognised* failures were mapped to success.
+
+    Imported rather than re-listed, because two copies of one table is how the two
+    backends drift (R-17).
+    """
+    if not raw or raw == "tool_use" or has_tool_calls:
+        return {"paused": 0}
+    if raw in CONTINUE:
+        n = paused + 1
+        if n > MAX_PAUSES:              # parity with the loop: loud, not a quiet success
+            return {"paused": n, "stop_reason": "error",
+                    "detail": f"the model paused {n} times in a row without finishing; "
+                              f"stopping rather than paying for a loop"}
+        return {"paused": n}            # not finished; routed back to the budget gate
+    mapped = _MAP.get(raw)
+    if mapped is None:
+        return {"stop_reason": "error", "detail": f"unknown stop reason {raw!r}"}
+    if mapped is StopReason.COMPLETED:
+        return {"paused": 0}
+    detail = ("the answer got cut off because it reached its token ceiling"
+              if mapped is StopReason.TRUNCATED else "the model declined this request")
+    return {"stop_reason": mapped.value, "detail": detail}
 
 
 def _RESERVED(max_tokens: int):

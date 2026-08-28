@@ -8,7 +8,7 @@
 > diễn giải của hội đồng đều được đánh dấu rõ. Cột **Ở đâu** trỏ tới nơi yêu cầu đó
 > được đáp ứng, để một yêu cầu không thể "được đồng ý" mà không có địa chỉ.
 
-**Nguồn:** toàn bộ hội thoại thiết kế, hội đồng chạy từ Round 0 đến Round 37.
+**Nguồn:** toàn bộ hội thoại thiết kế, hội đồng chạy từ Round 0 đến Round 38.
 **Phạm vi:** thư viện Python `harness`, nhánh `claude/ai-agent-harness-design-ti5vk3`.
 
 ---
@@ -93,7 +93,15 @@ Agent thông minh **không** đồng nghĩa với luôn dùng model lớn hoặc
 Harness cần chọn được cách xử lý phù hợp với từng nhiệm vụ thay vì luôn dùng cùng một
 model hoặc cùng một workflow.
 
-**Ở đâu:** [`docs/07-cost.md §6`](docs/07-cost.md).
+**Ở đâu:** [`docs/07-cost.md §6`](docs/07-cost.md) — adaptive thinking bật mặc định,
+`effort` là dial người dùng cầm, `strict` trên mọi tool, `returns=` có kiểu, subagent chạy
+model rẻ hơn, prefix cache ổn định.
+
+**⚠️ Hội đồng từ chối một phần yêu cầu này, và nói rõ:** **không có model routing tự động**
+(ADR-006) — không ai nêu được một policy định tuyến mà hội đồng đồng ý là đúng. Việc "chọn
+cách xử lý phù hợp với từng nhiệm vụ" là **thủ công**: người dùng đặt `effort=`, chọn
+`model=`, hoặc uỷ thác cho subagent. Khả năng có, tự động thì không. Vòng 38 kiểm từng
+dòng của bảng §07.6 và tìm ra hai tuyên bố sai hoặc thiếu (xem §XIX).
 
 ### 5. Efficient
 
@@ -236,7 +244,7 @@ Không được tạo Implementation Plan một lần rồi kết thúc.
 | **Round 8** | Production Engineering — reliability, failure handling, observability, deployment, scaling, recovery, upgrade, migration |
 | **Round N** | **Recursive Review** — sau mỗi thay đổi lớn, review lại **toàn bộ**, vì một thay đổi có thể tạo regression ở phần khác. **Không giới hạn số vòng** |
 
-**Ở đâu:** [`docs/00-council.md`](docs/00-council.md) — nhật ký đầy đủ Round 0 → Round 37,
+**Ở đâu:** [`docs/00-council.md`](docs/00-council.md) — nhật ký đầy đủ Round 0 → Round 38,
 **kèm cả những lập luận đã thua**.
 
 ---
@@ -311,14 +319,14 @@ Chỉ kết thúc khi **đồng thời**:
 | Deliverable | Ở đâu |
 |---|---|
 | Final Implementation Plan | [`docs/11-implementation-plan.md`](docs/11-implementation-plan.md) |
-| **Design Decision Log** | [`docs/12-decision-logs.md`](docs/12-decision-logs.md) — ADR-001…037 |
-| **Implementation Decision Log** | [`docs/12-decision-logs.md`](docs/12-decision-logs.md) — IDL-01…48 |
-| **Risk Register** | [`docs/13-risk-register.md`](docs/13-risk-register.md) — R-01…R-21 |
-| **Open Issues** (chỉ giữ thứ thực sự không blocking) | [`docs/13-risk-register.md §3`](docs/13-risk-register.md) — OI-1…OI-10 |
+| **Design Decision Log** | [`docs/12-decision-logs.md`](docs/12-decision-logs.md) — ADR-001…039 |
+| **Implementation Decision Log** | [`docs/12-decision-logs.md`](docs/12-decision-logs.md) — IDL-01…50 |
+| **Risk Register** | [`docs/13-risk-register.md`](docs/13-risk-register.md) — R-01…R-22 |
+| **Open Issues** (chỉ giữ thứ thực sự không blocking) | [`docs/13-risk-register.md §3`](docs/13-risk-register.md) — OI-1…OI-11 |
 | **Definition of Done** | [`docs/11-implementation-plan.md`](docs/11-implementation-plan.md) — mỗi task |
 | **Implementation Sequence** | [`docs/11-implementation-plan.md`](docs/11-implementation-plan.md) — M0→M5 |
 | **Dependency Graph** | [`docs/11-implementation-plan.md`](docs/11-implementation-plan.md) |
-| **Validation Plan** | [`docs/14-validation-plan.md`](docs/14-validation-plan.md) — AC-01…55 |
+| **Validation Plan** | [`docs/14-validation-plan.md`](docs/14-validation-plan.md) — AC-01…61 |
 
 ---
 
@@ -401,15 +409,34 @@ Chốt qua hỏi–đáp trực tiếp ở vòng 0:
 | 5 nguyên tắc bất biến có mục riêng, quyết định riêng, test riêng | ✅ | Vòng 21 kiểm đếm; một nguyên tắc từng **không có mục nào** cho tới lúc đó |
 | Plugin boundary được xác định bằng phép thử, không bằng cảm tính | ✅ | 5 seam, [`docs/02-architecture.md §4`](docs/02-architecture.md) |
 | Cost là architectural concern | ✅ | ADR-017/026/029; SC-4 = 95.3% đo thật |
+| **Intelligent** — chọn cách xử lý theo nhiệm vụ | ⚠️ **Một phần** | Dial có (`effort`, `model`, subagent) nhưng **không tự động định tuyến** — hội đồng từ chối có lý do (ADR-006). Xem §I.4 |
 | Safe by Design | ✅ | 21 red-team test chạy trong CI; 4 lỗi bảo mật đã tìm ra và sửa |
 | Poka-Yoke | ✅ | 83 failure mode, xếp hạng theo thang phòng ngừa |
 | Extreme DX / 10 tuổi | ⚠️ **Một phần** | Đo được: tài liệu lớp 4.2, thông báo lỗi xấu nhất lớp 4.9. **Chưa đo với trẻ em thật** — xem SC-1b |
 | Zero-to-Agent | ✅ | Thang progressive disclosure + quickstart 5 bậc |
-| Rounds 0–8 + Round N đệ quy | ✅ | **Round 0 → Round 37**, nhật ký đầy đủ kèm lập luận đã thua |
+| Rounds 0–8 + Round N đệ quy | ✅ | **Round 0 → Round 38**, nhật ký đầy đủ kèm lập luận đã thua |
 | Readiness Gate 16 chiều | ✅ | [`docs/00-council.md §3`](docs/00-council.md) |
 | Final Implementation Simulation | ✅ | [`docs/14-validation-plan.md §5`](docs/14-validation-plan.md) |
 | 9 deliverable mục XIII | ✅ | Bảng ở mục XIII |
 | Nền tảng bắt buộc (LangChain/LangGraph + OpenViking) | ✅ | Mục XV |
+
+### Vòng 38 — kiểm source code đối chiếu chính file này
+
+Bốn lỗi, đều là chỗ **tài liệu khẳng định một đằng, code làm một nẻo**:
+
+| # | Lỗi | Trạng thái |
+|---|---|---|
+| H38.1 | `pause_turn` chưa từng được xử lý — API nói *chạy tiếp được*, harness nói *lỗi, chấm hết*. Đây là thứ server tool (web search) trả về, nên lỗi rơi đúng vào tính năng sinh ra nó | ✅ Đã sửa (ADR-038) |
+| H38.2 | IDL-19 khẳng định "refusal fallbacks bật mặc định" ở **ba tài liệu**; payload chưa bao giờ mang nó | ✅ Đã sửa (ADR-039) |
+| H38.3 | **Trên chính backend bắt buộc**, `refusal` và `max_tokens` đều báo `completed` — người dùng nhận nửa câu trả lời gắn nhãn hoàn tất | ✅ Đã sửa (ADR-038) |
+| H38.4 | `assert_tool_called`/`assert_no_tool` đọc **ý định** chứ không đọc **hành vi** — không phân biệt nổi tool bị chặn với tool đã chạy | ✅ Đã sửa (IDL-49) |
+
+Ba trong bốn nằm ở đường code **không test nào chạy qua**; cái thứ tư nằm trong chính các
+helper dùng để test. Bảng parity (R-17, điểm 25) bỏ lọt H38.3 vì **chưa kịch bản parity nào
+từng đặt stop reason của provider** — tất cả đều kết thúc `end_turn` hoặc `tool_use`.
+
+> Mỗi lần package này được mở rộng, code mới hỏng ở một **input mà code cũ vẫn xử lý được** —
+> không bao giờ hỏng ở chính tính năng đang thêm.
 
 ### Còn mở — nói thẳng, không giấu
 
@@ -417,7 +444,7 @@ Chốt qua hỏi–đáp trực tiếp ở vòng 0:
 |---|---|---|
 | **SC-1b** | Chưa đo với **trẻ em thật 10–12 tuổi** | Cần người thật. [`docs/16-sc1b-field-kit.md`](docs/16-sc1b-field-kit.md) là bộ công cụ chạy được, nhưng hội đồng **không coi yêu cầu mục IV là đã đạt** cho tới khi đo xong |
 | **OI-10** | Binding OpenViking **chưa từng chạy với server thật** | Server cần embedding model và wizard đòi TTY. Test chạy qua **code thật của SDK** trên stub transport; nội dung response thật vẫn chưa được kiểm chứng |
-| — | `AnthropicProvider` chưa chạy với API thật | Môi trường không có `ANTHROPIC_API_KEY` |
+| **OI-11** | `AnthropicProvider` **chưa chạy với API thật** | Không có `ANTHROPIC_API_KEY`. Payload giờ được assert offline theo tài liệu hiện hành của Anthropic (AC-56/57) — chính việc đó bắt được 3 tuyên bố sai ở vòng 38. **Cái nó không bắt được:** một tham số mà tài liệu mô tả khác với hành vi thật của endpoint. Một lần gọi thật là đóng |
 | — | mypy / ruff chưa từng chạy | Chưa cài trong môi trường này |
 
 ---
@@ -427,7 +454,7 @@ Chốt qua hỏi–đáp trực tiếp ở vòng 0:
 Ghi lại vì chúng là kết quả trực tiếp của việc mục VI bắt hội đồng phải tự phản biện.
 
 **23 vòng đọc–review** tìm ra 20 lỗi và **0 lỗi bảo mật**.
-**14 vòng xây thật** tìm ra hơn 30 lỗi, **4 lỗi bảo mật**, và **12+ tính năng đã đặc tả
+**15 vòng xây thật** tìm ra hơn 34 lỗi, **4 lỗi bảo mật**, và **12+ tính năng đã đặc tả
 nhưng chưa bao giờ được viết** — kể cả model provider.
 
 > **Đọc không tìm ra được thứ chỉ có chạy mới tìm ra.**

@@ -167,6 +167,12 @@ against slow architectural drift, which no ordinary test catches.
 | AC-53 | **A second turn on one `thread_id` calls the model**, and spend accumulates across turns while the step ceiling resets. | ADR-036, 037 |
 | AC-54 | **Two `thread_id`s on one compiled graph do not share a budget or a taint state.** | ADR-036, R-21 |
 | AC-55 | **Taint survives a process restart**: a tainted conversation resumed by a fresh Runtime over the same checkpoint does not regain its `danger` tools. | ADR-036 |
+| AC-56 | **The provider payload carries `thinking={"type":"adaptive"}`, `effort` inside `output_config`, never a top-level `output_format`, never `budget_tokens`, and `strict` tools whose schema has `additionalProperties:false` + `required`.** | ADR-039, §07.6 |
+| AC-57 | **Refusal fallbacks are on by default**, with the beta id matching the parameter form, and can be turned off. | IDL-19, ADR-039 |
+| AC-58 | **`pause_turn` resumes on both backends**, bounded and loud at the bound. | ADR-038 |
+| AC-59 | **A refusal and a truncation are never reported as `completed`, on either backend.** | ADR-038, IDL-30 |
+| AC-60 | **`assert_tool_called` / `assert_no_tool` report execution, not the model's request** — a blocked tool did not run. | IDL-49 |
+| AC-61 | **No priced model id carries a date suffix.** | §07 |
 | AC-33 | Every conditional subsystem is either reachable from the shipped defaults or declares in the docs that it is not | P-10 |
 | AC-31 | **Every public parameter is read somewhere in the package.** *`max_parallel_tools` was accepted, stored and documented for two milestones without anything reading it (Round 26).* | NFR-09 |
 | AC-28 | Every `Secret` guarantee (unhashable, unpicklable, weakly registered) is exercised, not just declared | ADR-024 |
@@ -203,10 +209,14 @@ the highest in the register — and the only thing that moves it is rows. When a
 added to one backend, the same change adds its parity row, or the rule is unprotected in
 the other backend and nothing will say so.
 
+Stop-reason rows were added in Round 38 after the graph backend was found reporting a
+refusal and a truncation as `completed`: **no parity scenario had ever set a provider stop
+reason**, so every one of them ended `end_turn` or `tool_use`.
+
 Rules with a row today: read-tool execution, danger refused without an approver, an
 approver admitting a call, taint raised by `external` output with `accepts_tainted`
 passing, construction-time refusal of the unsafe pair, per-request secret redaction
-(RT-13), the step ceiling, the USD ceiling, plain completion, and the emitted event set.
+(RT-13), the step ceiling, the USD ceiling, plain completion, the emitted event set, and the five stop-reason outcomes (refusal, truncation, unknown, pause, endless pause).
 
 Added in Round 37 after all three of its defects slipped through: multi-turn on one
 thread, two threads on one graph, and restart. **Every scenario in the suite had invoked

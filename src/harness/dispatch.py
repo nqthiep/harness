@@ -53,6 +53,7 @@ def err(call_id: str, message: str) -> dict[str, Any]:
 class Dispatcher:
     def __init__(self, engine) -> None:
         self._e = engine            # the RunEngine, for bus/ledger/policy/taint/agent
+        self.ran: list[str] = []
 
     async def _run_tools(self, resp, step: int, run_id: str) -> list[dict[str, Any]]:
         calls = [b for b in resp.content if b.get("type") == "tool_use"]
@@ -93,6 +94,10 @@ class Dispatcher:
                 continue
             seen[key] = i
             (parallel if EFFECT_PROFILES[spec.effect].parallel_safe else serial).append((i, b, spec))
+
+        # The executed set, recorded where execution is actually decided.  Anything that
+        # `continue`d above — unknown tool, DENY, duplicate — never reaches here (Round 38).
+        self.ran.extend(spec.name for _, _, spec in parallel + serial)
 
         if parallel:
             done = await asyncio.gather(

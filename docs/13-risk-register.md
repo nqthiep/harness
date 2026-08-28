@@ -29,6 +29,7 @@ Scored **L**ikelihood × **I**mpact on 1–5. Anything at 12+ has a mitigation t
 | R-19 | **A retrieval source is classified as `read` and the taint lattice silently stops covering the largest untrusted surface in the system** | **4** | **5** | **20** | The classification ships with the store rather than with the author (ADR-035): `recall` is `external`, so a poisoned memory cannot buy `danger`-tool privileges, and the construction-time refusal of external+irreversible applies to it. **Generalises beyond OpenViking**: any future retrieval binding — vector store, RAG index, web archive — carries the same rule, and a binding that classifies retrieval as `read` is the defect. | ADR-035 |
 | R-20 | **A vendor integration is widened past its seam because the vendor offers more** | 3 | 4 | 12 | OpenViking's `get_session_context()` is its own context assembler and overlaps §07's. Not integrated: two things deciding the context window is R-17's class with a bigger blast radius. The `Store` protocol is the contract; anything beyond it needs its own ADR and its own seam justification. | ADR-035, §02.4 |
 | R-21 | **A test suite covers every rule and still misses the shape of use** | **4** | **4** | **16** | **Materialized in Round 37.** R-17 was scored 25 and the parity suite was built to hold it; it caught none of three defects — one of them a security regression — because every graph scenario invoked exactly once. Multi-turn, concurrent threads and restart are now covered, and IDL-48 makes "invoke more than once" a rule rather than a habit. **The register's standing question gains a third form:** has this been run, in every implementation that claims it, *in the shape a user will actually use it*? | ADR-036, IDL-48 |
+| R-22 | **A document asserts a behaviour the code does not implement, and nothing notices because nothing exercises that path** | **5** | **4** | **20** | **Materialized in Round 38**, four times. IDL-19's refusal fallbacks were claimed in three documents and absent from the payload; T-0.4's `pause_turn` handling was never written. Both survived every earlier audit because `AnthropicProvider` has never run against the live API. `tests/test_conformance.py` now asserts the payload offline, and the standing question gains a fourth form: **has this claim been executed, or only written?** | ADR-038, 039, IDL-50 |
 
 ## 1.1 What Round 35 changes about how risks are read
 
@@ -53,6 +54,13 @@ been run in every implementation that claims it?"**
 [volcengine/OpenViking](https://github.com/volcengine/OpenViking), a context database for
 agents. Integrated as a `Store` (ADR-035). The council's earlier note that it "does not
 resolve on PyPI" was a spelling artifact, not a fact about the package.
+
+**OI-11 — `AnthropicProvider` has never run against the live API.** Its payload is now
+asserted offline against Anthropic's current documented parameter shapes (`thinking`,
+`output_config.effort`, `output_config.format`, `strict`, `betas`/`fallbacks`, model ids),
+which is what caught three wrong or missing claims in Round 38. **What that cannot catch:**
+a parameter the docs describe differently from how the endpoint behaves, and any error
+mapping that depends on a real response. One live call with a real key closes it.
 
 **OI-10 — The OpenViking binding has never run against a live server.** Its tests drive
 the real `openviking_sdk` client over a stub transport, so the SDK's URL building, request

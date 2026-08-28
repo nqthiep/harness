@@ -1888,6 +1888,79 @@ backend was ever asked to handle.
 
 ---
 
+### Round 38 — Auditing the source against HARNESS.md
+
+The brief existed for one round before it was used as a test. Four defects, all of them
+places where a document asserts something the code does not do.
+
+**H38.1 — `pause_turn` had never been heard of.** T-0.4's own "How" says *"Surface
+`pause_turn` rather than swallowing it."* The stop-reason table has three entries and that
+is not one of them, so it fell through to *unknown stop reason* and killed the run. The
+provider says **resumable**; the harness said **dead**. It is what a server tool — web
+search, web fetch — returns when the model pauses mid-turn, so the failure lands on the
+one feature that produces it. Now it resumes, bounded at five consecutive pauses and loud
+at the bound.
+
+**H38.2 — IDL-19 asserts server-side refusal fallbacks "enabled by default", in three
+documents, and the payload had never carried them.** A routine safety decline arrives as
+HTTP 200 with `stop_reason: "refusal"`; without fallbacks it is a dead end. The specified-
+but-never-built class again, and it survived every earlier audit because nothing exercises
+the provider — `AnthropicProvider` has never run against the live API. The payload is now
+built and asserted offline, against the parameter shapes in Anthropic's own current
+documentation rather than from memory: `betas=["server-side-fallback-2026-07-01"]` with
+`fallbacks="default"`, on the beta messages endpoint, the two forms matched (mixing them
+is a 400).
+
+**H38.3 — On the mandated backend a refusal and a truncation both reported `completed`.**
+The graph's model node never read the stop reason at all; it only asked whether the
+message carried tool calls. A refusal has none, and a `max_tokens` truncation has none, so
+both routed to `finish` and came back as success. **IDL-30 forbids mapping an
+*unrecognised* stop reason to a success; this mapped two recognised failures to one.** The
+caller got half an answer labelled as a whole one.
+
+The mapping now comes from the hand-written loop's table, imported rather than re-listed —
+two copies of one table is how the backends drift (R-17).
+
+**H38.4 — The shipped test helpers could not tell a blocked tool from an executed one.**
+`_tools_called` read `tool_use` blocks, which are the model's *requests*. So for a
+dangerous tool that policy correctly refused:
+
+```
+tool actually ran     : False
+assert_tool_called    : PASS   ← wrong
+assert_no_tool        : FAIL "expected 'xoa' NOT to be called, but it was"   ← wrong
+```
+
+§09 calls these *"readable assertions on behaviour"*; they were assertions on intent. In a
+library whose entire safety story is that dangerous tools get blocked, **the helper shipped
+for proving it asserts the opposite.** `Result` now carries `tools_run`, recorded where
+execution is actually decided, and the failure message names the distinction.
+
+### What the audit says about the audits
+
+**Three of the four are in code paths no test exercised**, and the fourth is in the test
+helpers themselves. R-17 is scored 25 and the parity suite exists to hold it; it missed
+H38.3 because **no parity scenario had ever set a provider stop reason** — every one of
+them ended `end_turn` or `tool_use`. Round 37's lesson was that a suite can cover the rules
+and miss the shape of use; this round is the same lesson one level down: **the suite covered
+the rules under the inputs it had thought to supply.**
+
+The parity table now has five stop-reason rows. The pattern worth naming, because it is now
+three rounds old:
+
+> Every time this package has been extended, the new code has failed on an input the old
+> code handled — never on the feature being added.
+
+**H38.5 — one non-defect, recorded because it nearly became a finding.** `approve_all` /
+`deny_all` are factories: §09 documents `approve=deny_all()`, with parentheses. Passing the
+function itself raises `TypeError: approve_all() takes 0 positional arguments but 2 were
+given`, which does not mention the missing parentheses. That is a real §II question-6 gap
+(*"can the API make the wrong use hard?"*) and it is **not** a correctness defect. Kept
+separate rather than inflated, because a review that reports its own misuse as a bug is
+worth less than one that does not.
+
+---
+
 ## 2.4 What the five build rounds cost, and what they found
 
 | Round | Built | Defects | Security | Specified-but-unbuilt | Test-harness bugs |
@@ -2004,6 +2077,7 @@ with a 16/16 gate. They found:
 | **35** | **Porting to LangGraph reintroduced three defects the council had already fixed, one of them a live secret leak** | **A defect class fixed in one implementation is not fixed in the next one** |
 | **36** | **A memory system classified as `read` puts a hole in the taint lattice the size of the memory system; and the parse tests were green against an envelope the server never sends** | **Retrieved memory is untrusted input, and a fixture you invented cannot falsify what you believe** |
 | **37** | **Multi-turn had never worked: the model was called once per thread, ever. Two customers shared one budget, and taint was lost across a restart** | **A suite that covers the rules can still miss the shape of use — every graph test had invoked exactly once** |
+| **38** | **A refusal and a truncation both reported `completed` on the mandated backend; the shipped test helper could not tell a blocked tool from an executed one** | **Every time this package is extended, the new code fails on an input the old code handled — never on the feature being added** |
 
 **Every one of these passed a prior review.** The five techniques that found them — multiply
 the numbers out, execute the contract, traverse types rather than tasks, count coverage per
