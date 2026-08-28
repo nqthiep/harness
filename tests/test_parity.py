@@ -194,7 +194,8 @@ class DependencyWeight(unittest.TestCase):
             [sys.executable, "-c",
              "import sys; sys.path.insert(0, 'src'); import harness;"
              "print([m for m in sys.modules if m.split('.')[0] in "
-             "('langchain_core', 'langgraph', 'pydantic')])"],
+             "('langchain_core', 'langgraph', 'pydantic', 'openviking_sdk', "
+             "'openviking', 'httpx')])"],
             capture_output=True, text=True)
         self.assertEqual(out.stdout.strip(), "[]",
                          f"the core pulled in the graph extra: {out.stdout.strip()}")
@@ -203,8 +204,19 @@ class DependencyWeight(unittest.TestCase):
         import pathlib as _p
         toml = _p.Path("pyproject.toml").read_text()
         deps = toml.split("dependencies = [", 1)[1].split("]", 1)[0]
-        self.assertNotIn("langgraph", deps, "langgraph must not be a core dependency")
-        self.assertIn("graph = [", toml, "the graph extra is not declared")
+        for name in ("langgraph", "openviking"):
+            self.assertNotIn(name, deps, f"{name} must not be a core dependency")
+        for extra in ("graph = [", "viking = ["):
+            self.assertIn(extra, toml, f"the {extra} extra is not declared")
+
+    def test_the_server_package_is_not_what_we_depend_on(self):
+        """`openviking` (the server) is 185 packages; `openviking-sdk` (the client) is 9.
+        A database is a process you run, not a library you vendor (ADR-035)."""
+        import pathlib as _p
+        toml = _p.Path("pyproject.toml").read_text()
+        viking = toml.split("viking = [", 1)[1].split("]", 1)[0]
+        self.assertIn("openviking-sdk", viking)
+        self.assertNotIn('"openviking"', viking)
 
 
 if __name__ == "__main__":

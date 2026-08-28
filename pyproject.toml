@@ -9,6 +9,10 @@ dependencies = ["anthropic", "typing-extensions", "jsonschema"]
 # 36 transitive packages against NFR-05's budget of three, measured — which is why it is
 # an extra and not a dependency (ADR-032).  `import harness` must never import LangChain.
 graph = ["langgraph>=1.0", "langchain-core>=1.0"]
+# The CLIENT only.  The `openviking` server package resolves to 185 transitive packages
+# — a web crawler and two other LLM SDKs among them — because it is a database server,
+# and you run it as a process rather than vendoring it into a library (ADR-035).
+viking = ["openviking-sdk>=0.1.9"]
 otel = ["opentelemetry-api", "opentelemetry-sdk"]
 dev  = ["pytest", "mypy", "ruff", "hypothesis"]
 

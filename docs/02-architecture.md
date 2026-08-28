@@ -213,6 +213,7 @@ src/harness/
 
   memory/
     base.py             Store protocol
+    viking.py           OpenViking — semantic recall; `recall` is `external` (ADR-035)
     inmemory.py         Dict-backed
     sqlite.py           SQLite-backed (default persistent store)
 

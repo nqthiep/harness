@@ -1741,6 +1741,92 @@ against both.
 
 ---
 
+### Round 36 — OpenViking, and what a memory system does to the taint lattice
+
+`openvikking` in the mandate is `openviking` — one `k`. The council had recorded it as
+unidentifiable (OI-9); it is [volcengine/OpenViking](https://github.com/volcengine/OpenViking),
+a context database for agents that presents memories, resources and skills as a virtual
+filesystem under `viking://`.
+
+**It lands on a seam the design already reserved.** [§04.5](04-interfaces.md#5-store) has
+said since Round 7 that FTS5 keyword search is not semantic recall, and that *"a user who
+wants it implements `Store`."* This is that user. No new abstraction was needed, which is
+the plugin-boundary test ([§02.4](02-architecture.md#4-what-is-a-plugin--the-test)) paying
+out: the seam was justified by naming two real implementations, and a third arrived.
+
+**H36.1 — A memory system is an untrusted input, and classifying it as `read` puts a hole
+in the taint lattice the size of the memory system.** A context database ingests web pages
+(`ov add-resource https://…`). Everything it hands back may be attacker-authored. The
+obvious classification for `recall` is `read` — it reads, after all — and it is wrong:
+`read` does not taint, so a poisoned memory would buy `danger`-tool privileges for the
+rest of the run. **`recall` ships as `external`.**
+
+The decision is shipped *in* `VikingStore.tools()` rather than left to each author,
+because it is not a judgement call an author can be expected to get right — it depends on
+knowing what the database ingested, months ago, on somebody else's machine. Poka-Yoke
+grade: **Impossible-to-omit** rather than **Documented**.
+
+Measured end to end: a recall taints the run, and `recall` next to an irreversible tool is
+refused at construction (F9.1) — which only works *because* the classification ships with
+the store.
+
+**H36.2 — The parse tests passed against an envelope the server never sends.** The first
+version of the test file invented `{"results": [...]}`. The SDK's real contract is
+`{"status": …, "result": …}` for success and `{"status": "error", "error": {"code": …}}`
+for failure, mapped through the SDK's own `ERROR_CODE_TO_EXCEPTION`. Every parse test was
+green against a shape that does not exist. **Round 26's benchmark defect, in a new place:
+a fixture the author invented cannot falsify the author's belief.** The tests now drive
+the real `openviking_sdk` client over a stub transport, so the SDK's URL building, request
+shaping, response parsing and error mapping all execute.
+
+**H36.3 — And the failure classification was guessing.** The first cut matched exception
+*names* and treated anything unrecognised as absent — so an unknown failure would have
+returned "nothing remembered", and the agent would have told a customer their order does
+not exist. Fail-open, in the direction where the wrong answer is plausible enough to go
+unnoticed. Now: `NOT_FOUND`/`INVALID_URI` are absence; `UNAUTHENTICATED`/`PERMISSION_DENIED`
+are a `ConfigError` because retrying cannot fix a wrong key; **everything else, including a
+code this binding has never heard of, is a failure.** The same rule as IDL-30 for an
+unrecognised provider stop reason, arrived at independently and then recognised.
+
+**H36.4 — A key is not a path.** Keys are interpolated into a `viking://` URI, so
+`key="../../resources"` reads outside its namespace. Refused at the boundary against a
+strict pattern rather than escaped — escaping is a thing you can get subtly wrong, refusing
+is not — and a test asserts the rejected key never reaches the wire.
+
+**H36.5 — The client holds capabilities the store must not.** `SyncHTTPClient` exposes
+`admin_create_account`, `admin_regenerate_key`, `rm`, `delete_session`, `import_ovpack`.
+A store binding that hands those to a model-facing tool is a least-privilege violation
+with a prompt injection on the other end of it. `ALLOWED_CALLS` is a fixed set of six, and
+every request goes through one function that enforces it. `delete()` writes an empty value
+rather than calling `rm`: emptying is reversible in the database's own history, `rm` is not.
+
+**The dependency finding, measured: 185 versus 9.** The `openviking` package resolves to
+**185 transitive packages** — a web crawler (scrapy, twisted), two other LLM SDKs (openai,
+litellm), tree-sitter for ten languages, fastapi, uvicorn, pdfplumber, python-pptx. The
+`openviking-sdk` client resolves to **nine**, and needs only `httpx`. So the harness
+depends on the client, as an extra:
+
+> **A database is a process you run, not a library you vendor.** Nobody links Postgres
+> into their application to use it; the 185 packages are the server's business, and the
+> server is a separate process by design.
+
+### What the council did *not* build, and why
+
+`get_session_context(session_id, token_budget=…)` is OpenViking's own context assembler,
+and it overlaps [§07](07-cost.md)'s. Integrating it would mean two things deciding what
+goes in the window, which is R-17's defect class with a bigger blast radius. **Not built.**
+The `Store` seam is the boundary the design already justified; widening the integration
+because the vendor offers more is how a library acquires a second architecture.
+
+**The limit of this round, stated plainly: none of it has run against a live
+`openviking-server`.** The server needs an embedding model and a config wizard that wants
+a TTY, neither available here. What is proven is conformance to the SDK's real code path;
+what is not proven is the server's actual response *content*. Recorded as OI-10 rather
+than implied, because R-16 exists precisely because a control that was specified and never
+executed failed on first execution.
+
+---
+
 ## 2.4 What the five build rounds cost, and what they found
 
 | Round | Built | Defects | Security | Specified-but-unbuilt | Test-harness bugs |
@@ -1855,6 +1941,7 @@ with a 16/16 gate. They found:
 | **33** | **`returns=` was accepted and never parsed; non-ASCII tool results cost 2.2×–4.8×** | **A default is chosen for an audience; ask what it does to the others** |
 | **34** | **A workflow state machine leaked one customer's position to the next** | **Two documents can each be correct and contradict each other in production** |
 | **35** | **Porting to LangGraph reintroduced three defects the council had already fixed, one of them a live secret leak** | **A defect class fixed in one implementation is not fixed in the next one** |
+| **36** | **A memory system classified as `read` puts a hole in the taint lattice the size of the memory system; and the parse tests were green against an envelope the server never sends** | **Retrieved memory is untrusted input, and a fixture you invented cannot falsify what you believe** |
 
 **Every one of these passed a prior review.** The five techniques that found them — multiply
 the numbers out, execute the contract, traverse types rather than tasks, count coverage per

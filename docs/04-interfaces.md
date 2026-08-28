@@ -497,6 +497,29 @@ This is stated plainly so nobody assumes semantic recall. Vector search is a non
 Values are strings, not arbitrary objects. Pickling user objects into a store is a
 deserialization vulnerability and a versioning trap.
 
+### 5.1 Retrieval stores taint the run
+
+Three `Store` implementations ship: `InMemoryStore`, `SqliteStore`, and — under
+`harness[viking]` — `VikingStore` over [OpenViking](https://github.com/volcengine/OpenViking),
+which is the semantic recall this section called a non-goal. **A user who wanted it did
+implement `Store`; the seam held.**
+
+A store that retrieves is not the same kind of thing as a store that returns what you put
+in it, and the difference is a safety rule rather than a performance note:
+
+> **Anything a retrieval store hands back is untrusted input.** A context database ingests
+> web pages. What comes out may have been written by an attacker, months ago, on somebody
+> else's machine.
+
+So `VikingStore.tools()` ships `recall` classified **`external`**, not `read`. It taints
+the run, and the construction-time refusal of external + irreversible applies to it. The
+classification lives with the store rather than with the author because the author cannot
+reasonably know what the database ingested (ADR-035).
+
+**Any future retrieval binding carries the same rule.** A vector store, a RAG index, a web
+archive: retrieval is `external`. A binding that classifies it `read` is the defect, not a
+configuration choice.
+
 ---
 
 ## 6. Events & exporters

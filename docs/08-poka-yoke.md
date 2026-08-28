@@ -140,6 +140,17 @@ backends exist. The council's position is that it is the price of the platform m
 it is stated rather than hidden, and that the ten rows of the parity table are the thing
 keeping it survivable.
 
+## Retrieval and store failure modes (Round 36)
+
+| # | Failure | Grade | Defense |
+|---|---|---|---|
+| 78 | A store key escapes its namespace (`../../resources`) | **Construction/call-time** | Strict pattern, refused not escaped; a test asserts the rejected key never reaches the wire (IDL-44) |
+| 79 | A vendor changes its result envelope and retrieval silently returns nothing | **Loud** | Unknown shapes yield `[]`, but an unknown *error code* raises — the failure path cannot be mistaken for an empty one |
+| 80 | Retrieved memory is treated as trusted and reaches an irreversible tool | **Impossible** | `recall` ships as `external` from the store itself; the author never makes this call (ADR-035) |
+| 81 | A model-facing tool holds administrative client capabilities | **Impossible** | Fixed `ALLOWED_CALLS`, enforced in the one function every request passes through (IDL-45) |
+| 82 | "The database is down" is indistinguishable from "nothing remembered" | **Loud** | Distinct exception; only two vendor codes mean absence, everything else raises |
+| 83 | An enormous retrieval blows the context window or the budget | **Impossible** | `max_result_tokens` applies to a store's tools like any other; measured at 200 kB in, 16 kB out |
+
 ## The five items that only reach "Documented", and why
 
 | # | Why it cannot be raised |

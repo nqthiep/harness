@@ -159,6 +159,11 @@ against slow architectural drift, which no ordinary test catches.
 | AC-45 | **The whole graph state serializes with the real checkpoint serializer**, and holds no callable. *Durability is what the platform is for, and it failed on a `ToolSpec` in state (IDL-40).* | IDL-40 |
 | AC-46 | **`import harness` pulls in no `langgraph`, `langchain_core` or `pydantic` module**, and `pyproject` declares the graph backend as an extra. | NFR-05, R-18 |
 | AC-47 | **Every rule in the parity table produces the same outcome on both backends** — tools run, denials, taint, construction refusals, secret redaction, step and USD ceilings, and the set of event kinds actually emitted. *A differing row is a defect, never a documented difference.* | R-17 |
+| AC-48 | **Every retrieval-backed tool the package ships is classified `external`**, so recall taints the run and the external+irreversible construction check applies to it. | ADR-035, R-19 |
+| AC-49 | **A store key that could escape its namespace is refused before any request is sent** — asserted by observing that no request reached the transport. | IDL-44 |
+| AC-50 | **The store calls nothing outside its capability list**, and `delete` never calls `rm`. | IDL-45 |
+| AC-51 | **An unrecognised vendor error code raises rather than returning an empty result.** | ADR-035, IDL-30 |
+| AC-52 | **`pyproject` depends on `openviking-sdk`, never on `openviking`.** | ADR-035 |
 | AC-33 | Every conditional subsystem is either reachable from the shipped defaults or declares in the docs that it is not | P-10 |
 | AC-31 | **Every public parameter is read somewhere in the package.** *`max_parallel_tools` was accepted, stored and documented for two milestones without anything reading it (Round 26).* | NFR-09 |
 | AC-28 | Every `Secret` guarantee (unhashable, unpicklable, weakly registered) is exercised, not just declared | ADR-024 |

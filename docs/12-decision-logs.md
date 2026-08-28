@@ -739,6 +739,49 @@ message, so scoping it there is both sufficient for the leak and bounded to exac
 window in which the value can still be written.
 
 
+### ADR-035 — A context database is a `Store`, and its recall is `external`
+
+**Context.** The mandate named OpenViking, a context database for agents. It presents
+memories, resources and skills as a virtual filesystem and does semantic retrieval —
+precisely the thing [§04.5](04-interfaces.md#5-store) declared a non-goal while reserving
+the seam for it.
+
+**Decision.** `harness.memory.viking.VikingStore` implements `Store`. It ships its own
+model-facing tools with the effect classes already set, and **`recall` is `external`**.
+
+**Why `external` and not `read`.** A context database ingests web pages. What it returns
+may be attacker-authored, months ago, on a different machine. `read` does not taint, so a
+`read` classification means a poisoned memory buys `danger`-tool privileges for the rest
+of the run — a hole in the taint lattice the size of the memory system. The author cannot
+reasonably make this call themselves, so the store makes it: **Impossible-to-omit rather
+than Documented** on §08's ladder.
+
+**Why the tools ship with the store.** The construction-time refusal of `external` +
+irreversible (F9.1) only fires if the tool set *says* it is external. Leaving the
+classification to the caller means the strongest check in the package silently does not
+apply to the largest untrusted-input surface in the system.
+
+**Least privilege.** The SDK client can create accounts, regenerate keys, delete sessions
+and `rm` paths. The store holds six capabilities and enforces the list on every call.
+`delete()` writes an empty value rather than calling `rm`, because emptying is reversible
+in the database's own history and `rm` is not.
+
+**Unknown failures are failures.** `NOT_FOUND`/`INVALID_URI` mean absence;
+`UNAUTHENTICATED`/`PERMISSION_DENIED` are a `ConfigError`; **everything else, including an
+unrecognised code, raises.** Mapping an unknown outcome to "nothing remembered" is
+fail-open in the direction where the wrong answer is plausible — the agent tells a customer
+their order does not exist. Same rule as IDL-30.
+
+**Dependency.** `harness[viking]` depends on `openviking-sdk` (nine transitive packages,
+`httpx` only), never on `openviking` (185, including a web crawler and two other LLM SDKs).
+**A database is a process you run, not a library you vendor.**
+
+**Not integrated:** `get_session_context()`, OpenViking's own context assembler. Two
+things deciding what goes in the context window is R-17's defect class with a bigger blast
+radius. The `Store` seam is the boundary; widening an integration because the vendor
+offers more is how a library acquires a second architecture.
+
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
@@ -785,4 +828,7 @@ window in which the value can still be written.
 | IDL-41 | Every key a node returns must be declared in `AgentState` | LangGraph **silently discards** an undeclared key. The first port lost `_pending`, so no tool ran at all — and the test asserting a denied tool had not run passed for that reason (H35.6) |
 | IDL-42 | `Decimal` crosses graph state as a string, never a float | State is JSON-checkpointed; a float here would reintroduce the rounding class IDL-01 exists to exclude |
 | IDL-43 | The graph delegates ASK resolution to `PolicyEngine.resolve` | One implementation of the rule. The port had written a second one, with a different callback signature and a different no-callback behaviour (H35.4) |
+| IDL-44 | A store key is validated against a strict pattern, never escaped | A key becomes part of a `viking://` URI; `../../resources` reads another namespace. Escaping is a thing you can get subtly wrong, refusing is not |
+| IDL-45 | The store's client capabilities are a fixed set, enforced on every call | `SyncHTTPClient` exposes `admin_*`, `rm` and `delete_session`. A model-facing tool holding those is a prompt injection with administrative reach |
+| IDL-46 | Integration tests drive the vendor SDK over a stub transport, never a hand-written fake of it | The first fixtures invented an envelope the server never sends, and every parse test was green against it (H36.2) |
 | IDL-31 | Context-management fixtures are specified per model | Whether the budget or the context window binds first depends on the model's price and window ([§07.3](07-cost.md#3-token-discipline)) |
