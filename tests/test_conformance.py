@@ -168,5 +168,74 @@ class NotOverEngineered(unittest.TestCase):
             self.assertLessEqual(len(body), cap, f"{f} is {len(body)} lines")
 
 
+class StaticChecks(unittest.TestCase):
+    """HARNESS.md §III — CLEAN CODE, and §II question 5: turn a runtime error into one a
+    checker catches.  Both tools were listed as never run until Round 39."""
+
+    def _tool(self, *cmd):
+        import shutil, subprocess
+        if shutil.which(cmd[0]) is None:
+            self.skipTest(f"{cmd[0]} is not installed")
+        return subprocess.run(cmd, capture_output=True, text=True)
+
+    def test_ruff_is_clean(self):
+        r = self._tool("ruff", "check", "src", "tests", "examples")
+        self.assertEqual(r.returncode, 0, r.stdout[-2000:])
+
+    def test_mypy_is_clean(self):
+        r = self._tool("mypy")
+        self.assertEqual(r.returncode, 0, r.stdout[-2000:])
+
+    def test_a_user_gets_real_type_checking_on_the_value_types(self):
+        """The count was never the point.  Before `dataclass_transform`, every value type
+        in the package accepted any arguments at all, and `agent.name` — documented public
+        in §03 — was reported as not existing (Round 39)."""
+        import shutil, subprocess, tempfile, pathlib as _p, os
+        if shutil.which("mypy") is None:
+            self.skipTest("mypy is not installed")
+        src = os.path.abspath("src")
+        with tempfile.TemporaryDirectory() as d:
+            f = _p.Path(d) / "u.py"
+            f.write_text(
+                "from harness import Agent\n"
+                "from harness.result import Usage\n"
+                "from harness.models.fake import FakeModel\n"
+                "a = Agent(name='T', job='j', model='fake', "
+                "provider=FakeModel([]), budget='$1')\n"
+                "print(a.name, a.budget, a.safety)\n"
+                "bad = Usage(1, 2, 3, 4, 5)\n"
+                "typo = Usage(input_tokns=1)\n")
+            env = {**os.environ, "MYPYPATH": src}
+            r = subprocess.run(["mypy", "u.py", "--ignore-missing-imports",
+                                "--no-error-summary"],
+                               capture_output=True, text=True, env=env, cwd=d)
+            own = [l for l in r.stdout.splitlines() if l.startswith("u.py")]
+            self.assertTrue(own or r.returncode == 0, r.stdout[-1500:])
+        self.assertTrue(any("Too many arguments" in l for l in own),
+                        f"wrong arity not caught: {own}")
+        self.assertTrue(any("input_tokns" in l for l in own),
+                        f"misspelt field not caught: {own}")
+        self.assertFalse([l for l in own if "has no attribute" in l],
+                         f"a documented public attribute was reported missing: {own}")
+
+
+class ConfigTimeRefusals(unittest.TestCase):
+    """§II — Prevent, not Detect.  Each of these used to fail at run time, after paying
+    for a model call."""
+
+    def test_returns_wants_the_type_not_an_instance(self):
+        from dataclasses import dataclass
+        from harness.errors import ConfigError
+
+        @dataclass
+        class KQ:
+            a: str
+
+        with self.assertRaises(ConfigError) as cm:
+            Agent(name="T", job="j", model="fake", returns=KQ("x"),
+                  provider=FakeModel([]), budget="$5")
+        self.assertIn("returns=KQ", str(cm.exception))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

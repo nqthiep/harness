@@ -11,7 +11,7 @@ from .._value import value
 import re
 import time
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from decimal import Decimal
 from typing import Final
 
@@ -158,7 +158,10 @@ class Ledger:
         """Derive max_tokens from what is left (ADR-017)."""
         if self._blocked:
             raise BudgetExceeded(
-                f"budget of {Money(self._b.usd)} is spent ({self.spent}); no further calls"
+                # `_blocked` is only ever set inside an `is not None` guard, so the
+                # narrowing a checker cannot see is guaranteed by construction.
+                f"budget of {Money(self._b.usd)} is spent ({self.spent}); "  # type: ignore[arg-type]
+                f"no further calls"
             )
         if self._b.usd is None or price.output_per_mtok == 0:
             # A free provider (FakeModel, a local model) has nothing to divide by and
@@ -245,7 +248,8 @@ class Ledger:
         remaining = self.remaining_usd()
         if remaining is None:
             return amount
-        held = Money(min(amount.decimal, max(remaining.decimal, 0)))
+        # min/max over two Decimals; the checker widens them to a comparison protocol.
+        held = Money(min(amount.decimal, max(remaining.decimal, 0)))  # type: ignore[arg-type]
         self._spent = self._spent + held
         return held
 

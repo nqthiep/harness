@@ -8,7 +8,7 @@ from __future__ import annotations
 from .._value import value
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import field
 from enum import Enum
 from typing import Any, Mapping, Protocol
 

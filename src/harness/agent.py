@@ -13,7 +13,7 @@ from typing import Any, Callable, Literal, Sequence
 from .budget.ledger import Budget, Ledger
 from .context.assembler import ContextAssembler
 from .context.linter import PrefixWatcher, check_determinism
-from .errors import ConfigError, RunFailed, SyncInAsyncContextError, UnsafeToolSetError
+from .errors import ConfigError, SyncInAsyncContextError, UnsafeToolSetError
 from .observe.console import ConsoleExporter
 from .observe.events import EventBus
 from .observe.transcript import TranscriptWriter, read as read_transcript
@@ -36,6 +36,30 @@ class Agent:
                  "approve", "policies", "allowed_hosts", "provider", "returns",
                  "max_parallel_tools", "transcript", "exporters", "_asm", "_watch",
                  "_as_tool_budget")
+
+    # Declared for the type checker.  The fields are set through `object.__setattr__`
+    # (the Agent is frozen), which a checker cannot see — so without these, **a user
+    # running mypy on `agent.name` was told the attribute does not exist**, on the
+    # attributes §03 documents as public.  Annotations only: with `__slots__` these
+    # create no class attribute (Round 39).
+    name: str
+    job: str
+    toolset: ToolSet
+    model: str
+    effort: str
+    budget: Budget
+    safety: str
+    approve: Any
+    policies: tuple[Any, ...]
+    allowed_hosts: tuple[str, ...] | None
+    provider: Any
+    returns: type | None
+    max_parallel_tools: int
+    transcript: str | None
+    exporters: tuple[Any, ...]
+    _asm: Any
+    _watch: Any
+    _as_tool_budget: Any
 
     def __init__(
         self,
@@ -88,6 +112,14 @@ class Agent:
         object.__setattr__(self, "toolset", toolset)
         object.__setattr__(self, "model", model)
         object.__setattr__(self, "effort", effort)
+        if returns is not None and not isinstance(returns, type):
+            raise ConfigError(
+                f"returns= needs the type itself, not one you already made.\n\n"
+                f"  You wrote:  returns={type(returns).__name__}(...)\n"
+                f"  Write:      returns={type(returns).__name__}\n\n"
+                f"  The agent builds one for you from the model's answer.\n\n"
+                f"  -> docs/03-public-api.md"
+            )
         object.__setattr__(self, "returns", returns)
         object.__setattr__(self, "budget", Budget.parse(budget))
         object.__setattr__(self, "safety", safety)
@@ -227,7 +259,6 @@ class Agent:
         return asyncio.run(self.aresume(transcript))
 
     async def aresume(self, transcript: Any) -> Result:
-        from .tools import EFFECT_PROFILES
         started: dict[str, str] = {}
         finished: set[str] = set()
         message = ""
@@ -289,7 +320,10 @@ class Chat:
         if remaining is not None and remaining.decimal <= 0:
             return Result("", StopReason.BUDGET_EXHAUSTED, 0, self._spent, Usage(),
                           "chat", False, (), None,
-                          f"this conversation reached its budget of {Money(self._budget.usd)}")
+                          # reachable only inside `remaining is not None`, which
+                          # implies `usd is not None` two lines above.
+                          f"this conversation reached its budget of "
+                          f"{Money(self._budget.usd)}")  # type: ignore[arg-type]
         turn = self._agent
         if remaining is not None:
             turn = self._agent.with_(budget=replace(self._agent.budget,

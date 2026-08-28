@@ -8,15 +8,17 @@ from __future__ import annotations
 
 import ast
 import operator
+from typing import Callable
 
 from .. import tool
 
-_OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+_OPS: dict[type, Callable[..., float]] = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
         ast.Div: operator.truediv, ast.Pow: operator.pow, ast.Mod: operator.mod,
         ast.FloorDiv: operator.floordiv, ast.USub: operator.neg, ast.UAdd: operator.pos}
 
 
 def _ev(node: ast.AST) -> float:
+    """Only the operators in `_OPS`; anything else raises. No eval, ever (AC-41)."""
     if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
         return node.value
     if isinstance(node, ast.BinOp) and type(node.op) in _OPS:

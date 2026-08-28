@@ -1,12 +1,12 @@
 """M3 executed: transcript, resume, exporters, event taxonomy."""
-import io, json, os, subprocess, sys, tempfile, textwrap, unittest
+import io, os, subprocess, sys, tempfile, textwrap, unittest
 sys.path.insert(0, "src")
 
-from harness import Agent, tool, Secret, StopReason
+from harness import Agent, tool, Secret
 from harness.models.fake import FakeModel
 from harness.observe.console import ConsoleExporter
 from harness.observe.events import EventKind
-from harness.observe.transcript import TranscriptWriter, read
+from harness.observe.transcript import read
 
 RAN: list = []
 
@@ -117,7 +117,7 @@ class M3(unittest.TestCase):
         m2 = FakeModel([FakeModel.text("understood")])
         a = Agent(name="T", job="j", tools=[charge], provider=m2, budget="$5",
                   approve=lambda c, x: True)
-        r = a.resume(self.path)
+        a.resume(self.path)
         self.assertEqual(RAN, [], "a danger tool was re-executed on resume")
         sent = str(m2.calls[0].messages)
         self.assertIn("NOT retried", sent, "the model was not told the call was interrupted")

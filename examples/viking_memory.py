@@ -17,7 +17,7 @@ sys.path.insert(0, "src"); sys.path.insert(0, "tests")
 
 import httpx
 from fake_chat import FakeChat
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage
 from openviking_sdk import AsyncHTTPClient
 
 from harness import tool

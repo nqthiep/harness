@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from .._value import value
 
-from dataclasses import dataclass
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Mapping, Protocol
 

@@ -5,8 +5,7 @@ from .._value import value
 
 import hashlib
 import json
-from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol
 
 from ..result import Usage
 

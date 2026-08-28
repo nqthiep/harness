@@ -13,7 +13,7 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 
 from harness import Decision, Verdict, tool
-from harness.lg import GUARDED, build_agent, unguarded_paths
+from harness.lg import build_agent, unguarded_paths
 from harness.lg.state import AgentState
 
 RAN: list = []
@@ -72,7 +72,6 @@ class Topology(unittest.TestCase):
 
     def test_removing_a_gate_is_caught_at_compile_time(self):
         """The guarantee must fail loudly if someone rewires the graph."""
-        from harness.lg import graph as G
         from langgraph.graph import END, START, StateGraph
         g = StateGraph(AgentState)
         for n in ("budget", "model", "policy", "approve", "tools"):

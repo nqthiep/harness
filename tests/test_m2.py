@@ -2,7 +2,6 @@
 import asyncio, sys, time, unittest
 sys.path.insert(0, "src"); sys.path.insert(0, "tests")
 
-from caching_fake import CachingFake
 from harness import Agent, tool
 from harness.models.base import ModelResponse
 from harness.models.fake import FakeModel

@@ -22,7 +22,8 @@ _REGISTRY: "dict[int, weakref.ref[Secret]]" = {}
 
 def _register(s: "Secret") -> None:
     key = id(s)
-    _REGISTRY[key] = weakref.ref(s, lambda _ref, k=key: _REGISTRY.pop(k, None))
+    _REGISTRY[key] = weakref.ref(
+        s, lambda _ref, k=key: _REGISTRY.pop(k, None))   # type: ignore[misc]
 
 
 #: Values revealed during the current run, held strongly until the run ends.
@@ -63,7 +64,10 @@ def _live() -> "list[Secret]":
 
 class Secret:
     __slots__ = ("_v", "_name", "__weakref__")
-    __hash__ = None                         # IDL-32
+    #: Same reason as `Agent`: set via `object.__setattr__`, invisible to a checker.
+    _v: str
+    _name: str
+    __hash__ = None                         # type: ignore[assignment]  # IDL-32
 
     def __init__(self, value: str, *, name: str = "secret") -> None:
         object.__setattr__(self, "_v", value)

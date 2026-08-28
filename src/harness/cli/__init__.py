@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Mapping
 
 SCAFFOLD = '''from harness import Agent
 
@@ -47,7 +48,7 @@ def cmd_new(name: str, *, cwd: Path | None = None) -> list[Path]:
     return [agent_file, gitignore]
 
 
-def key_status(env: dict | None = None) -> tuple[bool, str]:
+def key_status(env: Mapping[str, str] | None = None) -> tuple[bool, str]:
     import os
     env = env if env is not None else os.environ
     if env.get("ANTHROPIC_API_KEY"):

@@ -7,7 +7,6 @@ import asyncio
 import difflib
 import functools
 import inspect
-from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Final, Mapping
 

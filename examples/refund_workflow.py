@@ -14,7 +14,6 @@ Chạy:  python3 examples/refund_workflow.py
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
@@ -202,7 +201,7 @@ def main() -> None:
     truoc = len(DA_HOAN)
     a2.try_run("hoàn tiền")
     print(f"  state machine cho phép : có (đang ở '{Buoc.DA_KIEM_CHINH_SACH.value}')")
-    print(f"  người duyệt            : từ chối")
+    print("  người duyệt            : từ chối")
     print(f"  thực tế có chạy không  : {'CÓ — LỖI' if len(DA_HOAN) > truoc else 'KHÔNG'}")
     print("  → verdict compose bằng max: policy chỉ THẮT CHẶT, không bao giờ nới lỏng")
 

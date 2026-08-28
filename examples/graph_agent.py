@@ -10,7 +10,7 @@ import sys
 sys.path.insert(0, "src"); sys.path.insert(0, "tests")
 
 from fake_chat import FakeChat                     # thay cho model thật, không cần key
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 
 from harness import tool

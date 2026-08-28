@@ -7,7 +7,6 @@ from harness.memory import InMemoryStore, SqliteStore
 from harness.memory.sqlite import SCHEMA_VERSION
 from harness.models.fake import FakeModel
 from harness.plugins import PluginRegistry
-from harness.tools import EFFECT_PROFILES
 
 
 @tool(effect="read")
@@ -225,7 +224,6 @@ class NonAsciiNames(unittest.TestCase):
         return Agent(name=name, job="j", tools=[peek], provider=FakeModel([]), budget="$1")
 
     def test_every_name_produces_a_valid_tool_name(self):
-        import re
         for name in self.NAMES:
             spec = self._agent(name).as_tool()
             self.assertRegex(spec.name, r"^[a-z][a-z0-9_]{0,63}$",

@@ -1,7 +1,6 @@
 """A scripted LangChain chat model — no network, no key."""
 from __future__ import annotations
 
-from typing import Any, Sequence
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage

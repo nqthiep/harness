@@ -173,6 +173,10 @@ against slow architectural drift, which no ordinary test catches.
 | AC-59 | **A refusal and a truncation are never reported as `completed`, on either backend.** | ADR-038, IDL-30 |
 | AC-60 | **`assert_tool_called` / `assert_no_tool` report execution, not the model's request** — a blocked tool did not run. | IDL-49 |
 | AC-61 | **No priced model id carries a date suffix.** | §07 |
+| AC-62 | **`ruff check src tests examples` is clean**, against a config that records the package's own style rather than a default. | IDL-51 |
+| AC-63 | **`mypy` is clean**, with every remaining suppression carrying a one-line reason at the site. | ADR-040 |
+| AC-64 | **A user's own file gets real type errors on the value types** — wrong arity and misspelt fields caught — **and none on the documented public attributes** of `Agent`. | ADR-040 |
+| AC-65 | **`returns=` refuses an instance at construction**, naming the fix. | H39.2 |
 | AC-33 | Every conditional subsystem is either reachable from the shipped defaults or declares in the docs that it is not | P-10 |
 | AC-31 | **Every public parameter is read somewhere in the package.** *`max_parallel_tools` was accepted, stored and documented for two milestones without anything reading it (Round 26).* | NFR-09 |
 | AC-28 | Every `Secret` guarantee (unhashable, unpicklable, weakly registered) is exercised, not just declared | ADR-024 |

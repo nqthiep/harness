@@ -6,7 +6,7 @@ backend has its own tests.  So the scenarios live here once and every one runs
 against both backends.  A row that differs is a defect in whichever backend is wrong,
 never a difference to document.
 """
-import asyncio, sys, unittest
+import sys, unittest
 sys.path.insert(0, "src"); sys.path.insert(0, "tests")
 
 from fake_chat import FakeChat

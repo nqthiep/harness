@@ -861,6 +861,26 @@ it silently names a retired model.
 
 **Still unverified against the live API** — like the rest of this provider (OI-11).
 
+### ADR-040 — `@value` declares itself to type checkers
+
+**Context.** `@value` (IDL-05) returns `type[T]`, so a checker sees the undecorated class
+body. Round 39 measured the effect: 86 of 112 mypy errors, and **no type checking at all
+for anyone using this library's core value types**.
+
+**Decision.** `@value` carries `@dataclass_transform(frozen_default=True)` (PEP 681). The
+two classes that use bare `__slots__` with `object.__setattr__` — `Agent` and `Secret` —
+declare their fields as class-level annotations, which under `__slots__` create no class
+attribute and change no behaviour.
+
+**Why it matters more outside the package than inside.** The internal error count is
+cosmetic. What was not cosmetic: `Usage(input_tokns=1)` passed silently, and `agent.name`
+— documented public in §03 and stable under §04.8 — was reported as nonexistent to every
+user with a type checker. §II question 5 exists to turn runtime errors into earlier ones;
+this had inverted it for the whole data layer.
+
+**Scope.** Not `mypy --strict`. The remaining six diagnostics are narrowing and
+monkeypatch limitations, each proved safe and each carrying a one-line reason at the site.
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
@@ -914,4 +934,6 @@ it silently names a retired model.
 | IDL-48 | Graph tests must invoke more than once | All three Round 37 defects were invisible to a suite where every scenario called `invoke()` exactly one time |
 | IDL-49 | `Result.tools_run` records what EXECUTED, written where execution is decided | The test helpers read `tool_use` blocks — the model's requests — so a tool policy blocked counted as called, and `assert_no_tool` failed on the exact case it exists to prove (H38.4) |
 | IDL-50 | A provider payload is asserted offline against the vendor's current documented parameter shapes | This provider has never run against the live API, so "it looks right" was the only check it had. Three of its claims were wrong or absent |
+| IDL-51 | Ruff is configured to the package's own style, not the default | 62 of 162 findings were one-line accessors written that way on purpose. Rewriting working lines to satisfy a default is churn; the config records the choice instead |
+| IDL-52 | An automatic fix is a change, and the suite runs immediately after | `ruff --fix` removed a re-export and broke `import harness` (H39.4) |
 | IDL-31 | Context-management fixtures are specified per model | Whether the budget or the context window binds first depends on the model's price and window ([§07.3](07-cost.md#3-token-discipline)) |

@@ -1961,6 +1961,68 @@ worth less than one that does not.
 
 ---
 
+### Round 39 — Closing the open item: mypy and ruff had never been run
+
+Both tools were listed as never executed since Round 30. Running them is not a formality:
+**162 ruff findings and 112 mypy errors**, and the interesting ones were not the counts.
+
+**H39.1 — `@value` was invisible to every type checker, so nobody using this library got
+any.** The decorator returns `type[T]`, so a checker sees the original class body with no
+generated `__init__`. Measured consequence, from a user's file rather than ours:
+
+```
+Usage(100, 50, 0, 0, 999)   # wrong arity      → not caught
+Usage(input_tokns=100)      # misspelt field   → not caught
+agent.name                  # documented public in §03 → "Agent has no attribute name"
+```
+
+**A user running mypy on `agent.name` was told the attribute does not exist**, while
+`Money`, `Usage`, `Result`, `Decision` and `ToolCall` accepted any arguments at all. §II's
+fifth question asks whether a runtime error can be made a compile-time one; for the entire
+value layer the answer had been *no*, silently. `dataclass_transform` (PEP 681) plus
+class-level annotations on the two `__slots__` classes fixed both: 112 → 22, and all three
+user mistakes above are now caught, the misspelling with a did-you-mean.
+
+**H39.2 — `returns=` accepted an instance where it needs the class**, and failed with
+`AttributeError: 'KQ' object has no attribute '__name__'` **after paying for a model
+call**. Found by mypy, not by any test. Now refused at construction, naming the fix.
+
+**H39.3 — A lint warning whose obvious fix disables a security test.** RT-08 binds
+`s = Secret(...)` and never reads it — `F841`. The binding is what keeps the secret alive
+in ADR-024's weak registry; without it `redact()` cannot match the value and the secret
+goes out in cleartext. Measured both ways. It fails *loudly* rather than silently, which is
+the saving grace — but nothing in the file said why the variable was there, so a
+contributor clearing the warning would read the failure as flakiness. Now stated, with a
+`noqa` so the tool stops inviting the change.
+
+**H39.4 — And the autofix broke the package.** `ruff --fix` removed
+`from .dispatch import ... RunContext` from `run.py` as unused; it is a re-export that
+`harness/__init__.py` depends on. `import harness` failed. Caught by running the suite
+immediately after, which is the only reason it is a footnote rather than a defect —
+**an automatic fix is a change, and a change gets tested like any other.**
+
+**Two dead things and a duplicate.** 38 unused imports, all debris from the two file
+splits (Round 28's `dispatch.py`, Round 35's `runtime.py`); and `err()` defined twice in
+`dispatch.py`, the bodies identical, so no behaviour rode on which won. Checked before
+being written up, because "duplicate function" and "the wrong one wins" are different
+findings and only one of them was true.
+
+### What was deliberately not done
+
+E701/E702 — one-line accessors (`def spent(self) -> Money: return self._spent`) and paired
+assignment — account for 62 of the 162 ruff findings. They are a house style applied
+consistently, and rewriting ~60 working lines to satisfy a default would be churn with risk
+and no reader benefit. Ruff is configured to the style the package actually uses; the
+config says so. `mypy --strict` is likewise declined: it would buy annotations on internals
+nobody calls. **HARNESS.md §III cuts both ways — "not over-engineer" applies to the
+cleanup as much as to the feature.**
+
+Both tools are now CI gates (AC-62, AC-63), and a third test asserts the thing that
+actually mattered: that a *user's* file gets real type errors on the value types and none
+on the documented public attributes.
+
+---
+
 ## 2.4 What the five build rounds cost, and what they found
 
 | Round | Built | Defects | Security | Specified-but-unbuilt | Test-harness bugs |
@@ -2078,6 +2140,7 @@ with a 16/16 gate. They found:
 | **36** | **A memory system classified as `read` puts a hole in the taint lattice the size of the memory system; and the parse tests were green against an envelope the server never sends** | **Retrieved memory is untrusted input, and a fixture you invented cannot falsify what you believe** |
 | **37** | **Multi-turn had never worked: the model was called once per thread, ever. Two customers shared one budget, and taint was lost across a restart** | **A suite that covers the rules can still miss the shape of use — every graph test had invoked exactly once** |
 | **38** | **A refusal and a truncation both reported `completed` on the mandated backend; the shipped test helper could not tell a blocked tool from an executed one** | **Every time this package is extended, the new code fails on an input the old code handled — never on the feature being added** |
+| **39** | **Every value type in the package was invisible to type checkers, so users got no checking on `Money`, `Usage`, `Result` — and `agent.name` was reported as not existing** | **A tool nobody has run is a claim, not a check — and its autofix is a change that needs testing like any other** |
 
 **Every one of these passed a prior review.** The five techniques that found them — multiply
 the numbers out, execute the contract, traverse types rather than tasks, count coverage per

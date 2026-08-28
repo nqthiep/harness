@@ -1,14 +1,12 @@
 """The §14.5 acceptance walkthrough, executed.  No network, no API key, no pytest."""
-import sys, unittest, asyncio, gc
+import sys, unittest, asyncio
 sys.path.insert(0, "src")
 
-from harness import (Agent, tool, StopReason, Secret, Money, Budget,
-                     UnsafeToolSetError, MissingEffectError, ToolSchemaError,
-                     NonDeterministicPromptError, ConfigError, RunFailed)
+from harness import (Agent, tool, StopReason, Secret, Budget,
+                     UnsafeToolSetError, MissingEffectError, NonDeterministicPromptError, RunFailed)
 from harness.models.fake import FakeModel
 from harness.models.pricing import price, MAX_OUTPUT
 from harness.budget.ledger import Ledger
-from harness.tools.registry import ToolSet
 
 
 @tool(effect="read")

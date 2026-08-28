@@ -8,9 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
-import uuid
-from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from .errors import BudgetExceeded, ToolContractError
@@ -19,10 +16,10 @@ from .context.linter import PrefixWatcher
 from .context.window import manage as manage_context
 from .models.pricing import MAX_CONTEXT
 from .observe.events import EventBus, EventKind
-from .dispatch import Dispatcher, RunContext
+#: `RunContext` is re-exported here on purpose — `harness/__init__.py` imports it
+#: from this module, so it is not dead however it looks to a linter (Round 39).
+from .dispatch import Dispatcher, RunContext as RunContext
 from .result import Money, Result, StopReason, Usage
-from .secrets import redact
-from .tools import EFFECT_PROFILES, Effect, ToolSpec
 
 
 
@@ -161,7 +158,7 @@ class RunEngine:
                 f"text that is not {want.__name__}:\n\n    {text[:120]!r}\n\n"
                 f"  ({exc})"
             ) from None
-        if not dataclasses.is_dataclass(want):
+        if not (isinstance(want, type) and dataclasses.is_dataclass(want)):
             return data
         fields = {f.name for f in dataclasses.fields(want)}
         missing = sorted(f.name for f in dataclasses.fields(want)

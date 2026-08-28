@@ -5,7 +5,6 @@ not exist: the tutorial's "a tool that comes with Harness" section raised Module
 """
 from __future__ import annotations
 
-import json
 import urllib.parse
 import urllib.request
 

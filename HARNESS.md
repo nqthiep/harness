@@ -8,7 +8,7 @@
 > diễn giải của hội đồng đều được đánh dấu rõ. Cột **Ở đâu** trỏ tới nơi yêu cầu đó
 > được đáp ứng, để một yêu cầu không thể "được đồng ý" mà không có địa chỉ.
 
-**Nguồn:** toàn bộ hội thoại thiết kế, hội đồng chạy từ Round 0 đến Round 38.
+**Nguồn:** toàn bộ hội thoại thiết kế, hội đồng chạy từ Round 0 đến Round 39.
 **Phạm vi:** thư viện Python `harness`, nhánh `claude/ai-agent-harness-design-ti5vk3`.
 
 ---
@@ -244,7 +244,7 @@ Không được tạo Implementation Plan một lần rồi kết thúc.
 | **Round 8** | Production Engineering — reliability, failure handling, observability, deployment, scaling, recovery, upgrade, migration |
 | **Round N** | **Recursive Review** — sau mỗi thay đổi lớn, review lại **toàn bộ**, vì một thay đổi có thể tạo regression ở phần khác. **Không giới hạn số vòng** |
 
-**Ở đâu:** [`docs/00-council.md`](docs/00-council.md) — nhật ký đầy đủ Round 0 → Round 38,
+**Ở đâu:** [`docs/00-council.md`](docs/00-council.md) — nhật ký đầy đủ Round 0 → Round 39,
 **kèm cả những lập luận đã thua**.
 
 ---
@@ -319,14 +319,14 @@ Chỉ kết thúc khi **đồng thời**:
 | Deliverable | Ở đâu |
 |---|---|
 | Final Implementation Plan | [`docs/11-implementation-plan.md`](docs/11-implementation-plan.md) |
-| **Design Decision Log** | [`docs/12-decision-logs.md`](docs/12-decision-logs.md) — ADR-001…039 |
-| **Implementation Decision Log** | [`docs/12-decision-logs.md`](docs/12-decision-logs.md) — IDL-01…50 |
-| **Risk Register** | [`docs/13-risk-register.md`](docs/13-risk-register.md) — R-01…R-22 |
+| **Design Decision Log** | [`docs/12-decision-logs.md`](docs/12-decision-logs.md) — ADR-001…040 |
+| **Implementation Decision Log** | [`docs/12-decision-logs.md`](docs/12-decision-logs.md) — IDL-01…52 |
+| **Risk Register** | [`docs/13-risk-register.md`](docs/13-risk-register.md) — R-01…R-23 |
 | **Open Issues** (chỉ giữ thứ thực sự không blocking) | [`docs/13-risk-register.md §3`](docs/13-risk-register.md) — OI-1…OI-11 |
 | **Definition of Done** | [`docs/11-implementation-plan.md`](docs/11-implementation-plan.md) — mỗi task |
 | **Implementation Sequence** | [`docs/11-implementation-plan.md`](docs/11-implementation-plan.md) — M0→M5 |
 | **Dependency Graph** | [`docs/11-implementation-plan.md`](docs/11-implementation-plan.md) |
-| **Validation Plan** | [`docs/14-validation-plan.md`](docs/14-validation-plan.md) — AC-01…61 |
+| **Validation Plan** | [`docs/14-validation-plan.md`](docs/14-validation-plan.md) — AC-01…65 |
 
 ---
 
@@ -414,7 +414,7 @@ Chốt qua hỏi–đáp trực tiếp ở vòng 0:
 | Poka-Yoke | ✅ | 83 failure mode, xếp hạng theo thang phòng ngừa |
 | Extreme DX / 10 tuổi | ⚠️ **Một phần** | Đo được: tài liệu lớp 4.2, thông báo lỗi xấu nhất lớp 4.9. **Chưa đo với trẻ em thật** — xem SC-1b |
 | Zero-to-Agent | ✅ | Thang progressive disclosure + quickstart 5 bậc |
-| Rounds 0–8 + Round N đệ quy | ✅ | **Round 0 → Round 38**, nhật ký đầy đủ kèm lập luận đã thua |
+| Rounds 0–8 + Round N đệ quy | ✅ | **Round 0 → Round 39**, nhật ký đầy đủ kèm lập luận đã thua |
 | Readiness Gate 16 chiều | ✅ | [`docs/00-council.md §3`](docs/00-council.md) |
 | Final Implementation Simulation | ✅ | [`docs/14-validation-plan.md §5`](docs/14-validation-plan.md) |
 | 9 deliverable mục XIII | ✅ | Bảng ở mục XIII |
@@ -438,6 +438,17 @@ từng đặt stop reason của provider** — tất cả đều kết thúc `en
 > Mỗi lần package này được mở rộng, code mới hỏng ở một **input mà code cũ vẫn xử lý được** —
 > không bao giờ hỏng ở chính tính năng đang thêm.
 
+### Vòng 39 — chạy mypy/ruff, mục còn mở từ vòng 30
+
+| # | Phát hiện | Trạng thái |
+|---|---|---|
+| H39.1 | **`@value` vô hình với type checker** → `Usage(input_tokns=1)` lọt, `Usage(1,2,3,4,5)` lọt, và `agent.name` — thuộc tính công khai theo §03 — bị báo **không tồn tại** với mọi người dùng chạy mypy. §II câu hỏi 5 bị đảo ngược trên toàn bộ tầng dữ liệu | ✅ Sửa bằng PEP 681 (ADR-040); 112 → 0 |
+| H39.2 | `returns=` nhận **instance** thay vì class → `AttributeError` thô, **sau khi đã trả tiền cho một model call** | ✅ Từ chối lúc dựng, nói rõ phải viết gì |
+| H39.3 | Một cảnh báo lint mà cách sửa hiển nhiên **làm hỏng một test bảo mật** (biến giữ `Secret` sống trong weak registry ADR-024) | ✅ Ghi rõ lý do + `noqa` |
+| H39.4 | **`ruff --fix` làm hỏng package** — xoá một re-export, `import harness` chết | ✅ Bắt được vì chạy test ngay sau đó (IDL-52) |
+
+**Cố tình KHÔNG làm:** 62/162 lỗi ruff là style một dòng (`def spent(self) -> Money: return self._spent`) — dùng nhất quán, viết lại 60 dòng đang chạy tốt là churn có rủi ro và không ai đọc dễ hơn. Ruff được cấu hình theo style thật của dự án. `mypy --strict` cũng từ chối. **§III "not over-engineer" áp cho cả việc dọn dẹp, không chỉ cho tính năng.**
+
 ### Còn mở — nói thẳng, không giấu
 
 | # | Vấn đề | Vì sao chưa đóng được |
@@ -445,7 +456,7 @@ từng đặt stop reason của provider** — tất cả đều kết thúc `en
 | **SC-1b** | Chưa đo với **trẻ em thật 10–12 tuổi** | Cần người thật. [`docs/16-sc1b-field-kit.md`](docs/16-sc1b-field-kit.md) là bộ công cụ chạy được, nhưng hội đồng **không coi yêu cầu mục IV là đã đạt** cho tới khi đo xong |
 | **OI-10** | Binding OpenViking **chưa từng chạy với server thật** | Server cần embedding model và wizard đòi TTY. Test chạy qua **code thật của SDK** trên stub transport; nội dung response thật vẫn chưa được kiểm chứng |
 | **OI-11** | `AnthropicProvider` **chưa chạy với API thật** | Không có `ANTHROPIC_API_KEY`. Payload giờ được assert offline theo tài liệu hiện hành của Anthropic (AC-56/57) — chính việc đó bắt được 3 tuyên bố sai ở vòng 38. **Cái nó không bắt được:** một tham số mà tài liệu mô tả khác với hành vi thật của endpoint. Một lần gọi thật là đóng |
-| — | mypy / ruff chưa từng chạy | Chưa cài trong môi trường này |
+| ~~—~~ | ~~mypy / ruff chưa từng chạy~~ — **ĐÃ ĐÓNG (vòng 39)** | Chạy rồi: 162 lỗi ruff, 112 lỗi mypy. Quan trọng nhất không phải con số: **không người dùng nào của thư viện này có type checking trên `Money`, `Usage`, `Result`**, và `agent.name` bị báo là không tồn tại. Đã sửa; cả hai giờ là cổng CI (AC-62/63/64) |
 
 ---
 
@@ -454,7 +465,7 @@ từng đặt stop reason của provider** — tất cả đều kết thúc `en
 Ghi lại vì chúng là kết quả trực tiếp của việc mục VI bắt hội đồng phải tự phản biện.
 
 **23 vòng đọc–review** tìm ra 20 lỗi và **0 lỗi bảo mật**.
-**15 vòng xây thật** tìm ra hơn 34 lỗi, **4 lỗi bảo mật**, và **12+ tính năng đã đặc tả
+**16 vòng xây thật** tìm ra hơn 38 lỗi, **4 lỗi bảo mật**, và **12+ tính năng đã đặc tả
 nhưng chưa bao giờ được viết** — kể cả model provider.
 
 > **Đọc không tìm ra được thứ chỉ có chạy mới tìm ra.**

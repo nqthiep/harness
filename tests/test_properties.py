@@ -2,7 +2,7 @@
 import sys, random, unittest
 sys.path.insert(0, "src")
 
-from harness import Agent, tool, Budget, StopReason
+from harness import Agent, tool, Budget
 from harness.budget.ledger import Ledger, MIN_USEFUL_OUTPUT_TOKENS
 from harness.models.base import ModelResponse
 from harness.models.fake import FakeModel

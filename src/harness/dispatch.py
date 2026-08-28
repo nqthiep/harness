@@ -43,13 +43,6 @@ def truncate(text: str, max_tokens: int) -> tuple[str, bool]:
     return cut + f"\n[truncated: ~{max_tokens} of ~{len(text)//4} tokens shown]", True
 
 
-def err(call_id: str, message: str) -> dict[str, Any]:
-    # Redacted here, not only at the transcript: a tool error goes to the MODEL, a wider
-    # audience than a log file (Round 25, RT-13).
-    return {"type": "tool_result", "tool_use_id": call_id,
-            "content": redact(message), "is_error": True}
-
-
 class Dispatcher:
     def __init__(self, engine) -> None:
         self._e = engine            # the RunEngine, for bus/ledger/policy/taint/agent
@@ -77,7 +70,8 @@ class Dispatcher:
 
         # I-3: every tool_use gets exactly one tool_result, in the model's call order.
         out: list[dict[str, Any]] = [None] * len(planned)      # type: ignore[list-item]
-        parallel, serial = [], []
+        parallel: list[tuple[int, Mapping[str, Any], ToolSpec]] = []
+        serial: list[tuple[int, Mapping[str, Any], ToolSpec]] = []
         seen: dict[str, int] = {}          # (name, canonical args) -> index that runs it
         dupes: list[tuple[int, int]] = []  # (duplicate index, original index)
         for i, (b, spec, d) in enumerate(planned):

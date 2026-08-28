@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from ._value import value
 
-from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
 from typing import Any, ClassVar
@@ -17,7 +16,7 @@ class Money:
 
     def __init__(self, value: "Decimal | int | str | Money") -> None:
         if isinstance(value, Money):
-            self._d = value._d
+            self._d = value._d  # type: ignore[has-type]
         elif isinstance(value, float):                      # IDL-01
             raise TypeError("Money must not be built from a float; use Decimal or str")
         else:

@@ -32,11 +32,12 @@ def no_network() -> Iterator[None]:
                 "  -> docs/09-testing.md#3-harnesstesting"
             )
 
-    socket.socket = Blocked                           # type: ignore[assignment]
+    # IDL-08: the autouse fixture that makes an accidental live call impossible.
+    socket.socket = Blocked                           # type: ignore[misc]
     try:
         yield
     finally:
-        socket.socket = real                          # type: ignore[assignment]
+        socket.socket = real                          # type: ignore[misc]
 
 
 def approve_all():

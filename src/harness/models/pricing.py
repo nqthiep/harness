@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from .._value import value
 
-from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
 
