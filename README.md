@@ -37,6 +37,13 @@
 > ```
 >
 > Start here to build an agent: [`examples/langgraph_quickstart.py`](examples/langgraph_quickstart.py).
+> Start here to judge it: **[`examples/proof.py`](examples/proof.py)** — walks every
+> requirement in [`HARNESS.md`](HARNESS.md) and asserts each one in running code, including
+> the two it cannot prove.
+>
+> ```
+> python3 examples/proof.py
+> ```
 
 **Harness** is a Python library for building AI agents that are *cheap to run, hard to
 misuse, and easy to start with*.

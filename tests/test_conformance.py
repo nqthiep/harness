@@ -237,5 +237,18 @@ class ConfigTimeRefusals(unittest.TestCase):
         self.assertIn("returns=KQ", str(cm.exception))
 
 
+class TheProofRuns(unittest.TestCase):
+    """`examples/proof.py` walks HARNESS.md and asserts each requirement. A proof nobody
+    runs is a claim, so it runs here too — and Round 40 verified it *fails* when the
+    library breaks (disabling the taint rule breaks it at the taint assertion)."""
+
+    def test_the_proof_passes(self):
+        import subprocess
+        r = subprocess.run([sys.executable, "examples/proof.py"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout[-3000:] + r.stderr[-2000:])
+        self.assertIn("Chứng minh được bằng code chạy thật", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

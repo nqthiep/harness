@@ -84,7 +84,8 @@ that would block was resolved during the rounds rather than parked here — stan
 | OI-04 | Should `effort` default to `low` for subagents? | Plausible saving, unmeasured. Measure with the T-4.4 cost fixture, then decide with data. |
 | OI-05 | Windows support in CI | The library is pure Python and should work; the matrix costs CI minutes. Add if an issue is filed. |
 | OI-06 | Should `Budget` support a per-tool cost axis (e.g. paid APIs)? | Real need, but no user yet. `Policy` can already enforce it out-of-tree today. |
-| OI-07 | A second `ModelProvider` implementation before 1.0 | The seam is proven by `FakeModel` plus the real adapter. A second vendor is a validation nicety, not a design risk, and would double the maintenance surface at 1.0. |
+| OI-08 | *(number unused — a gap, recorded rather than silently renumbered, because renumbering breaks every reference)* | — |
+| OI-07 | A second `ModelProvider` implementation before 1.0 | **Largely answered (Round 40).** `examples/proof.py` implements one outside the package — no inheritance, protocol only — and runs an agent on it end to end, alongside `AnthropicProvider` and `FakeModel`. What remains is a *live* third-party provider, which is OI-11's problem, not the seam's. |
 
 ## 4. What would make the council reconvene
 
