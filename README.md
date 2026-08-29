@@ -37,6 +37,12 @@
 > ```
 >
 > Start here to build an agent: [`examples/langgraph_quickstart.py`](examples/langgraph_quickstart.py).
+> Measured against an independent study of 12 frameworks and 9 harnesses
+> ([`docs/17`](docs/17-research-alignment.md)): **67.8/100** on that study's own weighted
+> matrix — strong on Safety, Cost, Testability and DX; weak on Integration, Performance,
+> Observability and Reliability. The plan that closes the gap is M6–M10 there, and
+> `python3 tests/test_roadmap.py` prints how far it has got (1/11 today).
+>
 > Start here for a production-shaped agent: **[`examples/full_agent.py`](examples/full_agent.py)**
 > — one set of tools and policies exercising every capability, built on both backends,
 > printing which one delivers what.

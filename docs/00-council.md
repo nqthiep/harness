@@ -2071,6 +2071,68 @@ completeness it does not have. The parity suite is what keeps the shared rows ho
 
 ---
 
+### Round 42 — Đối chiếu với nghiên cứu hợp nhất về framework và harness
+
+Người dùng đưa vào một nghiên cứu độc lập: 12 framework, 9 harness, ma trận 10 tiêu chí có
+trọng số, và một phụ lục API với 5 anti-pattern. Hội đồng dùng nó như **một bài kiểm tra
+từ bên ngoài** — cái mà 41 vòng vừa qua không có, vì mọi tiêu chí trước đều do chính người
+dùng hoặc chính hội đồng đặt ra.
+
+**Tự chấm theo đúng ma trận của nghiên cứu: 67.8/100.** Để tham chiếu, nghiên cứu chấm
+LangGraph 89.4, Goose 83.5, Pi 76.8. Con số không so sánh trực tiếp được (khác người
+chấm, và họ chấm dự án đã trưởng thành) — **giá trị nằm ở hình dạng**: mạnh ở Safety 4/5,
+Cost 4/5, Testability 4/5, DX 4/5; yếu ở Integration 2/5, Performance 2/5,
+Observability 3/5, Reliability 3/5.
+
+**H42.1 — Nghiên cứu chỉ đúng một chỗ hội đồng đã lảng tránh.** [§01.5](01-requirements.md)
+xếp sandbox vào non-goal, lập luận rằng cách ly thật cần process/WASM và đó là một sản
+phẩm khác. Nghiên cứu bác lại ở mức nguyên tắc, và bác đúng: *"approval không đồng nghĩa
+sandbox"* là nhận xét của nó về Cline, và **harness mắc đúng lỗi đó**. Isolation là một
+trong tám lớp Poka-Yoke; harness có bảy, không có lớp này. Không thể đóng gói container
+vào một thư viện — nhưng ba việc thư viện làm được thì đã không làm: workspace root,
+egress **mặc định chặn** (hiện `allowed_hosts=None` nghĩa là cho tất cả), và một seam để
+cắm sandbox thật. R-24, chấm 20.
+
+**H42.2 — `CancelledError` bị nuốt.** Đo được: `t.cancel()` rồi `await t` trả về
+`Result(stop_reason="cancelled")` thay vì raise. Phần side effect thì **đúng** — tool bị
+huỷ thật, không chạy ngầm — nên đây là lỗi giao thức chứ không phải lỗ hổng: một
+`TaskGroup` hay `asyncio.wait_for` bao ngoài sẽ không thấy việc huỷ đã xảy ra. `try_run()`
+trả về `Result` là thiết kế (IDL-11), nhưng **huỷ không phải một stop reason bình thường,
+nó là tín hiệu điều khiển.**
+
+**H42.3 — Không có idempotency key.** Anti-pattern 3 của nghiên cứu, và OWASP xếp
+duplicate-action thành rủi ro riêng. [§05.3](05-data-and-state.md) từ chối *tự* chạy lại
+`write`/`danger` khi resume, và hội đồng đã coi thế là đủ — không đủ: một client timeout
+rồi gọi lại vẫn gửi email lần hai, vì không có gì nhận ra đó là cùng một lời gọi. R-25.
+
+**H42.4 — Envelope thiếu trường truy vết.** `Event` có `seq, ts, run_id, kind, step, data`;
+nghiên cứu đòi thêm `schema_version`, `trace_id`, `tenant_id`. Không có version thì không
+đổi được taxonomy mà không phá exporter của người khác — và taxonomy đã đổi hai lần
+(vòng 27, vòng 35).
+
+### Điều nghiên cứu xác nhận là đúng
+
+Bảy trong tám lớp Poka-Yoke đã có, và nguyên tắc trung tâm của nghiên cứu —
+*"model được quyền **đề xuất** tool call, không được tự cấp quyền thực thi"* — chính là
+điều `unguarded_paths()` chứng minh bằng reachability (ADR-032). Ba trong năm anti-pattern
+API đã tránh được từ trước: `Result` không phải một chuỗi, state không phải final text,
+và ranh giới an toàn nằm ở policy engine chứ không ở transport.
+
+### Kế hoạch: [§17](17-research-alignment.md)
+
+M6 Reliability → M7 Isolation → M8 Observability → M9 Integration → M10 Evaluation, xếp
+theo `trọng số × khoảng trống`. M6 trước vì idempotency là điều kiện tiên quyết cho retry,
+cho service API và cho contract "retry không nhân đôi side effect". M7 trước M9 vì mở MCP
+ra khi chưa có isolation là mở rộng bề mặt tấn công trước khi dựng tường.
+
+**Và một ràng buộc tự áp lên kế hoạch.** Nghiên cứu cảnh báo *surface rộng* (LlamaIndex)
+và *operationally nặng* (OpenHands). Kế hoạch này thêm MCP, HTTP server, sandbox và eval —
+đúng những thứ làm thư viện phình. Core giữ nguyên 3 dependency và import dưới 100 ms;
+mọi thứ M7–M10 là `extra`; và phép thử plugin boundary áp cho từng seam mới. Mục nào không
+qua được phép thử đó thì không vào.
+
+---
+
 ## 2.4 What the five build rounds cost, and what they found
 
 | Round | Built | Defects | Security | Specified-but-unbuilt | Test-harness bugs |
@@ -2191,6 +2253,7 @@ with a 16/16 gate. They found:
 | **39** | **Every value type in the package was invisible to type checkers, so users got no checking on `Money`, `Usage`, `Result` — and `agent.name` was reported as not existing** | **A tool nobody has run is a claim, not a check — and its autofix is a change that needs testing like any other** |
 | **40** | **`examples/proof.py` — every requirement asserted in running code, validated by breaking the library and watching it fail** | **A proof that cannot fail is not a proof** |
 | **41** | **`as_tool()` was built, documented, and broken on the mandated backend — its error reached the model as a tool result; and the example's own state machine let the refund through** | **An example that demonstrates a control must be read as carefully as the control** |
+| **42** | **Một nghiên cứu bên ngoài chấm 67.8/100 và chỉ ra lớp Poka-Yoke duy nhất còn trống: Isolation — chỗ hội đồng đã tự cho phép mình lảng tránh** | **Tiêu chí do chính mình đặt ra không phát hiện được thứ mình đã quyết định không nhìn** |
 
 **Every one of these passed a prior review.** The five techniques that found them — multiply
 the numbers out, execute the contract, traverse types rather than tasks, count coverage per
