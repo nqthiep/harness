@@ -18,7 +18,7 @@ from ..errors import BudgetExceeded
 from ..observe.events import EventKind
 from ..policy.base import Decision, ToolCall, Verdict
 from ..policy.taint import TaintTracker
-from ..result import StopReason, Usage
+from ..result import Money, StopReason, Usage
 from ..run import CONTINUE, _MAP
 from ..secrets import redact, redaction_scope
 from ..context.window import CLEARED, EDIT_AT, KEEP_RECENT_STEPS
@@ -195,6 +195,7 @@ class Runtime:
 
     def _run_tools(self, state) -> dict:
         tainter = self._tainter(state)
+        led = self._ledger(state)
         msgs, tainted = [], False
         for p in state.get("_pending", []):
             call = p["call"]
@@ -205,7 +206,12 @@ class Runtime:
                 continue
             self._emit(EventKind.TOOL_STARTED, tool=spec.name, call_id=call["id"])
             try:
-                value = asyncio.run(_invoke(spec, call.get("args", {})))
+                args = {k: v for k, v in call.get("args", {}).items()
+                        if not k.startswith("_")}
+                if spec.subagent is not None:
+                    value = _run_subagent(spec, args, led)
+                else:
+                    value = asyncio.run(spec.fn(**args))
                 payload = value if isinstance(value, str) else json.dumps(
                     value, sort_keys=True, ensure_ascii=False, default=str)
                 limit = spec.max_result_tokens * 4
@@ -225,7 +231,10 @@ class Runtime:
         self._emit(EventKind.STEP_FINISHED, step=state.get("step", 0),
                    stop_reason="tool_use", tool_calls=[p["tool"] for p in state.get("_pending", [])])
         return {"messages": msgs + self._manage(state["messages"] + msgs, state),
-                "_pending": [], "tainted": state.get("tainted", False) or tainted}
+                "_pending": [], "tainted": state.get("tainted", False) or tainted,
+                # A subagent settles into THIS ledger, so its spend has to reach state or
+                # the parent's ceiling leaks exactly as it did in Round 28.
+                "spent_usd": str(led.spent.decimal), "ledger": led.snapshot()}
 
     def finish(self, state) -> dict:
         """The single exit.  Every path out of the graph passes here, so `run.finished`
@@ -319,8 +328,7 @@ def _RESERVED(max_tokens: int):
     on.  Here every node builds its own ledger, so the open set is always empty and the
     id is free — the accounting that matters is the snapshot in state."""
     from ..budget.ledger import Reservation
-    from ..result import Money as _M
-    return Reservation("state", _M.ZERO, 0, max_tokens, 0.0)
+    return Reservation("state", Money.ZERO, 0, max_tokens, 0.0)
 
 
 class _Ctx:
@@ -329,8 +337,33 @@ class _Ctx:
         self.tainted, self.safety = tainted, safety
 
 
-async def _invoke(spec, args):
-    return await spec.fn(**{k: v for k, v in args.items() if not k.startswith("_")})
+def _run_subagent(spec, args: dict, led: Ledger) -> str:
+    """§06.4 / ADR-030, ported to the graph backend (Round 41).
+
+    A subagent tool is not `spec.fn` — calling it directly raises, which is what the
+    graph did: the AssertionError went to the model **as a tool result**, so the agent
+    read "subagent tools are dispatched, not called directly" and carried on. Built,
+    documented, and broken on the mandated backend.
+
+    The budget rule is the part that matters: the child is capped by the parent's
+    remaining headroom, and the headroom is **held**, not read — parallel children each
+    reading `remaining_usd()` all claimed the whole of it (Round 28).
+    """
+    from dataclasses import replace as _replace
+
+    child = spec.subagent
+    remaining = led.remaining_usd()
+    want = Money(child.budget.usd) if child.budget.usd is not None else None
+    run_child, held = child, None
+    if remaining is not None and want is not None:
+        held = led.hold(want)
+        run_child = child.with_(budget=_replace(child.budget, usd=held.decimal))
+    r = asyncio.run(run_child.atry_run(args.get("task", "")))
+    if held is not None:
+        led.release(held, r.cost)
+    else:
+        led.charge(r.cost)
+    return r.text if r.ok else f"{child.name} stopped: {r.stop_reason.value}. {r.text}"
 
 
 def _usage_of(msg) -> Usage:

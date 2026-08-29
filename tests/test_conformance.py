@@ -242,6 +242,16 @@ class TheProofRuns(unittest.TestCase):
     runs is a claim, so it runs here too — and Round 40 verified it *fails* when the
     library breaks (disabling the taint rule breaks it at the taint assertion)."""
 
+    def test_the_full_agent_runs(self):
+        """`examples/full_agent.py` is the one agent that uses every capability. It runs
+        here because an example nobody runs rots — and this one already shipped a broken
+        state machine once (Round 41)."""
+        import subprocess
+        r = subprocess.run([sys.executable, "examples/full_agent.py"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout[-2500:] + r.stderr[-1500:])
+        self.assertIn("KHẢ NĂNG NÀO Ở BACKEND NÀO", r.stdout)
+
     def test_the_proof_passes(self):
         import subprocess
         r = subprocess.run([sys.executable, "examples/proof.py"],

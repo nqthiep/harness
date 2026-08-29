@@ -15,7 +15,7 @@
 > in under a second**:
 >
 > ```
-> python3 tests/test_conformance.py    # 19 — the code against HARNESS.md's claims
+> python3 tests/test_conformance.py    # 21 — the code against HARNESS.md's claims
 > ruff check src tests examples        # clean
 > mypy                                 # clean
 > python3 tests/test_walkthrough.py    # 20 — the §14.5 acceptance walkthrough
@@ -31,12 +31,16 @@
 > These need `pip install 'harness[graph]'` / `'harness[viking]'`:
 >
 > ```
-> python3 tests/test_lg.py             # 25 — graph topology, durability, multi-turn
+> python3 tests/test_lg.py             # 28 — graph topology, durability, subagents
 > python3 tests/test_parity.py         # 18 — every rule, on BOTH backends
 > python3 tests/test_viking.py         # 22 — the OpenViking store
 > ```
 >
 > Start here to build an agent: [`examples/langgraph_quickstart.py`](examples/langgraph_quickstart.py).
+> Start here for a production-shaped agent: **[`examples/full_agent.py`](examples/full_agent.py)**
+> — one set of tools and policies exercising every capability, built on both backends,
+> printing which one delivers what.
+>
 > Start here to judge it: **[`examples/proof.py`](examples/proof.py)** — walks every
 > requirement in [`HARNESS.md`](HARNESS.md) and asserts each one in running code, including
 > the two it cannot prove.

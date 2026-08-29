@@ -292,6 +292,48 @@ class MultiTurn(unittest.TestCase):
         self.assertNotIn(("wipe", 1), RAN, "a tainted run regained its danger tools")
 
 
+class Subagents(unittest.TestCase):
+    """ADR-030 on the graph backend. Round 41 found `as_tool()` built fine here and then
+    failed at run time — and the AssertionError went to the model **as a tool result**,
+    so the agent read it and carried on."""
+
+    def _child(self, text="xong", budget="$0.05"):
+        from harness import Agent
+        from harness.models.fake import FakeModel
+        return Agent(name="Con", job="Việc con.", model="claude-opus-5",
+                     provider=FakeModel([FakeModel.text(text)]), budget=budget)
+
+    def test_a_subagent_tool_actually_runs(self):
+        sub = self._child("Được hoàn theo điều 4.2.").as_tool()
+        graph, _ = mk([FakeChat.call(sub.name, {"task": "hỏi"}), FakeChat.text("ok")],
+                      tools=[sub])
+        out = run(graph)
+        got = [m.content for m in out["messages"] if isinstance(m, ToolMessage)]
+        self.assertEqual(got, ["Được hoàn theo điều 4.2."])
+
+    def test_a_child_cannot_spend_past_the_parent_ceiling(self):
+        """The child is capped by the parent's REMAINING budget, and the headroom is
+        held rather than read — parallel children each reading it all claimed all of it
+        (Round 28)."""
+        from harness.models.fake import FakeModel
+        greedy = self._child("x" * 400, budget="$5")
+        greedy = greedy.with_(provider=FakeModel([FakeModel.text("x" * 400)] * 30))
+        sub = greedy.as_tool()
+        graph, _ = mk([FakeChat.call(sub.name, {"task": "t"}, f"c{i}") for i in range(8)]
+                      + [FakeChat.text("ok")], tools=[sub], budget="$0.10, 12 steps")
+        out = run(graph)
+        self.assertLessEqual(Decimal(out["spent_usd"]), Decimal("0.11"),
+                             "a subagent spent past the parent ceiling")
+
+    def test_the_childs_spend_reaches_the_parents_state(self):
+        """Round 28's defect was a $0.10 parent spending $30 while reporting $0.0000."""
+        sub = self._child().as_tool()
+        graph, _ = mk([FakeChat.call(sub.name, {"task": "t"}), FakeChat.text("ok")],
+                      tools=[sub])
+        out = run(graph)
+        self.assertGreater(Decimal(out["spent_usd"]), Decimal("0"))
+
+
 class Checkpointable(unittest.TestCase):
     """Everything in graph state is written by the checkpointer.  The first version put
     the ToolSpec in `_pending`, and a ToolSpec holds a callable — so durability, the main

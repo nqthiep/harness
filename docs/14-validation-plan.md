@@ -177,6 +177,8 @@ against slow architectural drift, which no ordinary test catches.
 | AC-63 | **`mypy` is clean**, with every remaining suppression carrying a one-line reason at the site. | ADR-040 |
 | AC-64 | **A user's own file gets real type errors on the value types** — wrong arity and misspelt fields caught — **and none on the documented public attributes** of `Agent`. | ADR-040 |
 | AC-65 | **`returns=` refuses an instance at construction**, naming the fix. | H39.2 |
+| AC-66 | **A subagent tool runs on the graph backend**, its spend settles into the parent's ledger, and the parent's ceiling holds against greedy children. | ADR-030, H41.1 |
+| AC-67 | **`examples/full_agent.py` runs** — one set of tools and policies, built on both backends, printing which capability each delivers. | H41.3 |
 | AC-33 | Every conditional subsystem is either reachable from the shipped defaults or declares in the docs that it is not | P-10 |
 | AC-31 | **Every public parameter is read somewhere in the package.** *`max_parallel_tools` was accepted, stored and documented for two milestones without anything reading it (Round 26).* | NFR-09 |
 | AC-28 | Every `Secret` guarantee (unhashable, unpicklable, weakly registered) is exercised, not just declared | ADR-024 |
@@ -227,9 +229,9 @@ thread, two threads on one graph, and restart. **Every scenario in the suite had
 exactly once**, so the rules were covered and the shape of use was not.
 
 **Not yet covered, and therefore not yet protected on the graph backend:** `returns=`
-parsing, transcripts and resume, streaming deltas, subagent budget holds, parallel tool
-scheduling and the `max_parallel_tools` ceiling, per-tool timeouts, and cache-prefix
-stability (SC-4). Each is a capability the hand-written backend has and the graph backend
+parsing, transcripts and resume, streaming deltas, parallel tool scheduling and the
+`max_parallel_tools` ceiling, per-tool timeouts, and cache-prefix stability (SC-4).
+**Subagent budget holds left this list in Round 41** — ported and covered by three tests. Each is a capability the hand-written backend has and the graph backend
 either lacks or has not been measured on — listed here rather than discovered later.
 
 ## 5. Acceptance walkthrough (Day 1 → first deployment)

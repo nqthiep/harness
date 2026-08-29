@@ -2023,6 +2023,54 @@ on the documented public attributes.
 
 ---
 
+### Round 41 — One agent using every capability, and the two things that stopped it
+
+The request was a single agent exercising the whole library. Writing it found that the
+library could not, quite, and that the example itself was wrong.
+
+**H41.1 — `as_tool()` was built, documented, and broken on the mandated backend.** A
+subagent `ToolSpec` is not called through `spec.fn`; the loop's dispatcher handles it so
+the child's spend settles into the parent's ledger (ADR-030). The graph called `spec.fn`
+directly, which raises — and **the `AssertionError` went to the model as a tool result**,
+so the agent read *"subagent tools are dispatched, not called directly"* and carried on.
+Built fine, failed at run time, degraded silently: the H38.2 shape again.
+
+Ported, with the part that matters intact — the child is capped by the parent's
+**remaining** headroom, and the headroom is *held* rather than read, because parallel
+children each reading `remaining_usd()` all claimed the whole of it (Round 28). Measured:
+a `$0.10` parent with eight greedy children settles at `$0.0158`.
+
+**H41.2 — And the port needed an import that Round 39 had deleted.** `Money` was removed
+from `lg/runtime.py` by `ruff --fix` as unused, correctly, at the time. This is the second
+time an autofix removal has surfaced later (H39.4 was the first, a re-export). Not an
+argument against the tool — an argument for IDL-52, which is why both were caught.
+
+**H41.3 — The example's own state machine let the refund through.** The first draft used
+`Enum` with Vietnamese labels and compared `self.buoc.value >= can.value`: a *string*
+comparison, alphabetical. `"đã tra đơn" >= "đã kiểm chính sách"` is meaninglessly True, so
+`hoan_tien` was ALLOWed on the first call — before the policy check, which is precisely
+what the workflow exists to prevent. The printed decision table is what exposed it:
+
+```
+✓ tra_cuu_van_chuyen  ALLOW
+✓ hoan_tien           ALLOW          ← wrong, and shipped in the first draft
+✗ ask_chuyen_gia      DENY  ...
+```
+
+Now an `IntEnum`, where order is order. **An example that demonstrates a control has to be
+read as carefully as the control**, and the reason it was caught is that the file prints
+every verdict rather than only the happy path.
+
+### What the round says about "all capabilities"
+
+No single backend has them all, by design and by record: `returns=`, transcript, resume and
+streaming are the loop's; durable checkpointing, multi-turn and per-thread isolation are the
+graph's. §14.4.1 has listed that since Round 37. So the agent is **one set of tools and
+policies, built twice**, and the file prints the capability table rather than implying a
+completeness it does not have. The parity suite is what keeps the shared rows honest.
+
+---
+
 ## 2.4 What the five build rounds cost, and what they found
 
 | Round | Built | Defects | Security | Specified-but-unbuilt | Test-harness bugs |
@@ -2141,6 +2189,8 @@ with a 16/16 gate. They found:
 | **37** | **Multi-turn had never worked: the model was called once per thread, ever. Two customers shared one budget, and taint was lost across a restart** | **A suite that covers the rules can still miss the shape of use — every graph test had invoked exactly once** |
 | **38** | **A refusal and a truncation both reported `completed` on the mandated backend; the shipped test helper could not tell a blocked tool from an executed one** | **Every time this package is extended, the new code fails on an input the old code handled — never on the feature being added** |
 | **39** | **Every value type in the package was invisible to type checkers, so users got no checking on `Money`, `Usage`, `Result` — and `agent.name` was reported as not existing** | **A tool nobody has run is a claim, not a check — and its autofix is a change that needs testing like any other** |
+| **40** | **`examples/proof.py` — every requirement asserted in running code, validated by breaking the library and watching it fail** | **A proof that cannot fail is not a proof** |
+| **41** | **`as_tool()` was built, documented, and broken on the mandated backend — its error reached the model as a tool result; and the example's own state machine let the refund through** | **An example that demonstrates a control must be read as carefully as the control** |
 
 **Every one of these passed a prior review.** The five techniques that found them — multiply
 the numbers out, execute the contract, traverse types rather than tasks, count coverage per
