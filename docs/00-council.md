@@ -2133,6 +2133,46 @@ qua được phép thử đó thì không vào.
 
 ---
 
+### Round 43 — Câu hỏi về API, và lỗi mà chính câu hỏi đó tìm ra
+
+Câu hỏi: *"phần API interface có cần thiết kế lại không?"* Trả lời bằng cách đo theo năm
+contract nghiên cứu tách ra, chứ không bằng ý kiến.
+
+**H43.1 — Dangling tool calls bị bỏ im lặng, và hội thoại lưu lại không hợp lệ.**
+Nghiên cứu nêu một chi tiết tinh vi về PydanticAI: *"final output có thể kết thúc run
+trước khi dangling tool calls được thực thi."* Đem đúng câu đó thử harness:
+
+```
+model trả: text + tool_use{ghi}  với stop_reason "end_turn"
+vòng lặp : completed · tool đã chạy []        ← bỏ im lặng
+           tool_use ['c1'] / tool_result []   ← VI PHẠM I-3
+graph    : tool đã chạy [1] · có ToolMessage  ← đúng
+```
+
+Hai lỗi trong một. Tool bị bỏ, **và** hội thoại giữ lại một `tool_use` không có
+`tool_result` — phát lại hội thoại đó cho provider là bị từ chối thẳng. Luật đã sửa:
+**tool call chạy vì nó CÓ MẶT, không vì provider dán nhãn `"tool_use"`.**
+
+Điều đáng ghi nhất: **backend graph vốn đã đúng.** Sau bảy vòng liên tiếp graph là bên
+thua kém (H38.3, H41.1, và cả loạt trước), lần này vòng lặp mới là bên phải đuổi theo.
+Bảng parity không nói ai đúng — nó chỉ nói hai bên khác nhau, và lần này bên đúng là bên
+mới hơn.
+
+**Trả lời câu hỏi: không thiết kế lại.** Contract 1 (invocation) và 2 (tool) là phần mạnh
+nhất của gói — không thư viện nào trong nghiên cứu suy ra **năm hành vi từ một phân loại
+`effect`**, và cả hai đang được §04.8 bảo hành. Contract 3 (event stream) và 4 (session)
+thì thiếu hẳn — nhưng thiếu không phải sai, và thêm chúng **không đổi một chữ ký nào đang
+có**: `Agent.stream()` là phương thức mới, `Session` là đối tượng mới. Phá contract 1–2 để
+"hiện đại hoá" là đổi thứ đã chứng minh lấy thứ chưa.
+
+Cụ thể cần học ở đâu, ghi trong [§17.3.3](17-research-alignment.md): `run_stream_events`
+và dependency injection của PydanticAI, run-state-as-object của OpenAI Agents SDK, stream
+có version của LangGraph, session cách ly của Goose. Và một mục **cố ý không học**: bốn
+promise rời rạc của Mastra — `Result` gom một chỗ là quyết định, vì bốn thứ rời nhau dễ bị
+đọc thiếu một.
+
+---
+
 ## 2.4 What the five build rounds cost, and what they found
 
 | Round | Built | Defects | Security | Specified-but-unbuilt | Test-harness bugs |
@@ -2254,6 +2294,7 @@ with a 16/16 gate. They found:
 | **40** | **`examples/proof.py` — every requirement asserted in running code, validated by breaking the library and watching it fail** | **A proof that cannot fail is not a proof** |
 | **41** | **`as_tool()` was built, documented, and broken on the mandated backend — its error reached the model as a tool result; and the example's own state machine let the refund through** | **An example that demonstrates a control must be read as carefully as the control** |
 | **42** | **Một nghiên cứu bên ngoài chấm 67.8/100 và chỉ ra lớp Poka-Yoke duy nhất còn trống: Isolation — chỗ hội đồng đã tự cho phép mình lảng tránh** | **Tiêu chí do chính mình đặt ra không phát hiện được thứ mình đã quyết định không nhìn** |
+| **43** | **Dangling tool calls bị bỏ im lặng và hội thoại lưu lại vi phạm I-3 — tìm ra bằng cách đem một cảnh báo về thư viện KHÁC ra thử thư viện mình** | **Backend mới hơn không phải lúc nào cũng là bên sai; parity chỉ nói hai bên khác nhau** |
 
 **Every one of these passed a prior review.** The five techniques that found them — multiply
 the numbers out, execute the contract, traverse types rather than tasks, count coverage per

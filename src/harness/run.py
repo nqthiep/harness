@@ -105,7 +105,15 @@ class RunEngine:
                     continue
 
                 mapped = _MAP.get(resp.stop_reason)
-                if resp.stop_reason == "tool_use":
+                # Tool calls are run because they are PRESENT, not because the provider
+                # labelled the turn "tool_use".  Round 43: a response carrying both text
+                # and tool_use with stop_reason "end_turn" had its tool calls silently
+                # dropped — and the stored conversation kept a `tool_use` with no
+                # matching `tool_result`, which violates invariant I-3 and is rejected
+                # outright if that conversation is ever replayed to the provider.
+                # The graph backend already did it this way; this is the loop catching up.
+                has_calls = any(b.get("type") == "tool_use" for b in resp.content)
+                if resp.stop_reason == "tool_use" or has_calls:
                     results = await self._dispatch._run_tools(resp, step, run_id)
                     msgs.append({"role": "user", "content": results})   # I-4: one message
                     msgs = self._manage_context(msgs, input_tokens, step)

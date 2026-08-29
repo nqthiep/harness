@@ -126,6 +126,40 @@ class StopReasonMapping(unittest.TestCase):
         self.assertIs(run([weird]).stop_reason, StopReason.ERROR)
 
 
+class DanglingToolCalls(unittest.TestCase):
+    """The subtlety the research names about PydanticAI: a final output can end the run
+    before dangling tool calls execute. Round 43 found this harness had it too."""
+
+    def test_tool_calls_run_even_when_the_turn_says_end_turn(self):
+        """A response carrying both text and tool_use with stop_reason "end_turn" had its
+        tool calls silently dropped: the run reported completed, the tool never ran."""
+        RAN.clear()
+        both = ModelResponse(
+            ({"type": "text", "text": "Xong."},
+             {"type": "tool_use", "id": "c1", "name": "xoa", "input": {"x": 1}}),
+            "end_turn", Usage(100, 20), "fake")
+        r = run([both, FakeModel.text("thật sự xong")], approve=T.approve_all())
+        self.assertEqual(RAN, [1], "tool_use blocks were dropped")
+        self.assertEqual(r.tools_run, ("xoa",))
+
+    def test_the_conversation_keeps_invariant_i3(self):
+        """Every tool_use gets exactly one tool_result. Without it the stored conversation
+        is rejected outright when replayed to the provider."""
+        RAN.clear()
+        both = ModelResponse(
+            ({"type": "text", "text": "Xong."},
+             {"type": "tool_use", "id": "c1", "name": "xoa", "input": {"x": 1}}),
+            "end_turn", Usage(100, 20), "fake")
+        r = run([both, FakeModel.text("ok")], approve=T.approve_all())
+        uses, results = [], []
+        for m in r.messages:
+            c = m.get("content") if isinstance(m, dict) else None
+            if isinstance(c, list):
+                uses += [b["id"] for b in c if b.get("type") == "tool_use"]
+                results += [b["tool_use_id"] for b in c if b.get("type") == "tool_result"]
+        self.assertEqual(set(uses), set(results), f"dangling: {set(uses) - set(results)}")
+
+
 class TestingHelpers(unittest.TestCase):
     """HARNESS.md §I.3 + §XIII — §09 calls these 'assertions on behaviour'."""
 

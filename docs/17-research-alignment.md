@@ -145,6 +145,78 @@ import time. Không có p50/p95, không có throughput, không có concurrency t
 
 ---
 
+## 3.3 API interface: có cần thiết kế lại không?
+
+**Không.** Kiểm theo đúng năm contract mà nghiên cứu tách ra, hai contract mạnh, một
+contract có **lỗi ngữ nghĩa** (đã sửa ở vòng 43), và hai contract **thiếu hẳn** — thiếu
+không phải là sai, và bổ sung không đòi hỏi phá vỡ [§04.8](04-interfaces.md).
+
+| Contract | Trạng thái | Chi tiết |
+|---|---|---|
+| **1. Invocation** | **Mạnh** | `run` / `try_run` / `arun` / `atry_run` / `chat` / `resume` / `aresume` / `as_tool` / `with_`. Ngang PydanticAI về số dạng gọi; `run` raise và `try_run` trả về là một quyết định rõ ràng (IDL-11) mà nhiều thư viện không có |
+| **2. Tool** | **Mạnh — có thể là phần đi trước mặt bằng chung** | Không thư viện nào trong nghiên cứu suy ra **năm hành vi từ một phân loại `effect`**: song song được, retry được, làm bẩn run, verdict mặc định, mức audit. Schema chỉ kiểm hình dạng dữ liệu; `effect` kiểm *hệ quả* |
+| **3. Event / stream** | **Yếu** | Chỉ có `on_delta(str)` — một callback text. Có taxonomy 15 event kind nhưng **không có cách tiêu thụ nó như một stream**: exporter là push, không có async iterator pull |
+| **4. Session / state** | **Yếu** | Nghiên cứu: *"Session ID phải được xem là resource có lifecycle"* — ownership, TTL, concurrent writer, fork, conflict. Harness có đường dẫn transcript và `thread_id` của graph, **không có đối tượng `Session`** |
+| **5. Transport** | **Vắng, có chủ ý** | Library-first ([§01](01-requirements.md)). M9 mở HTTP/MCP như `extra` |
+
+### Lỗi ngữ nghĩa đã tìm ra nhờ đọc kỹ nghiên cứu
+
+Nghiên cứu cảnh báo một chi tiết tinh vi của PydanticAI: *"trong một số chế độ, final
+output có thể kết thúc run trước khi dangling tool calls được thực thi."* Hội đồng đem
+đúng câu đó ra thử harness của mình:
+
+```
+model trả:  text "Xong rồi nhé." + tool_use{ghi}   với stop_reason "end_turn"
+vòng lặp :  stop_reason=completed · tool đã chạy: []      ← BỎ IM LẶNG
+            tool_use trong hội thoại: ['c1']
+            tool_result:              []                   ← VI PHẠM I-3
+graph    :  tool đã chạy: [1] · có ToolMessage: True       ← ĐÚNG
+```
+
+Hai lỗi trong một. Tool bị bỏ, **và** hội thoại lưu lại mang một `tool_use` không có
+`tool_result` — nếu phát lại hội thoại đó cho provider, nó bị từ chối thẳng.
+
+**Luật đã sửa: tool call được chạy vì nó CÓ MẶT, không phải vì provider dán nhãn
+`"tool_use"`.** Backend graph vốn đã làm đúng; lần này là vòng lặp đuổi theo — lần đầu
+tiên sự thua kém đảo chiều sau bảy vòng.
+
+### Cần học ở thư viện nào, điểm gì — cụ thể
+
+| Thư viện | Điểm đáng học | Vì sao harness cần |
+|---|---|---|
+| **PydanticAI** | `run_stream_events()` và `iter()` — tiêu thụ **event** chứ không chỉ text | Đóng contract 3. Taxonomy 15 kind đã có; chỉ thiếu cửa ra kiểu pull |
+| **PydanticAI** | Dependency injection (`deps_type`) tách state khỏi agent | Hiện muốn một `Agent` phục vụ nhiều tenant phải `with_()` ra bản sao. DI cho phép **một** agent, **nhiều** ngữ cảnh — và là chỗ tự nhiên để đặt `principal`/`tenant_id` (S-03) |
+| **OpenAI Agents SDK** | **Run state + interruptions là first-class**: serialize được, ngắt được, resume được | `resume(transcript_path)` của harness yếu hơn: state là một file, không phải một đối tượng có kiểu |
+| **LangGraph** | Stream có **version** (`astream_events(version=...)`) | Taxonomy đã đổi hai lần (vòng 27, 35) mà không có version → chính là Y-03 |
+| **OpenHands** | Agent Server REST/OpenAPI + WebSocket, session API key | Hình dạng cho M9; đã có OpenAPI nghĩa là contract test được |
+| **Goose** | Nhiều session đồng thời **cách ly nhau** | Contract 4. Vòng 37 đã sửa rò rỉ ngân sách/taint giữa thread, nhưng vẫn chưa có đối tượng Session |
+| **Cline** | Approval là bản ghi có actor và audit | S-02 |
+| **Mastra** | `.generate()` / `.stream()` trả riêng `toolCalls`/`toolResults`/`steps`/`usage` | **Không học.** `Result` gom lại một chỗ là cố ý — bốn promise rời rạc dễ bị đọc thiếu một cái |
+| **CrewAI** | — | **Không học.** Nghiên cứu ghi rõ: nhiều knob trên Agent → surface lớn, semantics ẩn sau abstraction |
+
+### Quyết định
+
+**Không thiết kế lại. Sửa một, bổ sung hai, giữ nguyên phần còn lại.**
+
+Contract 1 và 2 là phần mạnh nhất của gói này và đang được §04.8 bảo hành — phá chúng để
+"hiện đại hoá" là đổi thứ đã chứng minh lấy thứ chưa. Contract 3 và 4 thêm vào được
+**mà không đổi chữ ký nào đang có**: `Agent.stream()` là một phương thức mới,
+`Session` là một đối tượng mới. Contract 5 vốn đã nằm ngoài phạm vi có chủ ý.
+
+Việc này bổ sung hai task vào kế hoạch:
+
+- **T-8.5 Event stream có thể tiêu thụ** — `async for ev in agent.stream(msg)` trên đúng
+  taxonomy 15 kind, có `schema_version`. Nghiên cứu đòi phân biệt text delta, tool-call
+  delta, tool result, approval request, retry, cancellation, final — đây là chỗ chúng
+  xuất hiện.
+- **T-8.6 `Session` là resource** — id, ownership, TTL, fork, resume, và ranh giới đồng
+  thời. Vòng 37 đã sửa phần rò rỉ; đây là phần đặt tên cho thứ đã tồn tại ngầm.
+
+Cả hai nằm ở M8 chứ không sớm hơn: chúng phụ thuộc envelope v1 (T-8.1), vì thêm một cửa
+ra stream trước khi envelope có version là bày ra một contract rồi phải phá nó.
+
+---
+
 ## 4. KẾ HOẠCH — M6 đến M10
 
 Xếp theo `trọng số × khoảng trống`. Mỗi task theo đúng chín mục [§VIII của HARNESS.md](../HARNESS.md):

@@ -184,6 +184,8 @@ against slow architectural drift, which no ordinary test catches.
 | AC-70 | **Đường dẫn thoát khỏi workspace bị từ chối** — `..`, symlink, tuyệt đối, mã hoá URL. | R-24, T-7.1 |
 | AC-71 | **Một `Sandbox` của bên thứ ba cắm được mà không sửa core**, chứng minh như §I.1 của `examples/proof.py`. | T-7.3 |
 | AC-72 | **Pass rate luôn báo cáo kèm khoảng tin cậy 95%, tokens và cost** — không bao giờ một con số trần trụi. | S-13, T-10.2 |
+| AC-73 | **Tool call chạy vì nó có mặt, không vì stop_reason** — một turn "end_turn" mang `tool_use` vẫn thực thi, trên cả hai backend. | Round 43 H43.1 |
+| AC-74 | **Hội thoại lưu lại luôn giữ I-3** — mỗi `tool_use` có đúng một `tool_result`, kể cả ở turn kết thúc. | I-3, H43.1 |
 | AC-33 | Every conditional subsystem is either reachable from the shipped defaults or declares in the docs that it is not | P-10 |
 | AC-31 | **Every public parameter is read somewhere in the package.** *`max_parallel_tools` was accepted, stored and documented for two milestones without anything reading it (Round 26).* | NFR-09 |
 | AC-28 | Every `Secret` guarantee (unhashable, unpicklable, weakly registered) is exercised, not just declared | ADR-024 |

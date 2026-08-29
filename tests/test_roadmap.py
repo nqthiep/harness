@@ -138,6 +138,17 @@ class KhoangTrong(unittest.TestCase):
         except ImportError:
             self.fail("không có harness.eval.cost_per_success")
 
+    @muc("C-03", "event stream tiêu thụ được bằng async for (T-8.5)")
+    def test_events_can_be_consumed_as_a_stream(self):
+        self.assertTrue(hasattr(Agent, "stream"),
+                        "chỉ có on_delta(str); không có cửa ra kiểu pull cho 15 event kind")
+
+    @muc("C-04", "Session là resource có lifecycle (T-8.6)")
+    def test_session_is_a_first_class_resource(self):
+        import harness
+        self.assertTrue(hasattr(harness, "Session"),
+                        "state là đường dẫn transcript + thread_id, không phải đối tượng")
+
     @muc("S-05", "trajectory contract khai báo được (T-10.1)")
     def test_a_trajectory_contract_can_be_written(self):
         try:
