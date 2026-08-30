@@ -34,10 +34,8 @@ class Effect(str, Enum):
     DANGER   = "danger"
 
 
-class IdempotencyMode(str, Enum):
-    NONE   = "none"     # mặc định — xem §4
-    KEYED  = "keyed"    # harness giữ effect log, đạt at-most-once
-    NATIVE = "native"   # upstream nhận key, đạt exactly-once
+# Không có IdempotencyMode. Effect log LUÔN bật cho `write` và `danger` — xem §4.5.
+# Thứ duy nhất còn phải khai là upstream có nhận key hay không.
 
 
 @value
@@ -53,7 +51,7 @@ class ToolSpec:
 
     # Ba trường còn lại KHÔNG phải là hành vi; chúng là dữ kiện mà runtime không suy ra được.
     accepts_tainted: bool = False        # 00-foundation §3.2 — chỉ operator/tác giả local được đặt
-    idempotency: IdempotencyMode = IdempotencyMode.NONE   # chỉ có nghĩa khi effect == WRITE
+    upstream_accepts_key: bool = False   # chỉ có nghĩa khi effect ∈ {WRITE, DANGER}
     server: ServerLabel | None = None    # None = tool local; có = tool MCP, xem §5
     timeout_s: float = 30.0
 ```
@@ -85,7 +83,7 @@ EFFECT_PROFILES: Final[Mapping[Effect, EffectProfile]] = {...}
 | effect | song song | model retry | runtime tự retry | taint output | verdict mặc định | audit | exception lạ |
 |---|---|---|---|---|---|---|---|
 | `read` | ✅ | ✅ | ✅ (chỉ lỗi transport, ≤2) | không | `ALLOW` | `debug` | `FAILED` |
-| `write` | ❌ barrier | ✅ nếu có idempotency key | ❌ | không | `ASK` | `info` | `FAILED` nếu `KEYED`/`NATIVE`, `FATAL` nếu `NONE` |
+| `write` | ❌ barrier | ✅ (key luôn có) | ❌ | không | `ASK` | `info` | `FAILED` |
 | `external` | ✅ | ✅ | ❌ | **có** | `ALLOW` | `info` | `FAILED` |
 | `danger` | ❌ barrier | ❌ | ❌ | không | `ASK` | **`audit`** | `FATAL` |
 
@@ -104,7 +102,7 @@ def tool(
     effect: Effect | str,                    # keyword-only, KHÔNG có giá trị mặc định
     name: str | None = None,
     accepts_tainted: bool = False,
-    idempotency: IdempotencyMode = IdempotencyMode.NONE,
+    upstream_accepts_key: bool = False,
     timeout_s: float = 30.0,
 ) -> Callable[[Callable[..., Awaitable[Any]]], ToolSpec]: ...
 ```
@@ -364,8 +362,9 @@ async def call_with_effect_log(
        *không biết* side effect đã xảy ra chưa, nên nó **không chạy lại**: raise
        `AmbiguousEffect` → `FATAL`, ghi audit mức `audit`, và để nguyên hàng `in_flight` cho
        con người xử lý. Fail-closed.
-2. **Execute.** Gọi `fn`. Với `IdempotencyMode.NATIVE`, `ctx.idempotency_key` được truyền vào
-   để tool gắn nó lên upstream (`Idempotency-Key` header, `client_reference_id`, …).
+2. **Execute.** Gọi `fn`. `ctx.idempotency_key` luôn có mặt cho `write`/`danger`; khi
+   `upstream_accepts_key=True`, tool có nghĩa vụ gắn nó lên upstream (`Idempotency-Key`
+   header, `client_reference_id`, …).
 3. **Commit.** `UPDATE state='committed', result=...`, **trước khi** checkpoint ghi tool
    result.
    - Nếu `fn` raise `ToolInputInvalid` (hợp đồng: chưa có side effect) → `UPDATE
@@ -380,11 +379,18 @@ chạy lại. Đảo thứ tự là mất tính chất đó.
 
 ### 4.5 Nói thật về việc đạt được gì
 
-| mode | harness đảm bảo | cần gì từ upstream |
+| effect | harness đảm bảo | cần gì từ upstream |
 |---|---|---|
-| `NONE` | không gì — `write` không được retry ([00-foundation §2]) | — |
-| `KEYED` | **at-most-once**: không lần retry nào của harness làm side effect lần hai | không gì |
-| `NATIVE` | **exactly-once**, trong phạm vi upstream tôn trọng key | upstream nhận idempotency key |
+| `read`, `external` | — (lặp lại không sinh tác dụng mới, hoặc tác dụng nằm ngoài tầm) | — |
+| `write`, `danger` mặc định | **at-most-once**: không lần retry nào của harness làm side effect lần hai | không gì |
+| `write`, `danger` + `upstream_accepts_key=True` | **exactly-once**, trong phạm vi upstream tôn trọng key | upstream nhận idempotency key |
+
+**Vì sao không có mức "tắt".** Bản nháp đầu có `IdempotencyMode.NONE` làm mặc định, và một
+reviewer chỉ ra đó chính là lớp lỗi mà bản thiết kế này đang chê ở nơi khác: khuyết điểm #5
+chỉ được sửa cho ai nhớ opt-in, y như `handle_tool_error` per-tool của LangChain và module
+security không được wire của Microsoft ([review-kiss.md](review-kiss.md) K-25). Effect log
+giờ luôn bật cho `write`/`danger`; enum ba giá trị rút còn một `bool`. Thay đổi này làm thiết
+kế **vừa đơn giản hơn vừa đúng lời hứa hơn**.
 
 Harness một mình không thể hứa exactly-once: nếu tiến trình chết đúng giữa lúc HTTP request
 đang bay, không tồn tại bản ghi cục bộ nào phân biệt được "đã tới" với "chưa tới". `KEYED`
@@ -393,6 +399,61 @@ gửi hai lần. Đó là toàn bộ lời hứa, và nó vẫn nhiều hơn cá
 ([§07](../research/07-remaining-python.md) §ĐÍNH CHÍNH).
 
 ---
+
+## 4bis. `Sandbox` và `Workspace` — cưỡng chế được cái gì, và KHÔNG cưỡng chế được cái gì
+
+`Workspace` xuất hiện trong mọi ví dụ từ Mức 2 và là tham số bắt buộc khi bộ tool có
+`write`/`external`/`danger`. Bản nháp đầu bắt buộc nó mà không đặc tả nó một dòng nào
+([review-kiss.md](review-kiss.md) K-26) — tức là hứa cách ly mà không nói cách ly cái gì.
+Đó chính là lỗi của Goose: bốn permission mode, sandbox seatbelt đã bị gỡ, và tool vẫn chạy
+với quyền của user ([§05](../research/05-ideal-harness.md) §31-8).
+
+```python
+class Sandbox(Protocol):
+    """Biên cưỡng chế cho tool local. Tool MCP không đi qua đây — xem §5."""
+    async def open(self, run_id: RunId) -> SandboxHandle: ...
+
+@value
+class Workspace(Sandbox):
+    root: Path                      # thư mục duy nhất tool được đọc/ghi
+    egress: Egress = Egress.DENY    # DENY | Allowlist(hosts)
+    max_bytes: int = 256 * 1024 * 1024
+    max_procs: int = 0              # 0 = không cho spawn tiến trình con
+```
+
+### Cưỡng chế ở đâu
+
+| bảo đảm | cưỡng chế bằng | mức |
+|---|---|---|
+| tool không đọc/ghi ngoài `root` | resolve path rồi so `is_relative_to(root)`; từ chối segment `.`/`..`; từ chối symlink/reparse point **trước khi mở** | **Prevent** |
+| tool không mở kết nối ra ngoài `egress` | HTTP client tiêm sẵn trong `ToolCtx`, bind vào allowlist; DNS phân giải trước rồi pin IP | **Prevent** cho tool dùng client được tiêm |
+| tool không spawn tiến trình | `max_procs=0` cưỡng chế ở tầng tiến trình khi có (`RLIMIT_NPROC`, job object) | **Detect** ở nơi không có |
+| tool không ghi quá `max_bytes` | kiểm tra sau mỗi `write`, huỷ run khi vượt | **Detect** |
+
+Luật path học đúng chỗ Microsoft làm đúng: từ chối segment `.`/`..` **và** kiểm tra
+symlink/junction trước khi mở, chứ không chỉ `resolve()` một lần
+([§09](../research/09-memory-context-multiagent-hitl.md) §14.2).
+
+### KHÔNG được bảo đảm — đọc kỹ mục này
+
+Đây là mục quan trọng nhất, vì Goose sai chính ở chỗ hứa nhiều hơn cưỡng chế được.
+
+1. **`Workspace` không phải biên bảo mật ở mức OS.** Nó là biên trong tiến trình. Một tool
+   Python cố ý độc hại gọi thẳng `open()` hay `socket()` thay vì client được tiêm thì
+   `Workspace` **không chặn được**. Nó chống *tool viết ẩu* và *model bị injection*, không
+   chống *tác giả tool thù địch*.
+2. **Muốn chống tác giả tool thù địch thì cần biên tiến trình** — container, gVisor, seccomp,
+   hoặc Firecracker. Harness định nghĩa `Sandbox` là `Protocol` đúng để cắm cái đó vào;
+   `Workspace` là cài đặt mặc định, không phải cài đặt duy nhất.
+3. **`egress` không chặn được exfiltration qua tool được phép.** Nếu allowlist cho phép
+   `docs.python.org`, một tool có thể nhét dữ liệu vào query string tới host đó. Chống rò rỉ
+   là việc của trục `confidentiality` trong lattice ([00 §3.2](00-foundation.md)), không phải
+   của `egress`. Hai cơ chế khác nhau, đừng nhầm cái này bảo vệ cái kia.
+4. **Tool MCP không đi qua `Workspace`** — chúng chạy ở tiến trình/host khác. Biên cho chúng
+   là `ServerIdentity` + policy của operator ở §5.
+
+Nói thẳng bốn điều này quan trọng hơn thêm cơ chế thứ năm: một bảo đảm mà người dùng *tưởng*
+mình có là nguy hiểm hơn một bảo đảm họ biết là không có.
 
 ## 5. MCP — phân loại tool của người lạ
 
@@ -536,7 +597,7 @@ class ToolCtx:
     call_id: CallId
     cancel: CancelToken
     label: "Label"                            # 00-foundation §3.2
-    idempotency_key: IdempotencyKey | None    # khác None khi idempotency != NONE
+    idempotency_key: IdempotencyKey | None    # LUÔN khác None khi effect ∈ {WRITE, DANGER}
     deadline: datetime
 ```
 
