@@ -30,8 +30,21 @@ thuật vào đúng một chỗ:
 | **openai-agents** 0.22.0 | 1.0 | **8.5** | 0.9 | 2.1 | 3.6 | 0.0 |
 | **pydantic-ai** 2.36.0 | 0.7 | 0.7 | 0.5 | **6.5** | **9.1** | **1.1** |
 | **agent-framework** 1.16.0 | 6.2 | 0.2 | 0.6 | 0.4 | 1.9 | 0.0 |
-| **google-adk** 2.8.0 | 0.5 | 1.5 | 5.3 | 1.1 | 1.4 | 0.1 |
+| **google-adk** 2.8.0 | 0.5 | 1.5 | 1.3 ᶜ | 1.1 | 1.4 | 0.1 |
 | **crewai** 1.15.18 | 1.9 | 0.2 | 0.6 | 0.6 | 1.0 | 0.0 |
+
+> **ᶜ Đính chính (2026-08-30).** Con số `permission` của google-adk ban đầu công bố là
+> **5,3** — sai. google-adk là gói Python duy nhất trong nghiên cứu đặt header giấy phép
+> Apache vào *mọi* file nguồn, và câu "See the License for the specific language governing
+> **permissions** and limitations" khớp với probe. Trong 902 lần khớp, **686 là header giấy
+> phép**; chỉ 216 là thật → **1,3** (216/171,4 kLOC đếm tay; `harvest.py` sau khi vá
+> báo **1,4** vì nó cũng trừ các dòng header khỏi mẫu số kLOC — hai cách đều đúng,
+> con số tái lập được bằng lệnh là 1,4). Đã kiểm lại 7 gói Python còn lại:
+> tỷ lệ nhiễu của chúng là **0%**, nên không có số nào khác bị ảnh hưởng. Lỗi này được phát
+> hiện khi đo Java, nơi *mọi* project Apache đều mắc phải (spring-ai: 11,8 → 0,1).
+> `harvest.py` đã được vá để lọc header trước khi đếm; chạy lại trên openai-agents
+> cho đúng 0,9 như đã công bố, nên không có số nào khác đổi. Xem
+> [§10](10-governance-health-languages.md).
 
 LangGraph hơn phần còn lại **một bậc độ lớn** về checkpoint — durability không phải
 tính năng của nó, đó là kiến trúc của nó. smolagents có mật độ permission cao nhất

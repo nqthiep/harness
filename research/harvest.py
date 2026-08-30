@@ -17,6 +17,14 @@ GIỚI HẠN, nói trước vì nó quyết định cách đọc bảng:
   4. Mọi con số nổi bật phải được XÁC MINH bằng cách đọc code thật trước khi kết
      luận. Trong nghiên cứu này, chính bước đó đã lật ngược ý nghĩa của
      `idempoten*`: grep thì có, đọc vào thì hầu hết là no-op nội bộ hoặc HTTP header.
+  5. HEADER GIẤY PHÉP KHÔNG PHẢI LÀ CODE. Câu Apache-2.0 "See the License for the
+     specific language governing PERMISSIONS and limitations" khớp probe
+     `permission`. Java/Kotlin/C#/Go đặt header này vào MỌI file, nên probe
+     `permission` của một project Apache là gần như toàn nhiễu: spring-ai đo được
+     11,8/kLOC, đọc vào chỉ còn 0,03 — sai 390 lần. Trong Python chỉ google-adk
+     theo quy ước này, và số `permission` của nó đã từng bị công bố sai
+     (5,3 → 1,3; xem đính chính trong 00-executive-summary.md).
+     `_LICENSE_NOISE` dưới đây loại các dòng đó trước khi đếm.
 """
 from __future__ import annotations
 
@@ -40,13 +48,34 @@ PROBES: dict[str, str] = {
 }
 
 
+#: Dòng header giấy phép — loại trước khi đếm. Xem giới hạn (5) ở trên.
+_LICENSE_NOISE = re.compile(
+    r"governing permissions|under the License|Licensed under|"
+    r"WITHOUT WARRANTIES|Apache License|distributed under",
+    re.I,
+)
+
+#: Đuôi file được đọc, theo ngôn ngữ.
+SUFFIXES = ("*.py", "*.ts", "*.java", "*.kt", "*.cs", "*.go")
+
+
+def strip_license(text: str) -> str:
+    """Bỏ các dòng thuộc header giấy phép.
+
+    Lọc theo DÒNG chứ không theo file: một file vẫn có thể vừa có header vừa có
+    code thật, và ta chỉ muốn mất phần header.
+    """
+    return "\n".join(ln for ln in text.splitlines() if not _LICENSE_NOISE.search(ln))
+
+
 def do(root: pathlib.Path) -> dict[str, tuple[int, dict[str, float]]]:
     out = {}
     for pkg in sorted(p for p in root.iterdir() if p.is_dir()):
-        text = "\n".join(f.read_text(errors="ignore")
-                         for f in pkg.rglob("*.py"))
-        text += "\n".join(f.read_text(errors="ignore")
-                          for f in pkg.rglob("*.ts") if f.stat().st_size < 2_000_000)
+        parts = []
+        for suffix in SUFFIXES:
+            parts += [f.read_text(errors="ignore") for f in pkg.rglob(suffix)
+                      if f.stat().st_size < 2_000_000]
+        text = strip_license("\n".join(parts))
         kloc = max(1, text.count("\n") // 1000)
         out[pkg.name] = (kloc, {k: len(re.findall(v, text, re.I)) / kloc
                                 for k, v in PROBES.items()})

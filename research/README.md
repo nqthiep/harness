@@ -1,6 +1,6 @@
 # Nghiên cứu Agent Framework & Agent Harness
 
-**Data collected on: 2026-08-29**
+**Data collected on: 2026-08-29** (bổ sung 2026-08-30: §09, §10, đính chính §00)
 
 Nghiên cứu độc lập theo prompt `agent_framework_harness_research_prompt.md`. Không liên
 quan tới bất kỳ mã nguồn nào khác trong repository này.
@@ -15,6 +15,8 @@ quan tới bất kỳ mã nguồn nào khác trong repository này.
 | [05 — Ideal Harness](05-ideal-harness.md) | §29 Best-of-breed · §30 Ranking · §31 Lessons · §32 Kiến trúc · §33 Minimal core · §35–36 API · §37 Khuyến nghị · §39 Gaps · §40 Sources |
 | [06 — Phía TypeScript](06-typescript.md) | 5 gói npm · **MCP không phải security boundary** · approval tốt nhất |
 | [07 — Tám gói Python còn lại](07-remaining-python.md) | Bảng 16 gói · **hai đính chính cho kết luận trong §00** |
+| [09 — Memory, Context, Multi-agent, HITL](09-memory-context-multiagent-hitl.md) | §10 Memory · §11 Context engineering · §13 Multi-agent · §14 HITL · **4 số nổi bật bị bác bỏ** |
+| [10 — Governance, Health, Languages](10-governance-health-languages.md) | §25 License · §26 Dependency cost · §27 Repo health · §28 **Câu trả lời cho Java/Spring** · **đính chính một số đã công bố** |
 | [harvest.py](harvest.py) | **Bộ đo công khai** — mọi con số tái lập bằng một lệnh |
 
 ## Tái lập
@@ -46,7 +48,7 @@ qua tài liệu. Các con số cơ chế được chuẩn hoá theo kLOC để s
 3. **Mật độ cơ chế/kLOC đo sự hiện diện, không đo tính đúng.** Một dự án có thể có
    `retry` khắp nơi mà retry vẫn sai.
 
-## Ba kết luận
+## Sáu kết luận
 
 1. **Không dự án nào mạnh đều** — LangGraph hơn phần còn lại một bậc độ lớn về
    checkpoint (21,1/kLOC) nhưng budget 0,0 và OTel 0,1. Chuyên môn hoá, không phải thứ hạng.
@@ -60,3 +62,15 @@ qua tài liệu. Các con số cơ chế được chuẩn hoá theo kLOC để s
    **toàn bộ là OAuth ở tầng transport**. Nó chuẩn hoá "client này được nói chuyện với
    server này không", chưa bao giờ chuẩn hoá "lời gọi tool này được phép chạy không"
    ([§6](06-typescript.md)).
+5. **Không framework nào coi approval là một sự kiện có thể audit.** Kiểm chứng lại
+   trên **30 gói / 3 ngôn ngữ / mọi vendor lớn**: approval ở đâu cũng là *trạng thái
+   quyền*, không phải *quyết định* có tác giả, thời điểm và hạn dùng. Thiết kế tốt nhất
+   (Microsoft) khoá grant theo tool + giá trị tham số + biên MCP server — vẫn không ghi
+   ai duyệt. Java (`ToolConfirmation`) là đúng một `boolean`
+   ([§9](09-memory-context-multiagent-hitl.md) · [§10](10-governance-health-languages.md)).
+6. **Kiến trúc an toàn tốt nhất trong nghiên cứu lại không được bật.** `agent_framework.security`
+   là lattice information-flow hai chiều duy nhất tìm được (integrity × confidentiality,
+   có cả quarantine client) — nhưng không file nào trong `_harness/` import nó, nó không
+   có trong `__init__` top-level, và nó giữ middleware trong `threading.local()` rồi set
+   xuyên qua `await`: hai tool call đồng thời đọc nhầm slot của nhau, im lặng và fail-open
+   ([§9](09-memory-context-multiagent-hitl.md)).
