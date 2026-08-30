@@ -433,24 +433,9 @@ một chỗ trên graph, và mọi trường định danh do runtime điền. B�
 ### 4.1 Nhãn và luật
 
 ```python
-class Integrity(IntEnum):
-    TRUSTED = 0
-    UNTRUSTED = 1          # Biba — chống bị điều khiển
-
-
-class Confidentiality(IntEnum):
-    PUBLIC = 0
-    SECRET = 1             # Bell-LaPadula — chống rò rỉ
-
-
-@value
-class Label:
-    integrity: Integrity
-    confidentiality: Confidentiality
-
-    def join(self, other: Label) -> Label:
-        return Label(max(self.integrity, other.integrity),
-                     max(self.confidentiality, other.confidentiality))
+# Integrity / Confidentiality / Label: định nghĩa chuẩn ở 00-foundation.md §3.2.
+# Ở đây chỉ dùng, không định nghĩa lại.
+from harness import Integrity, Confidentiality, Label
 ```
 
 `join` là `max()` từng trục — **cùng một phép hợp thành với `Verdict` ở §1**. Đơn điệu,

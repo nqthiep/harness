@@ -490,8 +490,15 @@ toàn cục, không `ContextVar` (§5.1 đã nói vì sao).
 ```python
 @value
 class CancelToken:
+    """Định nghĩa chuẩn. Truyền TƯỜNG MINH qua mọi biên có thể block —
+    không ContextVar, không biến toàn cục (00 §5 R-4). Học autogen, gói có kỷ luật
+    cancellation cao nhất nghiên cứu (26,9/kLOC).
+    """
+    def cancel(self, reason: str) -> None: ...
     def cancelled(self) -> bool: ...
     def raise_if_cancelled(self) -> None: ...
+    @property
+    def reason(self) -> str | None: ...
 ```
 
 ### 6.2 Huỷ giữa chừng thì trạng thái ở đâu

@@ -519,12 +519,8 @@ API surface, nhưng là cách duy nhất khiến việc huỷ trở nên kiểm 
 ### 6.2 Thiết kế
 
 ```python
-class CancelToken:
-    """Truyền tường minh qua mọi biên có thể block.  Không ContextVar, không biến toàn cục
-    — 00-foundation §R-4.
-    """
-    def cancel(self, reason: str) -> None: ...
-    def raise_if_cancelled(self) -> None: ...
+# Định nghĩa chuẩn ở 04-runtime-durability.md §6.1 — ở đây chỉ dùng.
+from harness import CancelToken
     async def wait(self) -> str: ...          # trả về reason, để race với công việc
 
     @property

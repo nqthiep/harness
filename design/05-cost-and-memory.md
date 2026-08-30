@@ -558,23 +558,10 @@ Dùng đúng lattice hai chiều ở [`00-foundation.md`](00-foundation.md) §3.
 trục mới.
 
 ```python
-class Integrity(IntEnum):        # Biba
-    TRUSTED = 0
-    UNTRUSTED = 1
-
-class Confidentiality(IntEnum):  # Bell-LaPadula
-    PUBLIC = 0
-    SECRET = 1
-
-
-@value
-class Label:
-    integrity: Integrity = Integrity.TRUSTED
-    confidentiality: Confidentiality = Confidentiality.PUBLIC
-
-    def join(self, other: "Label") -> "Label":
-        return Label(max(self.integrity, other.integrity),
-                     max(self.confidentiality, other.confidentiality))
+# Integrity / Confidentiality / Label: định nghĩa chuẩn ở 00-foundation.md §3.2.
+# Ở đây chỉ dùng, không định nghĩa lại.
+from harness import Integrity, Confidentiality, Label
+```
 
 
 @value

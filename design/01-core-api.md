@@ -18,7 +18,7 @@ Toàn bộ bề mặt là **14 tên**. Một `import`.
 from harness import (
     Agent, tool, Effect, ToolSpec,          # định nghĩa
     Budget, Workspace,                       # trần chi tiêu, cách ly
-    Approver, Ruling, Verdict, Decision,     # phê duyệt
+    Approver, Answer, Verdict, Decision,     # phê duyệt
     Plugin, Result, StopReason, Label,       # mở rộng, kết quả
 )
 ```
@@ -63,7 +63,7 @@ Mười ba tham số, **và mỗi cái tồn tại vì một phát hiện đo đ
 | `deps_type` | `deps_type` của PydanticAI tách state khỏi agent: một agent phục vụ nhiều ngữ cảnh; DI là điều kiện của testability | ([§02](../research/02-api-comparison.md) §6, [§05](../research/05-ideal-harness.md) §31 bài học 5) |
 | `output_type` | PydanticAI typed end-to-end là Agent API duy nhất đạt "Type safety cao nhất bảng" | ([§02](../research/02-api-comparison.md) §6) |
 | `end_strategy` | Model trả **vừa** kết quả cuối **vừa** tool call là ngữ nghĩa khó. PydanticAI đặt tên cho nó, cho ba lựa chọn, và đổi mặc định từ `early` sang `graceful` vì mặc định cũ sai | ([§02](../research/02-api-comparison.md) §6) |
-| `approve` nhận `Approver`, trả `Ruling` — không bao giờ `bool` | Approval ở đâu cũng là trạng thái quyền chứ không phải sự kiện audit được; Java `ToolConfirmation` đúng một `boolean` | ([§09](../research/09-memory-context-multiagent-hitl.md) §14.1, [§10](../research/10-governance-health-languages.md) §28) |
+| `approve` nhận `Approver`, trả `Answer` — không bao giờ `bool` | Approval ở đâu cũng là trạng thái quyền chứ không phải sự kiện audit được; Java `ToolConfirmation` đúng một `boolean` | ([§09](../research/09-memory-context-multiagent-hitl.md) §14.1, [§10](../research/10-governance-health-languages.md) §28) |
 | `checkpointer` | Durability là kiến trúc hoặc không tồn tại: LangGraph 51,6 recover/kLOC so với phần còn lại < 2. Và nó chỉ cài được vì có topology | ([§11](../research/11-workflow-and-dx.md) §12) |
 | `plugins` | around-hook — xem §4 | ([§08](../research/08-tool-mcp-plugin.md) §24) |
 | `policies` | verdict lattice hợp bằng `max()`, chỉ thắt chặt | [`00`](00-foundation.md) §3.1 |
@@ -86,7 +86,7 @@ class Agent(Generic[DepsT, OutT]):
                       run_id: RunId | None = None) -> Result[OutT]: ...
     def stream(self, prompt: str, *, deps: DepsT | None = None,
                run_id: RunId | None = None) -> AsyncIterator[Event]: ...
-    async def resume(self, run_id: RunId, *, ruling: Ruling | None = None) -> Result[OutT]: ...
+    async def resume(self, run_id: RunId, *, answer: Answer | None = None) -> Result[OutT]: ...
     async def cancel(self, run_id: RunId) -> None: ...
 
     def run_sync(self, prompt: str, *, deps: DepsT | None = None,
@@ -129,11 +129,16 @@ import. Đây là hàng đầu tiên trong bảng Poka-Yoke: tool không khai `e
 `ToolSpec` giữ lại `__call__` uỷ nhiệm cho hàm gốc, nên tool vẫn unit-test được trực tiếp
 mà không cần dựng `Agent`.
 
-### 1.4 `Approver` và `Ruling` — sửa phát hiện số một
+### 1.4 `Approver` và `Answer` — sửa phát hiện số một
+
+> **Ba tên, ba vai, đừng lẫn.** `Ruling` là điều **policy** phán
+> ([02 §1](02-safety-engine.md)); `Answer` là điều **con người** trả lời; `Decision` là
+> bản ghi bất biến mà **runtime** niêm phong từ `Answer` + `Actor` + `Scope`
+> ([00 §4](00-foundation.md)). Chỉ `Decision` đi vào audit log.
 
 ```python
 @value
-class Ruling:
+class Answer:
     verdict: Literal[Verdict.ALLOW, Verdict.DENY]   # ASK không bao giờ là kết quả cuối
     reason: str                                      # bắt buộc, cả khi ALLOW
     expires_at: datetime | None = None
@@ -146,11 +151,11 @@ class ApprovalRequest:
     estimated_cost: Money
 
 class Approver:
-    def __init__(self, fn: Callable[[ApprovalRequest], Awaitable[Ruling]],
+    def __init__(self, fn: Callable[[ApprovalRequest], Awaitable[Answer]],
                  *, actor: Actor) -> None: ...
 ```
 
-**`Approver` trả `Ruling`, không trả `Decision`.** Đây là cách bất biến D-1 được thực thi
+**`Approver` trả `Answer`, không trả `Decision`.** Đây là cách bất biến D-1 được thực thi
 *bằng kiểu*, không bằng review: người duyệt chỉ điền `verdict`, `reason`, `expires_at`;
 runtime niêm phong thành `Decision` với `id`, `decided_at`, `run_id`, và `actor` — mà
 `actor` được gắn **lúc dựng `Approver`**, không phải mỗi lần gọi. Không có đường nào để
@@ -207,7 +212,7 @@ sinh từ type hints; docstring thành mô tả tool.
 ### Mức 2 — thêm tác dụng phụ: sandbox và approval xuất hiện *vì bộ tool đổi*
 
 ```python
-from harness import (Agent, Approver, Channel, Effect, Human, Ruling,
+from harness import (Agent, Approver, Channel, Effect, Human, Answer,
                      Verdict, Workspace, tool)
 
 @tool(effect=Effect.WRITE)
@@ -219,7 +224,7 @@ async def ask_terminal(req):
     print(f"  {req.scope.tool}({dict(req.scope.args or {})})")
     print(f"  vì: {req.reason} · ước tính {req.estimated_cost}")
     ok = input("  duyệt? [y/N] ") == "y"
-    return Ruling(verdict=Verdict.ALLOW if ok else Verdict.DENY,
+    return Answer(verdict=Verdict.ALLOW if ok else Verdict.DENY,
                   reason="người dùng trả lời ở terminal")
 
 agent = Agent(
@@ -364,7 +369,7 @@ mật độ rơi vào đâu thì rơi. Nhắm vào chỉ số proxy là tối ư
 | `sandbox=` thiếu khi bộ tool có write/external/danger | **construction** | kiểm bộ tool trong `__init__` |
 | `budget` thiếu trục tiền | **construction** | parser của `Budget` |
 | gõ sai tên tham số | **construction** | keyword-only + `TypeError` của Python |
-| `approve` trả `bool` | **type error** | `Approver` yêu cầu `Awaitable[Ruling]` |
+| `approve` trả `bool` | **type error** | `Approver` yêu cầu `Awaitable[Answer]` |
 | tool call thiếu idempotency key | **không thể xảy ra** | gateway sinh key, API không nhận |
 
 Bảng này là bản rút gọn của Poka-Yoke matrix ([§05](../research/05-ideal-harness.md)
@@ -450,7 +455,7 @@ thể bỏ qua, không thể nới rộng. Chứng minh được bằng property
 
 Ba thứ plugin **không có API để chạm tới**, và đó là danh sách đóng: `Ledger` (chỉ đọc
 qua `req.remaining`), `Decision` (không có constructor công khai — chỉ runtime niêm phong
-từ `Ruling`), và `Verdict` (không nằm trong `ToolRequest`). Cùng lý do R-3: model không
+từ `Answer`), và `Verdict` (không nằm trong `ToolRequest`). Cùng lý do R-3: model không
 cầm công tắc an toàn nào, và plugin do model gián tiếp điều khiển thì cũng không.
 
 ---
@@ -593,7 +598,7 @@ một event ở mức `info` trở lên và ghi vào `Result.detail` — ồn à
 | Google ADK ([§02](../research/02-api-comparison.md) §6) | `extra='forbid'` | keyword-only + reject positional |
 | LangChain 1.x ([§08](../research/08-tool-mcp-plugin.md) §24) | around-hook `wrap_model_call`/`wrap_tool_call` | 6 hook → 2; và **R-1**: invariant ra khỏi chuỗi plugin |
 | LangGraph ([§11](../research/11-workflow-and-dx.md) §12) | checkpoint là kiến trúc | `resume(run_id, ruling=…)` là approval round-trip, không chỉ resume kỹ thuật |
-| Microsoft `ToolApprovalRule` ([§09](../research/09-memory-context-multiagent-hitl.md) §14) | `Scope` khoá theo giá trị tham số + `server_label` | `Ruling` → `Decision` niêm phong bởi runtime, actor gắn ở `Approver` |
+| Microsoft `ToolApprovalRule` ([§09](../research/09-memory-context-multiagent-hitl.md) §14) | `Scope` khoá theo giá trị tham số + `server_label` | `Answer` → `Decision` niêm phong bởi runtime, actor gắn ở `Approver` |
 | — (không ai có) | trần chi tiêu thật ([§03](../research/03-safety-reliability.md) §20) | `budget` bắt buộc, phải có trục tiền |
 
 ---
@@ -617,7 +622,7 @@ một event ở mức `info` trở lên và ghi vào `Result.detail` — ồn à
    có thể tồn tại một hình dạng hook tốt hơn cặp `wrap_*` mà nghiên cứu chưa chạm tới.
 6. **`≤ 3 required dependency` là mục tiêu, chưa phải phép đo.** Nó chỉ kiểm được khi có
    implementation; cho tới lúc đó nó là ràng buộc tự đặt.
-7. **`Ruling` → `Decision` chưa có tiền lệ.** Không framework nào tách phần người duyệt
+7. **`Answer` → `Decision` chưa có tiền lệ.** Không framework nào tách phần người duyệt
    điền khỏi phần runtime niêm phong ([§09](../research/09-memory-context-multiagent-hitl.md)
    §14.1), nên không có bằng chứng nào cho biết nó chịu được một UI phê duyệt thật (nhiều
    người duyệt, uỷ quyền, thu hồi).

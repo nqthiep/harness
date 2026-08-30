@@ -35,12 +35,20 @@ Vì vậy harness này phân loại **một lần**, và suy ra **năm** hành v
 Effect = read | write | external | danger
 ```
 
-| effect | song song? | retry được? | làm nhiễm context? | verdict mặc định | mức audit |
-|---|---|---|---|---|---|
-| `read` | ✅ | ✅ | không | `ALLOW` | `debug` |
-| `write` | ❌ (barrier) | ❌ trừ khi có idempotency key | không | `ASK` | `info` |
-| `external` | ✅ | ✅ | **có** | `ALLOW` | `info` |
-| `danger` | ❌ (barrier) | ❌ | không | `ASK` | **`audit`** |
+| effect | song song? | model được thử lại? | runtime tự gọi lại? | làm nhiễm context? | verdict mặc định | mức audit |
+|---|---|---|---|---|---|---|
+| `read` | ✅ | ✅ | ✅ | không | `ALLOW` | `debug` |
+| `write` | ❌ (barrier) | ✅ nếu có idempotency key | ❌ | không | `ASK` | `info` |
+| `external` | ✅ | ✅ | **❌** | **có** | `ALLOW` | `info` |
+| `danger` | ❌ (barrier) | ❌ | ❌ | không | `ASK` | **`audit`** |
+
+**Vì sao hai cột retry chứ không phải một.** Bản nháp đầu của tệp này gộp chúng làm một và
+ghi `external` là "retry được" — một agent viết [03](03-tools-and-mcp.md) bắt được mâu
+thuẫn: nghiên cứu nói thẳng *"an `external` tool that fails may have already had an effect
+and must not be retried blindly"* ([§08](../research/08-tool-mcp-plugin.md) §8.2). Hai
+nghĩa khác nhau: **model được phép thử lại** (run không chết vì một lần fetch hỏng) khác
+với **runtime tự gọi lại im lặng** (chỉ an toàn khi lặp lại không sinh tác dụng mới). Chỉ
+`read` đúng cả hai.
 
 Bốn thuộc tính đầu là *dẫn xuất*, không phải cấu hình. Người viết tool chỉ khai một thứ.
 
@@ -75,6 +83,28 @@ confidentiality  : PUBLIC    <  SECRET         (Bell-LaPadula — chống rò r�
 
 Hợp thành đơn điệu, không bao giờ giảm trong một run. Harness hiện tại của repo này
 (ADR-011) **chỉ có trục integrity** — đây là nâng cấp có bằng chứng.
+
+**Định nghĩa chuẩn — mọi tệp khác tham chiếu, không định nghĩa lại:**
+
+```python
+class Integrity(IntEnum):        # Biba — chống bị điều khiển
+    TRUSTED = 0
+    UNTRUSTED = 1
+
+class Confidentiality(IntEnum):  # Bell-LaPadula — chống rò rỉ
+    PUBLIC = 0
+    SECRET = 1
+
+@value
+class Label:
+    integrity: Integrity = Integrity.TRUSTED
+    confidentiality: Confidentiality = Confidentiality.PUBLIC
+
+    def join(self, other: Label) -> Label:
+        """Hợp thành đơn điệu — cùng `max()` như Verdict, cùng lý do."""
+        return Label(max(self.integrity, other.integrity),
+                     max(self.confidentiality, other.confidentiality))
+```
 
 Luật thực thi:
 
