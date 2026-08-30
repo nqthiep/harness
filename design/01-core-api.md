@@ -262,7 +262,7 @@ agent = Agent(
     sandbox=Workspace("./ws", egress="allowlist:docs.python.org"),
     approve=Approver(ask_terminal, actor=Human(id="nqthiep", via=Channel.CLI)),
     policies=[DenyHosts("*.internal")],
-    plugins=[Retry(on=("rate_limited", "unavailable"), attempts=3), CostReport()],
+    plugins=[Backoff(on=("rate_limited", "unavailable"), attempts=3), CostReport()],
     checkpointer=SqliteCheckpointer("./runs.db"),
     end_strategy="graceful",
 )
@@ -273,7 +273,7 @@ async def main() -> None:
 
     r = await agent.try_run("Tiếp tục", run_id="r-42")
     if r.stop_reason is StopReason.AWAITING_DECISION:
-        r = await agent.resume("r-42", ruling=await ask_terminal_for(r.pending))
+        r = await agent.resume("r-42", answer=await ask_terminal_for(r.pending))
     print(r.output, r.cost, r.label, len(r.decisions))
 
 asyncio.run(main())
@@ -282,7 +282,7 @@ asyncio.run(main())
 Bốn khái niệm mới, và chúng là **bốn chỗ trống của cả ngành**, không phải bốn tính năng
 thêm cho vui: durability (`checkpointer` — có được vì runtime là graph,
 [§11](../research/11-workflow-and-dx.md) §12), policy chỉ-thắt-chặt, plugin cho retry/cost,
-và approval round-trip qua `AWAITING_DECISION` → `resume(ruling=…)`.
+và approval round-trip qua `AWAITING_DECISION` → `resume(answer=…)`.
 
 **Tổng cộng: 5 → 10 → 22 → 30 dòng.** Không mức nào phải viết lại mức trước; mỗi mức chỉ
 thêm tham số vào cùng một constructor.
@@ -505,13 +505,15 @@ class StopReason(str, Enum):
     TIMEOUT           = "timeout"
     DENIED            = "denied"
     CANCELLED         = "cancelled"
+    TRUNCATED         = "truncated"        # context không nén thêm được — 05 §B.3
+    GRAPH_CHANGED     = "graph_changed"    # graph đổi giữa hai lần resume — 04 §4.5
     ERROR             = "error"
 ```
 
 | stop reason | `ok` | resume được? | tiền đã tính | `output` |
 |---|---|---|---|---|
 | `COMPLETED` | ✅ | — | có | đầy đủ |
-| `AWAITING_DECISION` | ❌ | ✅ `resume(ruling=…)` | tới thời điểm dừng | một phần |
+| `AWAITING_DECISION` | ❌ | ✅ `resume(answer=…)` | tới thời điểm dừng | một phần |
 | `BUDGET_EXHAUSTED` | ❌ | ✅ sau khi nâng trần | có, tới trần | một phần |
 | `STEP_LIMIT` | ❌ | ✅ | có | một phần |
 | `TIMEOUT` | ❌ | ✅ | có | một phần |
@@ -581,7 +583,7 @@ Quy tắc mặc định, suy ra từ `Effect` ([`00`](00-foundation.md) §2):
 | `write` | `ToolFailed` | không retry được nếu thiếu idempotency key |
 | `danger` | `ToolFailed` | không retry được, và mức audit là `audit` |
 
-Tác giả tool vẫn raise `Retry`/`ToolFailed` tường minh khi biết rõ hơn. Nhưng **không có
+Tác giả tool vẫn raise `ToolInputInvalid`/`ToolUnavailable` tường minh khi biết rõ hơn. Nhưng **không có
 đường nào để một tool giết cả run**: mặc định của chúng ta ngược với LangChain. Đổi lại,
 để tránh "degrade âm thầm" mà mặc định của LangChain phòng chống, mọi lỗi tool đều phát
 một event ở mức `info` trở lên và ghi vào `Result.detail` — ồn ào mà không gây tử vong.
@@ -597,7 +599,7 @@ một event ở mức `info` trở lên và ghi vào `Result.detail` — ồn à
 | smolagents ([§05](../research/05-ideal-harness.md) §31) | cách ly ở constructor | **bỏ mặc định `"local"`** — không chọn thì không chạy |
 | Google ADK ([§02](../research/02-api-comparison.md) §6) | `extra='forbid'` | keyword-only + reject positional |
 | LangChain 1.x ([§08](../research/08-tool-mcp-plugin.md) §24) | around-hook `wrap_model_call`/`wrap_tool_call` | 6 hook → 2; và **R-1**: invariant ra khỏi chuỗi plugin |
-| LangGraph ([§11](../research/11-workflow-and-dx.md) §12) | checkpoint là kiến trúc | `resume(run_id, ruling=…)` là approval round-trip, không chỉ resume kỹ thuật |
+| LangGraph ([§11](../research/11-workflow-and-dx.md) §12) | checkpoint là kiến trúc | `resume(run_id, answer=…)` là approval round-trip, không chỉ resume kỹ thuật |
 | Microsoft `ToolApprovalRule` ([§09](../research/09-memory-context-multiagent-hitl.md) §14) | `Scope` khoá theo giá trị tham số + `server_label` | `Answer` → `Decision` niêm phong bởi runtime, actor gắn ở `Approver` |
 | — (không ai có) | trần chi tiêu thật ([§03](../research/03-safety-reliability.md) §20) | `budget` bắt buộc, phải có trục tiền |
 

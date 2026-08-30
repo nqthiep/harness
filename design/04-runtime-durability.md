@@ -655,6 +655,35 @@ Khi lý do là "isolation". Nó chỉ chính đáng khi mục tiêu là **giảm
 
 ---
 
+## 7bis. `redact()` — một hàm, ba nơi dùng
+
+Node `tools`, `PauseRequest.args`, và OTel attribute đều nhắc tới "redact", và bản nháp đầu
+không định nghĩa nó ở đâu ([review-kiss.md](review-kiss.md) K-29). Đây là cơ chế duy nhất
+chống lại điều nghiên cứu ghi là "không gói Python nào có kiểu `Secret`"
+([§03](../research/03-safety-reliability.md) §16).
+
+```python
+class Secret:
+    """Giá trị không bao giờ được serialise nguyên bản.
+
+    `__repr__`/`__str__`/`__format__` trả "***"; `json.dumps` raise.
+    Chỉ `.reveal()` lấy được giá trị thật, và chỉ tool đang giữ nó gọi được.
+    """
+    def reveal(self) -> str: ...
+
+def redact(value: object) -> object:
+    """Thay mọi `Secret` lồng bên trong bằng "***", giữ nguyên cấu trúc.
+
+    MỘT cài đặt, gọi từ ba chỗ: trước khi tool result vào checkpoint, trước khi
+    `PauseRequest` tới người duyệt, trước khi bất kỳ giá trị nào thành OTel attribute.
+    Ba bản sao là ba cơ hội để một bản quên cập nhật.
+    """
+```
+
+**Giới hạn, nói thẳng.** `redact()` chặn rò rỉ *do vô ý serialise*. Nó không chặn được một
+tool cố ý gọi `.reveal()` rồi đưa chuỗi vào kết quả — việc đó thuộc trục `confidentiality`
+của lattice ([00 §3.2](00-foundation.md)), và đó là lý do hai cơ chế cùng tồn tại.
+
 ## 8. Observability
 
 ### 8.1 Học của ai, và vì sao đây là việc bắt buộc phải làm

@@ -213,6 +213,42 @@ Không singleton mức module, không `threading.local()`, không `ContextVar` x
 
 ---
 
+## 5bis. Event kind — một bảng duy nhất, có version
+
+`AuditEvent` (02 §3.1) và `Event` của `stream()` (01) **cùng dùng bảng này**. Bản nháp đầu có
+hai `Literal` đóng khác nhau và ít nhất 5 event được phát mà không nằm trong bảng nào
+([review-kiss.md](review-kiss.md) K-19). Nghiên cứu cũng đòi envelope có version trong minimal
+core ([§05](../research/05-ideal-harness.md) §33).
+
+```python
+SCHEMA_VERSION = 1                       # tăng khi đổi nghĩa một kind, không khi thêm kind
+
+EventKind = Literal[
+    # vòng đời run
+    "run.started", "run.finished", "run.cancelled",
+    # model
+    "model.called", "model.returned", "model.refused",
+    # tool
+    "tool.called", "tool.returned", "tool.failed", "duplicate_suppressed",
+    # quyết định và từ chối
+    "decision", "policy.allowed", "policy.denied", "flow.denied", "budget.denied",
+    # luồng thông tin
+    "taint.raised",
+]
+
+@value
+class Event:
+    v: int                # = SCHEMA_VERSION — người đọc log cũ biết mình đang đọc gì
+    kind: EventKind
+    run_id: RunId
+    at: datetime
+    level: Literal["debug", "info", "audit"]
+    data: Mapping[str, Any]
+```
+
+17 kind. `AuditEvent` là `Event` có `level == "audit"`, không phải một kiểu thứ hai —
+**một sổ, một protocol** (K-4).
+
 ## 6. Từ vựng bắt buộc
 
 Dùng đúng các tên này. Không đặt tên đồng nghĩa.

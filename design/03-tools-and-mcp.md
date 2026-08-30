@@ -45,7 +45,7 @@ class ToolSpec:
     name: ToolName
     description: str
     input_schema: Mapping[str, Any]
-    fn: Callable[[Mapping[str, Any], "ToolCtx"], Awaitable[Any]]
+    fn: Callable[[Mapping[str, Any], "ToolCtx"], Awaitable[Any]]   # adapter do @tool SINH RA
 
     effect: Effect                       # ← THỨ DUY NHẤT người viết tool phải nghĩ
 
@@ -54,6 +54,14 @@ class ToolSpec:
     upstream_accepts_key: bool = False   # chỉ có nghĩa khi effect ∈ {WRITE, DANGER}
     server: ServerLabel | None = None    # None = tool local; có = tool MCP, xem §5
     timeout_s: float = 30.0
+
+    # Suy ra từ `effect` — KHÔNG phải tham số của @tool. Ghi ra vì 02 §4.1 đọc chúng.
+    @property
+    def max_confidentiality(self) -> Confidentiality:
+        """`write`/`external` là sink PUBLIC; `read`/`danger` không hạn chế."""
+    @property
+    def emits(self) -> Label:
+        """Nhãn mà output của tool này mang. `external` → UNTRUSTED, còn lại TRUSTED."""
 ```
 
 **Bất biến T-1: `ToolSpec` không có trường nào cho phép ghi đè năm hành vi dẫn xuất.**
@@ -169,7 +177,7 @@ class ToolInputInvalid(HarnessError):
 
     Hợp đồng: khi raise cái này, tool CHƯA gây side effect nào.
     """
-    def __init__(self, message: str, *, fix: str | None = None) -> None: ...
+    def __init__(self, *, what: str, got: object, fix: str, doc: str) -> None: ...
 
 
 class ToolUnavailable(HarnessError):
@@ -601,8 +609,30 @@ class ToolCtx:
     deadline: datetime
 ```
 
-`ToolCtx` là tham số bắt buộc trong signature của `fn`, nên token đi qua từng biên bằng kiểu,
-không bằng quy ước — đúng điều autogen làm, và ngược với mọi dự án dùng `task.cancel()` ngầm.
+**`ctx` là TUỲ CHỌN trong hàm người ta viết, bắt buộc trong `fn` mà runtime gọi.** Hai thứ
+khác nhau, và bản nháp đầu nhầm chúng làm một ([review-kiss.md](review-kiss.md) K-16).
+
+`@tool` đọc type hints của hàm gốc, sinh `input_schema` từ đó, và bọc nó thành adapter
+`(Mapping, ToolCtx) -> Awaitable`. Tác giả tool viết hàm Python bình thường:
+
+```python
+@tool(effect=Effect.READ)                     # đồng bộ, tham số đặt tên, không ctx
+def word_count(text: str) -> int:
+    return len(text.split())
+
+@tool(effect=Effect.WRITE)                    # async, có ctx vì cần key
+async def send_email(to: str, body: str, *, ctx: ToolCtx) -> str:
+    ctx.cancel.raise_if_cancelled()
+    return await mailer.send(to, body, idempotency_key=ctx.idempotency_key)
+```
+
+Luật tiêm: adapter truyền `ctx` **chỉ khi** hàm gốc khai một tham số keyword-only tên `ctx`.
+Hàm đồng bộ được chạy trong thread pool. Không có `ctx` thì tool không chạm được cancel token,
+idempotency key hay label — mặc định an toàn, và người viết `word_count` không phải học ba
+khái niệm để đếm chữ.
+
+Với tool cần nó, token vẫn đi qua biên **bằng kiểu chứ không bằng quy ước** — đúng điều
+autogen làm, ngược với mọi dự án dùng `task.cancel()` ngầm.
 
 ### 6.3 Bốn luật
 

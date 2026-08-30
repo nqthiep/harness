@@ -57,7 +57,7 @@ INPUT_MARGIN: Final[Decimal] = Decimal("1.15")  # bù cho việc đếm input l�
 
 @value
 class Budget:
-    usd: Decimal | None = Decimal("0.50")
+    usd: Decimal                      # BẮT BUỘC, không mặc định, không None — 00 §1 bất biến 2
     steps: int = 20
     wall_clock_s: float = 300.0
 
