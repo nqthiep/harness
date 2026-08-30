@@ -35,12 +35,20 @@ thuật vào đúng một chỗ:
 
 LangGraph hơn phần còn lại **một bậc độ lớn** về checkpoint — durability không phải
 tính năng của nó, đó là kiến trúc của nó. smolagents có mật độ permission cao nhất
-trong một gói chỉ 13 kLOC. PydanticAI là dự án **duy nhất** có sự hiện diện đáng kể của
-`cost` trong source.
+trong một gói chỉ 13 kLOC.
 
-**2. Một lỗ hổng của cả ngành: không dự án nào có idempotency cho side effect.**
-Đây là phát hiện đáng giá nhất của nghiên cứu. Grep `idempoten*` thì có, nhưng đọc vào
-thì:
+Bảng đầy đủ 16 gói ở [§7](07-remaining-python.md), và nó thêm hai điều: **autogen-agentchat
+có kỷ luật cancellation cao nhất toàn bộ nghiên cứu (26,9/kLOC — gấp ba lần á quân)**,
+truyền `CancellationToken` tường minh qua từng biên API; và **browser-use có mật độ `cost`
+1,9/kLOC, cao hơn PydanticAI**, với kế toán `cost_usd`/`cost_per_token` thật. Câu đúng là:
+PydanticAI là *framework đa dụng* duy nhất coi cost là khái niệm hạng nhất.
+
+**2. Một lỗ hổng của cả ngành: không dự án nào có idempotency ở mức TOOL CALL.**
+*(Đã thu hẹp sau khi đọc thêm 8 gói — xem [§7](07-remaining-python.md). Câu ban đầu
+"không dự án nào có idempotency" quá rộng: **agno 3.0.1 là phản ví dụ thật** ở mức
+run-submission, có partial-unique index trong Postgres và xử lý race đúng cách.)*
+
+Với 15/16 gói còn lại, grep `idempoten*` thì có, nhưng đọc vào thì:
 
 - `pydantic-ai` — nói về **thao tác nội bộ no-op** ("Idempotent: re-applying to an
   already-trimmed list is a no-op"), không phải bảo vệ side effect
@@ -49,10 +57,13 @@ thì:
 - `langgraph` — `CachePolicy(key_func=default_cache_key, ttl=...)`, tức **cache node**,
   và mặc định băm input **bằng pickle**
 
-> Không dự án nào trong tám gói đã đọc cung cấp *exactly-once* cho một tool đã gửi email
-> hay đã ghi database. Client timeout rồi gọi lại vẫn tạo side effect lần hai. Đây là
-> khoảng trống chung, và là lý do mục §33 của kiến trúc đề xuất đặt idempotency vào
-> **core**, không phải plugin.
+> **Không gói nào trong 16 gói cung cấp *exactly-once* ở mức tool call** — cho một tool
+> đã gửi email hay đã ghi database. Agno bảo vệ ở mức *submit một job*, không bảo vệ một
+> tool bên trong job đó khi agent tự retry. Đây là khoảng trống chung, và là lý do §33
+> đặt idempotency vào **core**, không phải plugin.
+>
+> Cách phát hiện cũng đáng ghi: agno có mật độ `idempoten*` **0,3/kLOC — thấp hơn** gói
+> mà khi đọc vào chỉ có HTTP header. Dừng ở bảng số thì kết luận đã sai.
 
 **3. Approval không phải isolation, và ngành đang lẫn hai thứ đó.** Goose có bốn chế độ
 quyền (Chat / Auto / Approve / SmartApprove) — nhưng sandbox seatbelt trên macOS **đã
