@@ -15,6 +15,7 @@ quan tới bất kỳ mã nguồn nào khác trong repository này.
 | [05 — Ideal Harness](05-ideal-harness.md) | §29 Best-of-breed · §30 Ranking · §31 Lessons · §32 Kiến trúc · §33 Minimal core · §35–36 API · §37 Khuyến nghị · §39 Gaps · §40 Sources |
 | [06 — Phía TypeScript](06-typescript.md) | 5 gói npm · **MCP không phải security boundary** · approval tốt nhất |
 | [07 — Tám gói Python còn lại](07-remaining-python.md) | Bảng 16 gói · **hai đính chính cho kết luận trong §00** |
+| [08 — Tool API, MCP, Plugin](08-tool-mcp-plugin.md) | §8 Tool API & error taxonomy · §9 **MCP tự nói annotation không phải tín hiệu bảo mật** · §24 Plugin architecture |
 | [09 — Memory, Context, Multi-agent, HITL](09-memory-context-multiagent-hitl.md) | §10 Memory · §11 Context engineering · §13 Multi-agent · §14 HITL · **4 số nổi bật bị bác bỏ** |
 | [10 — Governance, Health, Languages](10-governance-health-languages.md) | §25 License · §26 Dependency cost · §27 Repo health · §28 **Câu trả lời cho Java/Spring** · **đính chính một số đã công bố** |
 | [harvest.py](harvest.py) | **Bộ đo công khai** — mọi con số tái lập bằng một lệnh |
@@ -74,3 +75,20 @@ qua tài liệu. Các con số cơ chế được chuẩn hoá theo kLOC để s
    có trong `__init__` top-level, và nó giữ middleware trong `threading.local()` rồi set
    xuyên qua `await`: hai tool call đồng thời đọc nhầm slot của nhau, im lặng và fail-open
    ([§9](09-memory-context-multiagent-hitl.md)).
+
+## Về phương pháp: tám con số đã bị bác bỏ
+
+Bảng mật độ trong nghiên cứu này là **chỉ mục để biết đọc gì tiếp theo**, không phải kết
+quả. Quy tắc "không con số nổi bật nào thành kết luận trước khi có người đọc code đằng
+sau nó" đã loại **8 trong khoảng 60** con số được xét, theo ba kiểu hỏng giống nhau về
+bản chất — *regex đo một chuỗi, mà chuỗi không phải là khái niệm*:
+
+| kiểu | ví dụ | sai bao nhiêu |
+|---|---|---:|
+| tên gói trùng probe | crewai `orchestr` (2401 lần chuỗi `crewai`) · pydantic-ai `schema` | 2–19× |
+| header giấy phép trùng probe | spring-ai `permission` (292/294 dòng) | **390×** |
+| từ cùng miền nhưng khác nghĩa | pydantic-ai `plugin` = `provider` (nhà cung cấp model) | 19× |
+
+Một trong số đó đã được công bố sai và **đã đính chính tại chỗ** ([§00](00-executive-summary.md)).
+Chi tiết: [§08](08-tool-mcp-plugin.md) §8.1 · [§09](09-memory-context-multiagent-hitl.md) §10.1 ·
+[§10](10-governance-health-languages.md) §26.1.
