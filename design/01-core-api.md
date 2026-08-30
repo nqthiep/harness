@@ -28,12 +28,11 @@ from harness import (
 ```python
 from typing import Generic, Literal, Sequence, TypeVar
 
-DepsT = TypeVar("DepsT")
 OutT  = TypeVar("OutT")
 
 EndStrategy = Literal["early", "graceful", "exhaustive"]
 
-class Agent(Generic[DepsT, OutT]):
+class Agent(Generic[OutT]):
     def __init__(
         self,
         *,                                                  # keyword-only, không ngoại lệ
@@ -41,9 +40,8 @@ class Agent(Generic[DepsT, OutT]):
         job: str,
         model: ModelProvider | ModelName,
         budget: Budget | str,
-        tools: Sequence[ToolSpec[DepsT]] = (),
+        tools: Sequence[ToolSpec] = (),
         sandbox: Sandbox | None = None,
-        deps_type: type[DepsT] = object,
         output_type: type[OutT] = str,
         policies: Sequence[Policy] = (),
         approve: Approver | None = None,
@@ -60,7 +58,6 @@ Mười ba tham số, **và mỗi cái tồn tại vì một phát hiện đo đ
 | `model` là tham số bắt buộc, không có mặc định | Google ADK để `DEFAULT_MODEL: ClassVar[str] = 'gemini-3.5-flash'` — affinity nhà cung cấp giấu trong class variable. MS Agent Framework làm đúng: `client` bắt buộc, dependency inversion cưỡng chế | ([§02](../research/02-api-comparison.md) §6) |
 | `budget` **bắt buộc**, phải có trục tiền | Cả ngành có loop limit mà gần như không có spend ceiling: pydantic-ai 3,6 budget/kLOC là cao nhất, LangGraph 0,0; `max_turns` chặn số vòng, còn một vòng 200k token đắt gấp trăm lần | ([§03](../research/03-safety-reliability.md) §20) |
 | `sandbox` không có mặc định "local" | smolagents đưa `executor_type` vào constructor — thiết kế cách ly tốt nhất trong nghiên cứu — rồi để mặc định `"local"`, làm giảm giá trị của chính cơ chế đó | ([§05](../research/05-ideal-harness.md) §31 bài học 2 và 10) |
-| `deps_type` | `deps_type` của PydanticAI tách state khỏi agent: một agent phục vụ nhiều ngữ cảnh; DI là điều kiện của testability | ([§02](../research/02-api-comparison.md) §6, [§05](../research/05-ideal-harness.md) §31 bài học 5) |
 | `output_type` | PydanticAI typed end-to-end là Agent API duy nhất đạt "Type safety cao nhất bảng" | ([§02](../research/02-api-comparison.md) §6) |
 | `end_strategy` | Model trả **vừa** kết quả cuối **vừa** tool call là ngữ nghĩa khó. PydanticAI đặt tên cho nó, cho ba lựa chọn, và đổi mặc định từ `early` sang `graceful` vì mặc định cũ sai | ([§02](../research/02-api-comparison.md) §6) |
 | `approve` nhận `Approver`, trả `Answer` — không bao giờ `bool` | Approval ở đâu cũng là trạng thái quyền chứ không phải sự kiện audit được; Java `ToolConfirmation` đúng một `boolean` | ([§09](../research/09-memory-context-multiagent-hitl.md) §14.1, [§10](../research/10-governance-health-languages.md) §28) |
@@ -79,18 +76,14 @@ không nới lỏng Poka-Yoke: cái gì nguy hiểm khi thiếu thì không đư
 ### 1.2 Bốn cách chạy
 
 ```python
-class Agent(Generic[DepsT, OutT]):
-    async def run(self, prompt: str, *, deps: DepsT | None = None,
-                  run_id: RunId | None = None) -> Result[OutT]: ...
-    async def try_run(self, prompt: str, *, deps: DepsT | None = None,
-                      run_id: RunId | None = None) -> Result[OutT]: ...
-    def stream(self, prompt: str, *, deps: DepsT | None = None,
-               run_id: RunId | None = None) -> AsyncIterator[Event]: ...
+class Agent(Generic[OutT]):
+    async def run(self, prompt: str, *, run_id: RunId | None = None) -> Result[OutT]: ...
+    async def try_run(self, prompt: str, *, run_id: RunId | None = None) -> Result[OutT]: ...
+    def stream(self, prompt: str, *, run_id: RunId | None = None) -> AsyncIterator[Event]: ...
     async def resume(self, run_id: RunId, *, answer: Answer | None = None) -> Result[OutT]: ...
     async def cancel(self, run_id: RunId) -> None: ...
 
-    def run_sync(self, prompt: str, *, deps: DepsT | None = None,
-                 run_id: RunId | None = None) -> Result[OutT]: ...
+    def run_sync(self, prompt: str, *, run_id: RunId | None = None) -> Result[OutT]: ...
 ```
 
 `run()` **raise** khi run không hoàn tất; `try_run()` **luôn** trả `Result`. Cả hai trả
@@ -114,7 +107,7 @@ def tool(fn: Callable[..., Any], /) -> NoReturn: ...          # thiếu effect -
 def tool(*, effect: Effect, name: str | None = None,
          accepts_tainted: bool = False,
          max_confidentiality: Confidentiality = Confidentiality.PUBLIC,
-         ) -> Callable[[Callable[..., OutT]], ToolSpec[DepsT]]: ...
+         ) -> Callable[[Callable[..., OutT]], ToolSpec]: ...
 ```
 
 Người viết tool khai **đúng một thứ**: `effect`. Năm hành vi — song song, retry, taint,
@@ -305,7 +298,7 @@ Lập trường cụ thể hơn, đo được:
 - ship `py.typed`;
 - **không có `Any` trong signature công khai** — 14 tên ở §1 phải kiểm được bằng
   `mypy --strict` từ phía *người dùng*, không chỉ từ phía source;
-- `Agent` generic trên `DepsT`/`OutT` để `result.output` có kiểu thật, học PydanticAI
+- `Agent` generic trên `OutT` để `result.output` có kiểu thật, học PydanticAI
   ([§02](../research/02-api-comparison.md) §6);
 - **0 tệp `.pyi`.** Microsoft là dự án duy nhất ship stub (23 tệp), và đó là việc đúng
   *khi runtime type động* ([§11](../research/11-workflow-and-dx.md) §22). Kiểu của harness
@@ -594,7 +587,7 @@ một event ở mức `info` trở lên và ghi vào `Result.detail` — ồn à
 
 | lấy từ | cái gì | ở đây sửa gì |
 |---|---|---|
-| PydanticAI ([§02](../research/02-api-comparison.md) §6) | `deps_type`, `output_type`, `end_strategy`, taxonomy lỗi 3 nhánh | ba nhánh lỗi **suy ra từ `Effect`** thay vì bắt mỗi tool tự chọn |
+| PydanticAI ([§02](../research/02-api-comparison.md) §6) | `output_type`, `end_strategy`, taxonomy lỗi 3 nhánh | ba nhánh lỗi **suy ra từ `Effect`** thay vì bắt mỗi tool tự chọn |
 | MS Agent Framework ([§02](../research/02-api-comparison.md) §6) | `client` bắt buộc — DI cưỡng chế | không có model mặc định, cũng không có class var thiên hướng |
 | smolagents ([§05](../research/05-ideal-harness.md) §31) | cách ly ở constructor | **bỏ mặc định `"local"`** — không chọn thì không chạy |
 | Google ADK ([§02](../research/02-api-comparison.md) §6) | `extra='forbid'` | keyword-only + reject positional |
@@ -614,9 +607,15 @@ một event ở mức `info` trở lên và ghi vào `Result.detail` — ồn à
    giải bằng idempotency key chứ không bằng cờ retry. Thuộc [`03`](03-tools-and-mcp.md).
 2. **`run` async + `run_sync` là quy ước, không phải phát hiện.** Nghiên cứu không đo tác
    động của lựa chọn này lên DX; nó chỉ ghi rằng hai Agent API điểm cao nhất đều làm vậy.
-3. **`deps_type` generic có thể làm dốc learning curve.** [§11](../research/11-workflow-and-dx.md)
-   §45 ghi rõ learning curve, hành vi IDE và thời gian cài đặt **không được đo**. Việc mức 0
-   không cần chạm tới `deps_type` là suy luận, không phải kết quả đo.
+3. **`deps_type` đã bị CẮT.** Bản nháp đầu có `Agent` generic trên `DepsT`. Reviewer chỉ ra
+   hai lý do độc lập, mỗi lý do đủ: generic đó **không tới được người dùng nào** (`ToolCtx`
+   của [03](03-tools-and-mcp.md) §6.2 không có trường `deps`), và trích dẫn duy nhất cho nó
+   là "PydanticAI có nó" — theo [00 §8.4](00-foundation.md) đó là ý kiến, không phải phát
+   hiện ([review-kiss.md](review-kiss.md) K-2). Ai cần DI thì đóng gói vào closure của tool;
+   `functools.partial` đã có sẵn. Nếu sau này có nhu cầu **đo được**, thêm lại bằng một
+   trường `deps: Any` trên `ToolCtx` — một dòng, không cần generic trên `Agent`.
+
+
 4. **Thứ tự lồng plugin.** Nghiên cứu đọc `AgentMiddleware` ở mức signature; ngữ nghĩa
    thứ tự khi nhiều middleware cùng cài **không được đo**. "Khai trước thì ngoài hơn" là
    lựa chọn của tệp này, không phải điều học được.

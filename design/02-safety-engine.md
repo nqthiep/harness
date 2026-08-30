@@ -514,63 +514,22 @@ mà chính chúng ta đã chứng minh là chưa đủ.
 
 ---
 
-## 5. Quarantine
+## 5. Quarantine model — ĐÃ CẮT, chuyển sang mục rủi ro
 
-### 5.1 Cái Microsoft làm đúng, và chỗ đặt sai
+Mục này từng đặc tả một model phụ rẻ hơn để suy luận trên nội dung `UNTRUSTED`
+(mẫu dual-LLM/CaMeL), cùng `Quarantined[T]` và một nhánh fail-closed riêng.
 
-`set_quarantine_client` cung cấp một model riêng, rẻ hơn, để suy luận trên nội dung không
-tin cậy — mẫu dual-LLM / CaMeL. Đây là thứ **không gói nào khác trong 28 gói Python +
-TypeScript có** ([§09](../research/09-memory-context-multiagent-hitl.md) §16bis). Ý tưởng
-đúng; chỗ đặt sai: `_quarantine_chat_client` là biến **mức module**, gán qua
-`global`.
+**Đã cắt theo chính luật biên tập của bản thiết kế** ([00 §8.4](00-foundation.md)): mẫu này
+có đúng **một** cài đặt trong toàn nghiên cứu, và cài đặt đó `@experimental`, không được wire
+vào harness của chính nó, và không concurrency-safe. **Không có eval nào** so sánh tỉ lệ
+prompt-injection thành công có và không có quarantine
+([review-kiss.md](review-kiss.md) K-1).
 
-### 5.2 Nó thuộc về đâu trong đời một `Run`
+Đường đi bình thường đã đủ và đã có bằng chứng: `UNTRUSTED` + `danger` ⇒ `ASK` (có người
+duyệt) hoặc `DENY`. Đặc tả đầy đủ được giữ ở
+[`07-risks-and-open-issues.md`](07-risks-and-open-issues.md) dưới mục *"ý tưởng có kiến
+trúc, chờ eval"* — cắt khỏi đường đi bắt buộc, không vứt đi.
 
-Quarantine không phải cấu hình của tiến trình. Nó là **một seam của `Run`**:
-
-```python
-@value
-class RunConfig:
-    ...
-    quarantine: ModelProvider | None = None      # None = fail closed, xem dưới
-    max_grant_ttl: timedelta = timedelta(hours=1)
-
-
-@value
-class Quarantined[T]:
-    """Kết quả rút trích từ nội dung UNTRUSTED. Chỉ dữ liệu có schema, không văn xuôi."""
-    value: T                    # T phải là kiểu đóng: primitive, enum, hoặc @value có schema
-    label: Label                # luôn Integrity.UNTRUSTED — không hạ được
-    source_call_id: CallId
-```
-
-Ba luật, mỗi luật sửa một chỗ:
-
-1. **Vòng đời = vòng đời `Run`.** Provider được chốt (resolve) một lần lúc `Run` khởi
-   tạo và nằm trong `RunConfig` bất biến. Không setter, không `global`. Hai tenant chạy
-   song song trong một tiến trình có hai `RunConfig` — sửa khác biệt #3 ở §4.3.
-2. **Chỉ dữ liệu có schema quay lại context chính.** Model quarantine đọc nội dung
-   `UNTRUSTED` và trả về `Quarantined[T]` với `T` là kiểu đóng. Văn xuôi tự do **không**
-   được quay lại — đó chính là tính chất làm nên CaMeL: nội dung không tin cậy được rút
-   thành *giá trị*, không được rút thành *chỉ thị*. Transcript của quarantine không bao
-   giờ merge vào `messages` của run chính.
-3. **`Quarantined.label` không hạ được.** Không có API nào biến `UNTRUSTED` thành
-   `TRUSTED`. Quarantine giảm *bề mặt tấn công* (model rẻ, output có schema), nó **không**
-   tẩy nhãn. Đây là điểm dễ cài sai nhất và là lý do trường `label` nằm ngay trong kiểu.
-4. **Không cấu hình ⇒ `DENY`, không phải bỏ qua.** `quarantine=None` mà gặp tình huống
-   cần nó thì kết quả là `DENY` kèm reason nêu rõ. Đối lập với Microsoft: ở đó module
-   không được wire vào nên tình huống ấy **im lặng đi tiếp**.
-
-Chi phí của model quarantine tính vào **cùng một `Ledger`** của run
-([`05-cost-and-memory.md`](./05-cost-and-memory.md)). Một cơ chế an toàn có ngân sách
-riêng là một cơ chế an toàn không đếm được.
-
-**KISS:** quarantine chỉ được gọi ở đúng một tình huống — context `UNTRUSTED`, tool cần
-gọi là `danger` hoặc `accepts_tainted=False`, và người vận hành đã cấu hình provider. Nếu
-không, đường đi bình thường là `ASK` (có con người) hoặc `DENY`. Không thêm chế độ nào
-khác cho tới khi có số đo cho thấy cần.
-
----
 
 ## 6. Model không cầm công tắc nào (R-3)
 
