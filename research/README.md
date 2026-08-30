@@ -13,6 +13,7 @@ quan tới bất kỳ mã nguồn nào khác trong repository này.
 | [03 — Safety & Reliability](03-safety-reliability.md) | §15 Reliability · §16 Security · §17 Poka-Yoke · §18 Observability · §19 Evaluation · §20 Cost |
 | [04 — Weaknesses & Anti-patterns](04-weaknesses-antipatterns.md) | §26 S/W · §27 Hidden weaknesses · §28 Anti-patterns |
 | [05 — Ideal Harness](05-ideal-harness.md) | §29 Best-of-breed · §30 Ranking · §31 Lessons · §32 Kiến trúc · §33 Minimal core · §35–36 API · §37 Khuyến nghị · §39 Gaps · §40 Sources |
+| [06 — Phía TypeScript](06-typescript.md) | 5 gói npm · **MCP không phải security boundary** · approval tốt nhất |
 | [07 — Tám gói Python còn lại](07-remaining-python.md) | Bảng 16 gói · **hai đính chính cho kết luận trong §00** |
 | [harvest.py](harvest.py) | **Bộ đo công khai** — mọi con số tái lập bằng một lệnh |
 
@@ -55,3 +56,7 @@ qua tài liệu. Các con số cơ chế được chuẩn hoá theo kLOC để s
    thay vì giữ nguyên câu rộng ban đầu.
 3. **Approval không phải isolation** — Goose có bốn permission mode nhưng sandbox
    seatbelt đã bị gỡ và tool chạy với quyền của user.
+4. **MCP không phải security boundary** — 12,2/kLOC "permission" trong MCP SDK hoá ra
+   **toàn bộ là OAuth ở tầng transport**. Nó chuẩn hoá "client này được nói chuyện với
+   server này không", chưa bao giờ chuẩn hoá "lời gọi tool này được phép chạy không"
+   ([§6](06-typescript.md)).
