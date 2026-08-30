@@ -645,6 +645,33 @@ Cụ thể, vì đây là câu hỏi trung tâm:
 
 ## C.2 `recall` là effect gì?
 
+### C.2bis — `provenance` chỉ được NÂNG nhãn, không bao giờ giữ nhãn thấp
+
+Bản nháp đầu cho `recall` join nhãn **từng bản ghi** thay vì áp `spec.emits` như mọi tool
+`external`, với lập luận "không phải ngoại lệ mà là cùng luật ở dạng tổng quát". Một reviewer
+chỉ ra dạng tổng quát đó chỉ đúng **khi nhãn per-record có tính toàn vẹn** — điều kiện không
+được nêu ở đâu ([review-security.md](review-security.md) S-5).
+
+Kịch bản: run A đọc trang web thù địch, ghi memo với `integrity=UNTRUSTED` (đúng). Nhưng
+`Provenance` **nằm trong store**, và store là hệ thống bên ngoài — không chữ ký, không MAC.
+Attacker, một tenant khác, hay một backup bị chỉnh đặt lại `integrity=TRUSTED`. Run B `recall`,
+mọi memo tự khai `TRUSTED`, nhãn run B **không tăng**, và injection vừa trở thành thường trú
+vừa vô hình với lattice. Đó là một **cơ chế hạ nhãn hiệu dụng dựa trên dữ liệu do chính sink
+cung cấp** — và nó rơi đúng vào khuyết điểm #6 mà README tuyên bố đã sửa.
+
+Ba luật thay thế:
+
+| # | luật |
+|---|---|
+| **M-1** | `recall` là `external` như mọi tool `external`: **luôn** `join(UNTRUSTED)`. Không ngoại lệ mặc định. |
+| **M-2** | `provenance.label` đọc lên chỉ dùng để **nâng** nhãn, không bao giờ để giữ nhãn thấp — đúng tính đơn điệu mà [00 §3.2](00-foundation.md) đòi. |
+| **M-3** | Muốn `recall` **không** nâng nhãn thì phải có cả hai: operator khai `trusted_provenance=True`, **và** bản ghi mang MAC do harness ký bằng khoá của deployment. Thiếu một trong hai ⇒ M-1. |
+
+M-3 là chỗ duy nhất trong bản thiết kế mà một tuyên bố từ hệ thống bên ngoài được tin, và nó
+được tin **chỉ khi có chữ ký của chính harness**. Đó là khác biệt giữa "tin dữ liệu" và "tin
+chữ ký của mình trên dữ liệu".
+
+
 **`external`. Không phải `read`.**
 
 Lý giải theo bảng Effect ở [`00-foundation.md`](00-foundation.md) §2: `external` là lớp

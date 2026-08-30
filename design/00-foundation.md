@@ -114,6 +114,21 @@ Luật thực thi:
 - context chứa dữ liệu `SECRET` **không được** gọi tool có `max_confidentiality=PUBLIC`
   (tool `external` và `write` mặc định là sink `PUBLIC`)
 
+**Cái gì nâng nhãn lên `SECRET`.** Một reviewer chỉ ra bản nháp đầu không có **đường nào**
+đưa `confidentiality` rời `PUBLIC` — nửa lattice là trang trí, và một cơ chế không có đầu vào
+mà vẫn được liệt kê là điểm mạnh sẽ bị người vận hành tin nhầm
+([review-security.md](review-security.md) S-3). Hai nguồn, cả hai trên đường đi bắt buộc:
+
+1. **`Secret[T]` do người dùng đưa vào.** Bất kỳ giá trị nào bọc trong `Secret` (định nghĩa ở
+   [04 §7bis](04-runtime-durability.md)) nâng nhãn run lên `SECRET` khi nó vào context.
+2. **`ToolSpec.emits`, chỉ operator đặt được.** Suy ra từ `effect` theo mặc định; operator —
+   **không** phải tác giả tool — nâng riêng cho tool đọc vùng nhạy cảm (bảng lương, hồ sơ bệnh
+   án). Đặt ở cấu hình deployment, không ở decorator, vì cờ trong decorator đúng hình dạng
+   `mode_set` mà chính bản thiết kế này phê phán.
+
+Nếu một deployment không dùng cả hai, trục confidentiality nằm im ở `PUBLIC` và harness chỉ
+thực thi Biba — **điều đó phải được nói ra**, không được để người vận hành suy đoán.
+
 **Ba chỗ phải khác Microsoft:**
 
 1. **Bật mặc định.** Của họ là submodule opt-in mà chính `_harness/` của họ không import,

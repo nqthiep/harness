@@ -195,8 +195,11 @@ def unguarded_paths(
 ) -> Sequence[UnguardedPath]:
     """Mọi cách vòng qua một gate. Rỗng ⇔ enforcement giữ trên MỌI đường.
 
-    Duyệt DFS từ START trên graph đã compile, **từ chối đi qua** `gate`. Chạm được
-    `node` trong điều kiện đó là một phản ví dụ, và `witness` là đường đi để in ra.
+    Duyệt DFS **từ mọi entry point hợp lệ**, không chỉ `START`, **từ chối đi qua** `gate`.
+    Chạm được `node` trong điều kiện đó là một phản ví dụ, và `witness` là đường đi để in ra.
+
+    Với LangGraph, resume nạp checkpoint và tiếp tục từ node bất kỳ, nên tập entry point là
+    **mọi node** — xem §3.5. Đó là lý do phép chứng minh này KHÔNG đủ một mình.
     """
 ```
 
@@ -248,11 +251,53 @@ làm lại đúng cái vòng review tìm ra 0 lỗi bảo mật.
 **(c) CI — chạy trên graph thật của mỗi ví dụ trong `examples/`**, không chỉ graph mặc
 định. Một plugin thêm node là chuyện được phép (R-1); thêm node mà mở đường vòng thì không.
 
+### 3.5 Hai chỗ phép chứng minh thủng, và bất biến thay thế
+
+Một reviewer đối kháng tìm ra hai đường vòng mà `unguarded_paths()` **báo xanh**
+([review-security.md](review-security.md) S-1, S-2). Cả hai cùng một nguyên nhân: hàm này
+chứng minh về **cạnh trong graph**, còn kẻ tấn công đi ở **chỗ khác**.
+
+#### G-1. Resume là entry point ở giữa graph
+
+Checkpoint được ghi tại biên `approve → tools`. Tiến trình chết. Ba giờ sau, resume nạp
+checkpoint và chạy tiếp **từ node `tools`** — không phải một đường đi từ `START`. Node
+`policy` đã bị nhảy qua, nên không ai tra lại `DecisionLog`: `Decision` hết hạn từ hai giờ
+trước, hoặc đã bị thu hồi bằng `Decision(verdict=DENY)` ghi trong lúc pause, mà tool vẫn
+chạy. Mất **cùng lúc** TTL (02 §2.5), thu hồi (02 §2.4 D-2) và R-2 — và mất **im lặng**.
+
+> **Bất biến thay thế I-1.** *Gate là tiền điều kiện tại chỗ tiêu thụ, không phải một cạnh.*
+> Node `tools` gọi `DecisionLog.lookup(call, run_id, now=clock())` **ngay trước từng lời gọi**
+> và fail-closed nếu kết quả không còn `ALLOW`. Node `policy` vẫn tồn tại — nó là chỗ *hỏi*
+> — nhưng quyền được kiểm lại ở chỗ *dùng*. Một tra cứu thừa trên đường đi thuận là cái giá
+> rẻ để một resume ba giờ sau không thành lỗ hổng.
+
+#### G-2. `GUARDED` canh TÊN NODE, không canh lời gọi
+
+Ngưỡng nén ở [05](05-cost-and-memory.md) §B.2 gọi model để tóm tắt khi context đạt 80% cửa
+sổ. Lời gọi đó không nằm ở node tên `model`, nên `GUARDED[MODEL] = BUDGET` không phủ nó và
+`unguarded_paths()` vẫn rỗng. Reservation cấp ở node `budget` đã được tính trọn cho lời gọi
+chính, nên lời gọi tóm tắt tiêu **ngoài** trần. Kẻ tấn công chỉ cần dán một trang dài để mỗi
+lượt sinh thêm một model call không có ceiling — tức đẩy thẳng vào khuyết điểm #4 mà bản
+thiết kế tuyên bố sửa.
+
+> **Bất biến thay thế I-2.** *Không lời gọi `ModelProvider` nào chạy mà không có
+> `Reservation` đang mở.* Cưỡng chế ở **seam**, không ở tên node: `ModelProvider` được bọc
+> một lần trên đường đi bắt buộc, và wrapper raise nếu `ctx.reservation is None`. Kiểm ở
+> tầng seam bắt được mọi lời gọi bất kể nó phát ra từ node nào, kể cả node do plugin thêm.
+
+**Vì sao ghi hai cái này ra thay vì lặng lẽ vá.** `unguarded_paths()` được quảng cáo là
+"chứng minh được chứ không review được". Một phép chứng minh có miền hẹp hơn lời quảng cáo
+của nó thì nguy hiểm hơn không có phép chứng minh nào — người vận hành sẽ tin nó. Miền thật
+là: *mọi đường đi từ START trong graph tĩnh*. I-1 và I-2 phủ phần còn lại, và cả hai đều là
+**kiểm tại chỗ chạy**, không phải kiểm tại chỗ dựng.
+
 ### 3.4 Nó chứng minh gì, và KHÔNG chứng minh gì
 
 | chứng minh được | KHÔNG chứng minh được |
 |---|---|
-| không đường nào tới `model` bỏ qua `budget` | `budget` có thật sự `reserve()` không |
+| không đường nào **từ START** tới `model` bỏ qua `budget` | `budget` có thật sự `reserve()` không |
+| — | lời gọi model phát từ node khác (I-2 lo) |
+| — | resume vào giữa graph (I-1 lo) |
 | không đường nào tới `tools` bỏ qua `policy` | `policy` có ra `DENY` đúng chỗ không |
 | không đường nào tới `END` bỏ qua `finish` | `finish` có phát `run.finished` không |
 
