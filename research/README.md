@@ -16,9 +16,45 @@ quan tới bất kỳ mã nguồn nào khác trong repository này.
 | [06 — Phía TypeScript](06-typescript.md) | 5 gói npm · **MCP không phải security boundary** · approval tốt nhất |
 | [07 — Tám gói Python còn lại](07-remaining-python.md) | Bảng 16 gói · **hai đính chính cho kết luận trong §00** |
 | [08 — Tool API, MCP, Plugin](08-tool-mcp-plugin.md) | §8 Tool API & error taxonomy · §9 **MCP tự nói annotation không phải tín hiệu bảo mật** · §24 Plugin architecture |
+| [11 — Workflow & Developer Experience](11-workflow-and-dx.md) | §12 Ba triết lý orchestration · §22 DX đo được · **graph là tiền đề, không phải tính năng** |
 | [09 — Memory, Context, Multi-agent, HITL](09-memory-context-multiagent-hitl.md) | §10 Memory · §11 Context engineering · §13 Multi-agent · §14 HITL · **4 số nổi bật bị bác bỏ** |
 | [10 — Governance, Health, Languages](10-governance-health-languages.md) | §25 License · §26 Dependency cost · §27 Repo health · §28 **Câu trả lời cho Java/Spring** · **đính chính một số đã công bố** |
 | [harvest.py](harvest.py) | **Bộ đo công khai** — mọi con số tái lập bằng một lệnh |
+
+## Bản đồ phủ: 43 mục của đề bài nằm ở đâu
+
+Đánh số §-trong các tệp **00–07** được đặt sớm và không khớp 1-1 với đánh số của đề bài;
+các tệp 08–11 dùng đúng số của đề bài. Bảng này là bản đồ thật, để không mục nào bị coi
+là đã trả lời khi chưa.
+
+| đề bài | nội dung | trả lời ở |
+|---|---|---|
+| 1–3 | Vai trò, mục tiêu, phạm vi | [01](01-landscape-and-taxonomy.md) |
+| 4 | Framework vs Harness | [01](01-landscape-and-taxonomy.md) §1 |
+| 5 | Tiêu chí nghiên cứu & trọng số | [02](02-api-comparison.md) §4 |
+| 6–7 | Agent abstraction, Model interface | [02](02-api-comparison.md) §6 |
+| **8–9** | **Tool interface, MCP** | [08](08-tool-mcp-plugin.md) |
+| **10–11** | **Memory, Context engineering** | [09](09-memory-context-multiagent-hitl.md) |
+| **12** | **Workflow / Orchestration** | [11](11-workflow-and-dx.md) §12 |
+| **13–14** | **Multi-agent, HITL** | [09](09-memory-context-multiagent-hitl.md) |
+| 15–20 | Reliability, Poka-Yoke, Security, Observability, Eval, Cost | [03](03-safety-reliability.md) |
+| 21 | Performance | [03](03-safety-reliability.md) · [10](10-governance-health-languages.md) §26 |
+| **22** | **Developer Experience** | [11](11-workflow-and-dx.md) §22 |
+| 23 | API Design (12 lớp API) | [02](02-api-comparison.md) · [05](05-ideal-harness.md) §35–36 |
+| **24** | **Plugin Architecture** | [08](08-tool-mcp-plugin.md) §24 |
+| **25** | **Language Support (gồm Java)** | [10](10-governance-health-languages.md) §28 · [06](06-typescript.md) |
+| 26 | Production Readiness | [03](03-safety-reliability.md) · [10](10-governance-health-languages.md) §26 |
+| **27–28** | **License, GitHub Health** | [10](10-governance-health-languages.md) §25, §27 |
+| 29 | Ecosystem | [01](01-landscape-and-taxonomy.md) §2 · [10](10-governance-health-languages.md) |
+| 30–32 | Score, điểm yếu, anti-pattern | [04](04-weaknesses-antipatterns.md) |
+| 33–34 | So sánh API thật, reverse engineering | [02](02-api-comparison.md) §6 — và xuyên suốt 08–11 |
+| 35–38 | Top 10, best-of-breed, harness mới, ideal architecture | [05](05-ideal-harness.md) |
+| 39–40 | Minimal core, plugin boundary | [05](05-ideal-harness.md) · [08](08-tool-mcp-plugin.md) §24 |
+| 41–43 | API design, Poka-Yoke API, khuyến nghị cuối | [05](05-ideal-harness.md) |
+| 45–46 | Yêu cầu evidence & freshness | mọi tệp, mục *§45 Evidence limits* |
+
+Bổ sung ngoài đề bài: [06](06-typescript.md) TypeScript · [07](07-remaining-python.md)
+8 gói Python còn lại · [harvest.py](harvest.py) bộ đo.
 
 ## Tái lập
 
