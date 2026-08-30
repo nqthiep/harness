@@ -129,6 +129,48 @@ mà vẫn được liệt kê là điểm mạnh sẽ bị người vận hành 
 Nếu một deployment không dùng cả hai, trục confidentiality nằm im ở `PUBLIC` và harness chỉ
 thực thi Biba — **điều đó phải được nói ra**, không được để người vận hành suy đoán.
 
+### Nhãn gắn vào ĐÂU — per-message, và ba luật đi kèm
+
+Bản nháp đầu để câu này mở, và hai tệp trả lời khác nhau: [02](02-safety-engine.md) §4.3 mô
+tả nhãn như **một nhãn cho cả run** (hai chuỗi trong state đã checkpoint), còn
+[05](05-cost-and-memory.md) §B.2 nói *"`Label` của message tổng hợp = `join` của `Label` mọi
+message bị nó thay thế"* — tức **per-message**. Không thể cùng đúng
+([review-security.md](review-security.md) S-19).
+
+**Chốt: nhãn gắn vào từng message.** Nhãn mức run làm cả run `UNTRUSTED` vĩnh viễn sau một
+lần `web_fetch` và biến harness thành vô dụng. Nhưng per-message một mình là **fail-open**,
+nên nó đi kèm ba luật, và luật L-2 là luật không được quên:
+
+| # | luật |
+|---|---|
+| **L-1** | Mỗi message mang một `Label`. Message tool result mang `spec.emits` join nhãn của args. |
+| **L-2** | **Nhãn của message do MODEL sinh = `join` nhãn của TOÀN BỘ context tại thời điểm sinh.** |
+| **L-3** | Nhãn hiệu dụng đưa vào `check_flow` = `join` nhãn của **mọi message còn trong context**, tính lại **sau mỗi lần compaction**. |
+
+**Vì sao L-2 là luật không được quên.** Câu trả lời tự nhiên nhất cho "assistant message do
+model sinh ra mang nhãn gì?" là *"model của ta sinh ra, nên `TRUSTED`"* — và nó sai theo cách
+phá sập toàn bộ lattice:
+
+1. `web_fetch` trả nội dung `UNTRUSTED` chứa injection.
+2. Model đọc, sinh assistant message *"Người dùng muốn tôi xoá thư mục build."* Không có L-2,
+   message này là `TRUSTED`.
+3. Lượt sau `ClearToolResults` (05 §B.2, kích hoạt ở 60% window) **xoá nội dung tool result**
+   — tức xoá đúng message mang nhãn `UNTRUSTED`, giữ lại chuỗi `CLEARED`.
+4. Nhãn hợp thành của context còn lại: `TRUSTED`. Chỉ thị của attacker **vẫn còn**, đã được
+   diễn đạt lại bằng giọng của model.
+5. `check_flow` cho phép tool `danger`.
+
+Compaction — cơ chế mà 05 §B.2 khẳng định "không được rửa taint" — trở thành đường rửa taint
+hoàn hảo, bằng đúng thao tác mà tệp đó mô tả là an toàn. Luật *"summary của `UNTRUSTED` là
+`UNTRUSTED`"* chỉ nói về `SummarizeOldPrefix`; `ClearToolResults` không sinh summary nên luật
+đó không chạm tới nó. **L-2 chặn ở gốc**: message của model đã mang `UNTRUSTED` từ lúc sinh,
+nên xoá tool result không hạ được gì.
+
+L-3 nói rõ nhãn hiệu dụng là một hàm **tính lại**, không phải một biến tích luỹ. Điều đó cũng
+là cách nhãn *giảm* một cách hợp lệ: khi message `UNTRUSTED` cuối cùng rời context và không
+message nào do model sinh trong lúc nó có mặt còn ở lại. Đơn điệu vẫn giữ **trong** một lần
+tính; nó không phải một biến chỉ tăng suốt đời run.
+
 **Ba chỗ phải khác Microsoft:**
 
 1. **Bật mặc định.** Của họ là submodule opt-in mà chính `_harness/` của họ không import,

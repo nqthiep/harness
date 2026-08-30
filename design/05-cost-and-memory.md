@@ -467,7 +467,15 @@ là seam plugin, và là thứ duy nhất trong năm cái không phải là mộ
 > **Bản tóm tắt của nội dung `UNTRUSTED` là `UNTRUSTED`.** Bản tóm tắt của context chứa
 > `SECRET` là `SECRET`.
 
-`Label` của message tổng hợp = `join` của `Label` mọi message bị nó thay thế. Nếu không có
+`Label` của message tổng hợp = `join` của `Label` mọi message bị nó thay thế.
+
+> **`ClearToolResults` cũng phải giữ nhãn.** Xoá *nội dung* một tool result **không** xoá
+> `Label` của message đó — message rỗng vẫn mang nhãn cũ và vẫn tham gia `join` ở L-3. Bản
+> nháp đầu mô tả thao tác này là an toàn vì "giữ cả hai message", nhưng an toàn chỉ đúng khi
+> nhãn ở lại cùng. Cộng với L-2 ([00 §3.2](00-foundation.md)) — message do model sinh đã mang
+> nhãn của context lúc sinh — đường rửa taint ở S-19 bị chặn ở hai chỗ độc lập.
+
+Nếu không có
 luật này, summarization trở thành đường **rửa nhãn** hoàn hảo: nội dung web độc hại đi vào
 như `UNTRUSTED`, đi ra thành một đoạn văn do model viết trông y hệt nội dung tin cậy, và
 lattice mất hiệu lực đúng lúc context dài nhất. Hợp thành đơn điệu — không bao giờ giảm

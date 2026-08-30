@@ -105,14 +105,13 @@ Security 9 nhưng Runtime 4 vì `cancel` 0,0/kLOC ([§05](../research/05-ideal-h
 def tool(fn: Callable[..., Any], /) -> NoReturn: ...          # thiếu effect -> lỗi ngay
 @overload
 def tool(*, effect: Effect, name: str | None = None,
-         accepts_tainted: bool = False,
-         max_confidentiality: Confidentiality = Confidentiality.PUBLIC,
          ) -> Callable[[Callable[..., OutT]], ToolSpec]: ...
 ```
 
 Người viết tool khai **đúng một thứ**: `effect`. Năm hành vi — song song, retry, taint,
 verdict mặc định, mức audit — là *dẫn xuất* ([`00`](00-foundation.md) §2). Không có cờ
-`sequential=`, không có `handle_tool_error=`, không có `retries=` trên từng tool.
+`sequential=`, không có `handle_tool_error=`, không có `retries=` trên từng tool — và
+**không có `accepts_tainted=` lẫn `max_confidentiality=`**, xem [03 §1.1](03-tools-and-mcp.md).
 
 `@tool` không có dạng gọi trần (`@tool` không tham số): overload đầu tiên trả `NoReturn`
 nên **type checker báo lỗi trước cả khi chạy**, và runtime raise `MissingEffectError` lúc

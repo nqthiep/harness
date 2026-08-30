@@ -26,13 +26,14 @@ khi nó thành thật.
 | S-13 | `slice_for_child` nhân bội `steps`/`wall_clock`, mâu thuẫn `04 §7.2` | cần chốt ngữ nghĩa sub-agent budget |
 | S-14 | `reserve()` không có ngữ nghĩa với `spent`, không có đường huỷ reservation | cần đặc tả vòng đời `Reservation` |
 | S-15 | `Policy` dùng chung mọi run; không luật nào cấm state trong `self` ⇒ R-4 có lỗ | sửa được bằng một câu luật + test |
-| S-16 | `accepts_tainted` là cờ decorator — đúng hình dạng `mode_set` mà thiết kế phê phán | **mâu thuẫn thật với R-3**, cần chuyển sang cấu hình operator |
 | S-17 | `description` của tool MCP vào prompt khi nhãn còn `TRUSTED` | injection qua metadata; cần gắn nhãn cho description |
 | S-18 | P-4 (`Policy.check` thuần) làm `DenyHosts` chỉ còn advisory ⇒ SSRF đi qua | cần tách policy thuần khỏi enforcement I/O |
-| S-19 | nhãn mức run vs per-message mâu thuẫn; nhãn output model không định nghĩa ⇒ `ClearToolResults` rửa taint | **nghiêm trọng** — cần chốt mô hình nhãn |
 
-**S-16 và S-19 nên được ưu tiên**: S-16 là mâu thuẫn trực tiếp với R-3, và S-19 là một
-đường rửa taint, tức cùng lớp với S-5 đã sửa.
+> **S-16 và S-19 ĐÃ SỬA** (bước 0, trước khi viết code — cả hai là quyết định mức mô hình mà
+> code sẽ đóng băng). S-16: `accepts_tainted` và trần confidentiality rời khỏi `@tool`, chỉ
+> đến từ cấu hình operator keyed theo tên tool, dùng lại đúng cơ chế đã có cho tool MCP.
+> S-19: chốt nhãn **per-message** cộng ba luật L-1/L-2/L-3 ở [00 §3.2](00-foundation.md), và
+> `ClearToolResults` phải giữ nhãn khi xoá nội dung.
 
 ### 1.2 Bảo mật — nên sửa (S-21…S-29)
 

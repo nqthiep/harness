@@ -502,7 +502,7 @@ nhất cho khoảng cách giữa *làm được gì* và *mặc định làm gì
 | # | Microsoft | ở đây | bằng chứng |
 |---|---|---|---|
 | **1. Bật mặc định** | submodule opt-in; `grep` import từ `_harness/` trả về **rỗng**; không có trong `agent_framework/__init__.py`; `create_harness_agent` không cài lattice | node bắt buộc trong graph; `unguarded_paths()` chứng minh; không có công tắc bật/tắt | §16bis "the good module is not wired in" |
-| **2. Không `threading.local()`** | `_current_middleware = threading.local()` set/clear xuyên `await`; hai tool call đồng thời đọc nhầm slot của nhau, hoặc đọc `None` — **im lặng, fail-open** | nhãn sống trong **state đã checkpoint của thread** (`label_integrity`, `label_confidentiality` — chuỗi, JSON-checkpointable, như `spent_usd`) | §16bis, và Round 34/37/41 của chính repo này |
+| **2. Không `threading.local()`** | `_current_middleware = threading.local()` set/clear xuyên `await`; hai tool call đồng thời đọc nhầm slot của nhau, hoặc đọc `None` — **im lặng, fail-open** | nhãn sống trong **state đã checkpoint của thread**, gắn **theo từng message** (`msg.label_integrity`, `msg.label_confidentiality` — chuỗi, JSON-checkpointable); nhãn hiệu dụng là `join` tính lại theo L-3 ([00 §3.2](00-foundation.md)), không phải một biến tích luỹ | §16bis, và Round 34/37/41 của chính repo này |
 | **3. Không singleton toàn tiến trình** | `_global_variable_store` và `_quarantine_chat_client` ở mức module, đổi qua setter `global`; đa tenant thì một tenant đổi là mọi tenant đổi | mọi trạng thái an toàn khoá theo `run_id` trong state; không có biến module nào ghi được sau import | §16bis |
 
 Về (2), một điểm quan trọng dễ bị hiểu nhầm: `contextvars.ContextVar` — primitive đúng mà

@@ -49,8 +49,7 @@ class ToolSpec:
 
     effect: Effect                       # ← THỨ DUY NHẤT người viết tool phải nghĩ
 
-    # Ba trường còn lại KHÔNG phải là hành vi; chúng là dữ kiện mà runtime không suy ra được.
-    accepts_tainted: bool = False        # 00-foundation §3.2 — chỉ operator/tác giả local được đặt
+    # Dữ kiện runtime không suy ra được. KHÔNG có `accepts_tainted` — xem §1.1bis.
     upstream_accepts_key: bool = False   # chỉ có nghĩa khi effect ∈ {WRITE, DANGER}
     server: ServerLabel | None = None    # None = tool local; có = tool MCP, xem §5
     timeout_s: float = 30.0
@@ -102,6 +101,31 @@ that fails may have already had an effect and must not be retried blindly"*
 ([§08](../research/08-tool-mcp-plugin.md) §8.2). Vì vậy hai cột `model_may_retry` và
 `runtime_auto_retry` tách ra, và chỉ `read` có cột thứ hai bằng `True`.
 
+### 1.1bis Vì sao `accepts_tainted` KHÔNG nằm trên `@tool`
+
+Bản nháp đầu cho tác giả tool đặt `accepts_tainted=True` và `max_confidentiality=SECRET`
+ngay trong decorator. Một reviewer chỉ ra hai đối số đó có **đúng hình dạng** mà chính tệp
+này buộc tội Microsoft ở §1.3, và chúng tắt **đúng hai** nhánh `DENY` mà lattice cung cấp
+([review-security.md](review-security.md) S-16).
+
+Kịch bản: một dev viết `run_shell` (`effect=danger`); trong lúc test, injection từ web làm
+mọi lời gọi bị `check_flow` từ chối; cách sửa hiện ngay trong signature — thêm
+`accepts_tainted=True`. Diff **một dòng**, trong một tệp tool, không đụng cấu hình operator,
+và reviewer chỉ thấy một keyword argument nằm giữa `effect=` và `name=`. Từ đó nhánh
+integrity bị vô hiệu cho đúng tool nguy hiểm nhất repo.
+
+Bất biến **T-1** liệt kê những gì `ToolSpec` không có — `parallel_safe`, `handle_tool_error`,
+`approval_mode`, `sequential` — và bỏ sót hai cái nguy hiểm hơn cả bốn cái kia.
+
+> **Luật.** `accepts_tainted` và trần confidentiality **chỉ** đến từ cấu hình operator, keyed
+> theo tên tool. Cơ chế đã có sẵn cho tool MCP ở §5.2
+> (`policy.accepts_tainted: frozenset[ToolName]`) — tool local dùng **cùng** cơ chế đó, qua
+> `RunConfig`. Không có lý do gì tool local được đối xử lỏng hơn tool bên thứ ba.
+
+Chúng được resolve lúc **bind** (khi bộ tool gắn vào `Agent`), không lúc **định nghĩa**. Câu
+`"chỉ operator/tác giả local được đặt"` ở bản nháp đầu là chỗ lỗ hổng nằm: dấu gạch chéo đó
+gộp hai principal có hai quy trình review khác nhau.
+
 ### 1.3 Decorator — thiếu `effect` là lỗi lúc import
 
 ```python
@@ -109,7 +133,6 @@ def tool(
     *,
     effect: Effect | str,                    # keyword-only, KHÔNG có giá trị mặc định
     name: str | None = None,
-    accepts_tainted: bool = False,
     upstream_accepts_key: bool = False,
     timeout_s: float = 30.0,
 ) -> Callable[[Callable[..., Awaitable[Any]]], ToolSpec]: ...
