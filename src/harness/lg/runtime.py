@@ -16,7 +16,8 @@ from langgraph.types import interrupt
 from ..budget.ledger import Ledger
 from ..errors import BudgetExceeded
 from ..observe.events import EventKind
-from ..policy.base import Decision, ToolCall, Verdict
+from ..policy.base import Ruling, ToolCall, Verdict
+from ..policy.decision import Actor, Decision, DecisionLog, Scope
 from ..policy.taint import TaintTracker
 from ..result import Money, StopReason, Usage
 from ..run import CONTINUE, _MAP
@@ -30,13 +31,16 @@ from .graph import INTERRUPT, MAX_PAUSES
 class Runtime:
     def __init__(self, *, model, toolset, ledger: Ledger, engine, taint, price,
                  max_output: int, model_name: str = "claude-opus-5",
-                 bus=None, approve=None) -> None:
+                 bus=None, approve=None, decisions: DecisionLog | None = None) -> None:
         self._model, self._tools = model, toolset
         self._model_name, self._started = model_name, False
         self._budget = ledger.budget          # the spec; the spend lives per turn
         self._engine = engine
         self._price, self._max_output = price, max_output
         self._bus, self._approve = bus, approve
+        # Sổ quyết định. Nó KHÔNG phải trạng thái của một run — nó là audit sink, chung
+        # cho graph, và mọi tra cứu đều keyed theo run_id, nên R-4 vẫn giữ.
+        self._decisions = decisions if decisions is not None else DecisionLog()
 
     # ── everything mutable is derived from graph state ───────────────────────
     #
@@ -166,13 +170,23 @@ class Runtime:
                 ok = bool(interrupt({"tool": p["tool"],
                                      "arguments": p["call"].get("args", {}),
                                      "reason": p["reason"]}))
-                d = Decision(Verdict.ALLOW if ok else Verdict.DENY,
+                d = Ruling(Verdict.ALLOW if ok else Verdict.DENY,
                              "approved" if ok else "declined by approver", "approval")
             else:
                 d = asyncio.run(self._engine.resolve(
-                    Decision(Verdict.ASK, p["reason"], "policy"), call, ctx, self._approve))
+                    Ruling(Verdict.ASK, p["reason"], "policy"), call, ctx, self._approve))
             self._emit(EventKind.POLICY_DECIDED, tool=p["tool"], call_id=p["call"]["id"],
                        verdict=d.verdict.name, reason=d.reason, policy=d.policy)
+            # Phê duyệt là một SỰ KIỆN, không phải một cờ. Ghi nó ra sổ, scoped tới đúng
+            # lời gọi này: `call_id` khác None nên grant không sống quá lượt — "duyệt vĩnh
+            # viễn" không biểu diễn được (policy/decision.py).
+            self._decisions.record(Decision(
+                id=f"dec-{p['call']['id']}", verdict=d.verdict,
+                scope=Scope(tool=p["tool"], args=dict(p["call"].get("args", {})),
+                            call_id=p["call"]["id"]),
+                actor=(Actor.human("approver", via="callback")
+                       if self._approve is not None else Actor.policy(d.policy)),
+                decided_at=_now(), expires_at=None, run_id=_run_id(state), reason=d.reason))
             out.append({**p, "verdict": int(d.verdict), "reason": d.reason})
         denied = [ToolMessage(content=f"declined: {p['call']['name']}",
                               tool_call_id=p["call"]["id"], status="error")
@@ -193,11 +207,46 @@ class Runtime:
         with redaction_scope():
             return self._run_tools(state)
 
+    def _regate(self, p, state) -> Ruling:
+        """I-1 — gate là TIỀN ĐIỀU KIỆN TẠI CHỖ TIÊU THỤ, không phải một cạnh trong graph.
+
+        `unguarded_paths()` chứng minh mọi đường TỪ START tới `tools` đều qua `policy`.
+        Nhưng resume nạp checkpoint và chạy tiếp từ node bất kỳ: một run dừng sau
+        `approve` vào thẳng đây với `_pending` mang sẵn ALLOW, `policy` bị nhảy qua, và
+        grant có thể đã hết hạn hoặc đã bị thu hồi trong lúc pause
+        (design/review-security.md S-2, design/04 §3.5).
+
+        Nên node này KHÔNG tin `_pending`. Nó tính lại: engine thuần chạy lại (rẻ, không
+        I/O), và bất cứ cái gì còn ASK phải có một grant SỐNG trong sổ. Không có ⇒ từ chối.
+        """
+        spec = self._tools.get(p["tool"])
+        call = ToolCall(p["call"]["id"], p["tool"], p["call"].get("args", {}), spec)
+        ctx = _Ctx(tainted=self._tainter(state).tainted, safety=self._safety(state))
+        r = self._engine.decide(call, ctx)
+        if r.verdict is not Verdict.ASK:
+            return r
+        v = self._decisions.lookup(p["tool"], p["call"].get("args", {}),
+                                   run_id=_run_id(state), now=_now(),
+                                   call_id=p["call"]["id"])
+        if v is Verdict.ALLOW:
+            return Ruling(Verdict.ALLOW, "grant còn sống trong sổ", "decision-log")
+        return Ruling(Verdict.DENY,
+                      "không có grant còn hiệu lực cho lời gọi này "
+                      "(hết hạn, bị thu hồi, hoặc chưa từng được cấp)", "decision-log")
+
     def _run_tools(self, state) -> dict:
         tainter = self._tainter(state)
         led = self._ledger(state)
         msgs, tainted = [], False
         for p in state.get("_pending", []):
+            gate = self._regate(p, state)
+            if gate.verdict is not Verdict.ALLOW:
+                self._emit(EventKind.POLICY_DECIDED, tool=p["tool"],
+                           call_id=p["call"]["id"], verdict=gate.verdict.name,
+                           reason=gate.reason, policy=gate.policy)
+                msgs.append(ToolMessage(content=f"declined: {gate.reason}",
+                                        tool_call_id=p["call"]["id"], status="error"))
+                continue
             call = p["call"]
             spec = self._tools.get(p["tool"])
             if spec is None:                    # tool set changed under a resumed run
@@ -329,6 +378,16 @@ def _RESERVED(max_tokens: int):
     id is free — the accounting that matters is the snapshot in state."""
     from ..budget.ledger import Reservation
     return Reservation("state", Money.ZERO, 0, max_tokens, 0.0)
+
+
+def _now():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc)
+
+
+def _run_id(state) -> str:
+    """Danh tính run. Sống trong state (R-4), không trên Runtime."""
+    return str(state.get("run_id") or "-")
 
 
 class _Ctx:

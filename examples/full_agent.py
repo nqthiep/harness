@@ -27,7 +27,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from openviking_sdk import AsyncHTTPClient
 
-from harness import Agent, Decision, Verdict, tool
+from harness import Agent, Ruling, Verdict, tool
 from harness.lg import build_agent, unguarded_paths
 from harness.memory.viking import VikingStore
 from harness.models.fake import FakeModel
@@ -154,14 +154,14 @@ class QuyTrinhHoanTien:
     def __init__(self) -> None:
         self.buoc = Buoc.MOI
 
-    def check(self, call, ctx) -> Decision:
+    def check(self, call, ctx) -> Ruling:
         if call.name not in CHUYEN:
-            return Decision(Verdict.ALLOW, "ngoài quy trình", self.name)
+            return Ruling(Verdict.ALLOW, "ngoài quy trình", self.name)
         can, sang = CHUYEN[call.name]
         if self.buoc >= can:
             self.buoc = max(self.buoc, sang)
-            return Decision(Verdict.ALLOW, f"→ {self.buoc.nhan}", self.name)
-        return Decision(Verdict.DENY,
+            return Ruling(Verdict.ALLOW, f"→ {self.buoc.nhan}", self.name)
+        return Ruling(Verdict.DENY,
                         f"phải {can.nhan} trước; đang ở '{self.buoc.nhan}'", self.name)
 
 

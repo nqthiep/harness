@@ -169,13 +169,13 @@ class Walkthrough(unittest.TestCase):
 
     def test_p2_adding_a_policy_never_loosens(self):
         from harness.policy.engine import PolicyEngine
-        from harness.policy.base import Decision, Verdict, ToolCall
+        from harness.policy.base import Ruling, Verdict, ToolCall
         class AlwaysAllow:
             name = "yes"
-            def check(self, call, ctx): return Decision(Verdict.ALLOW, "", self.name)
+            def check(self, call, ctx): return Ruling(Verdict.ALLOW, "", self.name)
         class AlwaysDeny:
             name = "no"
-            def check(self, call, ctx): return Decision(Verdict.DENY, "nope", self.name)
+            def check(self, call, ctx): return Ruling(Verdict.DENY, "nope", self.name)
         call = ToolCall("c1", "roll_dice", {}, roll_dice)
         base = PolicyEngine((AlwaysDeny(),)).decide(call, None)
         with_extra = PolicyEngine((AlwaysDeny(), AlwaysAllow())).decide(call, None)

@@ -16,7 +16,7 @@ from typing import Any, Mapping
 from .context.assembler import canonical as _canonical
 from .errors import ToolContractError
 from .observe.events import EventKind
-from .policy.base import Decision, ToolCall, Verdict
+from .policy.base import Ruling, ToolCall, Verdict
 from .secrets import redact
 from .tools import EFFECT_PROFILES, ToolSpec
 
@@ -52,7 +52,7 @@ class Dispatcher:
         calls = [b for b in resp.content if b.get("type") == "tool_use"]
         ctx = RunContext(run_id, self._e._a.name, step, self._e._taint.tainted,
                          self._e._a.safety, self._e._l.remaining_wall_clock())
-        planned: list[tuple[dict, ToolSpec | None, Decision | None]] = []
+        planned: list[tuple[dict, ToolSpec | None, Ruling | None]] = []
 
         for b in calls:
             spec = self._e._a.toolset.get(b["name"])

@@ -23,7 +23,7 @@ class Verdict(IntEnum):
 
 
 @value
-class Decision:
+class Ruling:
     verdict: Verdict
     reason: str
     policy: str
@@ -40,4 +40,4 @@ class ToolCall:
 
 class Policy(Protocol):
     name: str
-    def check(self, call: "ToolCall", ctx: Any) -> Decision: ...
+    def check(self, call: "ToolCall", ctx: Any) -> Ruling: ...

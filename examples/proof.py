@@ -42,7 +42,7 @@ phan("§I.1", "EXTENSIBLE / PLUGINABLE — năm seam, cắm bằng code BÊN NGO
 # Yêu cầu: mở rộng được mà không sửa core; và "Pluginable ≠ Everything is a Plugin".
 # Phép thử thật sự: viết một bản cài đặt riêng cho CẢ NĂM seam, không import gì từ
 # nội bộ harness ngoài các protocol công khai, rồi chạy agent trên chúng.
-from harness import Agent, Decision, Verdict, tool                      # noqa: E402
+from harness import Agent, Ruling, Verdict, tool                      # noqa: E402
 from harness.models.base import ModelRequest, ModelResponse            # noqa: E402
 from harness.result import Money, Usage                                # noqa: E402
 
@@ -92,10 +92,10 @@ class ChiGioHanhChinh:                      # seam 3: Policy
     def __init__(self, gio: int) -> None:
         self.gio = gio
 
-    def check(self, call, ctx) -> Decision:
+    def check(self, call, ctx) -> Ruling:
         if 8 <= self.gio < 18:
-            return Decision(Verdict.ALLOW, "trong giờ", self.name)
-        return Decision(Verdict.DENY, f"ngoài giờ làm việc ({self.gio}h)", self.name)
+            return Ruling(Verdict.ALLOW, "trong giờ", self.name)
+        return Ruling(Verdict.DENY, f"ngoài giờ làm việc ({self.gio}h)", self.name)
 
 
 class KhoCuaToi:                            # seam 4: Store

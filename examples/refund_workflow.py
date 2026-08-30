@@ -19,7 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from harness import Agent, Decision, Verdict, tool
+from harness import Agent, Ruling, Verdict, tool
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -73,13 +73,13 @@ class QuyTrinhHoanTien:
         self.buoc = bat_dau
         self.lich_su: list[tuple[str, Buoc]] = []
 
-    def check(self, call, ctx) -> Decision:
+    def check(self, call, ctx) -> Ruling:
         if call.name in LUON_CHO_PHEP:
-            return Decision(Verdict.ALLOW, "tool đọc, không đổi trạng thái", self.name)
+            return Ruling(Verdict.ALLOW, "tool đọc, không đổi trạng thái", self.name)
 
         cho_phep = CHUYEN_TRANG_THAI[self.buoc]
         if call.name not in cho_phep:
-            return Decision(
+            return Ruling(
                 Verdict.DENY,
                 f"đang ở bước '{self.buoc.value}' — {GIAI_THICH[self.buoc]}. "
                 f"Bước hợp lệ tiếp theo: {', '.join(cho_phep) or 'không còn bước nào'}",
@@ -89,7 +89,7 @@ class QuyTrinhHoanTien:
         moi = cho_phep[call.name]
         self.lich_su.append((call.name, moi))
         self.buoc = moi
-        return Decision(Verdict.ALLOW, f"→ {moi.value}", self.name)
+        return Ruling(Verdict.ALLOW, f"→ {moi.value}", self.name)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

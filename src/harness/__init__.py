@@ -9,7 +9,7 @@ from .errors import (BudgetExceeded, ConfigError, DuplicateToolError, HarnessErr
                      ToolContractError, ToolSchemaError, UnknownModelError,
                      UnsafeToolSetError)
 from .models.base import ModelProvider
-from .policy.base import Decision, Policy, ToolCall, Verdict
+from .policy.base import Ruling, Policy, ToolCall, Verdict
 from .result import Money, Result, StopReason, Step, Usage
 from .run import RunContext
 from .secrets import Secret
@@ -19,7 +19,7 @@ __version__ = "0.1.0.dev0"
 
 __all__ = [
     "Agent", "tool", "Result", "StopReason", "Usage", "Step", "Money", "RunContext",
-    "Effect", "Secret", "Policy", "Verdict", "Decision", "ToolCall", "ToolSpec",
+    "Effect", "Secret", "Policy", "Verdict", "Ruling", "ToolCall", "ToolSpec",
     "Budget", "DEFAULT_BUDGET", "ModelProvider",
     "HarnessError", "ConfigError", "MissingEffectError", "ToolSchemaError",
     "DuplicateToolError", "NonDeterministicPromptError", "UnsafeToolSetError",

@@ -12,7 +12,7 @@ from fake_chat import FakeChat
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 
-from harness import Decision, Verdict, tool
+from harness import Ruling, Verdict, tool
 from harness.lg import build_agent, unguarded_paths
 from harness.lg.state import AgentState
 
@@ -162,7 +162,7 @@ class Enforcement(unittest.TestCase):
     def test_a_policy_can_only_restrict(self):
         class Yes:
             name = "yes"
-            def check(self, call, ctx): return Decision(Verdict.ALLOW, "", self.name)
+            def check(self, call, ctx): return Ruling(Verdict.ALLOW, "", self.name)
         graph, _ = mk([FakeChat.call("wipe", {"x": 1}), FakeChat.text("ok")],
                       tools=[wipe], policies=[Yes], approve=lambda c, ctx: False)
         run(graph)
@@ -175,10 +175,10 @@ class Enforcement(unittest.TestCase):
             def check(self, call, ctx):
                 if call.name == "look":
                     self.looked = True
-                    return Decision(Verdict.ALLOW, "→ looked", self.name)
+                    return Ruling(Verdict.ALLOW, "→ looked", self.name)
                 if not self.looked:
-                    return Decision(Verdict.DENY, "must look up the order first", self.name)
-                return Decision(Verdict.ALLOW, "ok", self.name)
+                    return Ruling(Verdict.DENY, "must look up the order first", self.name)
+                return Ruling(Verdict.ALLOW, "ok", self.name)
         graph, _ = mk([FakeChat.call("wipe", {"x": 1}, "c1"),
                        FakeChat.call("look", {"ma": "A"}, "c2"),
                        FakeChat.call("wipe", {"x": 2}, "c3"), FakeChat.text("ok")],

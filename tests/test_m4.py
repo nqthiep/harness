@@ -271,9 +271,9 @@ class StatefulPolicy(unittest.TestCase):
         def __init__(self, start=0):
             self.n = start
         def check(self, call, ctx):
-            from harness import Decision, Verdict
+            from harness import Ruling, Verdict
             self.n += 1
-            return Decision(Verdict.ALLOW, f"n={self.n}", self.name)
+            return Ruling(Verdict.ALLOW, f"n={self.n}", self.name)
 
     def _agent(self, policy):
         return Agent(name="T", job="j", tools=[peek], policies=[policy], budget="$5",
@@ -314,10 +314,10 @@ class StatefulPolicy(unittest.TestCase):
 
     def test_a_state_machine_cannot_loosen_an_earlier_denial(self):
         """Verdicts compose with max(), so a workflow can only ever restrict further."""
-        from harness import Decision, Verdict
+        from harness import Ruling, Verdict
         class AlwaysAllow:
             name = "workflow"
-            def check(self, call, ctx): return Decision(Verdict.ALLOW, "", self.name)
+            def check(self, call, ctx): return Ruling(Verdict.ALLOW, "", self.name)
         ran = []
         @tool(effect="danger")
         def wipe(x: int) -> str:

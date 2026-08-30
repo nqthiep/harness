@@ -16,7 +16,7 @@ That is CPython's, not ours: `slots=True` rebuilds the class, and the generated
 class body — no generated `__init__` — so every construction of every value type in the
 package reports "Too many arguments", and every field read reports "has no attribute".
 Round 39 measured it: 86 of 112 mypy errors, and, far worse, **a user of this library got
-no type checking at all on `Money`, `Usage`, `Result`, `Decision` or `ToolCall`** — the
+no type checking at all on `Money`, `Usage`, `Result`, `Ruling` or `ToolCall`** — the
 types they touch most.  §II question 5 asks whether a runtime error can be made a
 compile-time one; for the whole value layer the answer had been "no, silently".
 """
