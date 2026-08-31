@@ -41,9 +41,12 @@ lại, `## 4`/`## 5` cho thứ tự và điều kiện release.)*
   provider công bố ở docs/10 §3 nhưng chưa cài), **N-6** (`model.response` thiếu
   `usage`/`latency_ms`).
 - **M9 — XONG (3/3 sub-task: T-9.1 MCP client, T-9.2 Service API, T-9.3 canonical
-  event/3 transport).** **M10 (Evaluation) chưa có DÒNG CODE NÀO** — kiểm lại bằng
-  `grep` hôm nay, không phải bằng đọc lại tài liệu cũ (xem `## 3.2`). Đây là việc lớn
-  còn lại trước khi có thể tự chấm lại theo `docs/17`.
+  event/3 transport).**
+- **M10 — XONG (3/3 sub-task: T-10.1 trajectory contract, T-10.2 golden set, T-10.3
+  benchmark/cold-start).** Toàn bộ M6…M10 của `docs/17-research-alignment.md` giờ có
+  code, test, và ADR — xem `## 3.2` cho chi tiết từng sub-task, `## 4` cho roadmap đã
+  hoàn thành, `## 5` cho điều kiện v1.0 còn lại (chủ yếu: tự chấm lại theo `docs/17 §1`,
+  và pilot 2–4 tuần).
 
 ---
 
@@ -173,12 +176,29 @@ trong `src/harness/`:**
 | **M7 — Isolation** | 15% × gap — **nặng ký nhất theo trọng số nghiên cứu** | Workspace root, egress mặc định CHẶN (đảo `allowed_hosts=None` từ "cho tất cả" sang "chặn tất cả" — breaking change), seam `Sandbox`, secret không vào sandbox | **XONG (4/4 sub-task).** T-7.1 (workspace root) — `workspace.py::confine`, `tests/test_m7_t71_workspace.py` (14 test, ADR-045). T-7.2 (egress mặc định chặn, breaking change có chủ đích) — `allowed_hosts` mặc định `None`→`()`, `None` tường minh vẫn escape hatch, `tests/test_m7_t72_egress_default.py` (6 test), ADR-046 giải thích vì sao không làm chu kỳ deprecation nhiều phiên bản. T-7.3+T-7.4 (seam `Sandbox`, secret không vào sandbox) — `sandbox.py`: `Protocol Sandbox`, hai cài đặt `InProcess`/`Subprocess` (env sạch, không kế thừa `os.environ`, `Secret` object bị từ chối tường minh), seam THỨ SÁU đạt phép thử 3 phần `§02.4` (bảng ở `docs/02-architecture.md` đã cập nhật), ADR-047. KHÔNG gắn vào `Agent`/`dispatch.py` — chủ đích, cùng lý do T-6.1 (ADR-043): chưa có tool nào trong codebase cần chạy shell command, gắn dây bây giờ là surface không ai dùng. Khoá bằng `tests/test_m7_t73_t74_sandbox.py` (14 test, gồm bản cài đặt bên thứ ba đúng khuôn `proof.py §I.1`, cộng red-team test secret-không-lộ, mutation-tested). |
 | **M8 — Observability** | 10% × gap | Envelope v1 (`schema_version`/`trace_id`/`tenant_id`), `Approval` là bản ghi đầy đủ, OTel exporter thật, cost-per-successful-task, event stream tiêu thụ được, `Session` resource | **XONG (6/6 sub-task).** T-8.1 (envelope v1) ĐÃ XONG — ADR-048, `tests/test_m8_t81_envelope.py` (12 test). T-8.2 (Approval là bản ghi) ĐÃ XONG — chỉ thiếu `policy_version`, hai tiêu chí "Failure"/"Test" T-8.2 tự đặt hoá ra đã đúng sẵn, ADR-049, `tests/test_m8_t82_approval_record.py` (7 test). Sẵn tiện sửa lỗi tài liệu: `docs/04` gọi nhầm `Ruling` là `Decision`. T-8.3 (OTel exporter) ĐÃ XONG — `observe/otel.py::OtelExporter`, đọc `docs/10-observability-ops.md §2` (mapping đã công bố sẵn TRƯỚC bản nháp đầu, phải sửa lại theo đúng bảng đó) thay vì tự bịa tên span/attribute; xử lý đúng thứ tự `policy.decided` phát TRƯỚC `tool.started` bằng buffer-rồi-flush; hai lỗi thật tự bắt (parse `$`-prefixed `cost_usd`, một xung đột tên biến làm mypy từ chối sai); metrics thật (`harness.run.cost`, `.steps`, `harness.tool.duration`, `.cache.hit_ratio`, `harness.policy.denials`) qua OTel Meter thật. ADR-050. `tests/test_m8_t83_otel.py` (16 test, SDK OTel thật không mock, cả hai backend, mutation-tested). Hai phát hiện phụ ghi lại khi đọc docs/10, CHƯA sửa: **N-5** — retry cấp provider (rate limit/timeout) đã công bố ở docs/10 §3 nhưng chưa cài; **N-6** — event `model.response` thiếu `usage`/`latency_ms` so với `docs/05` tự hứa, khiến một phần attribute/metric của chính OTel exporter không có dữ liệu để đọc. T-8.4 (cost-per-success) ĐÃ XONG — `harness.eval.cost_per_success(runs)` (gói mới `harness/eval/`, chuẩn bị chỗ cho M10's `harness.eval.*`), `total_cost / P(thành công)`, khoảng tin cậy Wilson-scored (không phải xấp xỉ chuẩn — sai ở n nhỏ/tỉ lệ cực đoan, đúng miền một golden set nhỏ hay gặp), `cost_per_success_usd=None` (không phải 0 hay inf) khi 0 thành công. ADR-051, `tests/test_m8_t84_cost_per_success.py` (12 test, mutation-tested). T-8.5 (event stream) ĐÃ XONG — `Agent.stream(message, on_delta=None)`, async generator yield `Event` thật (16 kind, envelope v1 đầy đủ) qua một exporter riêng dùng `with_()` gắn thêm (không mutate, ADR-004); `on_delta=` giữ nguyên là cơ chế delta text riêng, không gộp vào stream; mọi phân biệt T-8.5 đòi (tool-call/tool result/approval/retry/cancellation/final) đã có sẵn trên taxonomy hiện tại, không cần kind mới. ADR-052. **Phát hiện phụ khi viết test transcript cho `stream()`, ĐÃ SỬA NGAY: N-7** — `Agent.with_()` âm thầm làm mất `transcript`/`exporters`/`accepts_tainted`/`sensitive` ở MỌI lời gọi (không phải lỗi riêng của `stream()` — bất kỳ ai gọi `with_()` cũng gặp). `tests/test_m8_t85_stream.py` (8 test) + `tests/test_n7_with_preserves_fields.py` (7 test), cả hai mutation-tested. T-8.6 (`Session` resource) ĐÃ XONG — `harness/session.py::Session` bọc `Chat` (không xây lại state isolation Round 37 đã có), id/owner/TTL/`fork()`/`resume_from()` (bọc `Agent.resume()` có sẵn, không phải resume phong phú hơn) + `threading.Lock` cho ranh giới đồng thời (không phải `asyncio.Lock` — khớp `Chat.say()` vốn đồng bộ). Chủ đích CHỈ cho backend cổ điển — LangGraph's `thread_id` đã là session primitive của nó (T-8.1). Test đua tất định (không dựa timing may rủi) chứng minh khoá thật sự cần thiết. ADR-053, `tests/test_m8_t86_session.py` (13 test, mutation-tested). **M8 hoàn thành 6/6 sub-task.** |
 | **M9 — Integration** | 8% × gap 3/5 — **khoảng trống lớn nhất theo tự chấm** | MCP client làm tool boundary, Service API (`POST /v1/runs`...), canonical event adapter | **XONG (3/3 sub-task).** T-9.1 (MCP client) — `harness/mcp/` (extra, `mcp>=1.9`): `McpServerPolicy`, `classify_mcp_tool()` (M-1..M-3, `design/03 §5.3`, bug-for-bug fail-closed hint mapping chép từ Microsoft), `connect()` (gọi `tools/list` đúng MỘT lần — §5.4's rug-pull-chốt-lúc-bind). `ToolSpec.server` (mới) và `Scope.server` (đã có, chưa ai gọi) giờ tham gia `DecisionLog.lookup()` — grant không rò giữa hai server. Đóng CÙNG LÚC S-7, S-8, S-10, S-17 và một phần S-9 (xem `## 3.1`). ADR-054, `tests/test_m9_t91_mcp.py` (32 test, mutation-tested). T-9.2 (Service API) — `harness/server/` (extra, `starlette`, ASGI — operator mang ASGI server riêng): `POST /v1/runs` (idempotency-key header → `execute_once`, T-6.1's caller thật đầu tiên, ở MỨC RUN), `GET /v1/runs/{id}` (status/result/pending approvals), `GET /v1/runs/{id}/events` (SSE, backlog + tail, `redact()` chạy đúng task của run — RT-13), `POST .../cancel`, `POST .../approvals/{call_id}` (cầu nối `approve=` qua một `asyncio.Future` một request HTTP resolve). Backend cổ điển only (cùng phạm vi `Session`/ADR-053); không auth (operator tự thêm); không `resume` (cần Store-backed registry chưa xây, giống lý do T-6.1/`Sandbox` chưa gắn dây). ADR-055, `tests/test_m9_t92_service_api.py` (21 test, mutation-tested). **S-4 CHƯA đóng dù có caller thật** — xem đoạn "M9" ở `## 4` và N-8 (`07 §1.5`): idempotency ở mức run ≠ idempotency ở mức tool call, `Dispatcher._invoke` chưa gắn `execute_once`. T-9.3 (canonical event, ba transport) — `observe/events.py::to_dict()` là hình dạng JSON DUY NHẤT `TranscriptWriter` và `harness.server` cùng xây trên đó (bắt được một lỗi lỗi thời thật: `TranscriptWriter` viết trước envelope v1, chưa từng mang `schema_version`/`trace_id`/`tenant_id`/`session_id`); thêm transport thứ ba `harness run <file> <msg> --json` (CLI/JSON). ADR-056, `tests/test_m9_t93_canonical_events.py` (8 test, mutation-tested). |
-| **M10 — Evaluation** | 12% (phần Testability còn thiếu) | Trajectory contract khai báo được, golden set + pass rate có khoảng tin cậy, benchmark p50/p95/throughput | Không có. |
+| **M10 — Evaluation** | 12% (phần Testability còn thiếu) | Trajectory contract khai báo được, golden set + pass rate có khoảng tin cậy, benchmark p50/p95/throughput | **XONG (3/3 sub-task).** T-10.1 — `harness/eval/trajectory.py::check_trajectory()`, tám tiêu chí §9 nghiên cứu đòi (`must_call`/`must_not_call` đọc `Result.tools_run` — IDL-49; `requires_approval` đọc `policy.decided`'s `policy=="approval"`, không chỉ "có event" — mutation bắt đúng lỗi auto-ALLOW bị tính nhầm là đã hỏi; `no_duplicate_side_effects` nối `tool.started` với `tool.requested` qua `call_id` vì event trước không mang `arguments`; `output_schema` dùng `jsonschema`, dependency core sẵn có, không thêm gì). Hàm THUẦN — không tự chạy gì, `golden.py` mới là caller. ADR-057, `tests/test_m10_t101_trajectory.py` (15 test, mutation-tested). T-10.2 — `harness/eval/golden.py::run_golden_set()`, dùng LẠI `_wilson_interval`/`cost_per_success` (T-8.4) thay vì viết lại khoảng tin cậy lần hai; mỗi case chạy qua `with_()` + `Exporter` riêng (cùng seam `stream()`/`harness.server` đã dùng) để lấy events KHÔNG mutate `Agent`. `GoldenCaseResult.passed` đòi CẢ `result.ok` LẪN `trajectory.ok` — mutation chỉ ra một run hoàn thành nhưng vi phạm contract (gọi tool cấm) sẽ tính PASS nhầm nếu chỉ kiểm `result.ok`. ADR-058, `tests/test_m10_t102_golden.py` (7 test, mutation-tested). T-10.3 — `harness/eval/benchmark.py::benchmark()` (p50/p95/throughput/cold-start, concurrency qua `asyncio.Semaphore` — cùng khuôn `Dispatcher._bounded`/NFR-09; mutation xác nhận bỏ semaphore thì đỉnh concurrency THẬT SỰ vượt trần) và `import_cold_start_ms()` (đóng Y-05 — "con số duy nhất từng đo là import time" giờ là một phép đo gọi được, không phải comment ad hoc; subprocess mới bắt buộc vì process này đã trả phí import rồi, không đo lại được). ADR-059, `tests/test_m10_t103_benchmark.py` (8 test, mutation-tested). |
 
-**Điểm tự chấm hiện tại (docs/17 §1): 67.8/100**, thấp nhất ở Integration (2/5),
-Performance (2/5), Ecosystem (1/5). Không có gì trong nhóm 1 (S-11…S-29) hay lượt vừa rồi
-làm dịch chuyển con số này — chúng đóng LỖ HỔNG trong cơ chế đã có, không THÊM cơ chế mới.
-M6…M10 là trục hoàn toàn khác, đo bằng tính năng chưa tồn tại.
+**Điểm tự chấm GỐC (docs/17 §1, trước M6…M10): 67.8/100.** Giờ M6…M10 đã xong, con số đó
+lỗi thời — nhưng tự chấm LẠI một điểm CHÍNH XÁC mới đòi đúng sự nghiêm ngặt bản gốc có
+(so với 12 framework + 9 harness thật trong nghiên cứu, người chấm khác, bối cảnh khác)
+mà một phiên tự động không tái tạo được — bịa một con số mới có vẻ chính xác sẽ chính là
+"trả lời tự tin nhưng rỗng" mà luật §45 cấm. Thay vào đó: **đối chiếu từng lý do TRỪ ĐIỂM
+gốc với code hôm nay**, hướng đi rõ ràng dù độ lớn thì cần người chấm thật:
+
+| Chiều | Lý do trừ điểm GỐC | Còn đúng không, sau M6…M10? |
+|---|---|---|
+| Control/Safety | "không có lớp Isolation nào" | **Một phần đã đóng** — `Sandbox` (M7, `InProcess`/`Subprocess`) + `Workspace` confinement + egress-deny-default tồn tại, nhưng ADR-047 tự nói thẳng đây KHÔNG phải namespace/cgroup isolation thật — chỉ là "ranh giới trung thực", không phải "không thiếu gì" |
+| Reliability | "không có idempotency key, cancellation bị nuốt, không có failure injection" | **Đóng hết** (M6): `execute_once` (T-6.1, dù chưa gắn dispatch path — N-8), cancellation không nuốt `CancelledError` nữa (T-6.2), `harness.testing.chaos` 5 kịch bản (T-6.4) |
+| Testability | "không có trajectory contract khai báo được, không có golden set" | **Đóng hết** (M10): `Trajectory`/`check_trajectory` (T-10.1), `run_golden_set` (T-10.2) |
+| Extensibility | "không có MCP" | **Đóng** (M9/T-9.1): `harness.mcp` |
+| Observability | "không có OTel thật, envelope thiếu traceId/tenantId/schemaVersion" | **Đóng hết** (M8): `OtelExporter` thật (T-8.3), envelope v1 đủ bốn trường (T-8.1) |
+| Integration | "Không có MCP, không có Service API, không có connector" | **MCP + Service API đóng** (M9); connector (bên thứ ba ngoài MCP) vẫn không có |
+| Performance | "Chưa đo latency/throughput/concurrency lần nào" | **Đóng** (M10/T-10.3): `benchmark()` + `import_cold_start_ms()` |
+| Ecosystem | "Chưa có" | Không đổi — ngoài phạm vi M6…M10 |
+
+**Việc cần làm trước khi gắn một con số mới:** một người (không phải phiên tự động này)
+chấm lại theo đúng phương pháp docs/17 §1 dùng — cùng thang 1-5 cho từng chiều, có so
+sánh với corpus, không chỉ đối chiếu danh sách trừ điểm như bảng trên.
 
 ### 3.3 Ý tưởng có kiến trúc, cắt có chủ ý — không phải backlog
 
@@ -190,12 +210,14 @@ ngày đo được nhu cầu thật — không đưa vào roadmap dưới đây.
 
 ## 4. Roadmap — thứ tự đề xuất, và vì sao
 
+**Toàn bộ chuỗi dưới đây ĐÃ XONG.**
+
 ```
 S-20 ──► M6 ──► M7 ──► M8 ──► K-13 ──► M9 ──► M10
 (ĐÃ XONG)  Reliability  Isolation    Observ.   (ĐÃ XONG)  Integration   Eval
-           + S-4/S-23   + M7 đảo     6/6                  + S-7…S-10    + trajectory
-           (idempotency) egress-deny sub-task             /S-17/S-23-  contract
-                                                            MCP-part
+  4/4        4/4          6/6                    3/3         3/3
+(idempotency) egress-deny sub-task            (MCP/Service   (trajectory/
+ cancel/retry  /Sandbox                        API/events)    golden/bench)
 ```
 
 **S-20 trước tất cả — ĐÃ XONG.** Không phụ thuộc gì, sửa nhanh (một sự kiện cảnh báo, đúng
@@ -236,8 +258,12 @@ caller thật (không còn là "hạ tầng không ai gọi"), nhưng KHÔNG t�
 là N-8 (`07 §1.5`), việc còn lại (gắn `execute_once` vào đường dispatch tool call) chưa
 lên lịch trong roadmap này.
 
-**M10 sau cùng**, đúng thứ tự `docs/17` đã lập luận: trajectory contract cần một bề mặt đã
-ổn định (MCP, idempotency, sandbox) để viết `must_call`/`must_not_call` có ý nghĩa.
+**M10 sau cùng — ĐÃ XONG.** Đúng thứ tự `docs/17` đã lập luận: trajectory contract cần
+một bề mặt đã ổn định (MCP, idempotency, sandbox) để viết `must_call`/`must_not_call` có
+ý nghĩa; `harness.eval.Trajectory`/`run_golden_set`/`benchmark` landing sau cả M6…M9,
+đọc `Result.tools_run` và `policy.decided` events đã có sẵn — không cần cơ chế mới nào
+ở tầng dưới, đúng dự đoán của thứ tự này. Toàn bộ roadmap `S-20 → M6 → M7 → M8 → K-13 →
+M9 → M10` (đầu `## 4`) nay đã XONG.
 
 **Ràng buộc xuyên suốt, nhắc lại từ `docs/17 §5`:** core vẫn 3 dependency, import dưới 100
 ms. Mọi thứ ở M6 trở đi là `extra`, và phép thử ranh giới plugin (`02-architecture.md §2.4`)
@@ -296,9 +322,8 @@ trail cần chịu được kiểm toán bên ngoài.
 1. ~~**S-20**~~ — **ĐÃ SỬA** (`## 1`). Nhỏ, không phụ thuộc, chặn phát hành — không còn
    chặn.
 2. ~~**Ghi S-1/S-4/S-5 vào `07-risks-and-open-issues.md`**~~ — **ĐÃ GHI** (`## 2`).
-3. **M6 (Reliability) trở đi — được lệnh tiến hành, không còn là điểm chờ quyết định.**
-   Người vận hành dự án đã quyết định: thực hiện toàn bộ roadmap này (`M6 → M7 → M8 →
-   K-13 → M9 → M10`) cho đến khi hoàn thành. Đây là XÂY TÍNH NĂNG MỚI (idempotency,
-   sandbox, MCP, Service API, eval harness), khác về bản chất công việc so với "sửa lỗi
-   trong code có sẵn" của giai đoạn S-1…S-29 — nhưng không còn là một nhánh rẽ cần hỏi lại
-   giữa chừng cho từng milestone.
+3. ~~**M6 (Reliability) trở đi**~~ — **ĐÃ XONG, toàn bộ roadmap.** `M6 → M7 → M8 → K-13
+   → M9 → M10` chạy liên tục theo đúng lệnh "cho đến khi hoàn thành", không dừng hỏi lại
+   giữa chừng cho từng milestone. 593 test xanh, ruff/mypy sạch, mọi `examples/*.py`
+   chạy được — xem `## 3.2` cho chi tiết từng sub-task. Việc còn lại trước v1.0 (`## 5`):
+   tự chấm lại theo `docs/17 §1`, và pilot 2–4 tuần thật — không phải việc CODE nữa.

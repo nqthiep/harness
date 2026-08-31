@@ -1538,6 +1538,114 @@ staleness this fixes) and one swapping `json.dumps(to_dict(event))` for `str(eve
 
 ---
 
+### ADR-057 — `Trajectory` contract: eight assertions, one pure function
+
+**Status:** Accepted (M10/T-10.1)
+
+**Context.** docs/17 §9 (cited at §264): a trajectory contract must express `must_call`,
+`must_not_call`, `requires_approval`, `max_model_calls`, `max_tokens`, `max_cost`,
+`output_schema`, `no_duplicate_side_effects`, and be "runnable with `FakeModel`" — i.e.
+checkable offline, without a live provider.
+
+**Decision.** `harness/eval/trajectory.py::check_trajectory(contract, result, events) ->
+TrajectoryResult` is a pure function — it runs nothing itself; `golden.py` is the one
+caller that drives a real run and hands both a `Result` and the `Event` list it produced
+back in. Each of the eight assertions reads from data ALREADY on `Result`/`Event` —
+nothing new had to be emitted to make this work, which is itself informative: `Result.
+tools_run` (Round 38, IDL-49) already IS "what must_call/must_not_call check against";
+`PolicyEngine.resolve`'s `policy="approval"` stamp (ADR-021) already IS the signal
+`requires_approval` needs, as long as one is careful to check that field rather than
+merely "a `policy.decided` event exists for this tool" — an auto-`ALLOW` (no `ASK` at
+all) also emits one, and a mutation test confirms the naive version passes a `read` tool
+that was never asked about.
+
+`no_duplicate_side_effects` is the one assertion needing correlation across TWO event
+kinds: `tool.started` carries no `arguments` (`dispatch.py` never puts them there —
+`tool.requested` does), so a duplicate check has to join on `call_id` first. A mutation
+test confirms the naive version (reading `arguments` straight off `tool.started`, which
+is always `{}`) collapses every call of the same tool into one bucket regardless of its
+real arguments, hiding genuine duplicates behind false ones.
+
+`output_schema` reuses `jsonschema` — already a core dependency (`pyproject.toml`), no
+new one for eval tooling — validated against `result.value` when `returns=` populated it
+(ADR-022), else `result.text`.
+
+**Tests.** `tests/test_m10_t101_trajectory.py` (15 tests): one pass/fail pair per
+assertion, plus the two mutations described above.
+
+### ADR-058 — Golden set reuses `cost_per_success`'s Wilson interval, doesn't reinvent it
+
+**Status:** Accepted (M10/T-10.2)
+
+**Context.** docs/17 §265: "pass rate WITH a 95% confidence interval, tokens, cost —
+never a bare number." T-8.4 (ADR-051) already built and tested Wilson-score interval
+math for exactly this shape of question (a proportion from a small sample).
+
+**Decision.** `harness/eval/golden.py::run_golden_set(agent, cases) -> GoldenReport`
+imports `_wilson_interval`/`_Z_SCORES` from `eval/cost.py` rather than a second copy —
+the interval is over PASS rate here instead of SUCCESS rate, but it is the same binomial
+proportion question `cost_per_success` already answers correctly at small n and extreme
+proportions. `cost_per_success(...)` itself is called for the cost figure, so a golden
+run's report and a standalone cost report never disagree about what "total cost" means.
+
+A case's `Trajectory` is optional — a case with none only asserts `Result.ok`, covering
+docs/17 §9's simplest tier; most of the negative/adversarial/failure-injection cases
+§265 names want a real contract (`must_not_call` the tool an injection prompt tried to
+trigger, say).
+
+**Each run is captured with its own events, without mutating the `Agent` under test** —
+the same `with_()` + per-call `Exporter` seam `Agent.stream()` (T-8.5) and
+`harness.server` (T-9.2) already use, not a fourth reinvention of "how do I get events
+out of a run." A test confirms `agent.exporters` is unchanged after `run_golden_set`
+returns.
+
+**A real distinction a mutation test makes visible:** a `GoldenCaseResult.passed` that
+only reads `result.ok` marks a case PASS whenever the run completed — even one that
+violated its `Trajectory` (called a forbidden tool, blew a token budget). `passed`
+checks both `result.ok` AND `trajectory.ok`; the mutation test constructs exactly that
+scenario (a completed run that called a `must_not_call` tool) and shows the naive
+version marks it passing.
+
+**Tests.** `tests/test_m10_t102_golden.py` (7 tests).
+
+### ADR-059 — Benchmark: bounded concurrency, cold start needs a fresh process
+
+**Status:** Accepted (M10/T-10.3, closes Y-05)
+
+**Context.** docs/17: *"Y-05 — Performance has never been measured. 6% weight, and the
+only number ever measured is import time."* Not even that measurement was a real,
+reproducible artifact — it was a comment recording a number someone ran once.
+
+**Decision.** Two functions, because "performance" here is actually two different
+measurements that cannot share a mechanism:
+
+- `harness/eval/benchmark.py::benchmark(run_fn, *, n, concurrency) -> BenchmarkReport` —
+  drives `n` calls to a caller-supplied zero-arg async callable under an
+  `asyncio.Semaphore`, the same bounded-concurrency shape `Dispatcher._bounded` already
+  uses for tool fan-out (NFR-09) — an unbounded benchmark measures whatever the test
+  double or provider happens to tolerate at once, not the harness. Reports `p50`/`p95`
+  (own percentile interpolation, no new dependency), `throughput_per_s` as `n / wall
+  time` at the given concurrency (not `1000/p50`, which is only correct at
+  concurrency 1 and silently assumes perfect scaling otherwise — exactly the "no
+  concurrency test" Y-05 names), and separates the FIRST call's latency
+  (`cold_start_ms`) from the rest (`warm_p50_ms`) rather than folding a cold-cache call
+  into the steady-state percentile and hiding it.
+- `import_cold_start_ms()` — a FRESH subprocess times `import harness` alone. This
+  cannot be measured in-process: the calling process has already paid the import cost
+  and cannot pay it twice. Takes an `env=` override so a checkout that isn't `pip
+  install`ed (this repo's own test suite, always run via `PYTHONPATH=src`) can still
+  call it — a real, installed deployment needs no override.
+
+**Tests.** `tests/test_m10_t103_benchmark.py` (8 tests) — percentile ordering, cold
+start separated from warm p50, `n=1`'s well-defined "no cold start to separate out",
+concurrency actually bounded (measured via a live counter, not inferred), a mutation
+running the same work through bare `asyncio.gather` with no semaphore and confirming
+the peak DOES exceed the cap when the bound is removed, and `import_cold_start_ms`
+against this checkout (via `PYTHONPATH`) plus its failure mode when the import
+genuinely cannot succeed.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
