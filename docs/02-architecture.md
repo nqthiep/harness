@@ -145,6 +145,7 @@ Applied:
 | **Store** (memory & transcript persistence) | ✅ | ✅ | ✅ memory / SQLite / Redis | **SEAM** |
 | **Policy** | ✅ | ✅ | ✅ approval / egress allowlist / PII | **SEAM** |
 | **Exporter** | ✅ | ✅ | ✅ console / JSONL / OTel | **SEAM** |
+| **Sandbox** (added M7/T-7.3, ADR-047) | ✅ | ✅ | ✅ `InProcess` / `Subprocess` — a real container runtime (Docker/Firecracker/gVisor) plugs into the same seam | **SEAM** |
 | Run loop | ❌ | — | ❌ one | **CORE** — and see below |
 | Context assembler | ❌ | ❌ must be byte-deterministic | ❌ | **CORE** |
 | Budget ledger | ❌ | ❌ security-critical | ❌ | **CORE** |

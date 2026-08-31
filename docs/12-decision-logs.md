@@ -1095,6 +1095,47 @@ actually asserts T-7.2's own behavior (both backends), which none of the five ab
 
 ---
 
+### ADR-047 — `Sandbox` is a sixth plugin seam, extending ADR-002
+**Status:** Accepted (M7/T-7.3, T-7.4)
+
+**Context.** ADR-002 fixed five plugin seams — Tool, ModelProvider, Store, Policy,
+Exporter — on the three-part test (docs/02-architecture.md §2.4). §01.5 names container
+isolation a stated non-goal ("needs process/WASM isolation — a different product"), which
+research (W-03: "approval mistaken for isolation") named as an evasion, not an answer: a
+library cannot ship a container runtime, but it can ship an honest boundary and a seam a
+real one plugs into.
+
+**Decision.** `Sandbox` (`sandbox.py`) is a `Protocol` — `run(cmd, *, cwd, env, timeout)
+-> Completed` — checked against the same three-part test the other five passed: (a) a
+reasonable third party would publish one (Docker/Firecracker/gVisor wrappers exist on
+PyPI today), (b) core needs zero knowledge of a concrete implementation, (c) two
+genuinely different implementations ship today — `InProcess` (no isolation, says so in
+its own name and docstring) and `Subprocess` (clean environment, own process group,
+hard timeout — still not namespace/cgroup isolation, but the honest ceiling of what pure
+Python can do). It passes all three, so it is a sixth seam, not a violation of ADR-002's
+five — the count in that ADR was never meant to be permanent, only to reject speculative
+seams that fail the test (its own rejected alternative: "nine ABCs with one
+implementation each").
+
+**T-7.4, folded into the same module.** `_check_env` rejects a `Secret` instance in
+`env` outright (`TypeError`, pointing at T-7.4 and the fix), rather than letting it
+silently stringify to `<name hidden>` (IDL-32) and hand the child process a useless,
+confusing placeholder. Neither implementation ever merges `env` with `os.environ` — the
+one guarantee that makes "secrets never appear in the sandboxed process's environment"
+red-team-testable at all, since this process's own `os.environ` can carry the harness's
+own provider API key.
+
+**Not wired into `Agent`/`dispatch.py` in this pass — same reasoning as T-6.1's
+`execute_once` (ADR-043).** No tool in this codebase currently declares a need to run an
+arbitrary shell command; wiring `Sandbox` into tool dispatch (a `@tool(sandbox=...)`
+surface, say) with no such tool to exercise it would be exactly the same "surface with
+no consumer" ADR-002's rejected alternative warns against. What ships here is the seam
+and its two implementations, provable standalone — a third-party `Sandbox` plugs in
+without touching core, which is T-7.3's own Done criterion, independent of whether any
+shipped tool uses it yet.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
