@@ -75,7 +75,9 @@ budget ledger with pre-flight reservation, a two-axis taint/confidentiality latt
 effect-classified tool system (`read`/`write`/`external`/`danger` — one declaration,
 five derived behaviours), an approval system where every decision is an immutable,
 auditable record, deterministic prompt caching, transcripts + resume, a SQLite memory
-store, subagents, idempotency and cancellation primitives, and a CLI.
+store, subagents, idempotency and cancellation primitives, `harness.middleware` for
+cross-cutting behavior (logging, caching, retries — `docs/03-public-api.md §3.6`), and a
+CLI.
 
 **Extras** — each is optional, none is imported by `import harness`:
 

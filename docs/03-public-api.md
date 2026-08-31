@@ -90,8 +90,8 @@ research = Agent(name="Research", job="...", tools=[search, reader.as_tool()])
 
 ### Level 3 — extending the harness (as needed)
 
-Custom `ModelProvider`, `Store`, `Policy`, `Exporter`; plugin packaging; transcript
-replay; direct `RunContext` access. Contracts in [§04](04-interfaces.md).
+Custom `ModelProvider`, `Store`, `Policy`, `Exporter`, `Middleware` (§3.6); plugin
+packaging; transcript replay; direct `RunContext` access. Contracts in [§04](04-interfaces.md).
 
 ## 3. `Agent` — the complete signature
 
@@ -219,6 +219,62 @@ agent.run("they're asking for a refund")   # same session_id -> picks up mid-con
 All five are the LangGraph backend's own pre-existing limits (`design/07-risks-and-open-issues.md`),
 now reachable from the primary surface instead of only from the escape hatch — refused
 loudly, at the point they'd matter, rather than silently downgraded.
+
+### 3.6 `harness.middleware` — cross-cutting behavior without touching a seam per concern
+
+Logging, caching, redaction, retries: each one otherwise means implementing a custom
+`ModelProvider` *and* wrapping tool functions *and* writing an `Exporter`, separately,
+every time. `Middleware` is one base class covering all three, composed by
+`with_middleware()` into a new `Agent`:
+
+```python
+from harness import Agent, Middleware, ShortCircuit, with_middleware
+
+class Logging(Middleware):
+    def before_model(self, request):
+        print(f"-> {request.model}: {len(request.messages)} messages")
+        return request
+    def after_model(self, request, response):
+        print(f"<- {response.stop_reason}, {response.usage.total} tokens")
+        return response
+
+class Cache(Middleware):
+    def before_tool(self, name, kwargs):
+        if (hit := my_cache.get(name, kwargs)) is not None:
+            raise ShortCircuit(hit)          # skip the real tool, use `hit` instead
+        return kwargs
+    def after_tool(self, name, kwargs, result):
+        my_cache.put(name, kwargs, result)
+        return result
+
+agent = with_middleware(base_agent, Logging(), Cache())
+agent.run("...")             # same Agent surface — try_run/run/arun/atry_run unchanged
+```
+
+Unlike `ModelProvider`/`Policy`/`Exporter` (each a `Protocol` a caller implements in
+full), `Middleware` is a plain base class with five independent, optional hooks
+(`before_model`/`after_model`/`before_tool`/`after_tool`/`on_event`) — subclass it and
+override only what you need; every hook not overridden is a no-op. `with_middleware()`
+returns a **new** `Agent` (frozen, ADR-004); the original is untouched.
+
+**This is sugar, not a seventh seam.** `with_middleware()` is built entirely from three
+seams already documented above — it wraps `provider=`, wraps each tool's plain callable,
+and adds one `Exporter` — the loop itself (`run.py`/`lg/runtime.py`) has no knowledge
+`Middleware` exists, so it cannot weaken anything the six seams already decided:
+
+* `before_tool`/`after_tool` run **after** `Policy` has already ruled ALLOW — a call
+  `Policy` denies is never handed to a `Middleware` at all. Returning `kwargs` unmodified
+  is not "voting to allow"; there is no vote to cast.
+* Nothing here can waive a budget reservation, clear a taint label, or lower a verdict.
+* `on_event` is observation only — an exception there is caught and that hook is
+  disabled for the rest of the run (the same rule an `Exporter` follows), it never stops
+  a run.
+* Works identically under `durable=True` (§3.5) — both engines call the same wrapped
+  `provider=`.
+
+`ShortCircuit(result)`, raised from `before_tool`, skips the tool's own function and
+uses `result` as if it had run — still subject to the same truncation/redaction/taint
+labelling a real result gets.
 
 ## 4. Choosing an effect
 

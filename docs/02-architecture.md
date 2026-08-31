@@ -184,6 +184,15 @@ The loop is not extensible, but it is **observable** (events) and **interceptabl
 defined seams** (policies decide, tools act). That covers the legitimate reasons someone
 would want to override it.
 
+**`harness.middleware`** is sugar over three of the seams above (`ModelProvider`, a
+tool's own callable, `Exporter`) — a `Middleware` base class with five optional hooks
+(`before_model`/`after_model`/`before_tool`/`after_tool`/`on_event`) that
+`with_middleware(agent, *middlewares)` wires onto a new `Agent`. It is not a seventh
+seam and not the middleware chain rejected below: every hook runs strictly *after* the
+core decision it follows (`before_tool` never sees a call `Policy` already denied), so
+stacking many of these can only add restriction or observation, never bypass one.
+`docs/03-public-api.md §3.6` documents it as a Level-3 extension.
+
 ## 5. Module map
 
 Every module below maps to at least one task in [§11](11-implementation-plan.md). Nothing
@@ -197,6 +206,8 @@ src/harness/
   result.py             Result, StopReason, Usage, Step
   errors.py             Exception hierarchy (§04.7)
   _typing.py            Internal type aliases
+  middleware.py         Middleware base class + with_middleware() — sugar composed from
+                        ModelProvider/tool/Exporter (§4), not a seventh seam, not the loop
 
   tools/
     __init__.py         @tool decorator, Effect, ToolSpec, EFFECT_PROFILES

@@ -8,6 +8,7 @@ from .errors import (BudgetExceeded, ConfigError, DuplicateToolError, HarnessErr
                      PolicyDenied, ProviderError, RunFailed, SyncInAsyncContextError,
                      ToolContractError, ToolSchemaError, UnknownModelError,
                      UnsafeToolSetError)
+from .middleware import Middleware, ShortCircuit, with_middleware
 from .models.base import ModelProvider
 from .policy.base import Ruling, Policy, ToolCall, Verdict
 from .policy.decision import Actor, Approval
@@ -23,7 +24,8 @@ __all__ = [
     "Agent", "tool", "Result", "StopReason", "Usage", "Step", "Money", "RunContext",
     "Effect", "Secret", "safe_for_display", "Policy", "Verdict", "Ruling", "ToolCall",
     "ToolSpec", "Actor", "Approval", "Session", "SessionExpiredError",
-    "Budget", "DEFAULT_BUDGET", "ModelProvider",
+    "Budget", "DEFAULT_BUDGET", "ModelProvider", "Middleware", "ShortCircuit",
+    "with_middleware",
     "HarnessError", "ConfigError", "MissingEffectError", "ToolSchemaError",
     "DuplicateToolError", "NonDeterministicPromptError", "UnsafeToolSetError",
     "InvalidBudgetError", "UnknownModelError", "ToolContractError",
