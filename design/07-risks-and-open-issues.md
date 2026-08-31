@@ -53,6 +53,29 @@ khi nó thành thật.
 > instance, chạy graph thật hai thread không lây đếm — cộng mutation test (khôi
 > phục một `PolicyEngine` chia sẻ) xác nhận 3 test đỏ ngay.
 
+> **S-15 trên backend cổ điển — ĐÃ KIỂM, KHÔNG THÊM.** Câu hỏi: có nên áp CÙNG luật
+> "từ chối instance, chỉ nhận factory" lên `Agent`/backend cổ điển, để hai backend
+> nhất quán? Không — hai cơ chế khác nhau có chủ ý, không phải một cái đã sửa và một
+> cái quên. `agent.py:_check_shared_policy_state` (Round 34, `tests/test_m4.py::
+> StatefulPolicy`, vẫn nguyên vẹn) đã kiểm và đã có test cho đúng bốn trường hợp: một
+> instance có state đổi trong lúc chạy bị từ chối SAU KHI chạy xong (`ConfigError`,
+> "changed while it ran"), một factory/class được dùng đúng, mỗi lần chạy một instance
+> mới, VÀ — khác biệt chính — **một instance cấu hình thuần (`EgressPolicy(["..."])`,
+> không state đổi theo run) vẫn được dùng chung bình thường, không bị từ chối**.
+> `build_agent()` không làm được việc phân biệt đó: nó từ chối MỌI instance ngay lúc
+> dựng, kể cả instance cấu hình thuần, vì graph phục vụ nhiều thread ĐỒNG THỜI — không
+> có ranh giới "hết một run()" sạch để chờ rồi so sánh trước/sau như backend cổ điển
+> có (mỗi `atry_run()` là một lời gọi async hoàn chỉnh, tuần tự trên CÙNG một `Agent`,
+> nên "trước lúc chạy" và "sau khi chạy xong" là hai mốc rõ ràng để snapshot). Áp luật
+> từ chối construction của backend LangGraph sang backend cổ điển sẽ phá đúng ca dùng
+> hợp lệ mà Round 34 cố tình giữ lại (`test_a_stateless_policy_is_still_shareable`) mà
+> không sửa được lỗ hổng nào thật — cơ chế hiện tại của backend này đã đúng cho đúng
+> mô hình thực thi của nó. Khoảng trống còn lại — hai lời gọi `atry_run()` ĐỒNG THỜI
+> (không tuần tự) cùng dùng một instance có state — là rủi ro mutable-state-dùng-chung
+> chung của Python với BẤT KỲ object nào, không riêng gì cơ chế Policy của harness này,
+> và không có cách sửa tương tự per-thread-cache của S-15 vì backend cổ điển không có
+> khái niệm định danh kiểu `run_id`/`thread_id` để cache theo — chấp nhận, không xây.
+
 > **S-13 ĐÃ SỬA — cả hai backend.** `_run_subagent` chỉ `hold()` trục `usd`;
 > `steps`/`wall_clock_s` của con được kế thừa nguyên vẹn từ `Budget` con tự khai,
 > không liên quan gì tới số còn lại của cha — bốn sub-agent spawn trong một lượt,
@@ -255,19 +278,14 @@ Từ sáu tệp thiết kế, không lặp lại lý lẽ:
 
 ## 5. Việc tiếp theo, theo thứ tự
 
-1. **S-15 trên backend cổ điển — kiểm lại, có thể không cần.** Backend cổ điển đã có
-   `_check_shared_policy_state` từ Round 34 và nó đúng cho ranh giới `run()` sạch mà
-   backend đó có. Chưa kiểm: có đáng thêm CÙNG luật "từ chối instance, chỉ nhận factory"
-   ở đó để hai backend nhất quán, hay để nguyên vì cơ chế dò-sau-khi-chạy đã đủ và không
-   cần siết thêm.
-2. **S-7, S-8, S-9, S-10** — landing cùng lúc với khi tích hợp MCP thật được xây, không
+1. **S-7, S-8, S-9, S-10** — landing cùng lúc với khi tích hợp MCP thật được xây, không
    trước (xem `## 1.1`).
-3. **Cắt K-7, K-9, K-10, K-23** — giảm đường tới production từ ~38 xuống ~33 tên.
-4. **`Ledger.void()`, S-16/S-19/S-3 trên backend cổ điển — ĐÃ KIỂM, KHÔNG THÊM.** Cả hai
-   được xét kỹ và có 0 caller trong `src/harness/` hôm nay; xem `## 1.1` cho `void()`.
-5. **Tiếp tục viết code.** S-16/S-19/S-3 (cả hai nguồn)/S-6/S-14/S-15/S-13 đã vào
+2. **Cắt K-7, K-9, K-10, K-23** — giảm đường tới production từ ~38 xuống ~33 tên.
+3. **`Ledger.void()`, S-16/S-19/S-3 trên backend cổ điển, S-15 trên backend cổ điển —
+   ĐÃ KIỂM, KHÔNG THÊM.** Cả ba được xét kỹ; xem `## 1.1` cho từng cái.
+4. **Tiếp tục viết code.** S-16/S-19/S-3 (cả hai nguồn)/S-6/S-14/S-15/S-13 đã vào
    `src/harness/` — 312 test xanh, mỗi cơ chế chính có mutation test đi kèm. Vẫn còn
-   nhiều phát hiện review chưa
-   chạm tới code, và nghiên cứu của chính dự án đo được **23 vòng review tìm 20 lỗi và 0
+   nhiều phát hiện review chưa chạm tới code, và nghiên cứu của chính dự án đo được
+   **23 vòng review tìm 20 lỗi và 0
    lỗi bảo mật; 16 vòng chạy tìm 38+ lỗi và 4 lỗi bảo mật** — bản thiết kế là sản phẩm của
    review, nó sẽ sai ở những chỗ chỉ có chạy mới tìm ra.
