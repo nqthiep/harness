@@ -248,5 +248,72 @@ class CanonicalTranscript(unittest.TestCase):
             self.assertEqual(row["session_id"], "ses1")
 
 
+class Backpressure(unittest.TestCase):
+    """S-14 (design/07-risks-and-open-issues.md) — buffer SSE bị giới hạn, và một
+    subscriber tụt lại phía sau được BÁO, không âm thầm mất event."""
+
+    def test_slow_subscriber_gets_a_dropped_notice_not_a_silent_gap(self):
+        from unittest.mock import patch
+
+        @tool(effect="read")
+        def peek(x: int) -> str:
+            """Nhìn."""
+            return "ok"
+
+        script = []
+        for i in range(6):
+            script.append(FakeModel.tool_call("peek", {"x": i}, call_id=f"c{i}"))
+        script.append(FakeModel.text("xong"))
+
+        agent = Agent(name="T", job="j", model="fake", tools=[peek], budget="$5",
+                      provider=FakeModel(script))
+        app = create_app({"t": agent})
+        # Buffer cực nhỏ — chắc chắn tràn với 6 lượt gọi tool (mỗi lượt vài event).
+        with patch("harness.server.MAX_BUFFERED_EVENTS", 3):
+            with TestClient(app) as client:
+                run_id = client.post("/v1/runs",
+                                     json={"agent": "t", "message": "go"}).json()["id"]
+                deadline = time.monotonic() + 5.0
+                while time.monotonic() < deadline:
+                    if client.get(f"/v1/runs/{run_id}").json()["status"] != "running":
+                        break
+                    time.sleep(0.02)
+                text = client.get(f"/v1/runs/{run_id}/events").text
+        self.assertIn("event: dropped", text,
+                     "buffer tràn nhưng không có thông báo dropped nào cho subscriber")
+        self.assertIn("dropped_events", text)
+
+    def test_buffer_never_grows_past_the_bound(self):
+        """`RunStore.start()` gọi `asyncio.ensure_future` — PHẢI chạy trong một event loop
+        đang sống (như route handler thật đã làm), không phải gọi trực tiếp từ code đồng
+        bộ: gọi ngoài loop khiến task không bao giờ thật sự chạy, `run.status` đứng yên
+        mãi ở "running" — lỗi này tự nó gây treo, tìm ra khi viết test này lần đầu."""
+        from unittest.mock import patch
+
+        @tool(effect="read")
+        def peek(x: int) -> str:
+            """Nhìn."""
+            return "ok"
+
+        script = [FakeModel.tool_call("peek", {"x": i}, call_id=f"c{i}") for i in range(6)]
+        script.append(FakeModel.text("xong"))
+        agent = Agent(name="T", job="j", model="fake", tools=[peek], budget="$5",
+                      provider=FakeModel(script))
+
+        async def scenario():
+            from harness.server import RunStore
+            store = RunStore({"t": agent})
+            run, _ = store.start("t", "go")
+            deadline = asyncio.get_event_loop().time() + 5.0
+            while run.status == "running" and asyncio.get_event_loop().time() < deadline:
+                await asyncio.sleep(0.01)
+            self.assertNotEqual(run.status, "running", "run không xong trong 5s")
+            self.assertLessEqual(len(run.events), 3)
+            self.assertGreater(run.dropped_events, 0)
+
+        with patch("harness.server.MAX_BUFFERED_EVENTS", 3):
+            asyncio.run(scenario())
+
+
 if __name__ == "__main__":
     unittest.main()

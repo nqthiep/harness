@@ -76,7 +76,14 @@ nó thành thật.
 > × trạng thái sổ đủ hết cỡ + một luật gộp, cộng mutation test (bỏ short-circuit → 4 test
 > đỏ ngay).
 >
-> **S-14 ĐÃ SỬA MỘT PHẦN.** `Ledger._committed()` mới (`budget/ledger.py`) cộng mọi
+> **Va chạm namespace phát hiện khi làm ADR-059, chưa dọn (thêm vào danh sách K-13 kiểu
+> cho lần sau, không sửa ngay ở đây để tránh phình phạm vi lượt này):** mã `S-14` này
+> (Ledger, từ hai vòng review gốc) trùng số với `docs/17-research-alignment.md §2.2`'s
+> `S-14` (backpressure của Service API's SSE, ADR-059) — hai phát hiện HOÀN TOÀN khác
+> nhau, chỉ trùng số vì hai review khác thời điểm đều đánh số từ S-1. Đúng loại va chạm
+> K-13 đã dọn cho `P-`/`I-`; `S-` chưa được rà theo cách đó.
+>
+> **S-14 (Ledger, mã này) ĐÃ SỬA MỘT PHẦN.** `Ledger._committed()` mới (`budget/ledger.py`) cộng mọi
 > reservation đang mở vào `remaining_usd()` và vào cả hai nhánh kiểm ngân sách của
 > `reserve()` — trước bản vá, `self._open` được ghi và pop nhưng KHÔNG được cộng vào đâu
 > cả, nên hai `reserve()` chồng nhau (một `Retry` plugin tương lai gọi handler nhiều lần

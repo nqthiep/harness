@@ -1687,6 +1687,52 @@ and reaches `RunContext` through a real tool call, not just construction.
 
 ---
 
+### ADR-059 — S-14: a bounded `deque`, tracked by sequence number, not a list index
+**Status:** Accepted
+
+**Context.** `docs/17-research-alignment.md §2.2` S-14: "backpressure — a slow client
+doesn't fill memory or silently lose events." `harness.server`'s `RunStore._Run.events`
+was a plain `list`, appended to forever — a long-lived run, or a subscriber that never
+reads its SSE stream, grew memory without bound.
+
+**Decision.** `events` is a `deque(maxlen=MAX_BUFFERED_EVENTS)` (5 000 — generous against
+a default `budget.steps=20` run, which stays under a few hundred events even with every
+kind firing every step). `_Collector.emit()` checks `len(events) == maxlen` *before*
+appending (the append about to evict the oldest entry) and increments `run.dropped_events`
+when so — the eviction itself is `deque`'s job, the counter is this module's.
+
+**The SSE reader tracks by `Event.seq`, not by list index — index-based was the
+first draft and it is wrong the moment the buffer wraps.** `EventBus.seq` increases
+monotonically for the life of a run; a `deque(maxlen=N)` silently drops from the front on
+overflow, so an index that pointed at "the 40th element" yesterday points at a completely
+different event once the front has moved. Tracking `last_seq` sent and filtering
+`ev.seq > last_seq` on each poll is correct regardless of how much the front has been
+trimmed — a subscriber that has read up to seq 100 simply never sees the events that would
+have been between 101 and whatever is now at the front, which is exactly the loss S-14
+requires be visible: the generator detects `snapshot[0].seq > last_seq + 1` (a gap between
+what was last sent and what is now oldest) and emits one `event: dropped` SSE frame naming
+`dropped_events`/`resume_from_seq`, once, before resuming normal delivery.
+
+**A genuine hang found and fixed while testing this, unrelated to the buffer itself.**
+`RunStore.start()` calls `asyncio.ensure_future(_drive())`, which requires an event loop
+already *running* — every existing caller reaches it through a Starlette route handler,
+which always has one. The first version of this ADR's second test called
+`RunStore.start()` directly from synchronous test code, outside `asyncio.run()`: no
+running loop existed, so the driving task was scheduled but never actually executed, and
+`run.status` stayed `"running"` forever — an infinite poll loop in the test, not the
+library. Fixed by moving the `RunStore` call inside the same `asyncio.run(...)` as the
+polling, not by changing `RunStore` — the library's contract (call it from an async
+context with a running loop) was already correct; the test was the bug. Left as a
+documented lesson because it is exactly the kind of mistake an *operator* embedding
+`RunStore` outside a request handler could make too.
+
+**Test.** `tests/test_m9_t92_t93_service.py::Backpressure` — a run producing more events
+than a (patched, tiny) `MAX_BUFFERED_EVENTS` triggers a real `event: dropped` frame over a
+real SSE response; a second test proves the buffer never exceeds the bound and
+`dropped_events` is actually incremented, driven correctly inside `asyncio.run()`.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |

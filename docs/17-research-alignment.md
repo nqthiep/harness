@@ -119,7 +119,7 @@ grep -ril mcp src/     → KHÔNG CÓ
 | S-11 | **Failure injection** trong bộ test | §9 | **XONG.** `harness.testing.chaos` (T-6.4) — 5 kịch bản, tìm+sửa 2 lỗi thật (N-2, N-4). |
 | S-12 | **Đo p50/p95 latency, throughput, concurrency** | §10 | **MỘT PHẦN — hạ tầng đo có, số đo thật thì không.** `harness.eval.run_latency_benchmark`/`run_throughput_benchmark` (T-10.3) đo được thật (concurrency qua `asyncio.Semaphore` thật) — nhưng chưa có kết quả benchmark từ một deployment thật, chỉ có test chạy qua `FakeModel`. |
 | S-13 | **Pass rate kèm khoảng tin cậy 95%**, không dùng một con số đơn lẻ | §9, Terminal-Bench | **XONG.** `harness.eval.run_golden_set` (T-10.2), dùng lại Wilson interval của T-8.4. |
-| S-14 | **Backpressure**: client chậm không làm đầy memory hay mất event âm thầm | §6 | **CHƯA XÉT — vẫn đúng.** `harness.server`'s SSE endpoint buffer toàn bộ `run.events` không giới hạn (không CSDL, v1 library-first, ADR-055) — một client SSE không bao giờ đọc sẽ không làm RUN nghẽn, nhưng cũng không có giới hạn/rụng chủ động nào trên buffer đó. Ghi lại đây làm việc tiếp theo, không phải đóng giả. |
+| S-14 | **Backpressure**: client chậm không làm đầy memory hay mất event âm thầm | §6 | **XONG (ADR-059).** `run.events` là `deque(maxlen=MAX_BUFFERED_EVENTS)` (5 000) thay vì `list` không giới hạn. Theo dõi theo `Event.seq` (đơn điệu suốt run), không theo chỉ số list — chỉ số sẽ sai ngay khi buffer tràn lần đầu. Một subscriber tụt lại quá xa nhận một frame `event: dropped` nêu rõ số event đã mất, thay vì một khoảng trống im lặng. `tests/test_m9_t92_t93_service.py::Backpressure`. |
 
 ---
 

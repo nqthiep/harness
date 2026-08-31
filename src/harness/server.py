@@ -15,7 +15,12 @@ Routes (docs/17 §252 T-9.2):
                                                 starting a second one. In-process only —
                                                 see `RunStore._by_key` for the scope.
     GET  /v1/runs/{id}                          status, result (if done), pending approvals
-    GET  /v1/runs/{id}/events                   SSE — canonical Event JSON (T-9.3)
+    GET  /v1/runs/{id}/events                   SSE — canonical Event JSON (T-9.3).
+                                                Bounded buffer (`MAX_BUFFERED_EVENTS`,
+                                                S-14): a subscriber that falls far enough
+                                                behind gets an `event: dropped` frame
+                                                naming how many events it missed, rather
+                                                than an unbounded buffer or a silent gap.
     POST /v1/runs/{id}/cancel                   cancel the background run
     POST /v1/runs/{id}/approvals/{approval_id}  resolve one pending ASK
     POST /v1/runs/{id}/resume                   classic backend only — `Agent.resume()`
@@ -36,9 +41,11 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import json
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Final, Mapping
 
 from .agent import Agent
 from .observe.canonical import to_canonical_json
@@ -110,13 +117,28 @@ class ApprovalBridge:
         return True
 
 
+#: S-14 (design/07-risks-and-open-issues.md, `docs/17-research-alignment.md §2.2`) —
+#: "client chậm không làm đầy memory hay mất event âm thầm." `run.events` used to be an
+#: unbounded `list`; a run that emits more than this many events (a very long-lived agent,
+#: or a client that never reads its SSE stream) grew memory forever. Same shape of fix as
+#: `max_result_tokens` bounding a tool RESULT — bound the size, make the loss VISIBLE
+#: rather than either unbounded growth or a silent drop. 5 000 is generous: a default
+#: `budget.steps=20` run with every event kind firing every step stays under 400.
+MAX_BUFFERED_EVENTS: Final[int] = 5_000
+
+
 @dataclass
 class _Run:
     id: str
     agent_name: str
     message: str
     status: str = "running"           # running | completed | failed | cancelled
-    events: list[Event] = field(default_factory=list)
+    events: "deque[Event]" = field(
+        default_factory=lambda: deque(maxlen=MAX_BUFFERED_EVENTS))
+    #: Count of events evicted from the front of `events` because the buffer was full —
+    #: `stream_events` reports this to a subscriber that fell behind instead of silently
+    #: replaying a gap-free-looking but actually incomplete stream.
+    dropped_events: int = 0
     result: Result | None = None
     error: str | None = None
     bridge: ApprovalBridge | None = None
@@ -177,6 +199,8 @@ class RunStore:
 
         class _Collector:
             def emit(self, event: Event) -> None:
+                if len(run.events) == run.events.maxlen:
+                    run.dropped_events += 1        # append below evicts the oldest one
                 run.events.append(event)
 
             def close(self) -> None:
@@ -262,14 +286,30 @@ def create_app(agents: Mapping[str, Agent]) -> "Starlette":
         async def gen():
             # T-9.3 — CÙNG hàm `to_canonical_json` mà `TranscriptWriter` (CLI/JSON) dùng.
             # Không transport nào có semantics riêng.
-            i = 0
+            #
+            # S-14 — theo dõi bằng SEQ, không phải chỉ số list: `run.events` là một
+            # `deque(maxlen=...)`, phần tử cũ bị đẩy khỏi đầu khi đầy, nên một chỉ số cố
+            # định sẽ trỏ sai chỗ sau một lần đẩy. `Event.seq` tăng đơn điệu suốt đời run
+            # (EventBus), nên "đã gửi tới seq N" vẫn đúng bất kể buffer bị cắt phía trước.
+            last_seq = -1
+            warned_dropped = False
             while True:
-                while i < len(run.events):
-                    ev = run.events[i]
-                    i += 1
-                    import json as _json
-                    yield f"data: {_json.dumps(to_canonical_json(ev), ensure_ascii=False)}\n\n"
-                if run.status != "running" and i >= len(run.events):
+                snapshot = list(run.events)
+                if (snapshot and not warned_dropped and run.dropped_events
+                        and snapshot[0].seq > last_seq + 1):
+                    yield ("event: dropped\ndata: "
+                          + json.dumps({"dropped_events": run.dropped_events,
+                                       "resume_from_seq": snapshot[0].seq},
+                                      ensure_ascii=False)
+                          + "\n\n")
+                    warned_dropped = True
+                for ev in snapshot:
+                    if ev.seq > last_seq:
+                        yield (f"data: {json.dumps(to_canonical_json(ev), ensure_ascii=False)}"
+                              "\n\n")
+                        last_seq = ev.seq
+                caught_up = not snapshot or last_seq >= snapshot[-1].seq
+                if run.status != "running" and caught_up:
                     yield "event: end\ndata: {}\n\n"
                     return
                 await asyncio.sleep(0.05)

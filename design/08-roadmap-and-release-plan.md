@@ -247,8 +247,11 @@ còn im lặng.
 > `S-01…S-14` — **13/13 mục `tests/test_roadmap.py` theo dõi nay xanh** (ADR-058: S-01
 > idempotency_key gắn vào `ToolCall`, S-02 `ApprovalRecord` export, S-03
 > `RunContext.principal`/`.tenant_id`, cộng C-04 `Session` export — bốn mục đóng cùng
-> lượt). **Còn đúng MỘT mục mở: S-14 (backpressure của Service API's SSE)** — chưa sửa,
-> xem `## 3.1`/`§2.2`. Đừng đọc 88.4/100 là "xong" cho tới khi S-14 đóng và pilot chạy.
+> lượt). **S-14 (backpressure của Service API's SSE) nay cũng ĐÃ XONG** (ADR-059:
+> `deque(maxlen=...)`, theo dõi theo `Event.seq`, `event: dropped` khi subscriber tụt lại).
+> **14/14 mục `S-01…S-14` (`docs/17 §2.2`) đều đóng.** Điều kiện (b)/(c) của v1.0 nay đều
+> THOẢ. Điều kiện còn lại DUY NHẤT trước khi gắn nhãn v1.0 là pilot 2-4 tuần — xem `## 5`
+> và ghi chú giới hạn ngay dưới đây: không phiên agent nào tự chạy được nó.
 
 Điều kiện, theo đúng `docs/17 §6`'s tiêu chí hoàn thành đã đặt ra (không viết lại):
 
