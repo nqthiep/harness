@@ -266,6 +266,12 @@ meaningfully requires subprocess or WASM isolation with a serialization boundary
 different product. Implying a boundary we do not enforce is worse than having none,
 because it changes how carefully people choose plugins.
 
+**This is a different boundary from the `Sandbox` seam (M7, `docs/04-interfaces.md §6`).**
+`Sandbox` isolates what a TOOL does when it runs a command (`InProcess`/`Subprocess` —
+neither claims namespace/cgroup isolation either, ADR-047 says so directly). This section
+is about trusting the PLUGIN CODE itself — a package that extends the harness. Neither one
+is a container boundary; both say so rather than imply one.
+
 What the harness *does* provide:
 
 | Control | Effect |

@@ -72,7 +72,7 @@ xây M6-M10.** Còn mở thật sự, hôm nay: **6 mục** — xem `## 7`.
 | N-3 | LangGraph không hỗ trợ `returns=` | **Còn mở** |
 | N-4 | Lỗi provider crash thẳng ra ngoài, cả hai backend | **Đã sửa** |
 | N-5 | Retry cấp provider đã công bố nhưng chưa cài | **Còn mở** |
-| N-6 | `model.response` thiếu `usage`/`latency_ms` | **Còn mở** |
+| N-6 | `model.response` VÀ `run.finished` thiếu trường tài liệu đã hứa | **Còn mở** |
 | N-7 | `Agent.with_()` làm mất bốn trường, mọi lần gọi | **Đã sửa** |
 | N-8 | `execute_once` có caller thật nhưng chưa gắn vào tool dispatch | **Còn mở** (= S-4) |
 | N-9 | `tenant_id` chưa bao giờ tới được `Policy.check()` | **Đã sửa** |
@@ -228,9 +228,14 @@ hứa `ProviderRateLimited`/`ProviderUnavailable`/`ProviderTimeout` đều tự 
 chỉ biến lỗi thành `Result(ERROR)`, không tự retry gì. Cần thiết kế riêng (đọc
 `Retry-After` từ đâu — `ProviderRateLimited` chưa mang trường đó). Còn mở.
 
-**N-6 — `model.response` thiếu `usage`/`latency_ms` so với tài liệu tự hứa.**
-`docs/05-data-and-state.md §1` hứa đủ cả, code chỉ emit `stop_reason`/`cost_usd` — khiến
-một phần mapping của `OtelExporter` (T-8.3) không có dữ liệu để đọc. Còn mở.
+**N-6 — `model.response` VÀ `run.finished` thiếu trường tài liệu đã hứa.**
+`docs/05-data-and-state.md §1` hứa `model.response` mang `usage{in,out,cache_read,
+cache_write}`/`latency_ms` — code chỉ emit `stop_reason`/`cost_usd`, khiến một phần
+mapping của `OtelExporter` (T-8.3) không có dữ liệu để đọc. Phát hiện thêm khi soát tài
+liệu lượt này (không phải lúc T-8.3 viết): `run.finished` có cùng khoảng lệch —
+`docs/05` hứa `usage`/`duration_s`, code (`run.py`, `lg/runtime.py`) chỉ emit
+`stop_reason`/`steps`/`cost_usd`/`tainted`. Cùng một lớp gap (usage/timing chưa wire vào
+event emission), hai điểm emit. Còn mở.
 
 **N-7 (đã sửa) — `Agent.with_()` làm mất bốn trường, MỌI lần gọi.**
 `transcript`/`exporters`/`accepts_tainted`/`sensitive` biến mất khỏi agent phái sinh —

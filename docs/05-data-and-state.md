@@ -18,11 +18,11 @@ tracer/OTel exporter — T-8.3 — propagates one in), `tenant_id` and `session_
 | Kind | When | `data` payload |
 |---|---|---|
 | `run.started` | Once, first | `agent`, `model`, `budget`, `tool_names[]`, `safety`, `harness_version` |
-| `run.finished` | Once, last | `stop_reason`, `steps`, `cost_usd`, `usage`, `tainted`, `duration_s` |
+| `run.finished` | Once, last | `stop_reason`, `steps`, `cost_usd`, `tainted`. `usage`/`duration_s` documented here but not yet emitted — same gap class as `model.response` below (N-6, `design/07-risks-and-open-issues.md §3`) |
 | `step.started` | Each loop iteration | `step` |
 | `step.finished` | Each loop iteration | `step`, `stop_reason`, `tool_calls` |
 | `model.request` | Before each call | `model`, `input_tokens`, `n_tools`, `n_messages`, `breakpoints`, `estimate_usd` |
-| `model.response` | After each call | `stop_reason`, `usage{in,out,cache_read,cache_write}`, `cost_usd`, `latency_ms` |
+| `model.response` | After each call | `stop_reason`, `cost_usd`. `usage{in,out,cache_read,cache_write}`/`latency_ms` documented here but not yet emitted (N-6, `design/07-risks-and-open-issues.md §3`) — `OtelExporter`'s `gen_ai.usage.*` attributes have no data to read until this lands |
 | `budget.reserved` | Before each call | `estimate_usd`, `spent_usd`, `remaining_usd` |
 | `budget.exhausted` | Ceiling hit | `axis` (`usd`\|`steps`\|`time`\|`tokens`), `spent`, `limit` |
 | `budget.unlimited` | Once, right after `run.started`, only when `budget.usd is None` | `reason` |
