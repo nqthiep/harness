@@ -27,7 +27,7 @@ from typing import Any, Awaitable, Callable, Final, Mapping, Sequence
 
 from ._value import value
 from .errors import ConfigError, HarnessError
-from .tools import Effect, ToolSpec
+from .tools import Effect, ToolSpec, slug
 
 ServerLabel = str
 ToolName = str
@@ -174,8 +174,18 @@ def classify_mcp_tool(
     async def _fn(**kwargs: Any) -> Any:
         return await fn(**kwargs)
 
+    # S-23 re-verify (design/07-risks-and-open-issues.md) — `tool.name` là chuỗi TỰ KHAI
+    # của server, không đi qua `@tool`'s `_NAME_RE` check (đó chỉ áp cho tool tác giả tự
+    # viết). `slug()` (đã dùng cho `as_tool()`) là nơi duy nhất ép nó về đúng hình dạng
+    # `^[a-z][a-z0-9_]{0,63}$` trước khi vào `ToolSpec`/`ToolSet`/prompt của model — không
+    # có ký tự `:` nào lọt qua để mà bàn tới va chạm với dấu phân cách `f"{name}:
+    # {canonical(args)}"` của T-2.5's dedup key (`dispatch.py`). Tên upstream THẬT
+    # (`tool.name` gốc) không đổi — `bind_mcp_server`'s closure gọi lại vẫn dùng nó, chỉ
+    # tên MODEL THẤY mới bị chuẩn hoá.
+    exposed_name = slug(tool.name, fallback="mcp_tool")
+
     return ToolSpec(
-        name=tool.name,
+        name=exposed_name,
         description=description,
         input_schema=dict(tool.input_schema),
         effect=effect,

@@ -104,6 +104,16 @@ class ClassifyMcpTool(unittest.TestCase):
         with self.assertRaises(McpToolNotAllowed):
             classify_mcp_tool(_tool(name="t"), policy)
 
+    def test_malformed_server_name_is_normalized_not_rejected(self):
+        """S-23 re-verify — `tool.name` là chuỗi tự khai của server, không qua `@tool`'s
+        `_NAME_RE`. Một cái tên chứa `:` (thứ delimiter T-2.5's dedup key dùng) không
+        được lọt nguyên văn vào `ToolSpec.name`/prompt của model."""
+        policy = McpServerPolicy(identity="weird", trusted=False)
+        spec = classify_mcp_tool(_tool(name="Fetch Page: v2!!"), policy)
+        self.assertNotIn(":", spec.name)
+        self.assertNotIn(" ", spec.name)
+        self.assertRegex(spec.name, r"^[a-z][a-z0-9_]{0,63}$")
+
     def test_native_tools_have_no_server(self):
         from harness.tools import tool as tool_decorator
 

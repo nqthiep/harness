@@ -1561,6 +1561,76 @@ with `harness.testing.Trajectory` now importable.
 
 ---
 
+### ADR-057 — S-4/S-23 re-verified against the real T-6.1 code; two findings this surfaced, both fixed
+**Status:** Accepted (S-4/S-23 re-verification, held open since ADR-041/design/08 §2)
+
+**Context.** `design/07-risks-and-open-issues.md` had flagged both S-4 and S-23 "cannot
+close now, re-verify once M6 builds idempotency" — M6 landed (T-6.1) before this session,
+M9/M10 landed during it, but nobody had gone back and actually run S-4/S-23 against the
+real `idempotency.py`. Re-verifying surfaced two real, unrelated findings — not the
+original S-4/S-23 wording, which turns out not to apply to what got built.
+
+**Finding 1 — `execute_once` has a TOCTOU race under concurrency; `design/03 §4` describes
+a three-phase protocol that was never built.** `design/03-tools-and-mcp.md §4.4` specifies
+an `in_flight` → `committed`/`failed` protocol backed by a DB `UNIQUE INDEX`, with
+`IntegrityError`-based race resolution copied from agno. What T-6.1 actually shipped
+(`idempotency.py::execute_once`) is a plain `get` → (miss) `fn()` → `put` — no claim step,
+no unique constraint, because `Store` (`memory/base.py`) has no CAS/insert-if-absent
+primitive at all. Two `execute_once` calls racing the same key can both miss the `get` and
+both run `fn()` — a real double side effect for `write`/`danger`, the exact failure this
+module exists to prevent, and the design document describing why it shouldn't happen was
+simply never reconciled with what got coded. **Fixed with an in-process, per-key
+`asyncio.Lock`** (`_locks`, a `WeakValueDictionary` so a key's lock does not outlive every
+holder) — strictly weaker than design/03's cross-process, persistent-store protocol (two
+processes racing the same key are still unprotected; that needs the `Store` protocol to
+grow a real CAS operation, not attempted here), but closes the race within one process,
+honestly scoped in the module docstring rather than left silently open.
+
+**Finding 2 — the Service API this module was built for existed and nothing used it.**
+`idempotency.py`'s own docstring named the scenario: "client timeout rồi retry có thể gửi
+email hai lần... M9's Service API is the first real source of one." M9 landed in this
+session; `harness.server` never called `idempotency.py` at all. **Fixed:** `POST /v1/runs`
+accepts an optional `idempotency_key` in the body; `RunStore._by_key` (a plain dict, not
+`execute_once`) maps it to a run id — a retry of the same POST with the same key gets back
+the SAME run (`200`, `"replayed": true`) instead of starting a second one. Deliberately
+**not** `execute_once`: that function's `fail_open`/`fail_closed` contract is written for
+a *persistent* `Store` (crash recovery across restarts) — `RunStore` has no `Store` behind
+it by design (ADR-055, "no database"), and wrapping it in `execute_once` would imply a
+durability guarantee the in-memory map cannot deliver. The weaker, honestly-scoped
+guarantee — protected within one process's lifetime, not across a restart — is what
+`RunStore`'s already-stated scope can actually promise.
+
+**Finding 3 (S-23, actually re-verified this time) — MCP tool names bypass `_NAME_RE`, and
+whether that collides with T-2.5's dedup key needed checking, not assuming.** S-23's
+original closure ("`name` is author-controlled, not MCP-controlled today") stopped being
+true the moment T-9.1 landed in this session — an MCP server's self-reported `tool.name`
+flows straight into `ToolSpec.name` with no format check (`@tool`'s `_NAME_RE` only guards
+natively-authored tools). Checked directly, by construction rather than by reading:
+`dispatch.py`'s dedup key is `f"{name}:{canonical(args)}"`, and `canonical(args)` is always
+a complete, self-delimiting JSON value — splitting the concatenated string at any `:`
+*inside* that JSON necessarily leaves an unbalanced trailing brace from an enclosing level,
+which can never itself be a second valid JSON value. No two distinct `(name, args)` pairs
+can therefore produce the same key by exploiting a `:` embedded in an attacker-chosen tool
+name; verified by direct construction attempts, not proof by inspection alone (the
+package's own IDL-34 rule). **Still fixed anyway, on general robustness grounds rather than
+this specific collision:** `classify_mcp_tool` now runs every tool name through `slug()`
+(the same normalizer `as_tool()` already uses) before it reaches `ToolSpec`/the model's
+tool list — a name containing spaces, punctuation, or non-ASCII no longer reaches the
+provider unnormalized, and no name can contain `:` at all post-slug, closing the question
+at the shape level too, not just by the JSON argument. The upstream `tools/call` still uses
+the server's *original* name (`bind_mcp_server`'s closure captures it directly, independent
+of the exposed `ToolSpec.name`) — only what the model sees changes.
+
+**Test.** `tests/test_m6_t61_idempotency.py::RaceClosedByLock` — a forced (not
+timing-based) race via a controlled `asyncio.Event` handshake, same discipline as
+ADR-053's `Session` concurrency test; a second class proving unrelated keys never
+serialize against each other. `tests/test_m9_t92_t93_service.py` — four new cases for the
+idempotency-key replay path. `tests/test_m9_t91_mcp.py` — a malformed MCP tool name
+normalizes rather than reaching the model raw. 566/566 green, ruff/mypy clean including
+the whole-package check.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |

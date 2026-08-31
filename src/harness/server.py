@@ -7,7 +7,13 @@ same choice `docs/01-requirements.md §1.5` already made and `docs/17` W-08 rest
 
 Routes (docs/17 §252 T-9.2):
 
-    POST /v1/runs                              start a run -> 202 {id, status}
+    POST /v1/runs                              start a run -> 202 {id, status, replayed}
+                                                body may carry "idempotency_key": str —
+                                                a client retrying the same POST (its own
+                                                timeout, a proxy retry) gets back the
+                                                SAME run (200, replayed=true) instead of
+                                                starting a second one. In-process only —
+                                                see `RunStore._by_key` for the scope.
     GET  /v1/runs/{id}                          status, result (if done), pending approvals
     GET  /v1/runs/{id}/events                   SSE — canonical Event JSON (T-9.3)
     POST /v1/runs/{id}/cancel                   cancel the background run
@@ -126,11 +132,36 @@ class RunStore:
     def __init__(self, agents: Mapping[str, Agent]) -> None:
         self._agents = dict(agents)
         self._runs: dict[str, _Run] = {}
+        # S-4/S-23 re-verify, docs/12-decision-logs.md ADR-054's own note ("the only place
+        # [an idempotency key] will ever come from is M9's Service API") — nay Service API
+        # đã tồn tại, đây là chỗ đó. KHÔNG dùng `harness.idempotency.execute_once`: nó
+        # nhắm một `Store` BỀN VỮNG (crash giữa hai lần gọi vẫn thấy lại đúng kết quả) —
+        # `RunStore` cố ý không có `Store` nào phía sau (ADR-055, "không CSDL"), nên bọc nó
+        # bằng `execute_once` sẽ tạo cảm giác về một bảo đảm bền vững không có thật. Đây là
+        # một dict trong tiến trình, cùng đúng phạm vi RunStore đã tự đặt — client-side
+        # retry trong đời một tiến trình được bảo vệ; qua một lần restart thì không, và đó
+        # là giới hạn đã biết, không phải sơ sót.
+        self._by_key: dict[str, str] = {}
 
     def agent_names(self) -> list[str]:
         return sorted(self._agents)
 
-    def start(self, agent_name: str, message: str) -> _Run:
+    def start(self, agent_name: str, message: str, *,
+              idempotency_key: str | None = None) -> tuple[_Run, bool]:
+        """Trả `(run, was_replayed)` — cùng hình dạng `execute_once`'s `(result,
+        was_replayed)` để một client đọc quen với cái kia không phải học lại. `
+        was_replayed=True` nghĩa là `idempotency_key` đã thấy trước đó VÀ run cũ đó vẫn
+        còn trong `_runs` — không tạo run mới, trả lại đúng run cũ.
+        """
+        if idempotency_key is not None:
+            existing_id = self._by_key.get(idempotency_key)
+            if existing_id is not None:
+                existing = self._runs.get(existing_id)
+                if existing is not None:
+                    return existing, True
+                # Run cũ không còn (không có cơ chế dọn trong v1, nhưng phòng hờ) — coi
+                # như key chưa từng thấy, rơi xuống nhánh tạo mới bên dưới.
+
         base = self._agents[agent_name]                        # KeyError -> 404 ở route
         bridge = None
         driven = base
@@ -141,6 +172,8 @@ class RunStore:
         run = _Run(id="run_" + uuid.uuid4().hex[:20], agent_name=agent_name,
                   message=message, bridge=bridge)
         self._runs[run.id] = run
+        if idempotency_key is not None:
+            self._by_key[idempotency_key] = run.id
 
         class _Collector:
             def emit(self, event: Event) -> None:
@@ -166,7 +199,7 @@ class RunStore:
                 run.error = f"{type(exc).__name__}: {exc}"
 
         run.task = asyncio.ensure_future(_drive())
-        return run
+        return run, False
 
     def get(self, run_id: str) -> "_Run | None":
         return self._runs.get(run_id)
@@ -199,8 +232,14 @@ def create_app(agents: Mapping[str, Agent]) -> "Starlette":
             return JSONResponse(
                 {"error": f"không có agent {agent_name!r}. Có: {store.agent_names()}"},
                 status_code=404)
-        run = store.start(agent_name, message)
-        return JSONResponse({"id": run.id, "status": run.status}, status_code=202)
+        idem_key = body.get("idempotency_key")
+        if idem_key is not None and not isinstance(idem_key, str):
+            return JSONResponse({"error": "idempotency_key phải là chuỗi"}, status_code=400)
+        run, replayed = store.start(agent_name, message, idempotency_key=idem_key)
+        # replayed=True: cùng idempotency_key đã thấy trước — trả lại run CŨ, 200 (không
+        # phải "vừa tạo"). replayed=False: run mới, 202 Accepted (đang chạy nền).
+        return JSONResponse({"id": run.id, "status": run.status, "replayed": replayed},
+                            status_code=200 if replayed else 202)
 
     async def get_run(request: Request) -> JSONResponse:
         run = store.get(request.path_params["run_id"])

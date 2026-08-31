@@ -55,6 +55,54 @@ class HappyPath(unittest.TestCase):
             r = client.post("/v1/runs", json={"agent": "t"})
             self.assertEqual(r.status_code, 400)
 
+    def test_idempotency_key_replays_instead_of_starting_a_second_run(self):
+        """S-4 re-verify — client-supplied idempotency_key: một POST lặp lại (client tự
+        timeout rồi retry) phải trả lại ĐÚNG run cũ, không khởi một run thứ hai."""
+        agent = Agent(name="T", job="j", model="fake", budget="$5",
+                      provider=FakeModel([FakeModel.text("ok")]))
+        app = create_app({"t": agent})
+        with TestClient(app) as client:
+            r1 = client.post("/v1/runs", json={"agent": "t", "message": "hi",
+                                               "idempotency_key": "client-key-1"})
+            self.assertEqual(r1.status_code, 202)
+            self.assertFalse(r1.json()["replayed"])
+            id1 = r1.json()["id"]
+
+            r2 = client.post("/v1/runs", json={"agent": "t", "message": "hi khác hẳn",
+                                               "idempotency_key": "client-key-1"})
+            self.assertEqual(r2.status_code, 200)
+            self.assertTrue(r2.json()["replayed"])
+            self.assertEqual(r2.json()["id"], id1, "phải trả lại run CŨ, không tạo mới")
+
+    def test_different_idempotency_keys_start_different_runs(self):
+        agent = Agent(name="T", job="j", model="fake", budget="$5",
+                      provider=FakeModel([FakeModel.text("ok"), FakeModel.text("ok2")]))
+        app = create_app({"t": agent})
+        with TestClient(app) as client:
+            r1 = client.post("/v1/runs", json={"agent": "t", "message": "hi",
+                                               "idempotency_key": "key-a"})
+            r2 = client.post("/v1/runs", json={"agent": "t", "message": "hi",
+                                               "idempotency_key": "key-b"})
+            self.assertNotEqual(r1.json()["id"], r2.json()["id"])
+
+    def test_no_idempotency_key_always_starts_a_new_run(self):
+        agent = Agent(name="T", job="j", model="fake", budget="$5",
+                      provider=FakeModel([FakeModel.text("ok"), FakeModel.text("ok2")]))
+        app = create_app({"t": agent})
+        with TestClient(app) as client:
+            r1 = client.post("/v1/runs", json={"agent": "t", "message": "hi"})
+            r2 = client.post("/v1/runs", json={"agent": "t", "message": "hi"})
+            self.assertNotEqual(r1.json()["id"], r2.json()["id"])
+
+    def test_non_string_idempotency_key_is_400(self):
+        agent = Agent(name="T", job="j", model="fake", budget="$5",
+                      provider=FakeModel([FakeModel.text("ok")]))
+        app = create_app({"t": agent})
+        with TestClient(app) as client:
+            r = client.post("/v1/runs", json={"agent": "t", "message": "hi",
+                                              "idempotency_key": 123})
+            self.assertEqual(r.status_code, 400)
+
     def test_unknown_run_id_is_404(self):
         app = create_app({})
         with TestClient(app) as client:

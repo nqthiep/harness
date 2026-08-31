@@ -44,11 +44,23 @@ nó thành thật.
 > `CLEARED`), chỉ xoá nội dung, không gọi model nào. Không có lời gọi model nào ngoài
 > node `model` để mà thiếu reservation.
 
-> **S-4 — CHƯA LỖI THỜI, nhưng chưa áp dụng được vì cơ chế nó bàn chưa tồn tại.** Giao
-> thức idempotency ba pha (`IdempotencyMode`, `in_flight`, `call_with_effect_log`) không
-> có trong `src/harness/` — đúng khoảng trống `docs/17-research-alignment.md` M6/T-6.1 đã
-> ghi nhận và xếp lịch xây. Không đóng bây giờ: cần RE-VERIFY khi M6 build idempotency,
-> xem `design/08-roadmap-and-release-plan.md §2`.
+> **S-4 — RE-VERIFIED trên `idempotency.py` thật (ADR-057), đóng — nhưng bằng một phát
+> hiện KHÁC câu chữ gốc, không phải xác nhận câu chữ gốc.** `IdempotencyMode`/
+> `in_flight`/`call_with_effect_log` (giao thức ba pha `03 §4.4`) đúng là không tồn tại —
+> T-6.1 xây một cơ chế đơn giản hơn (`execute_once`: get → miss → chạy → put, không có
+> claim `in_flight`, không `UNIQUE INDEX`). Kiểm trực tiếp thay vì chỉ đọc lại tài liệu thì
+> thấy cơ chế đơn giản hơn đó có một race THẬT mà bản ba pha vốn được thiết kế để chặn: hai
+> `execute_once` đua nhau cùng key có thể cùng miss `get()`, cùng chạy `fn()` — nhân đôi
+> side effect cho `write`/`danger`, đúng lỗi T-6.1 tồn tại để ngăn. **Đã sửa**: khoá
+> `asyncio.Lock` theo từng key, trong một tiến trình — yếu hơn giao thức `03 §4.4` (không
+> chặn được hai tiến trình/replica đua nhau cùng key, cần `Store` có CAS thật, chưa xây),
+> nhưng đóng đúng cửa sổ TOCTOU trong phạm vi nó tuyên bố. Đồng thời: `idempotency.py`'s
+> docstring tự nói "M9's Service API is the first real source of [a key]" — M9 nay đã
+> tồn tại và KHÔNG gọi module này. Đã gắn: `POST /v1/runs` nhận `idempotency_key`, một
+> client retry (do timeout của chính họ) nhận lại ĐÚNG run cũ thay vì khởi run thứ hai —
+> xem `harness/server.py::RunStore._by_key`, cố ý KHÔNG dùng `execute_once` (nó nhắm một
+> `Store` bền vững, `RunStore` không có). `tests/test_m6_t61_idempotency.py::
+> RaceClosedByLock`, `tests/test_m9_t92_t93_service.py`'s bốn case idempotency-key.
 
 > **S-5 ĐÃ KIỂM — LỖI THỜI, và may mắn theo hướng an toàn.** Cơ chế `Provenance`/nhãn-theo-
 > bản-ghi mà S-5 phê phán (dữ liệu trong store tự khai `label`, giả mạo được) không được
@@ -251,15 +263,23 @@ lại duy nhất là `AuthEvidence` thật, ghi ở `## 5`.
 > (`cache_write_per_mtok`) ở cả `reserve()` lẫn nhánh `hard_max_input`.
 > `tests/test_attack_s21_s22.py`.
 
-> **S-23 ĐÃ KIỂM — LỖI THỜI, KHÔNG CẦN SỬA.** `call_key = blake2b(...)` mà review mô tả
-> thuộc giao thức idempotency ba pha (`03 §4.4`) — `IdempotencyMode`, `in_flight`,
-> `call_with_effect_log` — **không tồn tại** trong `src/harness/` (cùng tình trạng "0
-> caller" như S-7…S-10, K-25). Cơ chế dedup THẬT (T-2.5, `dispatch.py`) dùng
-> `f"{name}:{canonical_json(args)}"` chứ không phải `blake2b` nối chuỗi, và `name` là tên
-> tool do TÁC GIẢ đặt lúc bind (không phải input model/MCP điều khiển được hôm nay) — va
-> chạm domain-separator review lo chỉ thật khi `tool` là chuỗi tự do do bên ngoài đặt, đúng
-> viễn cảnh MCP namespaced mà S-7…S-10 hoãn. Không có gì để sửa cho tới khi MCP thật tồn
-> tại.
+> **S-23 RE-VERIFIED sau khi MCP thật tồn tại (ADR-057) — điều kiện đóng cũ ("name không
+> phải input MCP điều khiển được") đã hết hiệu lực từ khi T-9.1 landing, nên phải kiểm
+> lại, không được để mặc định "chắc vẫn ổn."** Kiểm bằng CÁCH DỰNG (không phải đọc), đúng
+> luật IDL-34: `dispatch.py`'s dedup key `f"{name}:{canonical(args)}"` — thử ép một tên
+> tool MCP chứa `:` để tạo va chạm với key của một tool khác, không dựng được, vì
+> `canonical(args)` luôn là một giá trị JSON hoàn chỉnh, tự đóng gói; tách chuỗi ghép tại
+> bất kỳ `:` nào NẰM TRONG khối JSON đó luôn để lại một dấu đóng ngoặc dư từ tầng bao
+> quanh, nên phần còn lại không bao giờ tự nó là một giá trị JSON hợp lệ thứ hai — không
+> có hai cặp `(name, args)` khác nhau nào tạo cùng key qua đường ký tự `:` trong tên. **Vẫn
+> sửa, vì lý do robust khác, không phải vì tìm ra va chạm:** `classify_mcp_tool` giờ chạy
+> mọi tên tool MCP qua `slug()` (cùng hàm `as_tool()` đã dùng) trước khi vào
+> `ToolSpec`/prompt của model — một tên chứa khoảng trắng, dấu câu, hay không phải ASCII
+> không còn lọt nguyên văn tới model, và không tên nào có thể chứa `:` sau khi qua `slug()`
+> — đóng luôn câu hỏi ở tầng HÌNH DẠNG, không chỉ dựa vào chứng minh JSON. Tên gọi
+> `tools/call` thật (upstream) không đổi — `bind_mcp_server`'s closure vẫn dùng tên gốc,
+> chỉ tên model THẤY bị chuẩn hoá. `tests/test_m9_t91_mcp.py::
+> test_malformed_server_name_is_normalized_not_rejected`.
 
 > **S-24 ĐÃ SỬA — hoá ra rộng hơn "seq không có nguồn cấp" review mô tả.** Đúng lỗi Round
 > 37 đã sửa cho `Ledger`/`TaintTracker`, và S-15 sửa cho `PolicyEngine`, lần THỨ TƯ:

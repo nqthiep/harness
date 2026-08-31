@@ -21,12 +21,38 @@ integration).
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import weakref
 from typing import Awaitable, Callable, TypeVar
 
 from .memory.base import Store
 
 T = TypeVar("T")
+
+#: S-4 re-verify (design/07-risks-and-open-issues.md, T-9.1/T-10.* session) — `Store` has
+#: no CAS/insert-if-absent (`memory/base.py::Store.put` is an unconditional write), so a
+#: plain get-then-put has a TOCTOU window: two concurrent `execute_once` calls sharing a
+#: key can both miss the `get`, both run `fn` (a REAL double side effect for `write`/
+#: `danger`), both `put`. design/03 §4.4's three-phase protocol (`in_flight` claim via a
+#: DB `UNIQUE INDEX`, `IntegrityError` read-back) closes this at the STORE layer, across
+#: processes — that protocol was never built (T-6.1 shipped the simpler two-step
+#: `execute_once` instead, deliberately, and this was never reconciled with `03 §4` until
+#: this re-verify). A per-key `asyncio.Lock` closes the SAME race WITHIN one process —
+#: strictly weaker than the documented protocol (two processes/replicas racing the same
+#: key are still unprotected), but a real improvement over none, and honestly scoped: it
+#: is what an in-process `execute_once` can promise without the persistent-store schema
+#: design/03 describes. `WeakValueDictionary` so a key's lock does not outlive every
+#: caller holding it — this module has no lifecycle hook to explicitly release one.
+_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+
+
+def _lock_for(key: str) -> asyncio.Lock:
+    lock = _locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _locks[key] = lock
+    return lock
 
 
 def idempotency_key(run_id: str, call_id: str) -> str:
@@ -63,21 +89,25 @@ async def execute_once(
     LOUD instead of silently returning success while the record never got written —
     fail visible (IDL-30), the same choice this whole design makes everywhere else.
     """
-    try:
-        cached = await store.get(key)
-    except Exception:
-        if not fail_open:
-            raise
-        cached = None
-    if cached is not None:
-        return json.loads(cached), True
-    result = await fn()
-    try:
-        await store.put(key, json.dumps(result, sort_keys=True, ensure_ascii=False))
-    except Exception:
-        if not fail_open:
-            raise
-        # fail_open: the call already ran and produced a real result — losing the
-        # record means a future replay of this same key won't be caught, but returning
-        # an error here for a call that SUCCEEDED would be strictly worse.
-    return result, False
+    # In-process TOCTOU close — see the module-level note on `_locks`. Two callers
+    # racing the SAME key serialize here; the second one through sees the first's `put`
+    # via `store.get` and replays instead of re-running `fn`.
+    async with _lock_for(key):
+        try:
+            cached = await store.get(key)
+        except Exception:
+            if not fail_open:
+                raise
+            cached = None
+        if cached is not None:
+            return json.loads(cached), True
+        result = await fn()
+        try:
+            await store.put(key, json.dumps(result, sort_keys=True, ensure_ascii=False))
+        except Exception:
+            if not fail_open:
+                raise
+            # fail_open: the call already ran and produced a real result — losing the
+            # record means a future replay of this same key won't be caught, but returning
+            # an error here for a call that SUCCEEDED would be strictly worse.
+        return result, False

@@ -6,6 +6,7 @@ fail open với read" — cả hai điều kiện đều test được KHÔNG C�
 đúng lý do `execute_once` được xây như một hàm độc lập trước, chưa gắn vào
 `Agent`/`Dispatcher` (xem docstring `idempotency.py`).
 """
+import asyncio
 import sys
 import unittest
 
@@ -179,6 +180,65 @@ class MutationExecuteOnceCoTacDung(unittest.TestCase):
                              "nhánh kiểm cache")
 
         import asyncio
+        asyncio.run(scenario())
+
+
+class RaceClosedByLock(unittest.TestCase):
+    """S-4 re-verify (design/07-risks-and-open-issues.md) — `Store.put` có TOCTOU: hai
+    lời gọi `execute_once` cùng key, đua nhau, có thể cùng miss `get()` rồi cùng chạy
+    `fn()`. Test ép buộc (không dựa timing may rủi, cùng kỷ luật `test_m8_t86_session.py`
+    ADR-053) chứng minh khoá theo key đóng đúng cửa sổ đó trong MỘT tiến trình."""
+
+    def test_two_concurrent_calls_same_key_run_fn_once(self):
+        async def scenario():
+            store = InMemoryStore()
+            calls: list[int] = []
+            started = asyncio.Event()
+            proceed = asyncio.Event()
+
+            async def fn():
+                calls.append(1)
+                started.set()
+                await proceed.wait()
+                return {"n": len(calls)}
+
+            async def first():
+                return await execute_once(store, "k1", fn)
+
+            async def second():
+                await started.wait()      # đợi first() thật sự đã vào fn()
+                proceed.set()              # rồi mới cho first() chạy tiếp
+                return await execute_once(store, "k1", fn)
+
+            r1, r2 = await asyncio.gather(first(), second())
+            self.assertEqual(len(calls), 1,
+                             "fn() chạy hơn một lần — khoá không đóng được race")
+            self.assertEqual(r1[0], r2[0])
+            self.assertFalse(r1[0] is None)
+            self.assertFalse(r1[1], "lời gọi đầu không thể là replay")
+            self.assertTrue(r2[1], "lời gọi sau phải thấy kết quả đã lưu, không chạy lại")
+
+        asyncio.run(scenario())
+
+    def test_different_keys_never_serialize_against_each_other(self):
+        async def scenario():
+            store = InMemoryStore()
+            order: list[str] = []
+
+            async def slow(tag):
+                order.append(f"start:{tag}")
+                await asyncio.sleep(0)
+                order.append(f"end:{tag}")
+                return {"tag": tag}
+
+            await asyncio.gather(
+                execute_once(store, "kA", lambda: slow("A")),
+                execute_once(store, "kB", lambda: slow("B")),
+            )
+            # Không đòi một thứ tự cụ thể — chỉ đòi CẢ HAI đều thật sự chạy (khoá theo
+            # key khác nhau không được vô tình khoá chéo nhau).
+            self.assertEqual(set(order), {"start:A", "end:A", "start:B", "end:B"})
+
         asyncio.run(scenario())
 
 
