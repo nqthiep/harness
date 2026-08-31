@@ -1285,6 +1285,43 @@ for an interpolation this narrow a use case does not need.
 
 ---
 
+### ADR-052 — `agent.stream()` yields real `Event`s; deltas stay on `on_delta=`
+**Status:** Accepted (M8/T-8.5)
+
+**Context.** docs/17's T-8.5 asks for `async for ev in agent.stream(msg)` over the 16-kind
+taxonomy, distinguishing "text delta, tool-call delta, tool result, approval request,
+retry, cancellation, final." The taxonomy is closed on purpose (docs/05 §1); inventing a
+second, parallel event shape just for streaming would be a second taxonomy to keep in
+sync with the first.
+
+**Decision.** `Agent.stream(message, on_delta=None)` is an async generator yielding the
+real `Event` objects the run already produces (T-8.1's full envelope included), via a
+per-call exporter that pushes onto an `asyncio.Queue`; `on_delta=` remains the existing,
+separate token-level text-delta mechanism, unchanged and un-multiplexed into the yielded
+stream. Every distinction T-8.5 names maps onto an existing kind: tool-call
+request/result → `tool.requested`/`tool.finished`; approval request → `policy.decided`
+(verdict `ASK`); retry → `error.raised` (`retryable=True`); cancellation/final →
+`run.finished` (`stop_reason="cancelled"`/otherwise). Built via `Agent.with_()` (ADR-004:
+frozen, no mutation) to layer one extra exporter onto whatever the agent already carries,
+never replacing them. Cancelling the `async for` (a `break`, or `aclose()`) cancels the
+underlying run, extending T-6.2's cancellation-propagates guarantee through the
+generator rather than swallowing it.
+
+**A real, independently-reachable bug this surfaced: N-7.** Writing `stream()`'s own
+transcript test found `Agent.with_()` silently drops `transcript`, `exporters`,
+`accepts_tainted`, and `sensitive` — not only when a caller happens to override one, but
+on EVERY call, because those four were simply absent from `with_()`'s base-field dict
+(`accepts_tainted`/`sensitive` doubly so: they are not even readable as
+`self.accepts_tainted` — `__init__` folds them into `self._grants`, a `Grants` of
+frozensets, and never keeps a same-named attribute). Confirmed directly before fixing:
+`Agent(transcript=..., accepts_tainted=[...]).with_(name="X")` returned an agent with
+`transcript=None` and an empty `accepts_tainted`. Fixed by adding the two attribute
+names and reading the other two off `self._grants`. `tests/test_n7_with_preserves_
+fields.py` (7 tests, plus `stream()`'s own transcript test) locks this in, independent
+of `stream()` itself — this is a bug `with_()`'s own callers hit regardless of T-8.5.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |

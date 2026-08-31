@@ -228,6 +228,63 @@ class Agent:
         _raise_if_failed(r)
         return r
 
+    async def stream(self, message: str, *, on_delta=None):
+        """T-8.5, docs/17-research-alignment.md M8 — `async for ev in agent.stream(msg)`
+        over the real event stream, on the taxonomy `docs/05-data-and-state.md §1`
+        already closes over (16 kinds) and carrying envelope v1 (T-8.1: `schema_version`,
+        `trace_id`, `tenant_id`, `session_id` are already on every `Event`, nothing extra
+        to add here). `on_delta=` stays the separate, existing mechanism for token-level
+        text streaming — this method does not multiplex deltas into the yielded stream
+        as a new kind; the taxonomy is closed on purpose (docs/05 §1), and "tool-call
+        delta"/"tool result"/"approval request"/"retry"/"cancellation"/"final" (the
+        research-required distinctions T-8.5 names) are ALL already representable on the
+        existing 16: `tool.requested`, `tool.finished`, `policy.decided` (verdict=ASK),
+        `error.raised` (retryable=True), `run.finished` (cancelled), `run.finished`
+        (final) respectively — inventing a parallel event shape for streaming would be a
+        second taxonomy to keep in sync with the first.
+
+        Cancelling the iteration (breaking out of `async for`, or `aclose()`) cancels
+        the underlying run — the same cancellation-propagates guarantee T-6.2 already
+        gives `atry_run()`, extended through this generator rather than swallowed by it.
+        """
+        import contextlib
+
+        queue: asyncio.Queue = asyncio.Queue()
+        done = object()
+
+        class _QueueExporter:
+            def emit(self, event: Any) -> None:
+                queue.put_nowait(event)
+
+            def close(self) -> None: ...
+
+        # `with_()` (ADR-004: Agent is frozen) rather than mutating anything — a
+        # per-call exporter that only this one streamed call needs, layered on top of
+        # whatever exporters the agent already carries (transcript, console, a user's
+        # own), never replacing them.
+        streaming = self.with_(exporters=tuple(self.exporters) + (_QueueExporter(),))
+
+        async def _run() -> None:
+            try:
+                await streaming.atry_run(message, on_delta=on_delta)
+            finally:
+                queue.put_nowait(done)
+
+        task = asyncio.ensure_future(_run())
+        try:
+            while True:
+                item = await queue.get()
+                if item is done:
+                    break
+                yield item
+            await task           # re-raises if `_run()` itself raised (a real bug,
+                                 # not a run outcome — atry_run() already never does)
+        finally:
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
     def try_run(self, message: str, *, on_delta=None, _history=()) -> Result:
         _guard_sync()
         return asyncio.run(self.atry_run(message, on_delta=on_delta, _history=_history))
@@ -310,11 +367,20 @@ class Agent:
         return await self.atry_run((message or "continue") + note)
 
     def with_(self, **overrides: Any) -> "Agent":
+        # N-7 (design/07-risks-and-open-issues.md §1.5): this base dict silently
+        # dropped `transcript`, `exporters`, `accepts_tainted`, and `sensitive` —
+        # every `with_()` call, not just a caller that happened to touch one of them.
+        # `accepts_tainted`/`sensitive` are not readable as `self.accepts_tainted` —
+        # `__init__` folds them into `self._grants` (a `Grants`, frozensets) and never
+        # keeps the originals — so they come from there, not from a same-named
+        # attribute like everything else in this dict.
         base = {k: getattr(self, k) for k in
                 ("name", "job", "model", "effort", "returns", "budget", "safety", "approve",
                  "policies", "allowed_hosts", "provider", "max_parallel_tools",
-                 "max_asks_per_run", "tenant_id", "session_id")}
+                 "max_asks_per_run", "tenant_id", "session_id", "transcript", "exporters")}
         base["tools"] = list(self.toolset)
+        base["accepts_tainted"] = self._grants.accepts_tainted
+        base["sensitive"] = self._grants.sensitive
         base.update(overrides)
         return Agent(**base)
 

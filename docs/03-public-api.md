@@ -159,13 +159,14 @@ error.** A Poka-Yoke whose message is incomprehensible is only half-built.
 
 | Method | Returns | Notes |
 |---|---|---|
-| `run(message, *, stream=None) -> Result` | Result | Raises `RunFailed` on non-success. Sync facade. |
-| `try_run(message, *, stream=None) -> Result` | Result | Never raises for run outcomes; check `result.ok`. **Exception:** `asyncio.CancelledError` propagates instead of returning a `stop_reason="cancelled"` Result — cancellation is a control signal from the caller, not a run outcome (T-6.2, docs/17-research-alignment.md Y-01); an outer `TaskGroup`/`wait_for` must see it happen. |
+| `run(message, *, on_delta=None) -> Result` | Result | Raises `RunFailed` on non-success. Sync facade. (Corrected here from an earlier `stream=None` — the shipped parameter has always been `on_delta`, a token-level delta callback; the doc never caught up.) |
+| `try_run(message, *, on_delta=None) -> Result` | Result | Never raises for run outcomes; check `result.ok`. **Exception:** `asyncio.CancelledError` propagates instead of returning a `stop_reason="cancelled"` Result — cancellation is a control signal from the caller, not a run outcome (T-6.2, docs/17-research-alignment.md Y-01); an outer `TaskGroup`/`wait_for` must see it happen. |
 | `arun(...)` / `atry_run(...)` | Awaitable[Result] | Async originals. |
+| `stream(message, *, on_delta=None) -> AsyncIterator[Event]` | AsyncIterator[Event] | T-8.5. `async for ev in agent.stream(msg)` over the real `Event` stream (all 16 kinds, envelope v1 — T-8.1). `on_delta=` stays the separate token-level mechanism; this yields whole `Event`s, not text fragments. Cancelling the iteration cancels the underlying run (T-6.2, extended). |
 | `chat(*, budget=None) -> Chat` | Chat | Stateful multi-turn session with **one ledger for the whole session**, defaulting to 10 × the agent's run budget (ADR-020). As it depletes, answers shorten before the chat ends. |
 | `as_tool(*, name=None, description=None) -> ToolSpec` | ToolSpec | Turns this agent into a subagent tool. |
 | `resume(transcript) -> Result` | Result | Continue an interrupted run. |
-| `with_(**overrides) -> Agent` | Agent | Returns a **new** agent. `Agent` is frozen; there are no setters. |
+| `with_(**overrides) -> Agent` | Agent | Returns a **new** agent, every field preserved except what `overrides` names. `Agent` is frozen; there are no setters. (N-7: `transcript`/`exporters`/`accepts_tainted`/`sensitive` used to be silently dropped on every call, not just one that touched them — fixed.) |
 
 `with_()` exists because `Agent` is immutable, and immutability is what keeps the cache
 prefix stable (ADR-004). Mutating an agent mid-run is not "discouraged" — it is impossible.

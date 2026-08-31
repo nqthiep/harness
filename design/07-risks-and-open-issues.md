@@ -492,6 +492,23 @@ mới không nên tự tạo thêm va chạm).
 > exporter chỉ đọc đúng những gì event mang. Chưa sửa — cần thêm `usage`/`latency_ms` vào
 > lời gọi `emit(MODEL_RESPONSE, ...)` ở cả hai backend, ngoài phạm vi T-8.3.
 
+> **N-7 ĐÃ SỬA — `Agent.with_()` âm thầm làm mất `transcript`/`exporters`/
+> `accepts_tainted`/`sensitive`, MỌI lần gọi.** Phát hiện khi viết T-8.5
+> (`agent.stream()`, dùng `with_()` để thêm một exporter riêng cho lần gọi đó): test
+> transcript của `stream()` fail vì agent phái sinh có `transcript=None` dù agent gốc có
+> đặt. Kiểm trực tiếp xác nhận: `Agent(transcript=..., accepts_tainted=[...]).with_(name=
+> "X")` trả về agent với `transcript=None` VÀ `accepts_tainted` rỗng — không phải lỗi
+> riêng của `stream()`, `with_()`'s base dict đơn giản là THIẾU bốn trường này từ trước,
+> ảnh hưởng MỌI lời gọi `with_()`, không chỉ khi caller đụng tới một trong bốn trường đó.
+> `accepts_tainted`/`sensitive` thiếu vì một lý do sâu hơn: chúng không hề là attribute
+> đọc lại được (`self.accepts_tainted` không tồn tại) — `__init__` gộp chúng vào
+> `self._grants` (frozenset) rồi không giữ bản gốc, nên `with_()` phải đọc từ
+> `self._grants.accepts_tainted`/`.sensitive`, không phải từ tên trường trùng khớp như
+> chín trường còn lại. Sửa: thêm `transcript`/`exporters` vào base dict, đọc
+> `accepts_tainted`/`sensitive` từ `self._grants`. Khoá bằng
+> `tests/test_n7_with_preserves_fields.py` (7 test, mutation-tested) độc lập với T-8.5 —
+> đây là lỗi bất kỳ ai gọi `with_()` cũng gặp, không phải lỗi riêng của tính năng mới.
+
 ---
 
 ## 2. Ý tưởng có kiến trúc, chờ eval
