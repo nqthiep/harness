@@ -229,6 +229,40 @@ class VongLapClassicCoSo(unittest.TestCase):
         log = DecisionLog()
         self.assertIs(self.mk(log).with_(name="B").decisions, log)
 
+    def test_tu_choi_boi_ask_cap_khong_duoc_ghi_thanh_nguoi_da_duyet(self):
+        """Bug thật, tìm thấy khi tự review lại lượt vá DecisionLog: nhánh ask-cap từ
+        chối MÀ KHÔNG BAO GIỜ gọi callback — nhưng trước bản vá này, `actor` bị bỏ
+        `None` trên nhánh đó, và vì `self._e._a.approve is not None` (có cấu hình
+        callback), sổ ghi `Actor.human("approver", via="callback")` như thể một NGƯỜI
+        đã từ chối qua callback. Một audit sau này đọc hàng đó sẽ tin nhầm là đã có
+        người được hỏi và đã từ chối — đúng lỗ hổng "self-declared identity" mà D-1/S-11
+        tồn tại để ngăn, lần này do CHÍNH policy của harness tự gây ra."""
+        log = DecisionLog()
+        asked = []
+
+        def approve(call, ctx):
+            asked.append(call.name)
+            return True
+
+        agent = Agent(name="Coder", job="j", tools=[push], budget="$5",
+                      approve=approve, decisions=log, max_asks_per_run=1,
+                      provider=FakeModel([
+                          FakeModel.tool_call("push", {"branch": "main"}, call_id="c1"),
+                          FakeModel.tool_call("push", {"branch": "dev"}, call_id="c2"),
+                          FakeModel.text("xong"),
+                      ]))
+        agent.try_run("đẩy hai nhánh")
+        # ASK đầu tiên đi qua callback thật (dưới trần); ASK thứ hai vượt trần, bị
+        # ask-cap từ chối KHÔNG hỏi callback.
+        self.assertEqual(asked, ["push"])
+        rows = log.all()
+        self.assertEqual(len(rows), 2)
+        capped = [r for r in rows if r.verdict is Verdict.DENY]
+        self.assertEqual(len(capped), 1)
+        self.assertEqual(capped[0].actor, Actor.policy("ask-cap"),
+                         "từ chối bởi ask-cap bị ghi nhầm thành một người đã duyệt")
+        self.assertNotEqual(capped[0].actor.kind, "human")
+
 
 class BackendGraphNhanDuocSo(unittest.TestCase):
     def test_build_agent_truyen_duoc_decisions_xuong_runtime(self):

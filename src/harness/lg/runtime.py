@@ -166,7 +166,20 @@ class Runtime:
         # read False even on a turn's very first step. Same reasoning as `_ledger`'s
         # `steps` reset just above: detect newness once, here, and let every later node
         # in this step read the already-reset value straight from state.
-        asks = 0 if _is_new_turn(state) else state.get("asks", 0)
+        #
+        # The mechanical stall detector (`progress.py`, ADR-062) needs the identical
+        # per-turn reset and had been missing it: `stalled_steps`/`seen_calls` were read
+        # straight from checkpointed state with no turn boundary at all, so a `Chat`-
+        # style conversation that ended one turn at (say) 4-of-6 toward STALL_AFTER, or
+        # with `seen_calls` full of that turn's tool signatures, carried that count
+        # into the NEXT turn — a routine "check status" step at the start of a brand
+        # new turn could repeat a signature from a completely different turn and fire
+        # `PROGRESS_STALLED` a few steps in. Found on review; no test had exercised more
+        # than one turn against the stall detector.
+        new_turn = _is_new_turn(state)
+        asks = 0 if new_turn else state.get("asks", 0)
+        stalled_steps = 0 if new_turn else state.get("stalled_steps", 0)
+        seen_calls = [] if new_turn else list(state.get("seen_calls", ()))
         if state.get("step", 0) == 0:
             # `step` lives in checkpointed state (thread-scoped), so this fires once per
             # THREAD — not once per compiled graph. A `self._started` instance flag here
@@ -184,21 +197,23 @@ class Runtime:
         self._emit(state, EventKind.STEP_STARTED, step=state.get("step", 0))
         if led.remaining_steps() <= 0:
             return {"stop_reason": "step_limit", "detail": "reached the step limit",
-                    "ledger": led.snapshot(), "asks": asks}
+                    "ledger": led.snapshot(), "asks": asks,
+                    "stalled_steps": stalled_steps, "seen_calls": seen_calls}
         if led.remaining_wall_clock() <= 0:
             return {"stop_reason": "timeout", "detail": "ran out of time",
-                    "ledger": led.snapshot(), "asks": asks}
+                    "ledger": led.snapshot(), "asks": asks,
+                    "stalled_steps": stalled_steps, "seen_calls": seen_calls}
         # Checked HERE and not in `run_tools`, even though that is where the observation
         # is made: this gate is the only node that clears `stop_reason` (see the comment
         # at the end of this method), so a stop set anywhere upstream of it is wiped
         # before `_after_budget` ever reads it. Sitting beside the step and wall-clock
         # ceilings is also where it belongs — it is a ceiling, on a different axis.
-        if state.get("stalled_steps", 0) >= STALL_AFTER:
-            self._emit(state, EventKind.PROGRESS_STALLED,
-                       stalled_steps=state.get("stalled_steps", 0))
+        if stalled_steps >= STALL_AFTER:
+            self._emit(state, EventKind.PROGRESS_STALLED, stalled_steps=stalled_steps)
             return {"stop_reason": StopReason.STALLED.value,
-                    "detail": stall_reason(state.get("stalled_steps", 0)),
-                    "ledger": led.snapshot(), "asks": asks}
+                    "detail": stall_reason(stalled_steps),
+                    "ledger": led.snapshot(), "asks": asks,
+                    "stalled_steps": stalled_steps, "seen_calls": seen_calls}
         text = json.dumps([m.content for m in state["messages"]],
                           ensure_ascii=False, default=str)
         input_tokens = max(1, len(text) // 4)
@@ -209,7 +224,8 @@ class Runtime:
         except BudgetExceeded as exc:
             self._emit(state, EventKind.BUDGET_EXHAUSTED, axis="usd", spent=str(led.spent))
             return {"stop_reason": "budget_exhausted", "detail": str(exc),
-                    "ledger": led.snapshot(), "asks": asks}
+                    "ledger": led.snapshot(), "asks": asks,
+                    "stalled_steps": stalled_steps, "seen_calls": seen_calls}
         self._emit(state, EventKind.BUDGET_RESERVED, estimate_usd=str(res.estimate),
                    spent_usd=str(led.spent))
         # `stop_reason` is cleared here, and only here.  It is checkpointed like every
@@ -218,7 +234,8 @@ class Runtime:
         # Multi-turn was silently dead: the model was called once per thread, ever, and
         # the caller got their own message echoed back (Round 37).
         return {"spent_usd": str(led.spent.decimal), "ledger": led.snapshot(), "asks": asks,
-                "max_tokens": max_tokens, "stop_reason": None, "detail": ""}
+                "max_tokens": max_tokens, "stop_reason": None, "detail": "",
+                "stalled_steps": stalled_steps, "seen_calls": seen_calls}
 
     def call_model(self, state) -> dict:
         led = self._ledger(state)

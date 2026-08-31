@@ -168,6 +168,43 @@ class BackendGraph(unittest.TestCase):
         self.assertFalse(hasattr(rt, "_progress"))
 
 
+class BoDemResetMoiLuot(unittest.TestCase):
+    """Bug thật, tìm thấy khi tự review lại lượt vá stall detector: `asks` được reset
+    mỗi lượt hội thoại mới (`_is_new_turn`, S-25(b)) nhưng `stalled_steps`/`seen_calls`
+    thì KHÔNG — đọc thẳng từ state đã checkpoint không qua ranh giới lượt nào cả. Một
+    `Chat` nhiều lượt trên cùng một `thread_id` để lại `stalled_steps` gần chạm
+    `STALL_AFTER` (hoặc `seen_calls` đầy chữ ký của lượt đó) khi lượt trước kết thúc, và
+    lượt SAU thừa hưởng nguyên con số đó — một bước "kiểm tra lại" bình thường ở đầu lượt
+    mới có thể trùng đúng chữ ký của lượt trước và bị dừng oan gần như ngay lập tức."""
+
+    def test_luot_moi_khong_thua_huong_bo_dem_cua_luot_truoc(self):
+        from langgraph.checkpoint.memory import MemorySaver
+
+        # Lượt 1: 6 lời gọi `look(a.py)` giống hệt nhau — đưa stalled_steps lên 5, VẪN
+        # DƯỚI STALL_AFTER(6) — rồi kết thúc lượt bằng một câu trả lời chữ.
+        turn1 = [FakeChat.call("look", {"path": "a.py"}, f"a{i}") for i in range(6)]
+        turn1.append(FakeChat.text("tạm nghỉ"))
+        # Lượt 2: MỞ ĐẦU bằng đúng một lời gọi trùng chữ ký lượt 1 (một bước "xem lại"
+        # hoàn toàn bình thường) — nếu bộ đếm không reset, bước này tự nó đã chạm trần.
+        # Rồi làm việc THẬT (edit một file khác) và kết thúc bình thường.
+        turn2 = [FakeChat.call("look", {"path": "a.py"}, "b0"),
+                FakeChat.call("edit", {"path": "b.py", "body": "x"}, "b1"),
+                FakeChat.text("xong")]
+
+        graph, _ = build_agent(model=FakeChat(script=turn1 + turn2), tools=[look, edit],
+                               budget="$5, 100 steps", checkpointer=MemorySaver())
+        cfg = {"configurable": {"thread_id": "t-stall-reset"}}
+        out1 = graph.invoke({"messages": [HumanMessage("đi 1")], "step": 0}, cfg)
+        self.assertEqual(out1.get("stop_reason"), "completed",
+                         "lượt 1 phải hoàn thành bình thường")
+        self.assertEqual(out1.get("stalled_steps"), 5)
+
+        out2 = graph.invoke({"messages": [HumanMessage("đi 2")]}, cfg)
+        self.assertEqual(out2.get("stop_reason"), "completed",
+                         "lượt 2 bị dừng STALLED oan ngay bước đầu — bộ đếm của lượt 1 "
+                         "tràn sang lượt 2")
+
+
 class HaiBackendGiongNhau(unittest.TestCase):
     def test_cung_mot_kich_ban_thi_cung_mot_stop_reason_va_cung_mot_cau(self):
         script_loop = [FakeModel.tool_call("look", {"path": "a.py"})] * 50

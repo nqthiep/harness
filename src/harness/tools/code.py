@@ -91,15 +91,22 @@ class CodeTools:
     def path(self, path: str) -> Path:
         return confine(self.root, path)
 
-    def walk(self) -> list[Path]:
+    def walk(self) -> tuple[list[Path], bool]:
+        """Trả về `(đường_dẫn, đã_cắt_bớt)`. `đã_cắt_bớt=True` nghĩa là workspace có
+        nhiều hơn `MAX_FILES` file — người GỌI phải tự nói ra điều đó, vì im lặng cắt
+        bớt ở đây từng khiến `search_code`/`list_files` báo "không tìm thấy" cho một
+        chuỗi THẬT SỰ có mặt trong repo, chỉ là nằm ngoài phần đã quét (một agent code
+        đọc câu đó rồi có thể viết lại một hàm đã tồn tại sẵn ở nơi khác). Cùng kỷ luật
+        `search_code` đã tự áp cho `MAX_MATCHES` của chính nó — bên đó nói rõ khi cắt,
+        bên này thì chưa, cho tới bản vá này."""
         out: list[Path] = []
         for dirpath, dirnames, filenames in os.walk(self.root):
             dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
             for name in sorted(filenames):
                 out.append(Path(dirpath) / name)
                 if len(out) >= MAX_FILES:
-                    return out
-        return out
+                    return out, True
+        return out, False
 
     async def _run(self, cmd: Sequence[str]) -> str:
         done = await self.sandbox.run(list(cmd), cwd=str(self.root), env=self.env,
@@ -115,11 +122,14 @@ class CodeTools:
         @tool(effect="read")
         async def list_files(pattern: str = "*") -> str:
             """Liệt kê file trong workspace. `pattern` là glob theo tên file, ví dụ `*.py`."""
-            names = [str(p.relative_to(me.root)) for p in me.walk()
+            paths, truncated = me.walk()
+            names = [str(p.relative_to(me.root)) for p in paths
                      if Path(p.name).match(pattern)]
+            note = (f"\n[đã dừng quét ở {MAX_FILES} file — có thể còn file khớp ngoài "
+                    f"phạm vi đã quét]" if truncated else "")
             if not names:
-                return f"không có file nào khớp {pattern!r}"
-            return "\n".join(names)
+                return f"không có file nào khớp {pattern!r}" + note
+            return "\n".join(names) + note
 
         @tool(effect="read")
         async def read_source(path: str, start: int = 1, end: int = 0) -> str:
@@ -146,7 +156,8 @@ class CodeTools:
             except re.error as exc:
                 return f"biểu thức chính quy không hợp lệ: {exc}"
             hits: list[str] = []
-            for p in me.walk():
+            paths, walk_truncated = me.walk()
+            for p in paths:
                 if not Path(p.name).match(glob):
                     continue
                 try:
@@ -161,7 +172,14 @@ class CodeTools:
                         hits.append(f"{rel}:{n}: {line.strip()[:200]}")
                         if len(hits) >= MAX_MATCHES:
                             return "\n".join(hits) + f"\n[dừng ở {MAX_MATCHES} kết quả]"
-            return "\n".join(hits) if hits else f"không tìm thấy {pattern!r}"
+            # `walk_truncated`: workspace có hơn MAX_FILES file, nên "không tìm thấy"
+            # ở đây có thể là dương tính giả — chuỗi có thể nằm trong một file ngoài
+            # phạm vi đã quét. Nói ra thay vì để model tin nhầm là chuỗi không tồn tại.
+            note = (f"\n[đã dừng quét ở {MAX_FILES} file — kết quả có thể chưa đầy đủ]"
+                    if walk_truncated else "")
+            if not hits:
+                return f"không tìm thấy {pattern!r}" + note
+            return "\n".join(hits) + note
 
         @tool(effect="read")
         async def outline(path: str) -> str:

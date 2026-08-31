@@ -107,6 +107,14 @@ class Dispatcher:
                               f"more than {self._e._a.max_asks_per_run} approval requests in "
                               f"this run — refusing rather than risk reflex-approval fatigue",
                               "ask-cap")
+                    # The callback is never called on this branch — the cap denies
+                    # before `resolve()` runs. Leaving `actor` as `None` would fall
+                    # through to `Actor.human("approver", via="callback")` below
+                    # whenever an `approve=` callback happens to be configured, which
+                    # records a human as having denied a call nobody ever asked —
+                    # exactly the self-declared-identity problem D-1/S-11 exist to
+                    # prevent, on a call this harness's own policy made unilaterally.
+                    actor = Actor.policy("ask-cap")
                 else:
                     # Parity with the graph's `_regate` (S-29): a grant already recorded
                     # for THIS run answers without asking a person the same question

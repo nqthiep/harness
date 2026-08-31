@@ -229,6 +229,63 @@ class ChayLenhThat(Base):
         self.assertFalse(out.startswith("exit 0"))
 
 
+class QuetBiCatBoPhaiNoiRo(Base):
+    """Bug thật, tìm thấy khi tự review lại lượt vá `harness.tools.code`: `walk()` cắt
+    ở `MAX_FILES` file mà không báo cho ai biết — khác `search_code`'s `MAX_MATCHES`,
+    vốn tự nói "[dừng ở N kết quả]" khi cắt. Hệ quả: một workspace thật (>500 file,
+    hoàn toàn bình thường với một repo có test/fixture) khiến `search_code` báo "không
+    tìm thấy" cho một chuỗi THẬT SỰ có mặt, chỉ vì nó nằm trong file thứ 501 trở đi —
+    dương tính giả có thể khiến agent viết lại một hàm đã tồn tại sẵn nơi khác."""
+
+    def setUp(self):
+        super().setUp()
+        # MAX_FILES=500: tạo dư ra để chắc chắn vượt ngưỡng, tên sắp xếp sao cho file
+        # "đáng tìm" rơi ra NGOÀI 500 file đầu (os.walk + sorted(filenames) theo tên).
+        for i in range(510):
+            Path(self.root, f"f{i:04d}.py").write_text(f"# rác {i}\n", encoding="utf-8")
+        self.target = Path(self.root, "z_target.py")
+        self.target.write_text("CHUOI_CAN_TIM = 1\n", encoding="utf-8")
+
+    def test_walk_tu_bao_da_cat_bot(self):
+        from harness.tools.code import MAX_FILES
+        paths, truncated = self.ct.walk()
+        self.assertTrue(truncated)
+        self.assertEqual(len(paths), MAX_FILES)
+
+    def test_search_code_khong_tim_thay_thi_phai_noi_ro_da_cat_bot(self):
+        out = self.call("search_code", pattern="CHUOI_CAN_TIM")
+        self.assertIn("không tìm thấy", out)
+        self.assertIn("đã dừng quét", out,
+                      "báo 'không tìm thấy' mà không nói đã cắt bớt — dương tính giả")
+
+    def test_list_files_khong_khop_thi_cung_phai_noi_ro(self):
+        out = self.call("list_files", pattern="z_target.py")
+        self.assertIn("không có file nào khớp", out)
+        self.assertIn("đã dừng quét", out)
+
+    def test_co_ket_qua_van_phai_noi_da_cat_bot_vi_co_the_con_thieu(self):
+        out = self.call("search_code", pattern="rác 0\\b")
+        self.assertIn("f0000.py", out)
+        self.assertIn("đã dừng quét", out,
+                      "có kết quả rồi thì im re về việc cắt bớt — nhưng vẫn có thể "
+                      "còn khớp khác ngoài phạm vi đã quét")
+
+    def test_khong_vuot_nguong_thi_khong_co_ghi_chu_thua(self):
+        """Đối chứng: một workspace nhỏ (như `Base.setUp`'s hai file) không được dán
+        thêm ghi chú "đã dừng quét" — nó không hề dừng gì cả."""
+        small = CodeTools(self._make_small_root())
+        out = asyncio.run(next(t for t in small.tools()
+                               if t.name == "search_code").fn(pattern="class Thing"))
+        self.assertNotIn("đã dừng quét", out)
+
+    def _make_small_root(self) -> str:
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        os.makedirs(os.path.join(d.name, "pkg"))
+        Path(d.name, "pkg", "a.py").write_text(SRC, encoding="utf-8")
+        return d.name
+
+
 def _co_git() -> bool:
     from shutil import which
     return which("git") is not None

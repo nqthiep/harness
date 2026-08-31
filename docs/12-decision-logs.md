@@ -2385,6 +2385,73 @@ retry attempt reserving its own `BUDGET_RESERVED` (I-1: no model call without a
 reservation immediately before it — a retry is a new call); and a non-transient error
 (`ProviderAuthError`) making exactly one attempt, never retried.
 
+### ADR-071 — Self-review of ADR-061…070: three real bugs found and fixed
+
+**Status:** Accepted
+
+**Context.** Asked to review the work behind ADR-061 through ADR-070 (TaskLedger through
+provider retry) rather than simply re-describe it, an adversarial pass over the diff —
+not a restatement of the commit messages — found three genuine defects, all introduced in
+that same span of work. Each is fixed here, with a test that fails on the unpatched code
+(confirmed by reverting each fix and re-running its test) and passes on the patched one.
+
+**Finding 1 — an ask-cap denial was recorded as a human's decision, in `dispatch.py`
+(introduced by ADR-063's `DecisionLog` wiring).** When `max_asks_per_run` denies a call
+before `resolve()` ever runs, the callback is never invoked — but `actor` was left `None`
+on that branch, and the `record(Decision(...))` call's fallback
+(`Actor.human("approver", via="callback") if self._e._a.approve is not None else ...`)
+cannot tell "the callback ran and returned a bare `bool`" apart from "the callback never
+ran at all." Any agent configured with both `approve=` and a reached `max_asks_per_run`
+produced an audit row claiming a human denied a call through the callback channel that
+was never contacted — exactly the self-declared-identity problem D-1/S-11 exist to
+prevent, this time manufactured by the harness's own policy rather than by a dishonest
+caller. Fixed: the ask-cap branch sets `actor = Actor.policy("ask-cap")` explicitly, so
+the `None` fallback is only ever reached on the path where the callback genuinely ran and
+returned a plain `bool`. `tests/test_decision_journal.py::VongLapClassicCoSo::
+test_tu_choi_boi_ask_cap_khong_duoc_ghi_thanh_nguoi_da_duyet`.
+
+**Finding 2 — the LangGraph stall counters were never reset on a new conversation turn
+(introduced by ADR-062's stall detector).** `budget_gate` already resets `asks` at the one
+point `_is_new_turn(state)` is reliably true, with a comment explaining exactly why —
+S-25(b)'s "per-turn attack, not something a long-lived conversation should accumulate
+towards forever." `stalled_steps`/`seen_calls` needed the identical treatment and simply
+didn't get it: they were read straight from checkpointed state with no turn boundary at
+all. A `Chat`-style conversation that ended one turn at, say, 5-of-6 toward `STALL_AFTER`
+carried that count into the next turn; a routine "check status again" step at the very
+start of a new turn could repeat a signature from an entirely different turn and fire
+`PROGRESS_STALLED` within the first couple of steps of legitimate new work. No test had
+exercised the stall detector across more than one turn. Fixed: `stalled_steps`/
+`seen_calls` reset alongside `asks`, using the same `_is_new_turn` check computed once and
+threaded through every one of `budget_gate`'s five return sites.
+`tests/test_progress_stall.py::BoDemResetMoiLuot`.
+
+**Finding 3 — `CodeTools.walk()` truncated at `MAX_FILES` with no signal, producing false
+negatives in `search_code`/`list_files` (introduced by ADR-065's `CodeTools`).** The same
+function's own `MAX_MATCHES` truncation already appends `"[dừng ở N kết quả]"` when it
+cuts off matches — but the file-enumeration cap one level below it had no equivalent. In
+any workspace with more than 500 non-skip-dir files (unremarkable for a real project with
+tests and fixtures), `search_code` silently searched only a subset and reported "not
+found" for a pattern that was genuinely present in a file past the cutoff — a false
+negative that could lead a coding agent to recreate something that already exists
+elsewhere in the repo it is working in. Fixed: `walk()` now returns `(paths, truncated)`;
+`list_files`/`search_code` append a truncation note whenever `truncated` is `True`,
+whether or not they found anything — a hit list can still be missing hits beyond the
+cutoff, not just a "not found" answer. `tests/test_tools_code.py::QuetBiCatBoPhaiNoiRo`
+(a 513-file workspace with the target string in the file sorted past position 500).
+
+**What this round did not find.** N-1/N-3/N-5/N-6, and the six coding-agent items
+(ADR-061…066), were otherwise sound under this pass — no further defects surfaced in
+`provider_retry.py`'s backoff math, the `returns=` JSON-safety boundary, the idempotency
+wiring, or the compaction tombstone logic. Recorded as a negative result rather than left
+implicit, per this project's own "thà nói 'chưa đủ evidence' còn hơn đoán" discipline —
+the absence of a fourth finding is not proof there is no fourth bug, only that this one
+review pass did not surface one.
+
+**Test.** All three fixes verified as real regressions, not defensive code with nothing
+to defend against: each fix was reverted in isolation and its new test re-run, going red
+in exactly the way its docstring predicts, before being restored. 725 tests green (up
+from 718), ruff clean, mypy unchanged.
+
 ---
 
 ## Implementation Decision Log
