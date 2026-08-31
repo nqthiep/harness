@@ -28,8 +28,8 @@ lại, `## 4`/`## 5` cho thứ tự và điều kiện release.)*
     S-28's phần tài liệu.
   - **Sửa được một phần, phần còn lại cần thiết kế mới:** S-11 (kênh `Approval` xong,
     `AuthEvidence` thật thì chưa).
-  - **CÒN SỐNG, chưa sửa:** S-4 (xem `## 2`; chờ M6/idempotency để re-verify — M6 đã xong,
-    re-verify vẫn chưa làm, xem `## 3.1`).
+  - **CÒN SỐNG, chưa sửa:** S-4 (xem `## 2`) — `execute_once` (M6/T-6.1) nay có caller
+    thật (M9/T-9.2), nhưng ở mức RUN, không phải mức TOOL CALL S-4 cần; xem `## 3.1`, N-8.
   - **S-7…S-10, S-17 — ĐÃ SỬA**, landing cùng `harness.mcp` (T-9.1, ADR-054). S-9's phần
     re-pointing-nhãn còn hoãn, cùng lý do K-12.
   - **K-13's va chạm `P-`/`I-` — ĐÃ SỬA XONG (hai lượt)**, xem `07 §1.3`. Không còn mục nào
@@ -40,7 +40,7 @@ lại, `## 4`/`## 5` cho thứ tự và điều kiện release.)*
   timeout per-tool), **N-3** (LangGraph không hỗ trợ `returns=`), **N-5** (retry cấp
   provider công bố ở docs/10 §3 nhưng chưa cài), **N-6** (`model.response` thiếu
   `usage`/`latency_ms`).
-- **M9 — 1/3 sub-task xong (T-9.1, MCP client).** T-9.2 (Service API) và T-9.3 (canonical
+- **M9 — 2/3 sub-task xong (T-9.1 MCP client, T-9.2 Service API).** T-9.3 (canonical
   event adapter) chưa có dòng code nào. **M10 (Evaluation) chưa có DÒNG CODE NÀO** — kiểm
   lại bằng `grep` hôm nay, không phải bằng đọc lại tài liệu cũ (xem `## 3.2`). Đây là việc
   lớn còn lại trước khi có thể tự chấm lại theo `docs/17`.
@@ -153,11 +153,11 @@ không cần code hay test mới — cả ba đã "đóng" theo đúng nghĩa "�
 | Mã | Việc | Vì sao chưa làm | Phụ thuộc |
 |---|---|---|---|
 | ~~**S-20**~~ | ~~`Budget(usd=None)` bypass~~ | **ĐÃ SỬA** — xem `## 1` | — |
-| **S-4** | Idempotency key thật | Cơ chế chưa tồn tại | M6 (T-6.1) |
+| **S-4** | Idempotency key thật CHO MỘT LỜI GỌI TOOL (bảo vệ `write`/`danger` khỏi chạy lại khi model/client retry) | `execute_once` (T-6.1) tồn tại và nay có CALLER thật (T-9.2, ở mức RUN qua `Idempotency-Key` header) — nhưng chưa gắn vào `Dispatcher._invoke`, nơi S-4 thật sự cần nó. Xem N-8, `07 §1.5` | Wiring vào dispatch path — chưa lên lịch |
 | ~~**S-7, S-8, S-10**~~ | ~~`ServerIdentity`(v1: `ServerLabel`)/hint-hạ-effect/`proposed_scope`(≈`accepts_tainted` policy-only) cho MCP~~ | **ĐÃ SỬA** — `harness.mcp` (T-9.1, ADR-054) | — |
 | **S-9 (một phần)** | `Scope.server` chặn va chạm HAI nhãn khác nhau (ĐÃ SỬA); re-pointing MỘT nhãn sang endpoint khác thì chưa (cần `ServerIdentity`+`fingerprint`) | K-12: định dạng `fingerprint` chưa chốt cho MCP stdio | Chờ bằng chứng re-pointing thật |
 | ~~**S-17**~~ | ~~Injection qua `description` tool MCP trước lời gọi đầu~~ | **ĐÃ SỬA** — bằng tài liệu (docstring `classify_mcp_tool`) + `default_effect=DANGER` fail-closed, cùng lý do S-18 | — |
-| **S-23** | `call_key` domain separator cho idempotency | Cơ chế chưa tồn tại (giống S-4) | M6 (T-6.1) |
+| ~~**S-23**~~ | ~~`call_key` domain separator cho idempotency~~ | **ĐÃ KIỂM, LỖI THỜI** — `call_key = blake2b(...)` review mô tả không tồn tại trong code thật, xem `07 §1` | — |
 | **S-11 (phần còn lại)** | `AuthEvidence` — xác thực người duyệt thật, không chỉ tự khai | Cần mô hình xác thực riêng, chưa thiết kế | Độc lập, ưu tiên theo nhu cầu deployment thật |
 | ~~**K-13 (phần còn lại)**~~ | ~~Va chạm namespace `P-`/`I-` giữa `01`/`02`/`docs/09` và `04`/`05`~~ | **ĐÃ SỬA** — `01`'s `P-3`→`PLUG-1`, `02`'s `P-1`/`P-3`/`P-4`→`POL-1`/`POL-3`/`POL-4` (`P-2` giữ nguyên, không va chạm thật), `03`'s `I-1` gốc (idempotency)→`IDEM-1`, `04`'s "bất biến thay thế I-1/I-2" bỏ chữ "thay thế", chú thích chéo tới `docs/02 §2.3`; sửa kéo theo `src/harness/policy/builtin.py` + `design/06`. Xem `07 §1.3` | — |
 
@@ -172,7 +172,7 @@ trong `src/harness/`:**
 | **M6 — Reliability** | 12% × gap 2/5 | Idempotency key, cancellation đúng chuẩn (không nuốt `CancelledError`), retry theo effect class, failure injection | **XONG (4/4 sub-task, theo đúng nghĩa "Done" mỗi task tự đặt ra).** T-6.2 (cancellation) — `tests/test_m6_t62_cancellation.py`. T-6.3 (retry theo effect class, cả hai backend) — `tests/test_m6_t63_retry.py`, 8 test. T-6.1 (idempotency) — contract `execute_once` xong và khoá bằng `tests/test_m6_t61_idempotency.py` (8 test), CHỦ ĐÍCH chưa gắn vào `Agent`/`Dispatcher`/`Runtime` (ADR-043 — không có caller thật cho tới M9). T-6.4 (chaos) — `harness.testing.chaos` (5 kịch bản: provider timeout, tool raise, store chết, policy raise, model trả rác) + `tests/test_m6_t64_chaos.py` (9 test); viết kịch bản chaos lộ ra **hai lỗi thật, cả hai đã sửa ngay trong lượt này** — N-2 (`try_run()` raise `ToolContractError` không bắt khi `returns=` sai) và **N-4 (nghiêm trọng hơn): lỗi provider — timeout, rate limit — crash thẳng ra ngoài `try_run()`/`graph.invoke()`, KHÔNG có `except` nào bắt ở CẢ HAI backend, trước bản vá này** (ADR-044, `docs/12`). Hai phát hiện phụ ghi lại, CHƯA sửa (ngoài phạm vi M6): **N-1** — LangGraph không có timeout per-tool; **N-3** — LangGraph không hỗ trợ `returns=` (`Result.value` luôn `None`). |
 | **M7 — Isolation** | 15% × gap — **nặng ký nhất theo trọng số nghiên cứu** | Workspace root, egress mặc định CHẶN (đảo `allowed_hosts=None` từ "cho tất cả" sang "chặn tất cả" — breaking change), seam `Sandbox`, secret không vào sandbox | **XONG (4/4 sub-task).** T-7.1 (workspace root) — `workspace.py::confine`, `tests/test_m7_t71_workspace.py` (14 test, ADR-045). T-7.2 (egress mặc định chặn, breaking change có chủ đích) — `allowed_hosts` mặc định `None`→`()`, `None` tường minh vẫn escape hatch, `tests/test_m7_t72_egress_default.py` (6 test), ADR-046 giải thích vì sao không làm chu kỳ deprecation nhiều phiên bản. T-7.3+T-7.4 (seam `Sandbox`, secret không vào sandbox) — `sandbox.py`: `Protocol Sandbox`, hai cài đặt `InProcess`/`Subprocess` (env sạch, không kế thừa `os.environ`, `Secret` object bị từ chối tường minh), seam THỨ SÁU đạt phép thử 3 phần `§02.4` (bảng ở `docs/02-architecture.md` đã cập nhật), ADR-047. KHÔNG gắn vào `Agent`/`dispatch.py` — chủ đích, cùng lý do T-6.1 (ADR-043): chưa có tool nào trong codebase cần chạy shell command, gắn dây bây giờ là surface không ai dùng. Khoá bằng `tests/test_m7_t73_t74_sandbox.py` (14 test, gồm bản cài đặt bên thứ ba đúng khuôn `proof.py §I.1`, cộng red-team test secret-không-lộ, mutation-tested). |
 | **M8 — Observability** | 10% × gap | Envelope v1 (`schema_version`/`trace_id`/`tenant_id`), `Approval` là bản ghi đầy đủ, OTel exporter thật, cost-per-successful-task, event stream tiêu thụ được, `Session` resource | **XONG (6/6 sub-task).** T-8.1 (envelope v1) ĐÃ XONG — ADR-048, `tests/test_m8_t81_envelope.py` (12 test). T-8.2 (Approval là bản ghi) ĐÃ XONG — chỉ thiếu `policy_version`, hai tiêu chí "Failure"/"Test" T-8.2 tự đặt hoá ra đã đúng sẵn, ADR-049, `tests/test_m8_t82_approval_record.py` (7 test). Sẵn tiện sửa lỗi tài liệu: `docs/04` gọi nhầm `Ruling` là `Decision`. T-8.3 (OTel exporter) ĐÃ XONG — `observe/otel.py::OtelExporter`, đọc `docs/10-observability-ops.md §2` (mapping đã công bố sẵn TRƯỚC bản nháp đầu, phải sửa lại theo đúng bảng đó) thay vì tự bịa tên span/attribute; xử lý đúng thứ tự `policy.decided` phát TRƯỚC `tool.started` bằng buffer-rồi-flush; hai lỗi thật tự bắt (parse `$`-prefixed `cost_usd`, một xung đột tên biến làm mypy từ chối sai); metrics thật (`harness.run.cost`, `.steps`, `harness.tool.duration`, `.cache.hit_ratio`, `harness.policy.denials`) qua OTel Meter thật. ADR-050. `tests/test_m8_t83_otel.py` (16 test, SDK OTel thật không mock, cả hai backend, mutation-tested). Hai phát hiện phụ ghi lại khi đọc docs/10, CHƯA sửa: **N-5** — retry cấp provider (rate limit/timeout) đã công bố ở docs/10 §3 nhưng chưa cài; **N-6** — event `model.response` thiếu `usage`/`latency_ms` so với `docs/05` tự hứa, khiến một phần attribute/metric của chính OTel exporter không có dữ liệu để đọc. T-8.4 (cost-per-success) ĐÃ XONG — `harness.eval.cost_per_success(runs)` (gói mới `harness/eval/`, chuẩn bị chỗ cho M10's `harness.eval.*`), `total_cost / P(thành công)`, khoảng tin cậy Wilson-scored (không phải xấp xỉ chuẩn — sai ở n nhỏ/tỉ lệ cực đoan, đúng miền một golden set nhỏ hay gặp), `cost_per_success_usd=None` (không phải 0 hay inf) khi 0 thành công. ADR-051, `tests/test_m8_t84_cost_per_success.py` (12 test, mutation-tested). T-8.5 (event stream) ĐÃ XONG — `Agent.stream(message, on_delta=None)`, async generator yield `Event` thật (16 kind, envelope v1 đầy đủ) qua một exporter riêng dùng `with_()` gắn thêm (không mutate, ADR-004); `on_delta=` giữ nguyên là cơ chế delta text riêng, không gộp vào stream; mọi phân biệt T-8.5 đòi (tool-call/tool result/approval/retry/cancellation/final) đã có sẵn trên taxonomy hiện tại, không cần kind mới. ADR-052. **Phát hiện phụ khi viết test transcript cho `stream()`, ĐÃ SỬA NGAY: N-7** — `Agent.with_()` âm thầm làm mất `transcript`/`exporters`/`accepts_tainted`/`sensitive` ở MỌI lời gọi (không phải lỗi riêng của `stream()` — bất kỳ ai gọi `with_()` cũng gặp). `tests/test_m8_t85_stream.py` (8 test) + `tests/test_n7_with_preserves_fields.py` (7 test), cả hai mutation-tested. T-8.6 (`Session` resource) ĐÃ XONG — `harness/session.py::Session` bọc `Chat` (không xây lại state isolation Round 37 đã có), id/owner/TTL/`fork()`/`resume_from()` (bọc `Agent.resume()` có sẵn, không phải resume phong phú hơn) + `threading.Lock` cho ranh giới đồng thời (không phải `asyncio.Lock` — khớp `Chat.say()` vốn đồng bộ). Chủ đích CHỈ cho backend cổ điển — LangGraph's `thread_id` đã là session primitive của nó (T-8.1). Test đua tất định (không dựa timing may rủi) chứng minh khoá thật sự cần thiết. ADR-053, `tests/test_m8_t86_session.py` (13 test, mutation-tested). **M8 hoàn thành 6/6 sub-task.** |
-| **M9 — Integration** | 8% × gap 3/5 — **khoảng trống lớn nhất theo tự chấm** | MCP client làm tool boundary, Service API (`POST /v1/runs`...), canonical event adapter | **Đang làm (1/3 sub-task).** T-9.1 (MCP client) ĐÃ XONG — `harness/mcp/` (extra, `mcp>=1.9`): `McpServerPolicy`, `classify_mcp_tool()` (M-1..M-3, `design/03 §5.3`, bug-for-bug fail-closed hint mapping chép từ Microsoft), `connect()` (gọi `tools/list` đúng MỘT lần — §5.4's rug-pull-chốt-lúc-bind). `ToolSpec.server` (mới) và `Scope.server` (đã có, chưa ai gọi) giờ tham gia `DecisionLog.lookup()` — grant không rò giữa hai server. Đóng CÙNG LÚC S-7, S-8, S-10, S-17 và một phần S-9 (xem `## 3.1`). ADR-054, `tests/test_m9_t91_mcp.py` (32 test, mutation-tested). T-9.2 (Service API) và T-9.3 (canonical event/multi-transport adapter) CHƯA làm — `execute_once` (T-6.1, ADR-043) đang chờ đúng T-9.2 làm caller thật của nó (idempotency key từ header HTTP), như đã ghi khi hoãn. |
+| **M9 — Integration** | 8% × gap 3/5 — **khoảng trống lớn nhất theo tự chấm** | MCP client làm tool boundary, Service API (`POST /v1/runs`...), canonical event adapter | **Đang làm (2/3 sub-task).** T-9.1 (MCP client) ĐÃ XONG — `harness/mcp/` (extra, `mcp>=1.9`): `McpServerPolicy`, `classify_mcp_tool()` (M-1..M-3, `design/03 §5.3`, bug-for-bug fail-closed hint mapping chép từ Microsoft), `connect()` (gọi `tools/list` đúng MỘT lần — §5.4's rug-pull-chốt-lúc-bind). `ToolSpec.server` (mới) và `Scope.server` (đã có, chưa ai gọi) giờ tham gia `DecisionLog.lookup()` — grant không rò giữa hai server. Đóng CÙNG LÚC S-7, S-8, S-10, S-17 và một phần S-9 (xem `## 3.1`). ADR-054, `tests/test_m9_t91_mcp.py` (32 test, mutation-tested). T-9.2 (Service API) ĐÃ XONG — `harness/server/` (extra, `starlette`, ASGI — operator mang ASGI server riêng): `POST /v1/runs` (idempotency-key header → `execute_once`, T-6.1's caller thật đầu tiên, ở MỨC RUN), `GET /v1/runs/{id}` (status/result/pending approvals), `GET /v1/runs/{id}/events` (SSE, backlog + tail, `redact()` chạy đúng task của run — RT-13), `POST .../cancel`, `POST .../approvals/{call_id}` (cầu nối `approve=` qua một `asyncio.Future` một request HTTP resolve). Backend cổ điển only (cùng phạm vi `Session`/ADR-053); không auth (operator tự thêm); không `resume` (cần Store-backed registry chưa xây, giống lý do T-6.1/`Sandbox` chưa gắn dây). ADR-055, `tests/test_m9_t92_service_api.py` (21 test, mutation-tested). **S-4 CHƯA đóng dù có caller thật** — xem đoạn "M9" ở `## 4` và N-8 (`07 §1.5`): idempotency ở mức run ≠ idempotency ở mức tool call, `Dispatcher._invoke` chưa gắn `execute_once`. T-9.3 (canonical event/multi-transport adapter) CHƯA làm. |
 | **M10 — Evaluation** | 12% (phần Testability còn thiếu) | Trajectory contract khai báo được, golden set + pass rate có khoảng tin cậy, benchmark p50/p95/throughput | Không có. |
 
 **Điểm tự chấm hiện tại (docs/17 §1): 67.8/100**, thấp nhất ở Integration (2/5),
@@ -206,9 +206,12 @@ là vấn đề, roadmap tiếp tục từ M6.
 
 **M6 trước M7.** Đúng lý do `docs/17 §5` đã ghi: idempotency là điều kiện tiên quyết cho
 retry, cho Service API (idempotency key trong header — M9), và cho M10's contract "retry
-không nhân đôi side effect." Landing M6 cũng đóng được S-4 và S-23 LUÔN — hai phát hiện
-"chờ cơ chế chưa tồn tại" ở `## 3.1` tự động được giải quyết theo cách ĐÚNG (không phải
-patch riêng, mà xây đúng cơ chế rồi kiểm S-4/S-23 lại trên nó).
+không nhân đôi side effect." **Sửa lại một overclaim ở đây** (bắt lúc soát T-9.2): M6 xây
+`execute_once` XONG nhưng CHỦ ĐÍCH chưa gắn vào `Dispatcher`/`Runtime` (ADR-043 — "không có
+caller thật cho tới M9"), nên câu gốc "Landing M6 cũng đóng được S-4 và S-23 LUÔN" là sai —
+S-23 đã tự lỗi thời từ trước, không liên quan gì tới M6 (xem `## 3.1`); S-4 (bảo vệ MỘT
+lời gọi tool `write`/`danger` khỏi chạy lại) vẫn CHƯA đóng ngay cả sau T-9.2 — xem đoạn M9
+bên dưới và N-8 (`07 §1.5`).
 
 **M7 trước M9.** Mở MCP ra (một hệ sinh thái tool bên thứ ba không đáng tin) trước khi có
 Isolation là mở rộng bề mặt tấn công trước khi dựng tường — cảnh báo này đã có sẵn trong
@@ -222,10 +225,16 @@ và dọn namespace trước tránh chồng thêm một namespace thứ ba lên 
 **M9 đóng được S-7…S-10, S-17 CÙNG LÚC — ĐÃ XONG (T-9.1).** Đây là lý do năm phát hiện đó
 bị hoãn thay vì bị vá non — landing `harness.mcp` (MCP client làm tool boundary, `ServerLabel`
 v1, phân loại `effect` bắt buộc cho tool MCP, `Scope.server` tham gia grant matching) chính
-là bản sửa của cả năm, không phải năm bản vá rời rạc sau đó. Phần MCP của S-23 (idempotency
-`call_key` domain separator cho tool call qua MCP) chờ T-9.2 — cùng lý do `execute_once`
-(T-6.1) chưa gắn dây: cần một caller thật (Service API's idempotency-key header) trước khi
-"domain separator" có nghĩa để kiểm.
+là bản sửa của cả năm, không phải năm bản vá rời rạc sau đó.
+
+**T-9.2 (Service API) — ĐÃ XONG, và là caller THẬT ĐẦU TIÊN của `execute_once`** —
+đúng như `idempotency.py`'s docstring tự đặt điều kiện ("M9's Service API is the first
+real source of one"). Nhưng ở mức RUN (`POST /v1/runs`'s `Idempotency-Key` header dedupe
+một request khởi động run), không phải mức TOOL CALL bên trong `Dispatcher._invoke` —
+đó mới là nơi S-4 thật sự cần. Landing T-9.2 CHỨNG MINH `execute_once` dùng được với một
+caller thật (không còn là "hạ tầng không ai gọi"), nhưng KHÔNG tự động đóng S-4 — ghi lại
+là N-8 (`07 §1.5`), việc còn lại (gắn `execute_once` vào đường dispatch tool call) chưa
+lên lịch trong roadmap này.
 
 **M10 sau cùng**, đúng thứ tự `docs/17` đã lập luận: trajectory contract cần một bề mặt đã
 ổn định (MCP, idempotency, sandbox) để viết `must_call`/`must_not_call` có ý nghĩa.

@@ -619,6 +619,30 @@ exporter in a try/except that converts an exception into a single `error.raised`
 **disables that exporter for the rest of the run**. A broken telemetry exporter must never
 take down an agent — that is a self-inflicted outage.
 
+### 6.1 Service API (T-9.2)
+
+`harness[server]` — `starlette` only; bring your own ASGI server. Full contract and
+rationale: ADR-055.
+
+```python
+# harness/server/__init__.py
+
+def create_app(agent: Agent, *, store: Store | None = None) -> "starlette.applications.Starlette": ...
+```
+
+| Route | Contract |
+|---|---|
+| `POST /v1/runs` | Body `{"message": str}`. `Idempotency-Key` header (optional) routes through `execute_once` — a retried request with the same key returns the same `run_id`, `"replayed": true`, and does not start a second run. `202` on a new run, `200` on a replay. |
+| `GET /v1/runs/{id}` | `{"id", "status", "result", "error", "pending_approvals"}`. `status` is one of `running`, `waiting_approval`, `done`, `error`, `cancelled`. |
+| `GET /v1/runs/{id}/events` | `text/event-stream` — buffered history first, then live-tails. Every line is a JSON `Event` (envelope v1 fields included), already `redact()`-ed. |
+| `POST /v1/runs/{id}/cancel` | `200` while cancellable, `409` once the run has already finished, `404` for an unknown id. |
+| `POST /v1/runs/{id}/approvals/{call_id}` | Body `{"approve": bool, "approved_by": str?}`. Resolves a pending `ASK` the same way any `approve=` callback would — `approved_by` is exactly as self-declared as any other `approve=` report (S-11's open gap, not a new one). |
+
+**Not in v1:** authentication (put this behind your own reverse proxy — the module is
+not the security boundary, same posture `EgressPolicy` takes toward real network
+isolation), a persistent run registry (in-memory, one process), and consequently no
+`resume` route.
+
 ---
 
 ## 7. Exception hierarchy

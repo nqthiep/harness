@@ -1431,6 +1431,73 @@ mutation restoring the pre-T-9.1 behavior and confirming it goes red.
 
 ---
 
+### ADR-055 — `harness.server`: an ASGI Service API, and `execute_once`'s first real caller
+
+**Status:** Accepted (M9/T-9.2)
+
+**Context.** `idempotency.py`'s own docstring (ADR-043) named exactly what it was
+waiting for: "M9's Service API is the first real source of [an idempotency key]... wiring
+`execute_once` in with no caller that can ever supply a meaningful key would be dead
+code." docs/17 §252-258 specifies the routes (`POST /v1/runs`, `GET /v1/runs/{id}`, `GET
+/v1/runs/{id}/events` SSE, approvals, cancel, resume) as `harness[server]`, core
+untouched — no deeper living-doc contract existed for this one (unlike T-8.3's OTel
+mapping, docs/10 §2), so this ADR is where the design gets made, not just cited.
+
+**Decision.** `harness/server/create_app(agent: Agent) -> Starlette` (an extra —
+`starlette` only; an operator supplies their own ASGI server). One shared `Agent`
+instance serves every run — already safe, since `Agent` is frozen and `atry_run()`
+builds a fresh `Ledger`/`TaintTracker`/`run_id` per call.
+
+- **`POST /v1/runs`** — an `Idempotency-Key` header routes through `execute_once`
+  (fail-closed, T-6.1's default for a write/danger-class operation): a retried request
+  with the same key returns the SAME `run_id` without starting a second run. Proven, not
+  assumed — `tests/test_m9_t92_service_api.py`'s `IdempotencyKey` class asserts the
+  underlying `FakeModel` is called exactly as many times after a replay as before it.
+- **`GET /v1/runs/{id}/events`** (SSE) — reuses the `Exporter` seam (`_SseExporter`), not
+  `Agent.stream()` directly, for one reason: redaction. `Secret.reveal()`'s tracking is a
+  `contextvars.ContextVar`, scoped to the task that revealed it — `Agent.stream()`'s own
+  queue-based exporter would hand a raw `Event` to whatever task is serving the HTTP
+  request, which is NOT the run's task, so a `redact()` call there could miss a revealed
+  value. `_SseExporter.emit()` runs synchronously inside `EventBus.emit()`, on the run's
+  own task — the same place `TranscriptWriter.emit()` already calls `redact()`, for the
+  same reason (RT-13, Round 25) — so `_event_json()` redacts there, before the string
+  ever reaches the queue a different task drains.
+- **`POST /v1/runs/{id}/approvals/{call_id}`** — `approve=` can be a coroutine
+  (`PolicyEngine.resolve` already awaits one, ADR-021), so the bridge is a plain
+  `asyncio.Future` per pending call, resolved by the HTTP request. This is the SAME shape
+  every other `approve=` callback already has — a resolution step, not a policy — just
+  fed by an HTTP request instead of an in-process one.
+- **Classic backend only**, same scope `Session` (T-8.6, ADR-053) chose: a durable,
+  awaitable approval channel exists cleanly there; `build_agent()`'s LangGraph `Runtime`
+  uses `interrupt()`/checkpointer semantics that don't compose with a plain `Future`.
+
+**What does NOT ship, and why (mirrors `EgressPolicy`'s "say the limit" discipline):** no
+authentication (an operator's own reverse proxy is the boundary — this module is not
+one); no persistent run registry (in-memory, one process — a restart loses run state);
+consequently **no `resume` route** — naming a resume contract this module cannot keep
+would be worse than shipping none, the same reasoning `Session` already applied to the
+same question.
+
+**S-4 is NOT closed by this, and the roadmap said it was — a real correction, caught
+soaking on this pass.** `design/08`'s M6 section had claimed "landing M6 closes S-4 and
+S-23" — wrong even before T-9.2 (M6 built `execute_once` but deliberately did not wire
+it into `Dispatcher`/`Runtime`, ADR-043's own text). T-9.2 supplies a real caller at the
+RUN level (`POST /v1/runs`'s idempotency key dedupes a request to START a run); S-4's
+scenario is at the TOOL CALL level, inside an already-running run — a client retry of a
+single `write`/`danger` call, which `Dispatcher._invoke` still does not protect. Recorded
+as N-8 (`07-risks-and-open-issues.md`) rather than silently left implied-fixed by an
+adjacent, similarly-named mechanism landing nearby.
+
+**Tests.** `tests/test_m9_t92_service_api.py` (21 tests): basic run lifecycle,
+`Idempotency-Key` semantics (including a mutation that bypasses `execute_once` entirely
+and shows two runs spawn for one key), the full approval round-trip both ways (approve
+and deny) plus a mutation proving a tool cannot run without a real HTTP resolution,
+cancel at every reachable state (404/409/200), SSE backlog-then-tail ordering, and
+redaction across the SSE boundary — including a mutation that removes `redact()` from
+`_event_json` and confirms a revealed secret leaks without it.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |

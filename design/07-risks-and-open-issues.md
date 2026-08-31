@@ -537,6 +537,21 @@ mới không nên tự tạo thêm va chạm).
 > `tests/test_n7_with_preserves_fields.py` (7 test, mutation-tested) độc lập với T-8.5 —
 > đây là lỗi bất kỳ ai gọi `with_()` cũng gặp, không phải lỗi riêng của tính năng mới.
 
+> **N-8 — `execute_once` có caller thật (T-9.2) nhưng vẫn CHƯA đóng S-4.** Phát hiện khi
+> soát lại roadmap sau khi landing T-9.2: `design/08`'s văn bản cũ tuyên bố "Landing M6
+> cũng đóng được S-4 và S-23 LUÔN" — sai, và sai từ TRƯỚC cả T-9.2 (M6 CHỦ ĐÍCH không gắn
+> `execute_once` vào `Dispatcher`/`Runtime`, ADR-043). T-9.2's `POST /v1/runs` dùng
+> `execute_once` để dedupe một REQUEST KHỞI ĐỘNG RUN qua header `Idempotency-Key` — đúng
+> "caller thật đầu tiên" mà `idempotency.py`'s docstring tự đặt điều kiện, và chứng minh
+> được cơ chế dùng tốt (`tests/test_m9_t92_service_api.py`'s `IdempotencyKey` — replay
+> không gọi model thêm lần nào). Nhưng đó là idempotency ở MỨC RUN, không phải MỨC TOOL
+> CALL — S-4's kịch bản gốc ("client timeout rồi retry có thể gửi email hai lần") xảy ra
+> BÊN TRONG một run đang chạy (model tự gọi lại một tool, hoặc một lỗi mạng khiến
+> `Dispatcher._invoke` không chắc side effect đã xảy ra chưa), không phải giữa hai HTTP
+> request riêng biệt. `Dispatcher._invoke` (`dispatch.py`) chưa gắn `execute_once` —
+> chưa lên lịch trong roadmap này, ghi lại đây làm việc tiếp theo tự nhiên nhất nếu có
+> nhu cầu thật (một `write`/`danger` tool trên một upstream không tự idempotent).
+
 ---
 
 ## 2. Ý tưởng có kiến trúc, chờ eval

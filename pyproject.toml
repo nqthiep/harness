@@ -17,6 +17,10 @@ otel = ["opentelemetry-api", "opentelemetry-sdk"]
 # MCP CLIENT only — a harness embeds MCP servers as tools, it does not host one. T-9.1,
 # docs/17-research-alignment.md M9.
 mcp  = ["mcp>=1.9"]
+# ASGI Service API (POST /v1/runs, SSE events, approvals, cancel) — T-9.2. `starlette`
+# only; an operator brings their own ASGI server (uvicorn, hypercorn, ...) to actually
+# serve `create_app()`'s app, so that is not a dependency of this extra.
+server = ["starlette>=1.0"]
 dev  = ["pytest", "mypy", "ruff", "hypothesis"]
 
 [build-system]
