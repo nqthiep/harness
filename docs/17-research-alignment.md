@@ -8,6 +8,13 @@
 > nêu ở đây đều được **kiểm bằng cách chạy code**, không phải bằng đọc lại tài liệu của
 > chính mình — vì 41 vòng vừa qua đã cho thấy đọc không tìm ra thứ chỉ có chạy mới tìm ra.
 
+> **Trạng thái hôm nay: kế hoạch M6-M10 ở `## 4` đã XONG hoàn toàn** — xem
+> `design/08-roadmap-and-release-plan.md` cho bảng "cái gì đã xong, ở đâu, test nào".
+> Tệp NÀY giữ nguyên như một bản GHI PHÂN TÍCH tại thời điểm viết (điểm tự chấm §1, so
+> sánh framework §2/§3, quyết định interface §3.3) — không sửa lại các con số/trạng thái
+> cũ để giả vờ chúng luôn đúng; mỗi bảng bên dưới có chú thích ngay cạnh cho biết mục đó
+> đã đóng ở đâu.
+
 ---
 
 ## 1. Tự chấm theo đúng ma trận trọng số của nghiên cứu
@@ -33,9 +40,13 @@ chiều nào cao, chiều nào thấp.
 
 Để tham chiếu, nghiên cứu chấm LangGraph 89.4, PydanticAI 87.1, Goose 83.5, Pi 76.8.
 
-**Kết luận trung thực: harness này mạnh ở đúng những chiều nặng ký nhất (Safety, Cost,
-Testability, DX) và yếu ở Integration, Performance, Observability, Reliability.** Kế
-hoạch dưới đây xếp theo `trọng số × khoảng trống`, không theo thứ tự thích làm.
+**Kết luận trung thực lúc viết: harness này mạnh ở đúng những chiều nặng ký nhất (Safety,
+Cost, Testability, DX) và yếu ở Integration, Performance, Observability, Reliability.**
+Kế hoạch dưới đây (`## 4`) xếp theo `trọng số × khoảng trống`, không theo thứ tự thích
+làm — và **đã chạy xong toàn bộ**. Bảng 67.8/100 ở trên là điểm GỐC, trước M6-M10; một
+điểm tự chấm mới đòi cùng độ nghiêm ngặt bản gốc có (so với corpus thật, người chấm khác)
+mà việc tự động đối chiếu không tái tạo được — `design/08-roadmap-and-release-plan.md §2`
+đối chiếu từng lý do TRỪ ĐIỂM ở cột "Vì sao" với code hôm nay, thay vì bịa một con số mới.
 
 ---
 
@@ -59,7 +70,7 @@ hoạch dưới đây xếp theo `trọng số × khoảng trống`, không theo
 | *"Cost/successful task, không phải cost/task"* | Công thức đúng — **chưa đo**, xem M8 |
 | *"Approval không thay thế isolation"* (Cline) | Đã nêu trong [§01.5](01-requirements.md) non-goals — **nhưng đó là lảng tránh, xem M7** |
 
-### 2.2 Những điều đáng học mà harness **chưa có** — đã kiểm bằng code
+### 2.2 Những điều đáng học mà harness **chưa có** — đã kiểm bằng code (lúc viết)
 
 ```
 Event envelope hiện có : ['seq','ts','run_id','kind','step','data']
@@ -74,22 +85,25 @@ grep -ril sandbox src/ → KHÔNG CÓ
 grep -ril mcp src/     → KHÔNG CÓ
 ```
 
-| # | Điểm mạnh cần học | Từ đâu | Trạng thái |
-|---|---|---|---|
-| S-01 | **Idempotency key trên mỗi tool call** | Anti-pattern 3; OWASP duplicate-action | Chưa có |
-| S-02 | **Approval là một BẢN GHI**, không phải boolean: decision id, actor, policy version, expiry, audit entry | §6 acceptance criteria | Chưa có |
-| S-03 | **Principal / tenant / scopes** trong ngữ cảnh và trong tool envelope | Anti-pattern 4; tool envelope §8 | Chưa có |
-| S-04 | **Lớp Isolation**: workspace-rooted, network egress mặc định chặn, secret không vào sandbox | Bảng Poka-Yoke, OpenHands/Goose | Chưa có |
-| S-05 | **Trajectory contract khai báo được** (Given/When/Then: tool nào phải gọi, tool nào cấm, ≤N call, ≤T token, ≤C cost, retry không nhân đôi side effect) | §9 | Có mảnh, chưa thành contract |
-| S-06 | **Cost per successful task** thay cho cost per task | §10 | Chưa đo |
-| S-07 | **Canonical event model + adapter cho nhiều transport** | Phụ lục §10 | Có event model, chưa có adapter |
-| S-08 | **Service API**: `POST /v1/runs`, `GET /runs/{id}`, SSE events, approvals, cancel, resume | Phụ lục §8 | Chưa có (§01 chọn library-first) |
-| S-09 | **MCP làm tool boundary** (không phải toàn bộ API) | §5 protocol | Chưa có |
-| S-10 | **Cancellation đúng quy ước** — huỷ giữa model call, tool call, approval, stream | §6 acceptance criteria | **Có lỗi, xem 3.2** |
-| S-11 | **Failure injection** trong bộ test | §9 | Chưa có |
-| S-12 | **Đo p50/p95 latency, throughput, concurrency** | §10 | Chưa đo lần nào |
-| S-13 | **Pass rate kèm khoảng tin cậy 95%**, không dùng một con số đơn lẻ | §9, Terminal-Bench | Chưa có |
-| S-14 | **Backpressure**: client chậm không làm đầy memory hay mất event âm thầm | §6 | Chưa xét |
+**Bảng snapshot LÚC VIẾT — cột "Trạng thái" giữ nguyên như một mốc, cột mới bên phải nói
+hôm nay:**
+
+| # | Điểm mạnh cần học | Từ đâu | Trạng thái lúc viết | Hôm nay |
+|---|---|---|---|---|
+| S-01 | **Idempotency key trên mỗi tool call** | Anti-pattern 3; OWASP duplicate-action | Chưa có | `execute_once` (T-6.1) xây xong, caller thật ở MỨC RUN (T-9.2) — MỨC TOOL CALL vẫn mở, `design/07 §7` mục 2 |
+| S-02 | **Approval là một BẢN GHI**, không phải boolean: decision id, actor, policy version, expiry, audit entry | §6 acceptance criteria | Chưa có | **Xong** — `Decision`/`DecisionLog` (T-8.2) |
+| S-03 | **Principal / tenant / scopes** trong ngữ cảnh và trong tool envelope | Anti-pattern 4; tool envelope §8 | Chưa có | **Tenant xong** (`RunContext.tenant_id`, N-9); principal/scopes vẫn mở, rộng hơn những gì T-8.1 hứa |
+| S-04 | **Lớp Isolation**: workspace-rooted, network egress mặc định chặn, secret không vào sandbox | Bảng Poka-Yoke, OpenHands/Goose | Chưa có | **Xong** — M7 (`workspace.py`, `Sandbox`, egress-deny-default) |
+| S-05 | **Trajectory contract khai báo được** (Given/When/Then: tool nào phải gọi, tool nào cấm, ≤N call, ≤T token, ≤C cost, retry không nhân đôi side effect) | §9 | Có mảnh, chưa thành contract | **Xong** — `harness.eval.Trajectory` (T-10.1) |
+| S-06 | **Cost per successful task** thay cho cost per task | §10 | Chưa đo | **Xong** — `cost_per_success` (T-8.4) |
+| S-07 | **Canonical event model + adapter cho nhiều transport** | Phụ lục §10 | Có event model, chưa có adapter | **Xong** — `to_dict()`, ba transport (T-9.3) |
+| S-08 | **Service API**: `POST /v1/runs`, `GET /runs/{id}`, SSE events, approvals, cancel, resume | Phụ lục §8 | Chưa có (§01 chọn library-first) | **Xong** (trừ `resume`, chủ ý — `harness[server]`, T-9.2) |
+| S-09 | **MCP làm tool boundary** (không phải toàn bộ API) | §5 protocol | Chưa có | **Xong** — `harness.mcp` (T-9.1) |
+| S-10 | **Cancellation đúng quy ước** — huỷ giữa model call, tool call, approval, stream | §6 acceptance criteria | **Có lỗi, xem 3.2** | **Xong** — T-6.2 |
+| S-11 | **Failure injection** trong bộ test | §9 | Chưa có | **Xong** — `harness.testing.chaos` (T-6.4) |
+| S-12 | **Đo p50/p95 latency, throughput, concurrency** | §10 | Chưa đo lần nào | **Xong** — `harness.eval.benchmark` (T-10.3) |
+| S-13 | **Pass rate kèm khoảng tin cậy 95%**, không dùng một con số đơn lẻ | §9, Terminal-Bench | Chưa có | **Xong** — `run_golden_set` (T-10.2) |
+| S-14 | **Backpressure**: client chậm không làm đầy memory hay mất event âm thầm | §6 | Chưa xét | Vẫn chưa xét — `harness.server`'s SSE buffer không có trần; không phát hiện thấy trong pilot nào (chưa có pilot) |
 
 ---
 
@@ -110,9 +124,9 @@ grep -ril mcp src/     → KHÔNG CÓ
 | W-09 | **"Stars không phải adoption"** | Toàn bộ §2 | Không lập luận từ độ phổ biến |
 | W-10 | **Một pass rate đơn lẻ để tuyên bố tốt hơn** | §9 | Mọi con số đều kèm cách đo; SC-4 = 95.3% có benchmark chạy được |
 
-### 3.2 Điểm yếu của **chính harness này**, đo được hôm nay
+### 3.2 Điểm yếu của **chính harness này**, đo được lúc viết — cả năm **ĐÃ ĐÓNG**
 
-**Y-01 — `CancelledError` bị nuốt.** Đo:
+**Y-01 — `CancelledError` bị nuốt. ĐÃ SỬA (T-6.2).** Đo lúc đó:
 
 ```
 t.cancel(); await t   →  trả về Result(stop_reason="cancelled")
@@ -126,22 +140,28 @@ là lớp lỗi đã biết, và nghiên cứu liệt kê cancellation thành m�
 `try_run()` trả về `Result` là thiết kế (IDL-11) — nhưng **huỷ không phải một stop reason
 bình thường**, nó là một tín hiệu điều khiển.
 
-**Y-02 — Không có lớp Isolation.** [§01.5](01-requirements.md) ghi sandbox là non-goal vì
-"cần process/WASM isolation — một sản phẩm khác". Nghiên cứu bác lại điều đó ở mức
-nguyên tắc: *"approval không đồng nghĩa sandbox"*, và Isolation là một trong 8 lớp
-Poka-Yoke. Không thể đóng gói container trong một thư viện, nhưng **có thể** làm ba việc
-thư viện làm được: workspace root, chặn egress mặc định, và một seam để cắm sandbox thật.
+**Y-02 — Không có lớp Isolation. ĐÃ ĐÓNG MỘT PHẦN (M7).** [§01.5](01-requirements.md) ghi
+sandbox là non-goal vì "cần process/WASM isolation — một sản phẩm khác". Nghiên cứu bác
+lại điều đó ở mức nguyên tắc: *"approval không đồng nghĩa sandbox"*, và Isolation là một
+trong 8 lớp Poka-Yoke. Không thể đóng gói container trong một thư viện, nhưng ba việc thư
+viện làm được đã xây: workspace root (T-7.1), chặn egress mặc định (T-7.2), một seam để
+cắm sandbox thật (`Sandbox`, T-7.3 — `InProcess`/`Subprocess` ship sẵn, KHÔNG claim
+namespace/cgroup isolation, ADR-047 nói thẳng; một container runtime thật vẫn là việc của
+người vận hành).
 
-**Y-03 — Envelope thiếu trường để truy vết đa tenant.** Không có `tenant_id`, `trace_id`,
-`schema_version`. Nghiên cứu coi việc propagate trace/run/session/tenant id là một tiêu
-chí Observability riêng.
+**Y-03 — Envelope thiếu trường để truy vết đa tenant. ĐÃ SỬA (T-8.1), rồi vá thêm một lỗ
+(N-9).** Không có `tenant_id`, `trace_id`, `schema_version` lúc viết. Envelope v1 thêm cả
+bốn — nhưng lúc mới xây, `tenant_id` chỉ tới được `Event`/`EventBus` (telemetry), CHƯA
+tới được `Policy.check()` (`RunContext`/`_Ctx`) — một policy không quyết định khác nhau
+được theo tenant cho tới N-9 (`design/07 §3`).
 
-**Y-04 — Integration 2/5.** Không MCP, không Service API. Nghiên cứu xếp Integration 8%
-và nói *"MCP nên là tool boundary"*. Với một harness định vị production, đây là khoảng
-trống lớn nhất theo trọng số.
+**Y-04 — Integration 2/5. ĐÃ ĐÓNG (M9).** Không MCP, không Service API lúc viết. Nghiên
+cứu xếp Integration 8% và nói *"MCP nên là tool boundary"* — khoảng trống lớn nhất theo
+trọng số lúc đó. `harness.mcp` (T-9.1) + `harness.server` (T-9.2) đóng cả hai.
 
-**Y-05 — Performance chưa từng được đo.** 6% trọng số, và con số duy nhất từng đo là
-import time. Không có p50/p95, không có throughput, không có concurrency test.
+**Y-05 — Performance chưa từng được đo. ĐÃ ĐÓNG (M10).** 6% trọng số, và con số duy nhất
+từng đo là import time — giờ là một phép đo GỌI ĐƯỢC (`import_cold_start_ms()`), cộng
+p50/p95/throughput/concurrency thật (`harness.eval.benchmark`, T-10.3).
 
 ---
 
@@ -155,9 +175,9 @@ không phải là sai, và bổ sung không đòi hỏi phá vỡ [§04.8](04-in
 |---|---|---|
 | **1. Invocation** | **Mạnh** | `run` / `try_run` / `arun` / `atry_run` / `chat` / `resume` / `aresume` / `as_tool` / `with_`. Ngang PydanticAI về số dạng gọi; `run` raise và `try_run` trả về là một quyết định rõ ràng (IDL-11) mà nhiều thư viện không có |
 | **2. Tool** | **Mạnh — có thể là phần đi trước mặt bằng chung** | Không thư viện nào trong nghiên cứu suy ra **năm hành vi từ một phân loại `effect`**: song song được, retry được, làm bẩn run, verdict mặc định, mức audit. Schema chỉ kiểm hình dạng dữ liệu; `effect` kiểm *hệ quả* |
-| **3. Event / stream** | **Yếu** | Chỉ có `on_delta(str)` — một callback text. Có taxonomy 15 event kind nhưng **không có cách tiêu thụ nó như một stream**: exporter là push, không có async iterator pull |
-| **4. Session / state** | **Yếu** | Nghiên cứu: *"Session ID phải được xem là resource có lifecycle"* — ownership, TTL, concurrent writer, fork, conflict. Harness có đường dẫn transcript và `thread_id` của graph, **không có đối tượng `Session`** |
-| **5. Transport** | **Vắng, có chủ ý** | Library-first ([§01](01-requirements.md)). M9 mở HTTP/MCP như `extra` |
+| **3. Event / stream** | **Yếu lúc viết → Mạnh (T-8.5)** | Lúc viết: chỉ có `on_delta(str)`. Nay: `async for ev in agent.stream(msg)` trên taxonomy 16 kind (envelope v1 đầy đủ), cộng transport SSE (`harness.server`) và CLI `--json` cùng hình dạng (T-9.3) |
+| **4. Session / state** | **Yếu lúc viết → Mạnh (T-8.6)** | Nghiên cứu: *"Session ID phải được xem là resource có lifecycle"* — ownership, TTL, concurrent writer, fork, conflict. Nay: `harness.Session` — id/owner/TTL/`.fork()`/`.resume_from()`, backend cổ điển (LangGraph có `thread_id` sẵn làm session primitive của nó) |
+| **5. Transport** | **Vắng, có chủ ý → mở qua extra (M9)** | Library-first ([§01](01-requirements.md)) vẫn đúng cho CORE. `harness[server]` (Service API) và `harness[mcp]` (client) mở transport như extra, không đổi lõi |
 
 ### Lỗi ngữ nghĩa đã tìm ra nhờ đọc kỹ nghiên cứu
 
@@ -219,6 +239,10 @@ ra stream trước khi envelope có version là bày ra một contract rồi ph�
 
 ## 4. KẾ HOẠCH — M6 đến M10
 
+**✅ ĐÃ XONG TOÀN BỘ.** Bảng dưới đây là kế hoạch GỐC, giữ nguyên làm bằng chứng mỗi task
+đã trả lời đủ chín mục trước khi code tồn tại — `design/08-roadmap-and-release-plan.md §1`
+là bảng "đã xong ở đâu, ADR nào, test nào" cho từng dòng dưới đây.
+
 Xếp theo `trọng số × khoảng trống`. Mỗi task theo đúng chín mục [§VIII của HARNESS.md](../HARNESS.md):
 **What · Why · Where · How · Depends · Contract · Failure · Test · Done**.
 
@@ -269,6 +293,8 @@ Xếp theo `trọng số × khoảng trống`. Mỗi task theo đúng chín mụ
 
 ## 5. Thứ tự, và vì sao
 
+**Đã chạy đúng thứ tự này** (`design/08-roadmap-and-release-plan.md §1` ghi lại việc thật).
+
 ```
 M6 Reliability ──► M7 Isolation ──► M8 Observability ──► M9 Integration ──► M10 Eval
    idempotency        workspace         envelope v1         MCP                trajectory
@@ -290,10 +316,12 @@ thử đó, nó không được vào.
 
 ## 6. Điều kiện hoàn thành
 
-Kế hoạch này xong khi tự chấm lại theo cùng ma trận cho **≥ 85** với Reliability,
-Observability và Integration đều ≥ 4/5 — và, quan trọng hơn con số, khi 14 mục `S-01…S-14`
-đều có một test đang chạy chứng minh chúng tồn tại. Nghiên cứu nói đúng điều mà 41 vòng
-vừa qua đã học được bằng cách trả giá:
+**Vế thứ hai đã đạt: 13/14 mục `S-01…S-14` có một test đang chạy chứng minh chúng tồn
+tại** (`## 2.2` — chỉ S-14, backpressure, còn mở, mức độ thấp, chưa quan sát thấy trong
+thực tế vì chưa có pilot nào chạy). Vế thứ nhất (tự chấm lại ≥ 85) cần một người chấm
+thật, không phải một con số tự động — xem `design/08-roadmap-and-release-plan.md §2`/`§3`.
+
+Nghiên cứu nói đúng điều mà 41 vòng vừa qua đã học được bằng cách trả giá:
 
 > *Quyết định cuối cùng cần một pilot 2–4 tuần có cùng model, cùng task set, cùng tool set
 > và cùng security policy.* Không có con số nào ở trên thay thế được việc đó.
