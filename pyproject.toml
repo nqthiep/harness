@@ -8,7 +8,11 @@ dependencies = ["anthropic", "typing-extensions", "jsonschema"]
 [project.optional-dependencies]
 # 36 transitive packages against NFR-05's budget of three, measured — which is why it is
 # an extra and not a dependency (ADR-032).  `import harness` must never import LangChain.
-graph = ["langgraph>=1.0", "langchain-core>=1.0"]
+# `langgraph-checkpoint-sqlite` is `Agent(durable=True)`'s default checkpoint store
+# (agent.py::_build_checkpointer) — +3 measured (itself, `aiosqlite`, `sqlite-vec`;
+# `langgraph`/`langchain-core` were already satisfied), not a separate extra: durable=True
+# IS the graph backend, just without the vocabulary reaching the caller.
+graph = ["langgraph>=1.0", "langchain-core>=1.0", "langgraph-checkpoint-sqlite>=2.0"]
 # The CLIENT only.  The `openviking` server package resolves to 185 transitive packages
 # — a web crawler and two other LLM SDKs among them — because it is a database server,
 # and you run it as a process rather than vendoring it into a library (ADR-035).

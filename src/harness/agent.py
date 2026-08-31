@@ -36,8 +36,8 @@ class Agent:
     __slots__ = ("name", "job", "toolset", "model", "effort", "budget", "safety",
                  "approve", "policies", "allowed_hosts", "provider", "returns",
                  "max_parallel_tools", "max_asks_per_run", "transcript", "exporters",
-                 "tenant_id", "session_id",
-                 "_asm", "_watch", "_as_tool_budget", "_grants")
+                 "tenant_id", "session_id", "durable", "checkpoint",
+                 "_asm", "_watch", "_as_tool_budget", "_grants", "_durable_thread")
 
     # Declared for the type checker.  The fields are set through `object.__setattr__`
     # (the Agent is frozen), which a checker cannot see — so without these, **a user
@@ -62,10 +62,13 @@ class Agent:
     exporters: tuple[Any, ...]
     tenant_id: str | None
     session_id: str | None
+    durable: bool
+    checkpoint: Any
     _asm: Any
     _grants: Grants
     _watch: Any
     _as_tool_budget: Any
+    _durable_thread: str | None
 
     def __init__(
         self,
@@ -102,6 +105,22 @@ class Agent:
         # this agent's runs emit.
         tenant_id: str | None = None,
         session_id: str | None = None,
+        # Backend unification (the "2 API interfaces" complaint this closes): ONE Agent,
+        # ONE set of methods, regardless of `durable`. `durable=True` runs on the
+        # LangGraph engine (`harness.lg.build_agent()`) instead of the hand-written loop,
+        # but nothing LangGraph-shaped — no `HumanMessage`, no raw `.invoke()`, no
+        # `thread_id` config — reaches the caller: `run`/`try_run`/`arun`/`atry_run` take
+        # the same `str` and return the same `Result` either way. The compiled graph
+        # itself stays available directly via `harness.lg.build_agent()` for power users
+        # who want it — an escape hatch, not the primary surface.
+        #
+        # Durability is the ONE thing `durable=True` buys that `durable=False` cannot:
+        # progress survives a process restart. `session_id=` (already a field, T-8.1) IS
+        # the conversation to reconnect to — pass the same one after a restart and the
+        # checkpointer picks the conversation back up; omit it and each Agent instance
+        # gets its own, generated once and kept only in memory.
+        durable: bool = False,
+        checkpoint: Any = None,
     ) -> None:
         if args:
             shown = ", ".join(repr(a) for a in args)
@@ -158,6 +177,18 @@ class Agent:
         object.__setattr__(self, "max_asks_per_run", max_asks_per_run)
         object.__setattr__(self, "tenant_id", tenant_id)
         object.__setattr__(self, "session_id", session_id)
+        if durable and returns is not None:
+            # N-3, design/07-risks-and-open-issues.md: the durable engine does not parse
+            # a final answer against `returns=` yet — `Result.value` would silently stay
+            # `None` forever, which is exactly the "quiet gap" ADR-022 exists to prevent.
+            raise ConfigError(
+                "durable=True doesn't support returns= yet.\n\n"
+                "  Drop returns= for now, or use durable=False — see N-3 in "
+                "design/07-risks-and-open-issues.md.\n\n"
+                "  -> docs/03-public-api.md"
+            )
+        object.__setattr__(self, "durable", durable)
+        object.__setattr__(self, "checkpoint", checkpoint)
 
         output_format = _output_format(returns) if returns is not None else None
         asm = ContextAssembler(model=model, job=job, tools=toolset, effort=effort,
@@ -168,6 +199,9 @@ class Agent:
         # per-run watcher would compare a prefix only against itself (Round 24).
         object.__setattr__(self, "_watch", PrefixWatcher())
         object.__setattr__(self, "_as_tool_budget", None)
+        # The conversation identity a durable run falls back to when the caller never
+        # gave `session_id=` — generated lazily, on first durable use (`_durable_thread_id`).
+        object.__setattr__(self, "_durable_thread", None)
 
     def __setattr__(self, *a: Any) -> None:
         raise AttributeError("Agent is frozen — use agent.with_(...) to make a changed copy")
@@ -177,18 +211,20 @@ class Agent:
 
     # -- running ----------------------------------------------------------
     async def atry_run(self, message: str, *, on_delta=None, _history=()) -> Result:
-        provider = self.provider
-        if provider is None:
-            from .cli import key_status
-            if key_status()[0]:
-                from .models.anthropic import AnthropicProvider
-                provider = AnthropicProvider()
-        if provider is None:
-            raise ConfigError(
-                "this agent has no way to reach a model yet.\n\n"
-                "  Run:  harness setup\n\n"
-                "  -> docs/15-first-agent.md"
-            )
+        if self.durable:
+            if _history:
+                # Only `Chat` passes `_history=` today, and `chat()` refuses a durable
+                # Agent outright (below) — so this can't yet be reached from the public
+                # surface. Kept as a loud guard rather than a silent drop: a durable
+                # thread's real history lives in its checkpointer, not in a Python list,
+                # so honouring `_history` here would mean two disagreeing sources of
+                # truth for the same conversation.
+                raise ConfigError(
+                    "durable=True conversations keep their own history (the "
+                    "checkpointer) — there is nothing for _history= to do here."
+                )
+            return await self._atry_run_durable(message, on_delta=on_delta)
+        provider = _resolve_provider(self.provider)
         run_id = "r_" + uuid.uuid4().hex[:16]
         exporters = list(self.exporters)
         writer = None
@@ -227,6 +263,98 @@ class Agent:
         r = await self.atry_run(message, on_delta=on_delta)
         _raise_if_failed(r)
         return r
+
+    # -- durable running (backend unification) -----------------------------
+    async def _atry_run_durable(self, message: str, *, on_delta=None) -> Result:
+        if on_delta is not None:
+            # The durable engine's model call isn't streamed (`ProviderChatModel._generate`
+            # calls the provider's non-streaming path) — a real, documented gap rather
+            # than a silently-ignored callback.
+            raise ConfigError(
+                "durable=True doesn't support on_delta= yet — the model call inside a "
+                "durable run isn't streamed.\n\n"
+                "  Drop on_delta=, or use durable=False for streaming.\n\n"
+                "  -> design/07-risks-and-open-issues.md"
+            )
+        from langchain_core.messages import HumanMessage
+
+        graph, close = await self._build_durable_graph()
+        try:
+            thread_id = self.session_id or self._durable_thread_id()
+            config = {"configurable": {"thread_id": thread_id}}
+            prior = await graph.aget_state(config)
+            before = len(prior.values.get("messages") or []) if prior and prior.values else 0
+            out = await graph.ainvoke({"messages": [HumanMessage(message)], "step": 0},
+                                      config=config)
+            return _state_to_result(out, before, thread_id)
+        finally:
+            await close()
+
+    def _durable_thread_id(self) -> str:
+        """The conversation identity when the caller didn't give one (`session_id=`).
+
+        Generated once and cached on this instance (Round 34: construct the Agent once,
+        keep it at module scope) — stable for calls made through THIS Python object, but
+        — unlike an explicit `session_id=` — not recoverable after a real process
+        restart, because nothing durable remembers it was ever generated. That is the
+        one thing an explicit `session_id=` buys over leaving it out.
+        """
+        tid = self._durable_thread
+        if tid is None:
+            tid = "t_" + uuid.uuid4().hex[:16]
+            object.__setattr__(self, "_durable_thread", tid)
+        return tid
+
+    async def _build_durable_graph(self):
+        """Compile this Agent's LangGraph engine and open its checkpoint store — fresh,
+        every call, deliberately not cached on the Agent.
+
+        `AsyncSqliteSaver` holds a live `aiosqlite` connection, which owns a background
+        thread that keeps the whole process alive until the connection is closed — so a
+        default-checkpoint `durable=True` Agent that cached its graph for reuse (the same
+        "build once" shape `_asm`/`_watch` use) would make `python examples/whatever.py`
+        hang on exit instead of returning, the first time anyone actually tried it. Opened
+        and closed around exactly this one call instead — the same shape `atry_run()`
+        already uses for its own per-run `TranscriptWriter` — trades a rebuild of the
+        (cheap, in-memory) graph structure on every call for an Agent that behaves the way
+        every other one in this library does: it returns.
+
+        A caller-supplied `checkpoint=` that is already a built checkpointer (the escape
+        hatch — Postgres, Redis, ...) is never closed here: it is the caller's object, not
+        one this method opened, so `close()` for that case is a no-op.
+        """
+        from .lg import build_agent
+        from .lg.adapter import ProviderChatModel
+        from .models import pricing
+
+        provider = _resolve_provider(self.provider)
+        model = ProviderChatModel(provider=provider, asm=self._asm,
+                                  max_output=pricing.MAX_OUTPUT.get(self.model, 8_000))
+        checkpointer, own_conn = await _build_checkpointer(self.checkpoint, self.name)
+        exporters = list(self.exporters)
+        writer = None
+        if self.transcript is not None:
+            writer = TranscriptWriter(self.transcript)
+            exporters.append(writer)
+        if ConsoleExporter.should_attach():
+            exporters.append(ConsoleExporter(self.name))
+        graph, _runtime = build_agent(
+            model=model, tools=list(self.toolset), budget=self.budget,
+            model_name=self.model, safety=self.safety, policies=self.policies,
+            allowed_hosts=self.allowed_hosts,
+            accepts_tainted=self._grants.accepts_tainted,
+            sensitive=self._grants.sensitive, approve=self.approve,
+            checkpointer=checkpointer, exporters=tuple(exporters),
+            max_asks_per_run=self.max_asks_per_run, tenant_id=self.tenant_id,
+        )
+
+        async def close() -> None:
+            if writer is not None:
+                writer.close()
+            if own_conn is not None:
+                await own_conn.close()
+
+        return graph, close
 
     async def stream(self, message: str, *, on_delta=None):
         """T-8.5, docs/17-research-alignment.md M8 — `async for ev in agent.stream(msg)`
@@ -301,6 +429,22 @@ class Agent:
         three.  The default is 10x the run budget; as it depletes, ADR-017's derived
         max_tokens shrinks, so answers shorten before the session ends.
         """
+        if self.durable:
+            # `Chat` keeps history in a Python list (`fork()`'s whole point is that this
+            # is copyable, in-process state) — the opposite of what `durable=True` is
+            # for. A durable conversation already keeps its own history, keyed by
+            # `session_id`, in the checkpointer: calling `try_run()`/`run()` again with
+            # the same `session_id=` **is** the multi-turn story here, and it needs no
+            # extra object to hold it.
+            raise ConfigError(
+                "durable=True agents don't use .chat() — the checkpointer already keeps "
+                "the conversation.\n\n"
+                '    agent = Agent(..., durable=True, session_id="cust-42")\n'
+                "    agent.run(\"first message\")\n"
+                "    agent.run(\"second message\")   # same session_id -> same "
+                "conversation\n\n"
+                "  -> docs/03-public-api.md"
+            )
         return Chat(self, budget=budget)
 
     def as_tool(self, *, name: str | None = None, description: str | None = None,
@@ -345,6 +489,18 @@ class Agent:
         return asyncio.run(self.aresume(transcript))
 
     async def aresume(self, transcript: Any) -> Result:
+        if self.durable:
+            # `resume()` replays a JSONL transcript to find what an interrupted run left
+            # mid-flight — the classic backend's only record of that. A durable Agent's
+            # record is its checkpointer, not a transcript file, and it is already
+            # current the moment the process comes back: call `run()`/`try_run()` again
+            # with the same `session_id=` and the graph continues from exactly where the
+            # checkpointer last left it — no separate resume step to take.
+            raise ConfigError(
+                "durable=True agents don't need resume() — call run()/try_run() again "
+                "with the same session_id= and the checkpointer picks up where it left "
+                "off.\n\n  -> docs/03-public-api.md"
+            )
         started: dict[str, str] = {}
         finished: set[str] = set()
         message = ""
@@ -377,7 +533,8 @@ class Agent:
         base = {k: getattr(self, k) for k in
                 ("name", "job", "model", "effort", "returns", "budget", "safety", "approve",
                  "policies", "allowed_hosts", "provider", "max_parallel_tools",
-                 "max_asks_per_run", "tenant_id", "session_id", "transcript", "exporters")}
+                 "max_asks_per_run", "tenant_id", "session_id", "transcript", "exporters",
+                 "durable", "checkpoint")}
         base["tools"] = list(self.toolset)
         base["accepts_tainted"] = self._grants.accepts_tainted
         base["sensitive"] = self._grants.sensitive
@@ -438,6 +595,104 @@ class Chat:
         new._messages = list(self._messages)
         new._spent = self._spent
         return new
+
+
+def _resolve_provider(provider: Any) -> Any:
+    """The classic and durable run paths both need "the caller's provider, or the
+    default Anthropic one if a key is configured, or a clear error" — factored out so
+    the two copies of this couldn't drift (they briefly did, mid-implementation)."""
+    if provider is None:
+        from .cli import key_status
+        if key_status()[0]:
+            from .models.anthropic import AnthropicProvider
+            provider = AnthropicProvider()
+    if provider is None:
+        raise ConfigError(
+            "this agent has no way to reach a model yet.\n\n"
+            "  Run:  harness setup\n\n"
+            "  -> docs/15-first-agent.md"
+        )
+    return provider
+
+
+async def _build_checkpointer(checkpoint: Any, name: str) -> Any:
+    """`checkpoint=` -> a LangGraph checkpointer.
+
+    Three shapes, in order: `None` -> a local SQLite file this creates, named after the
+    agent, under `.harness/checkpoints/` (mirrors `SqliteStore`'s own file-per-store
+    convention, `memory/sqlite.py`) — durable across a restart with zero configuration,
+    which is the whole point of `durable=True`'s default. A `str`/`Path` -> a SQLite file
+    at that exact path (or `:memory:`, for a durable-shaped run that intentionally keeps
+    nothing). Anything else -> handed to `build_agent()` as-is: a caller's own
+    already-built LangGraph checkpointer (Postgres, Redis, ...) — the escape hatch, same
+    as the raw graph itself.
+
+    Opened directly with `aiosqlite.connect()` rather than `AsyncSqliteSaver.
+    from_conn_string()`: that factory is an async context manager, and the caller here
+    (`_build_durable_graph`) already opens and closes it around exactly one call — a
+    second, nested context manager would buy nothing. Returns `(checkpointer,
+    connection-to-close-or-None)`: a caller-supplied checkpointer is never ours to
+    close, so its second element is `None`.
+    """
+    from pathlib import Path
+
+    if checkpoint is not None and not isinstance(checkpoint, (str, Path)):
+        return checkpoint, None
+    try:
+        import aiosqlite
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+    except ImportError as exc:
+        raise ConfigError(
+            "durable=True needs the SQLite checkpoint package.\n\n"
+            "  Run:  pip install 'harness[graph]'\n\n"
+            "  -> docs/03-public-api.md"
+        ) from exc
+    if checkpoint is None:
+        path = Path(".harness") / "checkpoints" / f"{slug(name, fallback='agent')}.sqlite3"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn_str = str(path)
+    else:
+        conn_str = str(checkpoint)
+    conn = await aiosqlite.connect(conn_str)
+    saver = AsyncSqliteSaver(conn)
+    await saver.setup()
+    return saver, conn
+
+
+def _state_to_result(state: Any, before: int, run_id: str) -> Result:
+    """Graph state -> the same `Result` the classic backend returns — the point at
+    which every LangChain type this run touched stops existing for the caller."""
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    from .lg.adapter import _lc_to_native
+
+    msgs = state.get("messages") or []
+    new = msgs[before:]
+    stop = StopReason(state.get("stop_reason") or "completed")
+    detail = state.get("detail", "")
+    cost = Money(state.get("spent_usd") or "0")
+    steps = state.get("step", 0)
+    tainted = bool(state.get("tainted", False))
+    text = ""
+    usage = Usage()
+    tools_run: list[str] = []
+    call_names: dict[str, str] = {}
+    for m in new:
+        if isinstance(m, AIMessage):
+            if isinstance(m.content, str) and m.content:
+                text = m.content
+            u = m.usage_metadata or {}
+            details = u.get("input_token_details", {}) or {}
+            usage = usage + Usage(u.get("input_tokens", 0), u.get("output_tokens", 0),
+                                  details.get("cache_read", 0), details.get("cache_creation", 0))
+            for tc in (m.tool_calls or []):
+                call_names[tc.get("id")] = tc.get("name")
+        elif isinstance(m, ToolMessage):
+            called = call_names.get(m.tool_call_id)
+            if called and getattr(m, "status", "success") != "error":
+                tools_run.append(called)
+    return Result(text, stop, steps, cost, usage, run_id, tainted,
+                 tuple(_lc_to_native(msgs)), None, detail, tuple(tools_run))
 
 
 def _output_format(returns: type) -> dict:

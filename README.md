@@ -42,18 +42,21 @@ roadmap** (reliability, isolation, observability, integration, evaluation). Noth
 here is a plan waiting to be implemented.
 
 ```
-python -m pytest -q          # 599 tests, offline, no API key, a few seconds
+python -m pytest -q          # 613 tests, offline, no API key, a few seconds
 ruff check src tests examples
 mypy
 python3 examples/proof.py    # walks HARNESS.md's requirements and asserts each in code
 python3 tests/test_roadmap.py  # prints how the M6–M10 growth roadmap stands, live
 ```
 
-The two backends: a **classic** async loop (`Agent`, no extra dependencies) and a
-**LangGraph-backed** one (`harness.lg.build_agent`, `harness[graph]`) — durable,
-resumable, checkpointed. `tests/test_parity.py` states every safety rule once and runs
-it against both; a row that differs between them is a defect, never a documented
-difference.
+One `Agent`, one API. Underneath, two engines: a **classic** async loop (no extra
+dependencies) and a **LangGraph-backed** one (`harness[graph]`) that adds durable
+checkpointing — a run that survives a process restart. `Agent(durable=True)` runs on the
+second engine through the exact same methods as the first — no LangChain vocabulary
+reaches the caller either way (`docs/03-public-api.md §3.5`). The raw compiled graph
+(`harness.lg.build_agent`) stays directly available as an escape hatch for LangGraph
+itself. `tests/test_parity.py` states every safety rule once and runs it against all
+three call shapes; a row that differs is a defect, never a documented difference.
 
 Measured against an independent study of 12 frameworks and 9 harnesses
 ([`docs/17`](docs/17-research-alignment.md)): a self-scored **67.8/100** on that study's
@@ -78,18 +81,25 @@ store, subagents, idempotency and cancellation primitives, and a CLI.
 
 | Extra | What it adds |
 |---|---|
-| `harness[graph]` | The LangGraph-backed runtime — durable, checkpointed, resumable across process restarts. |
+| `harness[graph]` | Durability: `Agent(durable=True)` (`docs/03-public-api.md §3.5`) and the raw `harness.lg.build_agent` escape hatch — checkpointed, resumable across process restarts. |
 | `harness[viking]` | `VikingStore` — semantic recall over [OpenViking](https://github.com/volcengine/OpenViking), classified `external` (it taints — anything a retrieval store hands back is untrusted). |
 | `harness[otel]` | A real OpenTelemetry exporter — spans and metrics on the mapping `docs/10-observability-ops.md §2` publishes. |
 | `harness[mcp]` | `harness.mcp.connect()` — turn a Model Context Protocol server into classified `ToolSpec`s. A third-party MCP server is never a security boundary; the policy engine still gates every call (`design/03-tools-and-mcp.md §5`). |
 | `harness[server]` | `harness.server.create_app()` — an ASGI Service API (`POST /v1/runs`, SSE event streaming, approvals, cancel). Bring your own ASGI server and your own auth. |
 | — (no extra; stdlib + `jsonschema`, already core) | `harness.eval` — trajectory contracts, golden-set pass rate with a confidence interval, latency/throughput/cold-start benchmarks. |
 
-Start here to build an agent: [`examples/langgraph_quickstart.py`](examples/langgraph_quickstart.py)
-— five steps, each adding exactly one concept.
+Start here to build an agent: [§15 — Your First Agent](docs/15-first-agent.md) — a
+ten-year-old's first tool, five minutes in.
+
+Start here for durability: [`examples/durable_agent.py`](examples/durable_agent.py) —
+`Agent(durable=True)`, one API, a simulated process restart mid-conversation.
 
 Start here for a production-shaped agent: [`examples/full_agent.py`](examples/full_agent.py)
-— one set of tools and policies exercising every capability, on both backends.
+— one set of tools and policies exercising every capability, on both engines.
+
+Start here for the raw LangGraph escape hatch: [`examples/langgraph_quickstart.py`](examples/langgraph_quickstart.py)
+— five steps, each adding exactly one concept, for a power user who wants LangGraph
+itself rather than `durable=True`.
 
 Start here to judge it: [`examples/proof.py`](examples/proof.py) — walks every
 requirement in [`HARNESS.md`](HARNESS.md) and asserts each one in running code.

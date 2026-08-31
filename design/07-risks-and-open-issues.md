@@ -14,8 +14,9 @@ tệp này chỉ giữ đủ để hiểu quyết định, không lặp lại to
 
 ## 0. Trạng thái tóm tắt
 
-**Tất cả 58 phát hiện gốc đã được xét. 9 phát hiện mới (N-1…N-9) tự bắt được trong lúc
-xây M6-M10.** Còn mở thật sự, hôm nay: **6 mục** — xem `## 7`.
+**Tất cả 58 phát hiện gốc đã được xét. 10 phát hiện mới (N-1…N-10): N-1…N-9 tự bắt được
+trong lúc xây M6-M10, N-10 đóng phản hồi trực tiếp của người dùng ("2 API interfaces gây
+khó dùng") sau đó.** Còn mở thật sự, hôm nay: **6 mục** — xem `## 7`.
 
 ### Bảo mật (S-1…S-29)
 
@@ -76,6 +77,7 @@ xây M6-M10.** Còn mở thật sự, hôm nay: **6 mục** — xem `## 7`.
 | N-7 | `Agent.with_()` làm mất bốn trường, mọi lần gọi | **Đã sửa** |
 | N-8 | `execute_once` có caller thật nhưng chưa gắn vào tool dispatch | **Còn mở** (= S-4) |
 | N-9 | `tenant_id` chưa bao giờ tới được `Policy.check()` | **Đã sửa** |
+| N-10 | "2 API interfaces" (backend cổ điển vs LangGraph) | **Đã sửa** — `Agent(durable=True)` |
 
 ---
 
@@ -207,15 +209,20 @@ Không thuộc hai vòng review gốc — đánh số riêng `N-` để không v
 **N-1 — LangGraph không timeout per-tool.** `lg/runtime.py::_run_tools` không có `async
 with asyncio.timeout(...)` nào bọc quanh lời gọi tool — khác `dispatch.py::_invoke`
 (Round 23). Một tool `read` treo mãi mãi (HTTP call không timeout riêng) treo cả node
-graph vô thời hạn; chỉ wall-clock CẤP RUN chặn được, và chỉ kiểm đầu mỗi bước. Còn mở.
+graph vô thời hạn; chỉ wall-clock CẤP RUN chặn được, và chỉ kiểm đầu mỗi bước. **Từ N-10
+(`Agent(durable=True)`): gap này giờ tới được từ mặt API chính, không chỉ từ
+`build_agent()` — cùng một `Runtime`, không phải hai bản.** Còn mở.
 
 **N-2 (đã sửa) — `try_run()` raise thẳng khi model trả rác khớp sai `returns=`.**
 `_parse_returns()` giờ chạy TRƯỚC khi `RUN_FINISHED` phát, bắt `ToolContractError` và hạ
 xuống `Result(stop_reason=ERROR)` — model trả rác là một OUTCOME, không phải crash.
 
 **N-3 — LangGraph không hỗ trợ `returns=`.** `build_agent()` không có tham số này;
-`Result.value` luôn `None` trên backend đó. Khoảng trống parity thật, không có tài liệu
-nào ghi nó là "chỉ backend cổ điển". Còn mở.
+`Result.value` luôn `None` trên backend đó. Khoảng trống parity thật. **N-10
+(`Agent(durable=True)`) đóng phần "âm thầm"**: `Agent(durable=True, returns=...)` giờ
+raise `ConfigError` ngay lúc dựng thay vì để `Result.value` lặng lẽ luôn `None` — nhưng
+bản thân khoảng trống (LangGraph chưa parse `returns=`) vẫn còn mở, giờ chỉ là bị chặn
+sớm thay vì bị giấu.
 
 **N-4 (đã sửa) — lỗi provider crash thẳng ra ngoài, cả hai backend.** MỌI lần gọi
 provider thật gặp rate limit/timeout tạm thời crash chương trình gọi nó — không có
@@ -256,6 +263,41 @@ chỉ từng chảy tới `EventBus` (telemetry), không bao giờ tới `RunCon
 ngay trước lượt dọn tài liệu này — hai check ĐỎ khác của cùng file hoá ra chỉ đoán sai
 TÊN (`ApprovalRecord`→`Decision`, `harness.testing`→`harness.eval`), sửa test chứ không
 sửa code; `tenant_id` là gap chức năng thật duy nhất trong năm check ban đầu đỏ.
+
+**N-10 (đã sửa) — "2 API interfaces" (backend cổ điển vs LangGraph) gây khó cho người
+dùng.** Phản hồi trực tiếp từ người dùng, không phải phát hiện tự động: có hai backend
+nghĩa là ai muốn durability phải học từ vựng LangChain (`HumanMessage`, `.invoke()`,
+`thread_id` trong config) bên cạnh `Agent`. Đóng bằng `Agent(durable=True)`
+(`docs/03-public-api.md §3.5`, `agent.py::_atry_run_durable`): CÙNG một `run`/`try_run`/
+`arun`/`atry_run`/`with_`, chạy trên `harness.lg.build_agent()` ở dưới, không có gì thuộc
+LangChain/LangGraph lọt ra ngoài. `ProviderChatModel` (`lg/adapter.py`) là seam làm được
+điều đó mà không cần một thư viện gọi model thứ hai: nó bọc `provider=` CỦA CHÍNH Agent
+đó (cùng `AnthropicProvider`/`FakeModel` backend cổ điển gọi) thành một LangChain chat
+model, nên `durable=True` gọi model qua đúng một đường error-mapping/pricing, và qua
+CÙNG `ContextAssembler` — đóng luôn một khoảng trống riêng của `build_agent()` (nó chưa
+bao giờ tự gửi system prompt/`job=` tới model). `checkpoint=` mặc định là file SQLite cục
+bộ, tự tạo, không cần hạ tầng ngoài (`_build_checkpointer`) — theo đúng trải nghiệm
+`SqliteStore` đã có sẵn cho memory.
+
+Ba khoảng trống MỚI, không âm thầm — mỗi cái raise `ConfigError` rõ ràng thay vì bỏ qua
+lặng lẽ: `durable=True` + `.chat()`, + `.resume(transcript)`, + `on_delta=` đều bị từ
+chối (checkpointer đã giữ lịch sử hội thoại, nên `.chat()`/`.resume()` là cơ chế trùng
+việc; model call trong `_generate` chưa stream). `Session`/Service API (T-8.6/T-9.2) vẫn
+CHỈ backend cổ điển — quyết định có mở rộng cho `durable=True` hay không CHƯA đưa ra,
+ghi ở §7 dưới.
+
+Một đánh đổi kiến trúc có chủ đích, không phải sơ suất: đồ thị được BIÊN DỊCH LẠI mỗi lần
+gọi (`_build_durable_graph`), không cache trên `Agent` như `_asm`/`_watch`. Lý do:
+`AsyncSqliteSaver` giữ một connection `aiosqlite` sở hữu một thread nền KHÔNG phải daemon
+— một `Agent` durable cache đồ thị (và connection) suốt vòng đời sẽ khiến một script gọi
+xong `run()` rồi thoát bình thường TREO LUÔN, thay vì return — bug thật, bắt được bằng
+tay lúc build tính năng này (không phải lý thuyết: `tests/test_durable_agent.py::
+DurableProcessExits` là regression test cho đúng bug đó, chạy script con qua
+`subprocess` với timeout cứng). Mở/đóng connection quanh đúng một lần gọi — cùng hình
+dạng `atry_run()` đã dùng cho `TranscriptWriter` của riêng nó — đổi lấy việc Agent này cư
+xử giống mọi Agent khác trong thư viện: nó return. `tests/test_durable_agent.py` (14
+test) và `tests/test_parity.py` (mở rộng thành BA call shape — loop, graph thô,
+`durable=True`) phủ tính năng.
 
 ---
 
@@ -347,8 +389,11 @@ Sáu mục, không hơn không kém:
    nhất nếu có nhu cầu thật (một `write`/`danger` tool trên upstream không tự idempotent).
 3. **S-9 phần re-pointing-nhãn** — cần `ServerIdentity`+`fingerprint`, hoãn tới khi quan
    sát được một lần re-pointing MCP thật (cùng lý do K-12).
-4. **N-1 — LangGraph không timeout per-tool.**
-5. **N-3 — LangGraph không hỗ trợ `returns=`.**
+4. **N-1 — LangGraph không timeout per-tool.** Từ N-10, tới được từ `Agent(durable=True)`
+   nữa, không chỉ từ `build_agent()` thô.
+5. **N-3 — LangGraph không hỗ trợ `returns=`.** Từ N-10, `Agent(durable=True, returns=...)`
+   raise `ConfigError` ngay lúc dựng thay vì âm thầm để `Result.value` luôn `None` — bản
+   thân khoảng trống (chưa parse) vẫn còn mở, chỉ không còn im lặng.
 6. **N-5 / N-6 — retry cấp provider chưa cài; `model.response` thiếu `usage`/`latency_ms`.**
 
 Không mục nào ở trên chặn v1.0 (xem `design/08-roadmap-and-release-plan.md §3` cho điều

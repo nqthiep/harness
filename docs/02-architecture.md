@@ -88,9 +88,9 @@ Four invariants of the loop, each with a test in [§09](09-testing.md):
   the conversation.
 - **I-4** All `tool_result` blocks for one assistant turn go in **one** user message.
 
-## 3.1 Two backends, one set of rules
+## 3.1 Two engines, one Agent
 
-The loop above is the default. `harness[graph]` supplies a second backend
+The loop above is the default engine. `harness[graph]` supplies a second one
 (`harness.lg`) in which **LangGraph** owns the loop and the rules are expressed as
 topology (ADR-032):
 
@@ -116,15 +116,33 @@ introspectable, so "every path to the model passes the budget gate" stops being 
 over our own source and becomes a reachability proof over the real execution structure —
 one that holds for paths no test happens to walk.
 
-**What the graph backend adds:** durable checkpointing (a run survives a process restart
-mid-flight), `approve=INTERRUPT` for a human decision that outlives the process, and the
-LangChain model ecosystem.
+**Two engines used to mean two APIs** — `build_agent()` returned a raw compiled graph, and
+reaching it meant learning LangChain (`HumanMessage`, `.invoke()`, `thread_id` config)
+alongside `Agent`. That was real user-facing friction, not just an implementation detail,
+and it is closed now: `Agent(durable=True)` runs on this same engine through the *same*
+`run`/`try_run`/`arun`/`atry_run`/`with_` methods everything else in this document uses —
+`docs/03-public-api.md §3.5` has the parameter and the (small, tracked) list of what it
+doesn't cover yet. `ProviderChatModel` (`lg/adapter.py`) is the seam that makes this
+possible without a second model-calling implementation: it wears this Agent's own
+`provider=` (the same `AnthropicProvider`/`FakeModel`/... the classic engine calls) as a
+LangChain chat model, so a durable run goes through identical error mapping, pricing, and
+`ContextAssembler` context — one provider seam, one context-assembly path, two loop
+topologies. `build_agent()` and the raw compiled graph remain directly available — the
+escape hatch for a power user who wants LangGraph itself, not the primary way to reach this
+engine.
 
-**What it costs:** 36 transitive packages, and a second implementation of one set of rules.
-The second cost is the dangerous one — Round 35 found three defects in it that the council
-had already found and fixed in the first. It is bounded by `tests/test_parity.py`, which
-states each rule once and runs it against both backends; a row that differs is a defect,
-never a documented difference.
+**What durability buys:** a run survives a process restart mid-flight (`session_id=` is the
+conversation to reconnect to), `approve=INTERRUPT` for a human decision that outlives the
+process, and the LangChain model ecosystem for a power user going through `build_agent()`
+directly.
+
+**What it costs:** 39 transitive packages (`langgraph-checkpoint-sqlite` — `durable=True`'s
+default checkpoint store — adds 3 over the `graph` extra's prior 36), and a second
+implementation of one set of rules. The second cost is the dangerous one — Round 35 found
+three defects in it that the council had already found and fixed in the first. It is
+bounded by `tests/test_parity.py`, which states each rule once and runs it against **all
+three** call shapes (the hand-written loop, the raw graph, and `Agent(durable=True)`); a row
+that differs is a defect, never a documented difference.
 
 ## 4. What is a plugin — the test
 

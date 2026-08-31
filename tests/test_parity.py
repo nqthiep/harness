@@ -100,6 +100,33 @@ def on_old(script, *, tools, budget, approve=None):
             "written": [str(w) for w in written], "events": list(COLLECTOR.kinds)}
 
 
+def on_durable(script, *, tools, budget, approve=None):
+    """A THIRD backend, not a second: `Agent(durable=True)` runs on the exact same
+    `harness.lg` engine `on_graph` exercises directly, wrapped so nothing LangChain- or
+    LangGraph-shaped reaches the caller (agent.py, `ProviderChatModel`/`_state_to_result`).
+    Same fixtures as `on_old` (`PricedFake`, `Agent`) on purpose — proving the durable
+    path calls the model through the identical seam, not a second one.
+    """
+    def one(s):
+        if s[0] == "stop":
+            from harness.models.base import ModelResponse
+            from harness.result import Usage
+            return ModelResponse(({"type": "text", "text": "một nửa"},), s[1],
+                                 Usage(100, 20), "fake")
+        return FakeModel.text(s[1]) if s[0] == "text" else FakeModel.tool_call(s[1], s[2], call_id=s[3])
+    a = Agent(name="p", job="parity", model=MODEL,
+              provider=PricedFake([one(s) for s in script], MODEL),
+              tools=[TOOLS[t] for t in tools], budget=budget, approve=approve,
+              accepts_tainted=["refund"], exporters=[COLLECTOR], allowed_hosts=None,
+              durable=True, checkpoint=":memory:")
+    r = a.try_run("go")
+    written = [b.get("content", "") for m in r.messages
+               if isinstance(m, dict) and isinstance(m.get("content"), list)
+               for b in m["content"] if isinstance(b, dict)]
+    return {"ran": list(RAN), "stop": r.stop_reason.value, "tainted": r.tainted,
+            "written": [str(w) for w in written], "events": list(COLLECTOR.kinds)}
+
+
 class StoppingChat(FakeChat):
     """FakeChat that also carries a provider stop reason, the way langchain_anthropic does."""
     stops: list = []
@@ -133,7 +160,7 @@ def on_graph(script, *, tools, budget, approve=None):
             "events": list(COLLECTOR.kinds)}
 
 
-BACKENDS = {"loop": on_old, "graph": on_graph}
+BACKENDS = {"loop": on_old, "graph": on_graph, "durable": on_durable}
 COLLECTOR = Collector()
 
 

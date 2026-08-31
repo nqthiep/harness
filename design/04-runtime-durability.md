@@ -437,6 +437,45 @@ không chạy tiếp. Fail-closed. Đây là chỗ bài học haystack quay lạ
 là hai thứ, nên checkpoint phải **nói được** nó thuộc định nghĩa nào
 ([§11](../research/11-workflow-and-dx.md) §12).
 
+### 4.6 `Agent(durable=True)` — giấu graph, không giấu durability
+
+Mọi thứ ở §1-§4.5 mô tả `harness.lg.build_agent()` — vẫn đúng nguyên văn, và vẫn là cách
+DUY NHẤT durability này được XÂY. Cái đổi (N-10, `design/07-risks-and-open-issues.md`)
+là AI gọi tới nó: trước, chỉ người tự tay viết `HumanMessage`/`graph.invoke()`/
+`thread_id` mới chạm được checkpoint. `Agent(durable=True)` là một lớp mỏng gọi thẳng
+`build_agent()` — không phải một cách durability thứ hai — qua đúng các method §03 đã
+định nghĩa (`agent.py::_atry_run_durable`/`_build_durable_graph`):
+
+```python
+agent = Agent(name="...", job="...", durable=True, session_id="cust-42")
+agent.run("...")           # str vào, Result ra — không LangChain nào lọt ra
+```
+
+Ba quyết định thực thi, không thuộc phần graph đã tả ở trên:
+
+1. **Model qua đúng MỘT seam.** `lg/adapter.py::ProviderChatModel` bọc `provider=` của
+   CHÍNH Agent đó (`AnthropicProvider`/`FakeModel`, cùng cái backend cổ điển gọi) thành
+   một `langchain_core.BaseChatModel` — không kéo `langchain-anthropic` vào, không có
+   đường gọi model thứ hai với error-mapping riêng. Nó cũng gọi `ContextAssembler.build()`
+   (`self._asm`, đã có sẵn từ `Agent.__init__`) để dựng `ModelRequest` — đóng luôn một
+   khoảng trống CỦA RIÊNG `build_agent()`: trước file này, không có gì gửi `job=`/system
+   prompt tới model trên backend graph, kể cả khi gọi trực tiếp.
+2. **Checkpoint SQLite mặc định, không cache trên `Agent`.** `checkpoint=None` (mặc
+   định) → `.harness/checkpoints/<slug(name)>.sqlite3`, tự tạo. Đồ thị biên dịch lại và
+   connection mở/đóng quanh ĐÚNG một lần gọi (`_build_durable_graph`), không giữ suốt
+   vòng đời `Agent` như `_asm`/`_watch` — vì `AsyncSqliteSaver` giữ một thread nền KHÔNG
+   phải daemon, và một `Agent` cache nó sẽ khiến script gọi `run()` xong không thoát
+   được. Đánh đổi: biên dịch lại đồ thị (rẻ, không I/O) mỗi lần gọi, đổi lấy một Agent cư
+   xử đúng như mọi Agent khác — nó return.
+3. **`session_id=` (đã có từ T-8.1) LÀ `thread_id`.** Không thêm khái niệm mới; bỏ trống
+   thì mỗi `Agent` object tự sinh một cái, sống trong RAM — khác `session_id=` tường minh
+   ở đúng một điểm: sống được qua một restart thật.
+
+`returns=`, `.chat()`, `.resume(transcript)`, `on_delta=` đều bị `ConfigError` khi
+`durable=True` — không phải thứ bài này thiết kế lại, mà là ranh giới hôm nay của
+`build_agent()` (N-1/N-3, chưa đóng) hoặc cơ chế đã trùng việc với checkpointer, nói rõ
+ra thay vì để `Result` âm thầm thiếu.
+
 ---
 
 ## 5. Trạng thái sống ở đâu (R-4)

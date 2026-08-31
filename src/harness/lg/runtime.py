@@ -200,7 +200,12 @@ class Runtime:
         # gap was found and fixed in run.py — nothing here ever caught a provider
         # failure either, so it would have propagated straight out of `graph.invoke()`.
         try:
-            msg = self._model.invoke(state["messages"])
+            # The ledger already sized this turn's ceiling (`budget_gate`, just before
+            # this node runs) — forwarding it is what lets a real `BaseChatModel` size
+            # its own request to it, instead of a fixed construction-time default.
+            # `**kw`-shaped models (every fixture in this tree, `FakeChat` included)
+            # accept and ignore an unused kwarg; this is additive, not a new contract.
+            msg = self._model.invoke(state["messages"], max_tokens=state.get("max_tokens"))
         except Exception as exc:
             self._emit(state, EventKind.ERROR_RAISED, where="provider",
                        type=type(exc).__name__, message=str(exc), retryable=False)

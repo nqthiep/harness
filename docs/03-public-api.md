@@ -126,10 +126,13 @@ class Agent:
         max_steps: int | None = None,        # None → from budget
         max_parallel_tools: int = 8,
         discover: bool = False,              # opt-in entry-point plugin discovery
+        # --- durability ----------------------------------------------------------
+        durable: bool = False,               # run on the LangGraph engine, hidden — §3.5
+        checkpoint: Any = None,              # str/Path -> SQLite file; or a raw checkpointer
     ) -> None: ...
 ```
 
-Twenty parameters may look like a lot; **three are required-by-use and seventeen have
+Twenty-two parameters may look like a lot; **three are required-by-use and nineteen have
 defaults that are correct for a first agent.** The parameters are ordered by the level of
 the ladder at which a user meets them, and grouped with comments in the source so the
 grouping survives.
@@ -163,13 +166,59 @@ error.** A Poka-Yoke whose message is incomprehensible is only half-built.
 | `try_run(message, *, on_delta=None) -> Result` | Result | Never raises for run outcomes; check `result.ok`. **Exception:** `asyncio.CancelledError` propagates instead of returning a `stop_reason="cancelled"` Result — cancellation is a control signal from the caller, not a run outcome (T-6.2, docs/17-research-alignment.md Y-01); an outer `TaskGroup`/`wait_for` must see it happen. |
 | `arun(...)` / `atry_run(...)` | Awaitable[Result] | Async originals. |
 | `stream(message, *, on_delta=None) -> AsyncIterator[Event]` | AsyncIterator[Event] | T-8.5. `async for ev in agent.stream(msg)` over the real `Event` stream (all 16 kinds, envelope v1 — T-8.1). `on_delta=` stays the separate token-level mechanism; this yields whole `Event`s, not text fragments. Cancelling the iteration cancels the underlying run (T-6.2, extended). |
-| `chat(*, budget=None) -> Chat` | Chat | Stateful multi-turn session with **one ledger for the whole session**, defaulting to 10 × the agent's run budget (ADR-020). As it depletes, answers shorten before the chat ends. `harness.session.Session` (T-8.6) wraps a `Chat` with an id, an owner, a TTL, `.fork()`, `.resume_from()`, and a concurrency boundary — the resource-lifecycle layer `Chat` alone doesn't have. |
+| `chat(*, budget=None) -> Chat` | Chat | Stateful multi-turn session with **one ledger for the whole session**, defaulting to 10 × the agent's run budget (ADR-020). As it depletes, answers shorten before the chat ends. `harness.session.Session` (T-8.6) wraps a `Chat` with an id, an owner, a TTL, `.fork()`, `.resume_from()`, and a concurrency boundary — the resource-lifecycle layer `Chat` alone doesn't have. **`durable=True` refuses this call** (§3.5) — a durable multi-turn conversation is `session_id=`, not `Chat`. |
 | `as_tool(*, name=None, description=None) -> ToolSpec` | ToolSpec | Turns this agent into a subagent tool. |
-| `resume(transcript) -> Result` | Result | Continue an interrupted run. |
+| `resume(transcript) -> Result` | Result | Continue an interrupted run from a JSONL transcript. **`durable=True` refuses this call** (§3.5) — a durable run needs no separate resume step. |
 | `with_(**overrides) -> Agent` | Agent | Returns a **new** agent, every field preserved except what `overrides` names. `Agent` is frozen; there are no setters. (N-7: `transcript`/`exporters`/`accepts_tainted`/`sensitive` used to be silently dropped on every call, not just one that touched them — fixed.) |
 
 `with_()` exists because `Agent` is immutable, and immutability is what keeps the cache
 prefix stable (ADR-004). Mutating an agent mid-run is not "discouraged" — it is impossible.
+
+### 3.5 `durable=True` — one Agent, one API, an engine swap underneath
+
+Two backends behind two different vocabularies was the problem, not the two engines: a
+caller who wanted a run to survive a process restart had to learn LangChain (`HumanMessage`,
+raw `.invoke()`, `thread_id` config) to get it. `durable=True` buys the same durability
+through the *same* methods everything above already uses — `run`/`try_run`/`arun`/`atry_run`
+take the same `str`, return the same `Result`. Nothing LangChain- or LangGraph-shaped ever
+reaches the caller.
+
+```python
+agent = Agent(name="Support", job="handle tickets", durable=True,
+             session_id="ticket-4471")   # the conversation to reconnect to
+agent.run("customer says their order never arrived")
+# ... process restarts here — nothing in Python survives it ...
+agent.run("they're asking for a refund")   # same session_id -> picks up mid-conversation
+```
+
+**What `durable=True` changes:**
+
+* Runs on `harness.lg.build_agent()` internally (§2's "extending the harness" — that
+  function, and the compiled graph it returns, stay directly usable for a power user who
+  wants LangGraph itself; `durable=True` is the same engine, not a different one).
+* `checkpoint=` says where progress is kept. `None` (the default) creates a local SQLite
+  file under `.harness/checkpoints/<agent-name>.sqlite3` — zero configuration, durable the
+  moment the first run completes. A `str`/`Path` names a specific SQLite file (or
+  `":memory:"`, for a durable-shaped run that keeps nothing). Anything else is passed
+  straight through as an already-built LangGraph checkpointer — the escape hatch, for a
+  Postgres- or Redis-backed store.
+* `session_id=` is the conversation identity (already an `Agent` field, T-8.1). Reuse it
+  across calls — and across a restart — to continue the same thread; omit it and each
+  `Agent` object gets one generated in memory, good for the life of that object only.
+
+**What it does not (yet) change — real, tracked gaps, not silent ones:**
+
+| Not supported when `durable=True` | What happens | Use instead |
+|---|---|---|
+| `returns=` | `ConfigError` at construction (N-3) | `durable=False`, or parse the text answer yourself |
+| `.chat()` | `ConfigError` | Call `run()`/`try_run()` repeatedly with the same `session_id=` |
+| `.resume(transcript)` | `ConfigError` | Nothing to do — call `run()` again with the same `session_id=` |
+| `on_delta=` (token streaming) | `ConfigError` | `durable=False` for a streamed run |
+| Per-tool timeout (N-1) | Not enforced | Keep tool implementations bounded themselves for now |
+
+All five are the LangGraph backend's own pre-existing limits (`design/07-risks-and-open-issues.md`),
+now reachable from the primary surface instead of only from the escape hatch — refused
+loudly, at the point they'd matter, rather than silently downgraded.
 
 ## 4. Choosing an effect
 

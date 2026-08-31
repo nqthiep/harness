@@ -50,6 +50,7 @@ gốc: xem lịch sử git của tệp này.
 | | T-10.2 Golden set | `harness/eval/golden.py::run_golden_set()` — pass rate + CI, dùng lại Wilson interval của T-8.4 | ADR-058 | `test_m10_t102_golden.py` |
 | | T-10.3 Benchmark | `harness/eval/benchmark.py::benchmark()` + `import_cold_start_ms()` — đóng Y-05 | ADR-059 | `test_m10_t103_benchmark.py` |
 | **N-9** (dọn nợ sau M10) | `tenant_id` chưa tới `Policy.check()` | `RunContext.tenant_id`/`_Ctx.tenant_id`, nối cả hai backend | ADR-060 | `test_n9_tenant_in_context.py` |
+| **N-10** (phản hồi người dùng sau M10) | "2 API interfaces" gây khó dùng | `Agent(durable=True)` — chạy trên `harness.lg.build_agent()`, cùng method như backend cổ điển; `lg/adapter.py::ProviderChatModel` bọc `provider=` thành LangChain model (một seam gọi model, không phải hai); checkpoint SQLite mặc định, tự tạo | `docs/03-public-api.md §3.5`, `docs/02-architecture.md §3.1` | `test_durable_agent.py` (14), `test_parity.py` (mở rộng BA call shape) |
 
 **Ràng buộc xuyên suốt, giữ nguyên suốt roadmap:** core vẫn 3 dependency, import ~80ms.
 Mọi thứ M6 trở đi là `extra` (`graph`/`viking`/`otel`/`mcp`/`server`; `eval` không cần
