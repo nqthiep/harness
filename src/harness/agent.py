@@ -36,7 +36,7 @@ class Agent:
     __slots__ = ("name", "job", "toolset", "model", "effort", "budget", "safety",
                  "approve", "policies", "allowed_hosts", "provider", "returns",
                  "max_parallel_tools", "max_asks_per_run", "transcript", "exporters",
-                 "tenant_id", "session_id",
+                 "tenant_id", "session_id", "principal",
                  "_asm", "_watch", "_as_tool_budget", "_grants")
 
     # Declared for the type checker.  The fields are set through `object.__setattr__`
@@ -62,6 +62,7 @@ class Agent:
     exporters: tuple[Any, ...]
     tenant_id: str | None
     session_id: str | None
+    principal: str | None
     _asm: Any
     _grants: Grants
     _watch: Any
@@ -102,6 +103,11 @@ class Agent:
         # this agent's runs emit.
         tenant_id: str | None = None,
         session_id: str | None = None,
+        # S-03 re-check, docs/17-research-alignment.md M9 session — who this agent acts
+        # on behalf of. Same "no natural default, `None` unless supplied" reasoning as
+        # `tenant_id`/`session_id` right above; flows into `RunContext.principal`
+        # (`dispatch.py`) for a tool/policy to read, never onto anything the model sees.
+        principal: str | None = None,
     ) -> None:
         if args:
             shown = ", ".join(repr(a) for a in args)
@@ -158,6 +164,7 @@ class Agent:
         object.__setattr__(self, "max_asks_per_run", max_asks_per_run)
         object.__setattr__(self, "tenant_id", tenant_id)
         object.__setattr__(self, "session_id", session_id)
+        object.__setattr__(self, "principal", principal)
 
         output_format = _output_format(returns) if returns is not None else None
         asm = ContextAssembler(model=model, job=job, tools=toolset, effort=effort,
@@ -374,10 +381,15 @@ class Agent:
         # `__init__` folds them into `self._grants` (a `Grants`, frozensets) and never
         # keeps the originals — so they come from there, not from a same-named
         # attribute like everything else in this dict.
+        # S-03: `principal` added to this tuple directly rather than left to be found
+        # missing later — N-7 was exactly this class of bug (a field that exists on
+        # `Agent` but not in this list silently vanishes through every `with_()` call,
+        # not just one that happens to touch it).
         base = {k: getattr(self, k) for k in
                 ("name", "job", "model", "effort", "returns", "budget", "safety", "approve",
                  "policies", "allowed_hosts", "provider", "max_parallel_tools",
-                 "max_asks_per_run", "tenant_id", "session_id", "transcript", "exporters")}
+                 "max_asks_per_run", "tenant_id", "session_id", "principal", "transcript",
+                 "exporters")}
         base["tools"] = list(self.toolset)
         base["accepts_tainted"] = self._grants.accepts_tainted
         base["sensitive"] = self._grants.sensitive

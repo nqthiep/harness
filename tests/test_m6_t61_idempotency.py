@@ -183,6 +183,73 @@ class MutationExecuteOnceCoTacDung(unittest.TestCase):
         asyncio.run(scenario())
 
 
+class WiredIntoToolCall(unittest.TestCase):
+    """S-01 re-check (design/07-risks-and-open-issues.md, `tests/test_roadmap.py`) —
+    `ToolCall.idempotency_key` giờ mang giá trị thật `f"{run_id}:{call_id}"`, không chỉ
+    tồn tại như một trường có kiểu. Cả hai backend."""
+
+    def test_classic_backend_stamps_it(self):
+        from harness import Agent, tool
+        from harness.models.fake import FakeModel
+        from harness.policy.base import Ruling, Verdict
+
+        seen = {}
+
+        @tool(effect="read")
+        def peek() -> str:
+            """Nhìn."""
+            return "ok"
+
+        class Capture:
+            name = "capture"
+
+            def check(self, call, ctx):
+                seen["key"] = call.idempotency_key
+                return Ruling(Verdict.ALLOW, "", "capture")
+
+        a = Agent(name="T", job="j", model="fake", tools=[peek], budget="$5",
+                  policies=[Capture()],
+                  provider=FakeModel([FakeModel.tool_call("peek", {}, call_id="cc1"),
+                                      FakeModel.text("ok")]))
+        r = asyncio.run(a.atry_run("go"))
+        self.assertIsNotNone(seen.get("key"))
+        self.assertTrue(seen["key"].endswith(":cc1"), seen["key"])
+        self.assertEqual(seen["key"], f"{r.run_id}:cc1")
+
+    def test_graph_backend_stamps_it(self):
+        sys.path.insert(0, "tests")
+        try:
+            from harness.lg import build_agent
+            from langchain_core.messages import HumanMessage
+            from fake_chat import FakeChat
+        except ImportError:
+            self.skipTest("extra 'graph' không cài trong môi trường này")
+        from harness import tool
+        from harness.policy.base import Ruling, Verdict
+
+        seen = {}
+
+        @tool(effect="read")
+        def peek() -> str:
+            """Nhìn."""
+            return "ok"
+
+        class Capture:
+            name = "capture"
+
+            def check(self, call, ctx):
+                seen["key"] = call.idempotency_key
+                return Ruling(Verdict.ALLOW, "", "capture")
+
+        graph, _rt = build_agent(
+            model=FakeChat(script=[FakeChat.call("peek", {}, "cc2"), FakeChat.text("ok")]),
+            tools=[peek], budget="$5", policies=[Capture])
+        graph.invoke({"messages": [HumanMessage("go")]},
+                    config={"configurable": {"thread_id": "t1"}})
+        self.assertIsNotNone(seen.get("key"))
+        self.assertTrue(seen["key"].endswith(":cc2"), seen["key"])
+
+
 class RaceClosedByLock(unittest.TestCase):
     """S-4 re-verify (design/07-risks-and-open-issues.md) — `Store.put` có TOCTOU: hai
     lời gọi `execute_once` cùng key, đua nhau, có thể cùng miss `get()` rồi cùng chạy

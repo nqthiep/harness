@@ -10,18 +10,27 @@ from .errors import (BudgetExceeded, ConfigError, DuplicateToolError, HarnessErr
                      UnsafeToolSetError)
 from .models.base import ModelProvider
 from .policy.base import Ruling, Policy, ToolCall, Verdict
-from .policy.decision import Actor, Approval
+from .policy.decision import Actor, Approval, Decision
 from .result import Money, Result, StopReason, Step, Usage
 from .run import RunContext
 from .secrets import Secret, safe_for_display
+from .session import Session, SessionExpiredError
 from .tools import Effect, ToolSpec, tool
 
 __version__ = "0.1.0.dev0"
 
+#: S-02 re-check (design/07-risks-and-open-issues.md, `tests/test_roadmap.py`) — the
+#: research's "Approval là một BẢN GHI" (decision id, actor, policy version, expiry,
+#: audit entry) is `Decision` (`policy/decision.py`, built for S-11/S-29/T-8.2), not a
+#: separate type. `ApprovalRecord` is an alias, not a second class, so there is exactly
+#: one shape to keep in sync rather than two that could drift.
+ApprovalRecord = Decision
+
 __all__ = [
     "Agent", "tool", "Result", "StopReason", "Usage", "Step", "Money", "RunContext",
     "Effect", "Secret", "safe_for_display", "Policy", "Verdict", "Ruling", "ToolCall",
-    "ToolSpec", "Actor", "Approval",
+    "ToolSpec", "Actor", "Approval", "Decision", "ApprovalRecord",
+    "Session", "SessionExpiredError",
     "Budget", "DEFAULT_BUDGET", "ModelProvider",
     "HarnessError", "ConfigError", "MissingEffectError", "ToolSchemaError",
     "DuplicateToolError", "NonDeterministicPromptError", "UnsafeToolSetError",

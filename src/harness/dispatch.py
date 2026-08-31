@@ -15,6 +15,7 @@ from typing import Any, Mapping
 
 from .context.assembler import canonical as _canonical
 from .errors import ToolContractError
+from .idempotency import idempotency_key
 from .observe.events import EventKind
 from .policy.base import Ruling, ToolCall, Verdict
 from .policy.builtin import check_flow, emits_of
@@ -43,6 +44,14 @@ class RunContext:
     deadline: float
     # Deliberately no message history: a tool that could read the transcript could
     # exfiltrate the whole conversation (IDL-15).
+    #: S-03 re-check (design/07-risks-and-open-issues.md, `tests/test_roadmap.py`) — who
+    #: this run acts on behalf of, and which tenant it belongs to. Both default `None`:
+    #: neither has a natural value without a caller supplying one (no multi-tenancy, no
+    #: `Session` identity flows through here today), same reasoning T-8.1 used for
+    #: `Event.tenant_id`/`.trace_id`. Set from `Agent(principal=..., tenant_id=...)` — a
+    #: tool/policy reads `ctx.principal`/`ctx.tenant_id`, never the model.
+    principal: str | None = None
+    tenant_id: str | None = None
 
     @property
     def tainted(self) -> bool:
@@ -70,7 +79,8 @@ class Dispatcher:
     async def _run_tools(self, resp, step: int, run_id: str) -> list[dict[str, Any]]:
         calls = [b for b in resp.content if b.get("type") == "tool_use"]
         ctx = RunContext(run_id, self._e._a.name, step, self._e._taint.label,
-                         self._e._a.safety, self._e._l.remaining_wall_clock())
+                         self._e._a.safety, self._e._l.remaining_wall_clock(),
+                         principal=self._e._a.principal, tenant_id=self._e._a.tenant_id)
         planned: list[tuple[dict, ToolSpec | None, Ruling | None]] = []
 
         for b in calls:
@@ -79,7 +89,8 @@ class Dispatcher:
                            call_id=b["id"], arguments=b.get("input", {}))
             if spec is None:
                 planned.append((b, None, None)); continue
-            call = ToolCall(b["id"], b["name"], b.get("input", {}), spec)
+            call = ToolCall(b["id"], b["name"], b.get("input", {}), spec,
+                           idempotency_key(run_id, b["id"]))
             d = self._e._engine.decide(call, ctx)
             if d.verdict is Verdict.ASK:
                 self._e._asks += 1

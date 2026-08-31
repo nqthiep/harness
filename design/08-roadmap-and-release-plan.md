@@ -239,16 +239,16 @@ còn im lặng.
 > **Trạng thái sau khi M6…M10 xong (chấm lại `docs/17 §1`: 67.8 → 88.4/100) — GẦN ĐẠT,
 > CHƯA ĐẠT.** Điều kiện đầu (tự chấm ≥ 85, R/O/I đều ≥ 4/5) **THOẢ** — 88.4/100,
 > Reliability 5/5, Observability 4/5, Integration 4/5. Điều kiện (c) — S-1…S-29 không còn
-> mục "hoãn chờ hạ tầng" — **NAY THOẢ**: S-4 và S-23 (`07-risks-and-open-issues.md`) đã
+> mục "hoãn chờ hạ tầng" — **THOẢ**: S-4 và S-23 (`07-risks-and-open-issues.md`) đã
 > được re-verify trên code M6 THẬT (ADR-057) — không xác nhận lại câu chữ gốc, mà tìm ra
 > hai phát hiện khác: một race TOCTOU thật trong `execute_once` (đã sửa, khoá theo key
 > trong tiến trình) và Service API (M9) chưa gọi `idempotency.py` dù chính module đó tự
 > nói mình chờ M9 (đã gắn, `POST /v1/runs`'s `idempotency_key`). Điều kiện (b) — 14 mục
-> `S-01…S-14` — vẫn **CHƯA THOẢ HẾT**: 4 mục còn "một phần"/"chưa xét" theo đúng
-> `tests/test_roadmap.py` — S-01 (`ToolCall.idempotency_key` không tồn tại theo nghĩa
-> đen), S-02 (`ApprovalRecord` không export top-level), S-03 (`RunContext` thiếu
-> `principal`/`tenant_id`), S-14 (backpressure của Service API's SSE). Đừng đọc 88.4/100
-> là "xong" — đọc bảng `docs/17 §1`/`§2.2` cho chi tiết từng mục.
+> `S-01…S-14` — **13/13 mục `tests/test_roadmap.py` theo dõi nay xanh** (ADR-058: S-01
+> idempotency_key gắn vào `ToolCall`, S-02 `ApprovalRecord` export, S-03
+> `RunContext.principal`/`.tenant_id`, cộng C-04 `Session` export — bốn mục đóng cùng
+> lượt). **Còn đúng MỘT mục mở: S-14 (backpressure của Service API's SSE)** — chưa sửa,
+> xem `## 3.1`/`§2.2`. Đừng đọc 88.4/100 là "xong" cho tới khi S-14 đóng và pilot chạy.
 
 Điều kiện, theo đúng `docs/17 §6`'s tiêu chí hoàn thành đã đặt ra (không viết lại):
 

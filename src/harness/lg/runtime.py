@@ -17,6 +17,7 @@ from langgraph.types import interrupt
 from ..budget.ledger import Ledger
 from ..dispatch import MAX_ATTEMPTS, RETRY_BACKOFF_MAX_S, RETRY_BACKOFF_S
 from ..errors import BudgetExceeded
+from ..idempotency import idempotency_key
 from ..observe.events import EventBus, EventKind
 from ..policy.base import Ruling, ToolCall, Verdict
 from ..policy.builtin import emits_of
@@ -230,7 +231,8 @@ class Runtime:
                     tool_call_id=c["id"], status="error"))
                 continue
             d = self._engine_for(_run_id(state)).decide(
-                ToolCall(c["id"], c["name"], c.get("args", {}), spec), ctx)
+                ToolCall(c["id"], c["name"], c.get("args", {}), spec,
+                        idempotency_key(_run_id(state), c["id"])), ctx)
             self._emit(state, EventKind.POLICY_DECIDED, tool=c["name"], call_id=c["id"],
                        verdict=d.verdict.name, reason=d.reason, policy=d.policy)
             if d.verdict is Verdict.DENY:
@@ -264,7 +266,8 @@ class Runtime:
                 out.append(p); continue
             asks += 1
             spec = self._tools.get(p["tool"])
-            call = ToolCall(p["call"]["id"], p["tool"], p["call"].get("args", {}), spec)
+            call = ToolCall(p["call"]["id"], p["tool"], p["call"].get("args", {}), spec,
+                           idempotency_key(_run_id(state), p["call"]["id"]))
             ctx = _Ctx(label=self._effective_label(state), safety=self._safety(state))
             reported_actor: Actor | None = None
             if asks > self._max_asks_per_run:
@@ -352,7 +355,8 @@ class Runtime:
         trước khi bất kỳ call nào trong batch này chạy).
         """
         spec = self._tools.get(p["tool"])
-        call = ToolCall(p["call"]["id"], p["tool"], p["call"].get("args", {}), spec)
+        call = ToolCall(p["call"]["id"], p["tool"], p["call"].get("args", {}), spec,
+                        idempotency_key(_run_id(state), p["call"]["id"]))
         if label is None:
             label = self._effective_label(state)
         ctx = _Ctx(label=label, safety=self._safety(state))

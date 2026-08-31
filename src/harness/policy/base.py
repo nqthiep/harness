@@ -35,6 +35,14 @@ class ToolCall:
     name: str
     arguments: Mapping[str, Any]
     spec: "ToolSpec"
+    #: S-01 re-check (design/07-risks-and-open-issues.md) — `f"{run_id}:{id}"`
+    #: (`idempotency.py::idempotency_key`), stamped by the caller (`dispatch.py`/
+    #: `lg/runtime.py`) that already has both. `None` only in tests that build a
+    #: `ToolCall` directly without a run — never in a real dispatch path. Read-only
+    #: information for a `Policy`/tool author that wants a stable per-call key; nothing
+    #: in the dispatch path consumes it yet (`execute_once` still has no caller inside
+    #: `Agent`/`Dispatcher` — see `idempotency.py`'s own docstring for why).
+    idempotency_key: str | None = None
     __hash__ = None                     # holds a Mapping — docs/04 §0 Hashability
 
 

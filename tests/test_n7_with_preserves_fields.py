@@ -81,5 +81,46 @@ class MutationN7CoTacDung(unittest.TestCase):
             agent_mod.Agent.with_ = original
 
 
+class PrincipalKhongBiMat(unittest.TestCase):
+    """S-03 (design/07-risks-and-open-issues.md) thêm `principal` sau khi N-7 đã sửa —
+    cùng loại lỗi có thể tái diễn cho bất kỳ trường mới nào không được thêm vào base dict
+    của `with_()`. Kiểm trực tiếp thay vì tin nó "chắc cũng được thêm đúng"."""
+
+    def test_principal_khong_bi_mat(self):
+        a = Agent(name="A", job="j", principal="user:42")
+        b = a.with_(name="B")
+        self.assertEqual(b.principal, "user:42")
+
+    def test_principal_va_tenant_id_toi_duoc_run_context(self):
+        """`ctx` chỉ tới tay `Policy.check` khi có tool thật được gọi — kiểm qua đường
+        đó, không phải qua một run chỉ trả text."""
+        import asyncio
+        from harness import tool as tool_decorator
+        from harness.models.fake import FakeModel
+        from harness.policy.base import Ruling, Verdict
+
+        seen = {}
+
+        class Capture:
+            name = "capture"
+
+            def check(self, call, ctx):
+                seen["principal"] = ctx.principal
+                seen["tenant_id"] = ctx.tenant_id
+                return Ruling(Verdict.ALLOW, "", "capture")
+
+        @tool_decorator(effect="read")
+        def peek() -> str:
+            """Nhìn."""
+            return "ok"
+
+        a = Agent(name="A", job="j", model="fake", tools=[peek], principal="user:42",
+                 tenant_id="acme", policies=[Capture()],
+                 provider=FakeModel([FakeModel.tool_call("peek", {}), FakeModel.text("ok")]))
+        asyncio.run(a.atry_run("go"))
+        self.assertEqual(seen.get("principal"), "user:42")
+        self.assertEqual(seen.get("tenant_id"), "acme")
+
+
 if __name__ == "__main__":
     unittest.main()

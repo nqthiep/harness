@@ -1631,6 +1631,62 @@ the whole-package check.
 
 ---
 
+### ADR-058 — Closing S-01/S-02/S-03/C-04: naming and export gaps, not design gaps; `Agent.with_()` gains a fourth field it must not drop
+**Status:** Accepted
+
+**Context.** `docs/17-research-alignment.md §2.2`'s S-01/S-02/S-03 and `tests/
+test_roadmap.py`'s C-04 flagged four items where the underlying mechanism existed
+(idempotency, `Decision` as an audit record, envelope `tenant_id`, `Session`) but a
+specific literal check — a field name, a top-level export — still failed. All four are
+closed the same way: expose or wire what already exists correctly, rather than build a
+second mechanism next to the first.
+
+**S-01 — `ToolCall.idempotency_key`.** `idempotency.py::idempotency_key(run_id, call_id)`
+already existed (T-6.1) but nothing stamped it onto a `ToolCall`. Added as a fifth,
+defaulted field (`policy/base.py`) so every existing 4-positional-arg construction site
+keeps working; the three real dispatch sites (`dispatch.py`, and `lg/runtime.py`'s
+`policy_gate`/`approval_gate`/`_regate`) now compute and pass it. Read-only information for
+now — nothing in the dispatch path consumes it (`execute_once` still has no caller inside
+`Agent`/`Dispatcher` itself; see ADR-057 for why that's deliberate).
+
+**S-02 — `ApprovalRecord`.** `Decision` (`policy/decision.py`) already carries
+`id`/`actor`/`policy_version`/`expires_at`/`reason`/`verdict` — everything the research's
+"Approval là một BẢN GHI" asks for. `harness.ApprovalRecord = Decision`, an alias exported
+from `harness/__init__.py`, not a second type: one shape to keep in sync, not two that
+could drift apart the way `ApprovalRecord`/`Decision` would if built as siblings.
+
+**S-03 — `RunContext.principal`/`.tenant_id`.** Neither existed on the classic backend's
+`RunContext` (`dispatch.py`) even though `Event.tenant_id` has carried tenant information
+since T-8.1. Added both fields (default `None`, same reasoning as `tenant_id`/`session_id`
+already have); `Agent(principal=...)` is a new constructor parameter threading through to
+`RunContext` at the one live construction site. **This surfaced a live instance of N-7's
+exact bug class**: `Agent` is a hand-written frozen class with an explicit `__slots__`
+tuple (not the `@value` dataclass decorator most of this package uses), and
+`object.__setattr__(self, "principal", principal)` raised `AttributeError` the moment
+`principal` was added to `__init__` without also adding it to `__slots__` — caught
+immediately by running the full suite (221 failures), not by this field alone passing its
+own new test. Fixed by adding `principal` to `__slots__`, the type-checker annotation
+block right below it, **and** the base dict inside `Agent.with_()` — the last of which is
+exactly what N-7 (ADR history, design/07 §1.5) already found missing for four other fields;
+a fifth field landing without it would have been the identical defect recurring.
+
+**C-04 — `harness.Session`.** `session.py::Session` (T-8.6) was never re-exported from the
+top-level package — `hasattr(harness, "Session")` failed despite the class being complete
+and tested. Exported alongside `SessionExpiredError`.
+
+**All thirteen checks `tests/test_roadmap.py` tracks are now green** (was 9/13 before this
+entry) — that file's own docstring says to delete a check once it passes and move it to the
+regular suite; left in place here since the four fixes landed together and a future reader
+benefits from seeing the before/after in one place before that housekeeping happens.
+
+**Test.** `tests/test_m6_t61_idempotency.py::WiredIntoToolCall` (both backends — the graph
+backend needs `FakeChat`, not `FakeModel`: `build_agent()` calls `.bind_tools()`, an
+interface only the LangChain-facing fake implements). `tests/
+test_n7_with_preserves_fields.py::PrincipalKhongBiMat` — `principal` survives `with_()`,
+and reaches `RunContext` through a real tool call, not just construction.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
