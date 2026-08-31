@@ -13,7 +13,10 @@ Hai vòng review đối kháng cho **58 phát hiện**. Đã sửa trước khi 
 qua đợt đó** — kiểm lại toàn bộ S-1…S-29 với code hôm nay (không phải chỉ nhóm đang được
 sửa từng đợt) tìm thấy nó vẫn sống. **S-20 nay đã sửa** (`EventKind.BUDGET_UNLIMITED`,
 `docs/12-decision-logs.md` ADR-041) — xem callout ở `## 1.1` và
-`design/08-roadmap-and-release-plan.md §1`.
+`design/08-roadmap-and-release-plan.md §1`. **Khi thực hiện M6 (roadmap), chaos testing
+(T-6.4) lộ ra một lỗi nghiêm trọng KHÔNG thuộc S-1…S-29 gốc — N-4 ở `## 1.5`: lỗi
+provider (timeout, rate limit) crash thẳng ra ngoài `try_run()`/`graph.invoke()`, cả hai
+backend, không có `except` nào bắt — nay đã sửa.**
 **Còn lại dưới đây chưa sửa** — liệt kê đầy đủ, vì một danh sách rủi ro chỉ có giá trị khi
 nó thành thật.
 
@@ -422,6 +425,51 @@ mới không nên tự tạo thêm va chạm).
 > hoặc gộp vào T-6.4's failure-injection harness để có một kịch bản "tool treo" đo được
 > trước khi sửa). `dispatch.py`'s `timeout = self._e._l.tool_timeout(spec.timeout_s)` là
 > khuôn cần chép sang, cùng cách nó clamp theo wall-clock còn lại của cả run.
+
+> **N-2 ĐÃ SỬA — classic loop's `try_run()` từng raise `ToolContractError` KHÔNG BỊ BẮT
+> khi model trả rác khớp sai `returns=`.** Phát hiện khi làm T-6.4 (chaos test "model trả
+> rác"): `_parse_returns()` (`run.py`) được gọi SAU khi `RUN_FINISHED` đã phát với
+> `stop=COMPLETED`, và raise của nó (`ToolContractError`) truyền thẳng ra ngoài
+> `atry_run()`/`try_run()` — vi phạm đúng hợp đồng đã công bố (`docs/03-public-api.md`:
+> "Never raises for run outcomes"; IDL-11: "run() raises, try_run() returns"). Kiểm trực
+> tiếp xác nhận: `Agent(returns=Ans).try_run(...)` với model trả `"not json"` raise thẳng
+> `ToolContractError`, không trả `Result`. Sửa: gọi `_parse_returns` TRƯỚC khi phát
+> `RUN_FINISHED`, bắt `ToolContractError` và hạ xuống `Result(stop_reason=ERROR, ...)`
+> bình thường — model trả rác giờ là một OUTCOME của run, không phải một crash. Khoá
+> bằng `tests/test_m6_t64_chaos.py`.
+
+> **N-3 — LangGraph backend không hỗ trợ `returns=` (không parse, không validate,
+> `Result.value` luôn `None`).** Phát hiện khi cổng bản sửa N-2 sang LangGraph để kiểm
+> parity: `build_agent()` (`lg/__init__.py`) **không có tham số `returns=` nào cả**, và
+> `lg/runtime.py` không có lời gọi `_parse_returns`/tương đương ở đâu —
+> `docs/03-public-api.md` không ghi `returns=` là "classic-loop only" ở đâu cả, nên đây
+> là một khoảng trống parity thật, không phải giới hạn có tài liệu. Chưa sửa — ngoài
+> phạm vi T-6.4 (đó là chaos testing, không phải xây tính năng mới cho backend kia); cần
+> một `finish` node mới đọc `state["messages"][-1]` và validate, cộng quyết định graph
+> shape (một cạnh lỗi riêng, hay gộp vào `FINISH` hiện có). Ghi lại để không mất, không
+> sửa vội.
+
+> **N-4 ĐÃ SỬA — lỗi provider (`ProviderTimeout`/`ProviderRateLimited`/bất kỳ raise nào
+> từ `complete()`/`invoke()`) crash thẳng ra ngoài `try_run()`/`graph.invoke()`, CẢ HAI
+> backend.** Phát hiện khi viết kịch bản chaos "provider timeout" cho T-6.4: kiểm trực
+> tiếp, `Agent(provider=<một provider tự raise TimeoutError>).try_run(...)` raise thẳng
+> `TimeoutError` ra ngoài, không trả `Result` nào — vi phạm đúng hợp đồng `try_run()`
+> "never raises for run outcomes" (docs/03), giống hệt lớp lỗi N-2 vừa sửa nhưng ở một
+> chỗ khác. `src/harness/models/anthropic.py` MAP lỗi SDK thật thành
+> `ProviderError`/`ProviderTimeout`/`ProviderRateLimited`/... (`errors.py`) — nhưng
+> **không có `except` nào cho các lớp đó ở bất kỳ đâu trong toàn bộ `src/harness/`**
+> (kiểm bằng grep, xác nhận trước khi sửa). Nghĩa là MỌI lần gọi provider thật gặp rate
+> limit hay timeout tạm thời sẽ crash chương trình gọi nó thay vì trả về một `Result`
+> lỗi — nghiêm trọng hơn N-2 vì đây là đường đi PHỔ BIẾN nhất khi chạy với provider thật
+> (khác `returns=`, một tính năng opt-in). Sửa cả hai backend: `run.py`'s vòng lặp bọc
+> `self._p.complete(...)` trong try/except, hạ xuống `Result(stop_reason=ERROR, ...)`;
+> `lg/runtime.py::call_model` bọc `self._model.invoke(...)` tương tự, trả
+> `{"stop_reason": "error", ...}` cho `_after_model` route sang `FINISH`. `retryable=`
+> trên sự kiện `error.raised` được gắn đúng theo loại lỗi (`ProviderTimeout`/
+> `ProviderRateLimited`/`ProviderUnavailable`/`TimeoutError` → `True`) dù CHƯA có gì tự
+> động retry ở tầng model-call (chỉ ghi lại cho audit — đúng khuôn `EFFECT_PROFILES.
+> retryable` tồn tại từ Round 5 trước khi T-6.3 mới có ai đọc nó). Khoá bằng
+> `tests/test_m6_t64_chaos.py` (cả hai backend, cộng mutation test từng cái).
 
 ---
 

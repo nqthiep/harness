@@ -189,7 +189,15 @@ class Runtime:
         # `test_e2e_five_invariants.py`/`test_label_l2_l3.py`.
         label_at_generation = self._effective_label(state)
         self._emit(state, EventKind.MODEL_REQUEST, max_tokens=state.get("max_tokens", 0))
-        msg = self._model.invoke(state["messages"])
+        # T-6.4 (chaos test "provider timeout"), ported here for parity after the same
+        # gap was found and fixed in run.py — nothing here ever caught a provider
+        # failure either, so it would have propagated straight out of `graph.invoke()`.
+        try:
+            msg = self._model.invoke(state["messages"])
+        except Exception as exc:
+            self._emit(state, EventKind.ERROR_RAISED, where="provider",
+                       type=type(exc).__name__, message=str(exc), retryable=False)
+            return {"stop_reason": "error", "detail": f"{type(exc).__name__}: {exc}"}
         _stamp_label(msg, label_at_generation)
         led.settle(_RESERVED(state.get("max_tokens", 0)), _usage_of(msg), self._price)
         led.count_step()

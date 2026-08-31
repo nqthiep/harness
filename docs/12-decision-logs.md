@@ -988,6 +988,39 @@ run, a regression with no corresponding safety gain until M9 exists to actually 
 
 ---
 
+### ADR-044 — Provider failures are caught and returned as a `Result`, never raised
+**Status:** Accepted (M6/T-6.4, found by chaos testing)
+
+**Context.** Writing T-6.4's "provider timeout" chaos scenario found that neither
+backend ever caught a provider exception: `models/anthropic.py` maps real SDK failures to
+`ProviderError`/`ProviderTimeout`/`ProviderRateLimited`/`ProviderUnavailable`/
+`ProviderAuthError`/`ProviderBadRequest` (`errors.py`), and grepping the whole of
+`src/harness/` for an `except` on any of them found none. Every real rate limit or
+transient timeout against a paid provider crashed straight out of `try_run()` /
+`graph.invoke()` — the single most common failure mode against a real provider,
+contradicting `try_run()`'s own documented contract ("never raises for run outcomes",
+docs/03-public-api.md) exactly the way N-2 (`returns=` validation) did, independently,
+at a different call site.
+
+**Decision.** `run.py`'s loop wraps `self._p.complete(...)` in try/except; `lg/
+runtime.py::call_model` wraps `self._model.invoke(...)` the same way. Both turn the
+exception into a normal `stop_reason=ERROR` outcome instead of letting it propagate.
+`ERROR_RAISED`'s `retryable=` field is set `True` for the transient subtypes
+(`ProviderTimeout`, `ProviderRateLimited`, `ProviderUnavailable`, and a bare
+`TimeoutError` for non-`ProviderError` providers) and `False` otherwise — recorded for
+the audit trail even though nothing automatically retries a model call yet, the same gap
+`EFFECT_PROFILES.retryable` sat in from Round 5 until T-6.3 gave it a reader (ADR-042).
+`asyncio.CancelledError` is not an `Exception` subclass in Python's own hierarchy, so this
+catch cannot swallow a cancellation — T-6.2 still holds without needing an explicit
+exclusion.
+
+**Cost accepted.** None weighed against — this is a straightforward "an error becomes a
+Result, not a crash" fix, the same shape as every other stop reason this loop already
+produces. The only judgment call was `retryable=`'s classification, which is
+observability only in this pass.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |

@@ -10,7 +10,7 @@ import asyncio
 import json
 from typing import Any, Mapping, Sequence
 
-from .errors import BudgetExceeded, ToolContractError
+from .errors import BudgetExceeded, ProviderRateLimited, ProviderTimeout, ProviderUnavailable, ToolContractError
 from .context.assembler import canonical as _canonical
 from .context.linter import PrefixWatcher
 from .context.window import manage as manage_context
@@ -93,7 +93,29 @@ class RunEngine:
                                input_tokens=input_tokens, max_tokens=max_tokens,
                                n_tools=len(self._a.toolset))
 
-                resp = await self._p.complete(req, on_delta=on_delta)
+                # T-6.4 (chaos test "provider timeout" found this): nothing here ever
+                # caught a provider failure — `ProviderError`/`ProviderTimeout`/
+                # `ProviderRateLimited` (models/anthropic.py maps real SDK errors to
+                # these) are raised and NEVER caught anywhere in this loop, so a live
+                # rate limit or a transient timeout crashed straight out of
+                # `try_run()` — the same documented-contract violation N-2 just fixed
+                # for `returns=`, one call site over. `asyncio.CancelledError` is not an
+                # `Exception` subclass (Python's own hierarchy), so this catch cannot
+                # swallow a cancellation — T-6.2 still holds.
+                try:
+                    resp = await self._p.complete(req, on_delta=on_delta)
+                except Exception as exc:
+                    # Transient-by-nature provider failures are flagged retryable=True
+                    # for the audit trail even though nothing acts on it automatically
+                    # yet — same shape as EFFECT_PROFILES.retryable existing since
+                    # Round 5 before T-6.3 gave it a reader (ADR-042).
+                    transient = isinstance(exc, (ProviderTimeout, ProviderRateLimited,
+                                                 ProviderUnavailable, TimeoutError))
+                    self._bus.emit(EventKind.ERROR_RAISED, step=step, where="provider",
+                                   type=type(exc).__name__, message=str(exc),
+                                   retryable=transient)
+                    stop, detail = StopReason.ERROR, f"{type(exc).__name__}: {exc}"
+                    break
                 self._l.settle(reservation, resp.usage, price)
                 self._l.count_step()
                 usage_total = usage_total + resp.usage
@@ -159,10 +181,26 @@ class RunEngine:
                            steps=step, cost_usd=str(self._l.spent), tainted=self._taint.tainted)
             raise
 
+        # T-6.4 (chaos test "model trả rác" found this): `_parse_returns` used to be
+        # called AFTER `RUN_FINISHED` was already emitted with `stop=COMPLETED`, and its
+        # `ToolContractError` on a malformed final answer propagated straight out of
+        # `atry_run()`/`try_run()` — an unhandled raise from `try_run()`, contradicting
+        # its own documented contract (docs/03-public-api.md: "never raises for run
+        # outcomes") and IDL-11 ("run() raises, try_run() returns"). A model that hands
+        # back garbage against `returns=` is a run OUTCOME, not a programming error — it
+        # gets `stop_reason=StopReason.ERROR` and a `Result`, same as every other failure
+        # mode this loop already turns into one, instead of a bare exception out of a
+        # method whose whole documented point is that it does not raise for this.
+        value = None
+        if stop is StopReason.COMPLETED and self._a.returns is not None:
+            try:
+                value = self._parse_returns(text)
+            except ToolContractError as exc:
+                stop, detail = StopReason.ERROR, str(exc)
+                self._bus.emit(EventKind.ERROR_RAISED, step=step, where="returns",
+                               type="ToolContractError", message=detail, retryable=False)
         self._bus.emit(EventKind.RUN_FINISHED, stop_reason=stop.value, steps=step,
                        cost_usd=str(self._l.spent), tainted=self._taint.tainted)
-        value = self._parse_returns(text) if (stop is StopReason.COMPLETED
-                                              and self._a.returns is not None) else None
         return Result(text, stop, step, self._l.spent, usage_total, run_id,
                       self._taint.tainted, tuple(msgs), value, detail,
                       tuple(self._dispatch.ran))
