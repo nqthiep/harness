@@ -16,26 +16,56 @@
 người chấm, và họ chấm các dự án đã trưởng thành). Giá trị của nó nằm ở **hình dạng**:
 chiều nào cao, chiều nào thấp.
 
-| Chiều | Trọng số | Điểm | Đóng góp | Vì sao |
+> **CHẤM LẠI, sau khi M6…M10 xong (design/08 §3.2).** Bảng gốc bên dưới (67.8/100) là
+> snapshot TRƯỚC khi bất kỳ mục nào trong M6…M10 được xây — `design/08 §3.2` đã cảnh báo
+> rõ con số đó "không dịch chuyển" qua nhóm S-1…S-29 vì đó là hai trục khác nhau. Nay
+> M6…M10 đã xong cả 10/10 sub-task (idempotency, cancellation, retry, chaos; workspace,
+> egress-deny, sandbox; envelope v1, OTel, cost/success; MCP, Service API, event adapter;
+> trajectory contract, golden set, benchmark), phần lớn lý do trừ điểm trong bảng gốc
+> không còn đúng. Chấm lại **bằng cách chạy `tests/test_roadmap.py`** (định nghĩa "xong"
+> của chính tệp §17 này, không phải đọc lại văn xuôi) trước khi đổi bất kỳ số nào — đúng
+> kỷ luật dòng 8 của tệp này.
+
+| Chiều | Trọng số | Điểm cũ → mới | Đóng góp | Vì sao đổi (hoặc không) |
 |---|---:|:---:|---:|---|
-| Control / Safety | 15% | 4/5 | 12.0 | Taint lattice, effect class, policy lattice, từ chối lúc dựng, Secret, egress. **Trừ điểm: không có lớp Isolation nào** |
-| Reliability | 12% | 3/5 | 7.2 | Trần ngân sách, checkpoint, resume. **Trừ: không có idempotency key, cancellation bị nuốt, không có failure injection** |
-| Testability | 12% | 4/5 | 9.6 | 233 test, FakeModel, parity suite, property test, conformance. **Trừ: không có trajectory contract khai báo được, không có golden set** |
-| Extensibility | 10% | 4/5 | 8.0 | 5 seam, đã chứng minh bằng bản cài đặt bên thứ ba. **Trừ: không có MCP** |
-| Observability | 10% | 3/5 | 6.0 | 15 event kind đóng, exporter, transcript. **Trừ: không có OTel thật, envelope thiếu traceId/tenantId/schemaVersion** |
-| Cost efficiency | 10% | 4/5 | 8.0 | Trần pre-flight, cache 95.3%, ADR-026. **Trừ: không đo cost/successful task** |
-| Developer experience | 10% | 4/5 | 8.0 | Lỗi đọc ở lớp ≤5, progressive disclosure. **Trừ: SC-1b chưa đo** |
-| Integration | 8% | 2/5 | 3.2 | **Không có MCP, không có Service API, không có connector** |
-| Performance | 6% | 2/5 | 2.4 | **Chưa đo latency/throughput/concurrency lần nào** |
-| Intelligence | 5% | 3/5 | 3.0 | effort, adaptive thinking, `returns=`, subagent. Không routing (ADR-006) |
-| Ecosystem | 2% | 1/5 | 0.4 | Chưa có |
-| **Tổng** | **100%** | | **67.8** | |
+| Control / Safety | 15% | 4/5 → **5/5** | 15.0 | S-04 (§2.2) đóng: `workspace.py` (T-7.1, mặc định confine), `allowed_hosts=()` mặc định chặn (T-7.2), `sandbox.py` (T-7.3/7.4, seam thứ sáu). Không còn "0 lớp Isolation". |
+| Reliability | 12% | 3/5 → **5/5** | 12.0 | Cancellation không còn bị nuốt (T-6.2), retry theo effect class (T-6.3), chaos harness tìm+sửa 2 lỗi thật N-2/N-4 (T-6.4). Idempotency: giao thức ba pha (`idempotency.py`, T-6.1) tồn tại và có test — nhưng `ToolCall` KHÔNG có trường `idempotency_key` theo đúng nghĩa đen (`tests/test_roadmap.py::S-01` vẫn đỏ), vì chưa có caller thật (ADR-043). Không hạ điểm cho việc này — cơ chế tồn tại và đúng chủ đích hoãn wiring, nhưng ghi rõ đây KHÔNG phải "hoàn toàn không còn gì để làm". |
+| Testability | 12% | 4/5 → **5/5** | 12.0 | Trajectory contract (T-10.1, `harness.testing.Trajectory`), golden set + pass rate CI (T-10.2), failure injection (T-6.4 chaos). `tests/test_roadmap.py::S-05/S-11/S-13` xanh. 559 test (không phải 233 nữa). |
+| Extensibility | 10% | 4/5 → **5/5** | 10.0 | MCP (T-9.1) không thêm seam thứ sáu — nó CHỨNG MINH seam Tool có sẵn đủ rộng cho một hệ sinh thái bên thứ ba không tin cậy, đúng luận điểm "5 seam là đủ" mạnh hơn trước. `tests/test_roadmap.py::S-09` xanh. |
+| Observability | 10% | 3/5 → **4/5** | 8.0 | Canonical event adapter (T-9.3) đóng S-07 (`tests/test_roadmap.py` không track S-07 riêng, nhưng `to_canonical_json` dùng chung SSE+transcript, xem ADR-055). Service API (T-9.2) mở thêm một transport thật. **Còn mở:** S-02 (`ApprovalRecord` không export ở top-level `harness`, dù `Decision`/`Approval` trong `policy/decision.py` mang đủ trường), S-03 (`RunContext` thiếu `principal`/`tenant_id`), S-14 (backpressure chưa xét — SSE endpoint của Service API buffer toàn bộ `run.events` không giới hạn), N-5/N-6 (retry cấp provider, `model.response` thiếu `usage`/`latency_ms`) — bốn khoảng trống thật, không phải lấy trọn 5/5. |
+| Cost efficiency | 10% | 4/5 → **5/5** | 10.0 | `cost_per_success` (T-8.4, trước phiên này) đã đo đúng "cost/successful task". `tests/test_roadmap.py::S-06` xanh. |
+| Developer experience | 10% | 4/5 → 4/5 | 8.0 | **Không đổi — SC-1b (pilot trẻ em 10-12 tuổi) vẫn CHƯA ĐO.** Đây là số đo cần người thật, ngoài khả năng một phiên code. [Unverified/chưa đo] |
+| Integration | 8% | 2/5 → **4/5** | 6.4 | MCP (S-09) và Service API (S-08, `POST /v1/runs`...) cả hai đóng, có test end-to-end thật (subprocess MCP server, Starlette `TestClient`). "connector" (kết nối SaaS cụ thể) vẫn chưa có và có lẽ ngoài phạm vi một harness (khác một platform tích hợp) — không lấy trọn 5/5 vì đó vẫn là một phần ba của deduction gốc. |
+| Performance | 6% | 2/5 → **3/5** | 3.6 | T-10.3 xây HẠ TẦNG đo (p50/p95, throughput×concurrency thật qua `asyncio.Semaphore`, cold start tách warm) — nhưng KHÔNG có con số đo THẬT từ một deployment thật, chỉ có test chạy qua `FakeModel`. "Đo được" khác "đã đo" — không lấy quá 3/5 vì phần "đã đo" của deduction gốc vẫn đúng. [Inference: cải thiện thật nhưng chưa đủ để gọi là đóng] |
+| Intelligence | 5% | 3/5 → 3/5 | 3.0 | Không đổi — ngoài phạm vi M6…M10. |
+| Ecosystem | 2% | 1/5 → 1/5 | 0.4 | Không đổi — MCP là harness TIÊU THỤ một hệ sinh thái có sẵn, không phải hệ sinh thái được XÂY quanh harness này. Không có bằng chứng nào khác về adoption/package bên thứ ba. |
+| **Tổng** | **100%** | | **88.4** (từ 67.8) | |
 
-Để tham chiếu, nghiên cứu chấm LangGraph 89.4, PydanticAI 87.1, Goose 83.5, Pi 76.8.
+Để tham chiếu, nghiên cứu chấm LangGraph 89.4, PydanticAI 87.1, Goose 83.5, Pi 76.8 — **nhắc
+lại câu đầu mục này: đây là tự chấm bằng CHÍNH thước đo và CHÍNH người chấm với harness
+này, không phải cùng người chấm bốn dự án kia.** 88.4 nằm giữa PydanticAI và LangGraph
+theo con số, nhưng con số đó không chứng minh được gì về so sánh trực tiếp — chỉ có giá
+trị nội bộ (hình dạng đã thay đổi ra sao so với chính nó).
 
-**Kết luận trung thực: harness này mạnh ở đúng những chiều nặng ký nhất (Safety, Cost,
-Testability, DX) và yếu ở Integration, Performance, Observability, Reliability.** Kế
-hoạch dưới đây xếp theo `trọng số × khoảng trống`, không theo thứ tự thích làm.
+**Ba giới hạn của con số mới, nói thẳng để không bị hiểu lầm là "xong":**
+1. **Không thay thế điều kiện v1.0 đã đặt ở `design/08 §5`.** Pilot 2-4 tuần với model/
+   task/tool/policy thật vẫn là điều kiện BẮT BUỘC trước khi gắn nhãn v1.0 — không con số
+   tự chấm nào, kể cả 88.4, thay được việc đó.
+2. **DX (SC-1b) và Performance (con số đo thật) là hai chiều KHÔNG THỂ đóng bằng code.**
+   Cả hai cần bằng chứng từ thế giới thật (trẻ em dùng thử, một deployment thật chạy qua
+   benchmark) — phiên làm việc sinh ra tài liệu này chỉ xây được HẠ TẦNG cho Performance,
+   không tạo ra được số đo, và không chạm được gì vào SC-1b.
+3. **Bốn mục S-01/S-02/S-03/S-14 (§2.2) vẫn mở dù M6/M8 "xong".**
+   "Milestone xong" nghĩa là danh sách task M6/M8 tự đặt ra đã thoả — không có nghĩa là
+   MỌI mục liền kề trong `§2.2`'s bảng 14 điểm mạnh cũng đóng theo. Bảng đó được cập nhật
+   ở `## 2.2` bên dưới, đúng trạng thái từng dòng.
+
+**Kết luận trung thực, cập nhật:** harness này nay mạnh ở hầu hết mọi chiều nặng ký
+(Safety, Reliability, Testability, Extensibility, Cost, Integration đều ≥ 4/5) — yếu còn
+lại tập trung ở ba chỗ không đóng được bằng code một mình: DX (đo người thật), Performance
+(đo deployment thật), Ecosystem (đo adoption thật). Kế hoạch M6…M10 ở dưới xếp theo
+`trọng số × khoảng trống` **tại thời điểm nó được viết** — giữ nguyên làm hồ sơ quyết định,
+không viết lại theo thì quá khứ (xem `design/08 §4` cho cùng cách xử lý).
 
 ---
 
@@ -74,22 +104,22 @@ grep -ril sandbox src/ → KHÔNG CÓ
 grep -ril mcp src/     → KHÔNG CÓ
 ```
 
-| # | Điểm mạnh cần học | Từ đâu | Trạng thái |
+| # | Điểm mạnh cần học | Từ đâu | Trạng thái (chấm lại — xem `## 1`) |
 |---|---|---|---|
-| S-01 | **Idempotency key trên mỗi tool call** | Anti-pattern 3; OWASP duplicate-action | Chưa có |
-| S-02 | **Approval là một BẢN GHI**, không phải boolean: decision id, actor, policy version, expiry, audit entry | §6 acceptance criteria | Chưa có |
-| S-03 | **Principal / tenant / scopes** trong ngữ cảnh và trong tool envelope | Anti-pattern 4; tool envelope §8 | Chưa có |
-| S-04 | **Lớp Isolation**: workspace-rooted, network egress mặc định chặn, secret không vào sandbox | Bảng Poka-Yoke, OpenHands/Goose | Chưa có |
-| S-05 | **Trajectory contract khai báo được** (Given/When/Then: tool nào phải gọi, tool nào cấm, ≤N call, ≤T token, ≤C cost, retry không nhân đôi side effect) | §9 | Có mảnh, chưa thành contract |
-| S-06 | **Cost per successful task** thay cho cost per task | §10 | Chưa đo |
-| S-07 | **Canonical event model + adapter cho nhiều transport** | Phụ lục §10 | Có event model, chưa có adapter |
-| S-08 | **Service API**: `POST /v1/runs`, `GET /runs/{id}`, SSE events, approvals, cancel, resume | Phụ lục §8 | Chưa có (§01 chọn library-first) |
-| S-09 | **MCP làm tool boundary** (không phải toàn bộ API) | §5 protocol | Chưa có |
-| S-10 | **Cancellation đúng quy ước** — huỷ giữa model call, tool call, approval, stream | §6 acceptance criteria | **Có lỗi, xem 3.2** |
-| S-11 | **Failure injection** trong bộ test | §9 | Chưa có |
-| S-12 | **Đo p50/p95 latency, throughput, concurrency** | §10 | Chưa đo lần nào |
-| S-13 | **Pass rate kèm khoảng tin cậy 95%**, không dùng một con số đơn lẻ | §9, Terminal-Bench | Chưa có |
-| S-14 | **Backpressure**: client chậm không làm đầy memory hay mất event âm thầm | §6 | Chưa xét |
+| S-01 | **Idempotency key trên mỗi tool call** | Anti-pattern 3; OWASP duplicate-action | **MỘT PHẦN.** Giao thức ba pha có (`idempotency.py`, T-6.1, `tests/test_m6_t61_idempotency.py`) — nhưng `ToolCall` không có trường `idempotency_key` theo đúng nghĩa đen (`tests/test_roadmap.py::S-01` vẫn đỏ). Chưa gắn vì chưa có caller thật (ADR-043) — hoãn có chủ ý, không phải bỏ quên. |
+| S-02 | **Approval là một BẢN GHI**, không phải boolean: decision id, actor, policy version, expiry, audit entry | §6 acceptance criteria | **MỘT PHẦN.** `Decision`/`Approval` (`policy/decision.py`, T-8.2) mang đủ `id`/`actor`/`policy_version`/`expires_at`/`reason` — nhưng không export dưới tên `ApprovalRecord` ở top-level `harness` (`tests/test_roadmap.py::S-02` vẫn đỏ, kiểm `hasattr(harness, "ApprovalRecord")`). Cơ chế đúng, tên/export chưa khớp kỳ vọng. |
+| S-03 | **Principal / tenant / scopes** trong ngữ cảnh và trong tool envelope | Anti-pattern 4; tool envelope §8 | **MỘT PHẦN.** `Event` (envelope v1, T-8.1) mang `tenant_id`/`session_id`. `RunContext` (`dispatch.py`) thì KHÔNG có `principal`/`tenant_id` (`tests/test_roadmap.py::S-03` vẫn đỏ) — envelope sự kiện và ngữ cảnh thực thi chưa đồng bộ trường này. |
+| S-04 | **Lớp Isolation**: workspace-rooted, network egress mặc định chặn, secret không vào sandbox | Bảng Poka-Yoke, OpenHands/Goose | **XONG.** `workspace.py` (T-7.1), `allowed_hosts=()` mặc định (T-7.2), `sandbox.py` (T-7.3/7.4). `tests/test_roadmap.py::S-04` xanh. |
+| S-05 | **Trajectory contract khai báo được** (Given/When/Then: tool nào phải gọi, tool nào cấm, ≤N call, ≤T token, ≤C cost, retry không nhân đôi side effect) | §9 | **XONG.** `harness.testing.Trajectory` (T-10.1) — cả 8 luật §9 liệt kê. `tests/test_roadmap.py::S-05` xanh. |
+| S-06 | **Cost per successful task** thay cho cost per task | §10 | **XONG.** `harness.eval.cost_per_success` (T-8.4). `tests/test_roadmap.py::S-06` xanh. |
+| S-07 | **Canonical event model + adapter cho nhiều transport** | Phụ lục §10 | **XONG.** `observe/canonical.py::to_canonical_json` (T-9.3) — SSE (`harness.server`) và `TranscriptWriter` (CLI/JSON) dùng chung một hàm; sửa luôn một lỗ hổng thật (envelope v1 bị rơi khỏi transcript JSONL trước bản vá). |
+| S-08 | **Service API**: `POST /v1/runs`, `GET /runs/{id}`, SSE events, approvals, cancel, resume | Phụ lục §8 | **XONG, đúng lựa chọn library-first.** `harness.server.create_app` (T-9.2), extra `harness[server]` (Starlette, ASGI app object, không server đóng gói). `resume` trả 501 có chủ đích (chưa giữ transcript path theo run_id) — nói thẳng thay vì giả vờ. |
+| S-09 | **MCP làm tool boundary** (không phải toàn bộ API) | §5 protocol | **XONG.** `harness.mcp` (T-9.1). `tests/test_roadmap.py::S-09` xanh. |
+| S-10 | **Cancellation đúng quy ước** — huỷ giữa model call, tool call, approval, stream | §6 acceptance criteria | **XONG** (T-6.2, trước phiên này). `tests/test_roadmap.py::Y-01/Y-01b` xanh. |
+| S-11 | **Failure injection** trong bộ test | §9 | **XONG.** `harness.testing.chaos` (T-6.4) — 5 kịch bản, tìm+sửa 2 lỗi thật (N-2, N-4). |
+| S-12 | **Đo p50/p95 latency, throughput, concurrency** | §10 | **MỘT PHẦN — hạ tầng đo có, số đo thật thì không.** `harness.eval.run_latency_benchmark`/`run_throughput_benchmark` (T-10.3) đo được thật (concurrency qua `asyncio.Semaphore` thật) — nhưng chưa có kết quả benchmark từ một deployment thật, chỉ có test chạy qua `FakeModel`. |
+| S-13 | **Pass rate kèm khoảng tin cậy 95%**, không dùng một con số đơn lẻ | §9, Terminal-Bench | **XONG.** `harness.eval.run_golden_set` (T-10.2), dùng lại Wilson interval của T-8.4. |
+| S-14 | **Backpressure**: client chậm không làm đầy memory hay mất event âm thầm | §6 | **CHƯA XÉT — vẫn đúng.** `harness.server`'s SSE endpoint buffer toàn bộ `run.events` không giới hạn (không CSDL, v1 library-first, ADR-055) — một client SSE không bao giờ đọc sẽ không làm RUN nghẽn, nhưng cũng không có giới hạn/rụng chủ động nào trên buffer đó. Ghi lại đây làm việc tiếp theo, không phải đóng giả. |
 
 ---
 

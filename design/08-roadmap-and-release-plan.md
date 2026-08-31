@@ -236,6 +236,18 @@ còn im lặng.
 
 ### v1.0 — "an toàn cho một quy trình, không phải một hạm đội"
 
+> **Trạng thái sau khi M6…M10 xong (chấm lại `docs/17 §1`: 67.8 → 88.4/100) — GẦN ĐẠT,
+> CHƯA ĐẠT.** Điều kiện đầu (tự chấm ≥ 85, R/O/I đều ≥ 4/5) nay **THOẢ** — 88.4/100,
+> Reliability 5/5, Observability 4/5, Integration 4/5. Hai điều kiện còn lại **CHƯA**:
+> (a) 4 trong 14 mục `S-01…S-14` (`docs/17 §2.2`) vẫn ở trạng thái "một phần" hoặc "chưa
+> xét" theo đúng `tests/test_roadmap.py` — S-01 (`ToolCall.idempotency_key` không tồn
+> tại), S-02 (`ApprovalRecord` không export top-level), S-03 (`RunContext` thiếu
+> `principal`/`tenant_id`), S-14 (backpressure của Service API's SSE chưa xét); (b) **S-4
+> và S-23 (`07-risks-and-open-issues.md`) CHƯA được re-verify trên code M6 THẬT** —
+> `design/07`'s ghi chú cũ ("RE-VERIFY khi M6 build idempotency") vẫn treo, phiên vừa xây
+> M9/M10 không phải phiên xây M6 nên không tự động làm việc đó. Đừng đọc 88.4/100 là
+> "xong" — đọc bảng `docs/17 §1`/`§2.2` cho chi tiết từng mục.
+
 Điều kiện, theo đúng `docs/17 §6`'s tiêu chí hoàn thành đã đặt ra (không viết lại):
 
 - Tự chấm lại theo ma trận `§17 §1` đạt **≥ 85**, với Reliability, Observability,
