@@ -310,8 +310,8 @@ class Verdict(IntEnum):        # IntEnum so max() composes them
     DENY  = 2
 
 @dataclass(frozen=True, slots=True)
-class Decision:
-    verdict: Verdict
+class Ruling:                  # renamed from `Decision` — see policy/decision.py::Decision below,
+    verdict: Verdict           # the audit-record class this name would otherwise collide with (K-13)
     reason: str                # shown to the user on ASK, to the model on DENY
     policy: str                # which policy produced it
 
@@ -339,7 +339,7 @@ class RunContext:
 
 class Policy(Protocol):
     name: str
-    def check(self, call: ToolCall, ctx: RunContext) -> Decision: ...
+    def check(self, call: ToolCall, ctx: RunContext) -> Ruling: ...
 ```
 
 ### Composition — the only rule

@@ -20,7 +20,7 @@ from ..errors import BudgetExceeded
 from ..observe.events import EventBus, EventKind
 from ..policy.base import Ruling, ToolCall, Verdict
 from ..policy.builtin import emits_of
-from ..policy.decision import Actor, Decision, DecisionLog, Scope
+from ..policy.decision import POLICY_ENGINE_VERSION, Actor, Decision, DecisionLog, Scope
 from ..policy.engine import PolicyEngine
 from ..policy.label import Grants, Integrity, Label
 from ..result import Money, StopReason, Usage
@@ -305,7 +305,8 @@ class Runtime:
                 actor=(reported_actor if reported_actor is not None else
                        (Actor.human("approver", via="callback")
                         if self._approve is not None else Actor.policy(d.policy))),
-                decided_at=_now(), expires_at=None, run_id=_run_id(state), reason=d.reason))
+                decided_at=_now(), expires_at=None, run_id=_run_id(state), reason=d.reason,
+                policy_version=POLICY_ENGINE_VERSION))
             out.append({**p, "verdict": int(d.verdict), "reason": d.reason})
         denied = [ToolMessage(content=f"declined: {p['call']['name']}",
                               tool_call_id=p["call"]["id"], status="error")
@@ -375,7 +376,8 @@ class Runtime:
                             call_id=p["call"]["id"]),
                 actor=Actor.policy("decision-log-reuse"), decided_at=_now(),
                 expires_at=None, run_id=_run_id(state),
-                reason="grant còn sống trong sổ, tái dùng cho lời gọi này"))
+                reason="grant còn sống trong sổ, tái dùng cho lời gọi này",
+                policy_version=POLICY_ENGINE_VERSION))
             return Ruling(Verdict.ALLOW, "grant còn sống trong sổ", "decision-log")
         return Ruling(Verdict.DENY,
                       "không có grant còn hiệu lực cho lời gọi này "

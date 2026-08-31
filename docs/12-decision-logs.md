@@ -1167,6 +1167,39 @@ behavior to gain them, and every existing test kept passing unmodified.
 
 ---
 
+### ADR-049 — `Decision` gains `policy_version`; `ApprovalRecord` was already built
+**Status:** Accepted (M8/T-8.2)
+
+**Context.** docs/17's T-8.2 reads as if approval were still a bare `bool`:
+"`ApprovalRecord(decision_id, actor, policy_version, decided_at, expires_at, verdict,
+reason)` thay cho `bool`." Checking today's code before writing anything (this session's
+standing discipline) found `policy/decision.py::Decision` already carries `id`, `verdict`,
+`scope`, `actor`, `decided_at`, `expires_at`, `run_id`, `reason` — built earlier in this
+session for S-11 (`Actor`, self-declared-identity channel) and S-29 (grant reuse logs a
+row every time, not just at the original grant). Only `policy_version` was missing.
+
+**Decision.** Add `policy_version: str | None = None` to `Decision`. `POLICY_ENGINE_VERSION
+= "1.0"` (`policy/decision.py`, same role `EVENT_SCHEMA_VERSION` plays for `Event`,
+ADR-048) is stamped at both sites `lg/runtime.py` records a `Decision` — the original
+grant and S-29's reuse-logs-a-row-every-time record.
+
+**T-8.2's own Failure/Test criteria were already true, not fixed here.** "Approval hết
+hạn không dùng lại được" — `DecisionLog.lookup()` already filters `not d.live_at(now)`.
+"Cùng một approval không mở khoá được lần chạy thứ hai" — `lookup()` already filters
+`d.run_id != run_id` first, so a grant is structurally incapable of crossing a run
+boundary regardless of expiry. Both are now covered by
+`tests/test_m8_t82_approval_record.py`, closing the verification gap rather than a code
+gap — the same "specified but never actually checked" shape S-1/S-5/S-12/S-17/S-23/S-26/
+S-28 all turned out to be earlier in this project's history.
+
+**Drive-by fix, found while updating docs/04 for this ADR.** `docs/04-interfaces.md`
+documented `policy/base.py`'s class as `Decision` — its real name in code is `Ruling`
+(renamed at some point specifically to avoid colliding with `policy/decision.py`'s
+`Decision`, going by the K-13 namespace-collision finding this same file's `## 1.5`
+tracks). The doc never caught up to the rename. Corrected to `Ruling` in place.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |

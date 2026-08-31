@@ -20,6 +20,11 @@ from typing import Any, Mapping, Sequence
 from .._value import value
 from .base import Verdict
 
+#: T-8.2 — the shape of `PolicyEngine.decide()`/`.resolve()` that produced a `Decision`,
+#: stamped by callers that record one. Bumped only when composition itself changes (how
+#: a verdict is derived), the same role `EVENT_SCHEMA_VERSION` plays for `Event`.
+POLICY_ENGINE_VERSION = "1.0"
+
 
 @value
 class Actor:
@@ -106,6 +111,17 @@ class Decision:
     expires_at: datetime | None
     run_id: str
     reason: str | None = None
+    #: T-8.2, docs/17-research-alignment.md M8 — which shape of `PolicyEngine.decide()`
+    #: produced this record. `Decision` already carried everything else
+    #: `ApprovalRecord(decision_id, actor, policy_version, decided_at, expires_at,
+    #: verdict, reason)` asked for (built earlier, for S-11/S-29) — this was the one
+    #: field missing. Not a per-policy version (`EffectPolicy`/`TaintPolicy`/
+    #: `EgressPolicy`/a user policy do not each declare one, and inventing that scheme
+    #: is a bigger change than T-8.2 asks for) — a single engine-shape marker, the same
+    #: role `EVENT_SCHEMA_VERSION` plays for `Event` (ADR-048): audit can tell "this
+    #: ALLOW was granted under policy-engine v1.0" apart from a future v1.1 that changed
+    #: how a verdict composes.
+    policy_version: str | None = None
 
     def __post_init__(self) -> None:
         if self.verdict is Verdict.ASK:
