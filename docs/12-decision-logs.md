@@ -2242,6 +2242,66 @@ rather than the total call getting one shared clock; and the two-branch message,
 distinguishing a tool's own slow timeout from the run's wall-clock actually being what ran
 out.
 
+### ADR-069 — N-3 closed: `returns=` on the LangGraph backend — one shared `parse_returns`, a JSON-safe `value`, and one honest scope boundary
+
+**Status:** Accepted
+
+**Context.** `build_agent()` had no `returns=` parameter at all; `Result.value` on this
+backend did not exist because nothing produced it. `docs/03-public-api.md` never scoped
+`returns=` to "classic loop only," so this was a real parity gap, not a documented
+limitation — the original finding named the fix directly: "một `finish` node mới đọc
+`state["messages"][-1]` và validate."
+
+**Decision 1 — `run.py::_parse_returns` becomes a module-level function, `parse_returns`,
+imported by `lg/runtime.py`.** It was a `RunEngine` method touching only `self._a.returns`
+— nothing tied it to the instance. Two independent copies of "what counts as a valid
+answer" is exactly the class of bug this project keeps finding and naming R-17; here it
+was prevented by construction instead. `tests/test_n3_returns_graph.py` asserts identity
+(`lg_runtime.parse_returns is run_mod.parse_returns`), not behavioral similarity — the
+strongest form of "one definition" a test can state.
+
+**Decision 2 — parsing happens in `finish`, gated on `stop == "completed"`, mirroring
+`run.py`'s placement exactly.** A run that stopped at the step limit or mid-tool-call
+never reaches this branch — `state["value"]` stays `None`, not a parse of whatever partial
+text happened to be sitting in the last message. Same reasoning `run.py` already applied:
+a malformed final answer is a run OUTCOME (`stop="error"`, `ToolContractError` caught),
+never an unhandled exception out of `graph.invoke()` — N-2's fix, ported.
+
+**Decision 3 — `state["value"]` is a JSON-safe `dict`/scalar, never the dataclass
+INSTANCE `Result.value` holds on the classic loop.** State is checkpointed; a class
+instance is not something every checkpointer backend can promise to round-trip, the exact
+reasoning IDL-42 already applied one level down for `Decimal`. `_returns_as_state()`
+converts only when `parse_returns` produced a dataclass instance
+(`dataclasses.asdict`); the non-dataclass case was already a plain JSON value and passes
+through unchanged. Declared in `AgentState` (IDL-41 — an undeclared key is silently
+dropped by LangGraph, not an error), with a comment naming the asymmetry so a future
+reader does not "fix" it into matching the classic loop's instance and reintroduce a
+checkpointing risk.
+
+**Decision 4 — the model's generation is NOT constrained on this backend, and the fix
+says so rather than pretending otherwise.** The classic loop's `returns=` gets a real
+guarantee: `ContextAssembler` threads `output_format` into `ModelRequest`, and
+`AnthropicProvider` sends it as the SDK's own `output_config.format` — constrained
+decoding, not a hope. `build_agent()` has no `job=` parameter and builds no system prompt
+at all; every message, including any system message, is the caller's to supply directly
+to whatever LangChain model they passed in. Wiring an equivalent guarantee would mean
+either injecting a system message this backend has never injected anything into, or
+switching to LangChain's own `with_structured_output()`, which does not compose cleanly
+with an ongoing `bind_tools()` ReAct loop — both are new designs, not what N-3 was scoped
+to close. So this fix parses and validates; it does not guarantee the model tries. Stated
+here and in `build_agent()`'s own parameter comment, not left to be discovered.
+
+**Test.** `tests/test_n3_returns_graph.py` — `value` declared in `AgentState`; a
+well-formed dataclass answer parsed into a `dict` (proven JSON-serializable, proven not a
+`Order` instance); extra fields dropped without breaking construction; malformed JSON and
+a missing required field each producing a message naming the type/field, not a bare
+parser error; a `returns=` failure landing as `stop="error"` rather than a crash or a
+false `"stalled"`; no `returns=` leaving `value=None` exactly as before; a non-dataclass
+`returns=` passing the raw parsed JSON through unchanged (parity with the classic loop's
+own branch); a run cut off at the step limit never attempting to parse partial output;
+and — the sharpest test — the exact same `detail` string on both backends for the
+identical malformed answer.
+
 ---
 
 ## Implementation Decision Log

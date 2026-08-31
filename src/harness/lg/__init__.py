@@ -40,7 +40,19 @@ def build_agent(*, model, tools: Sequence[Any] = (), budget: Any = None,
                 # across a restart — in which a `write`/`danger` call's result is recorded
                 # under `thread_id:call_id`, so a thread resumed after a crash inside the
                 # tools node replays that result instead of running the call twice.
-                idempotency_store: Any | None = None):
+                idempotency_store: Any | None = None,
+                # N-3 wired (ADR-069). Parses and validates the final answer against this
+                # type — same `parse_returns` the classic loop uses, so a malformed
+                # answer is diagnosed identically on both backends (`state["value"]`, a
+                # JSON-safe dict/scalar, never a class instance — state is checkpointed).
+                # NOT equivalent to `Agent(returns=...)` in one respect, stated plainly:
+                # this backend never builds a system prompt or binds a provider-level
+                # output schema (`build_agent()` has no `job=` either — every message is
+                # the caller's to supply), so nothing here constrains what the model
+                # actually generates. The caller's own system message/tool binding has
+                # to ask for matching JSON; this only parses and validates what comes
+                # back.
+                returns: type | None = None):
     """Compile an agent graph.  Returns (compiled_graph, runtime).
 
     `exporters=` is the spelling `Agent` uses for the same seam (Round 35 parity). It used
@@ -99,7 +111,7 @@ def build_agent(*, model, tools: Sequence[Any] = (), budget: Any = None,
                  max_output=pricing.MAX_OUTPUT.get(model_name, 8_000), model_name=model_name,
                  exporters=exporters, approve=approve, grants=grants,
                  max_asks_per_run=max_asks_per_run, tenant_id=tenant_id,
-                 decisions=decisions, idempotency_store=idempotency_store)
+                 decisions=decisions, idempotency_store=idempotency_store, returns=returns)
     compiled = build(rt).compile(checkpointer=checkpointer)
 
     broken = unguarded_paths(compiled)

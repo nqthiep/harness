@@ -10,13 +10,14 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from typing import Any
 
 from langchain_core.messages import ToolMessage
 from langgraph.types import interrupt
 
 from ..budget.ledger import Ledger
 from ..dispatch import MAX_ATTEMPTS, RETRY_BACKOFF_MAX_S, RETRY_BACKOFF_S
-from ..errors import BudgetExceeded
+from ..errors import BudgetExceeded, ToolContractError
 from ..idempotency import idempotency_key, once_if_unsafe
 from ..observe.events import EventBus, EventKind
 from ..policy.base import Ruling, ToolCall, Verdict
@@ -26,7 +27,7 @@ from ..policy.engine import PolicyEngine
 from ..progress import STALL_AFTER, ProgressLedger, stall_reason
 from ..policy.label import Grants, Integrity, Label
 from ..result import Money, StopReason, Usage
-from ..run import CONTINUE, _MAP
+from ..run import CONTINUE, _MAP, parse_returns
 from ..secrets import redact, redaction_scope
 from ..context.window import CLEARED, COMPACT_AT, EDIT_AT, KEEP_RECENT_STEPS
 from ..models.pricing import MAX_CONTEXT
@@ -45,7 +46,8 @@ class Runtime:
                  price, max_output: int, model_name: str = "claude-opus-5",
                  exporters=(), approve=None, decisions: DecisionLog | None = None,
                  grants: Grants | None = None, max_asks_per_run: int = 20,
-                 tenant_id: str | None = None, idempotency_store=None) -> None:
+                 tenant_id: str | None = None, idempotency_store=None,
+                 returns: type | None = None) -> None:
         # T-8.1 — deployment-level config, like `_grants` just below: fixed for this
         # compiled graph, not per-thread. `session_id` needs no separate field here —
         # LangGraph's own `thread_id` (== `run_id` per `_run_id(state)`) already IS the
@@ -98,6 +100,10 @@ class Runtime:
         # `idempotency.py`'s docstring). Deployment-level config like `_grants`, so it
         # lives on the Runtime; the per-key record lives in the Store the caller supplies.
         self._idempotency_store = idempotency_store
+        # N-3 — deployment-level config like `_grants`/`_max_asks_per_run` above: the
+        # TYPE never changes between runs, so it lives on the Runtime; the parsed VALUE
+        # is per-thread and lives in state (`AgentState.value`).
+        self._returns = returns
 
     # ── everything mutable is derived from graph state ───────────────────────
     #
@@ -542,6 +548,20 @@ class Runtime:
         """The single exit.  Every path out of the graph passes here, so `run.finished`
         cannot be forgotten by a branch (Round 35; the same rule as the two gates)."""
         stop = state.get("stop_reason") or "completed"
+        detail = state.get("detail", "")
+        value = None
+        # N-3 — parity with `run.py`'s identical placement: only on a clean finish, and
+        # only when the caller asked for `returns=`. Reusing `parse_returns` (not a
+        # second copy of the rule, R-17) means a malformed answer is diagnosed with the
+        # exact same message on both backends.
+        if stop == "completed" and self._returns is not None:
+            try:
+                value = _returns_as_state(parse_returns(_final_text(state["messages"]),
+                                                        self._returns))
+            except ToolContractError as exc:
+                stop, detail = "error", str(exc)
+                self._emit(state, EventKind.ERROR_RAISED, where="returns",
+                           type="ToolContractError", message=detail, retryable=False)
         self._emit(state, EventKind.STEP_FINISHED, step=state.get("step", 0),
                    stop_reason=stop, tool_calls=[])
         led = self._ledger(state)
@@ -552,7 +572,8 @@ class Runtime:
         self._emit(state, EventKind.RUN_FINISHED, stop_reason=stop, steps=state.get("step", 0),
                    cost_usd=str(led.spent), tainted=label.integrity is Integrity.UNTRUSTED,
                    confidentiality=label.confidentiality.name)
-        return {"stop_reason": stop, "spent_usd": str(led.spent.decimal)}
+        return {"stop_reason": stop, "detail": detail, "value": value,
+                "spent_usd": str(led.spent.decimal)}
 
     def _manage(self, messages, state) -> list:
         """Context growth, ported from T-2.6 (docs/07-cost.md §3).
@@ -662,6 +683,32 @@ def _context_chars(messages) -> int:
         if calls:
             total += len(str(calls))
     return total
+
+
+def _final_text(messages) -> str:
+    """The model's final answer as plain text — N-3. `AIMessage.content` is a `str` for
+    most chat models but a list of content blocks for some (Anthropic's own SDK shape),
+    same ambiguity `run.py` already resolves for `resp.content`; handled the identical
+    way here so a malformed `returns=` answer is diagnosed off the same text on both
+    backends."""
+    content = messages[-1].content if messages else ""
+    if isinstance(content, str):
+        return content
+    return "".join(b.get("text", "") for b in content
+                   if isinstance(b, dict) and b.get("type") == "text")
+
+
+def _returns_as_state(value: Any) -> Any:
+    """`parse_returns` may hand back a dataclass INSTANCE (the classic loop's
+    `Result.value` holds exactly that) — state is checkpointed, and a class instance is
+    not guaranteed to round-trip through a checkpointer the way a `dict` is (IDL-42's
+    same reasoning, one level up). Convert only when needed; the parsed JSON for a
+    non-dataclass `returns=` is already a plain `dict`/`list`/scalar and passes through
+    unchanged."""
+    import dataclasses
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.asdict(value)
+    return value
 
 
 def _last_tool_calls(messages) -> list:

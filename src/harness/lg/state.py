@@ -49,3 +49,11 @@ class AgentState(TypedDict, total=False):
     #: per-turn attack (approval fatigue), not something a long-lived conversation should
     #: accumulate towards forever.
     asks: int
+    #: N-3 (design/07-risks-and-open-issues.md) — the parsed `build_agent(returns=...)`
+    #: answer, set once by `finish`. A JSON-safe `dict`/scalar/list, never the dataclass
+    #: INSTANCE `run.py`'s `Result.value` holds: state is checkpointed, and a class
+    #: instance is not something a checkpointer can promise to round-trip (IDL-42's same
+    #: reasoning, one level up — a `Decimal` crosses as a string for the identical
+    #: reason). The caller reconstructs the dataclass from this dict if they need the
+    #: instance; `harness.tools.schema` already generated the shape, so the fields match.
+    value: Any

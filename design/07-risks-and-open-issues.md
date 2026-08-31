@@ -515,16 +515,21 @@ mới không nên tự tạo thêm va chạm).
 > bình thường — model trả rác giờ là một OUTCOME của run, không phải một crash. Khoá
 > bằng `tests/test_m6_t64_chaos.py`.
 
-> **N-3 — LangGraph backend không hỗ trợ `returns=` (không parse, không validate,
+> **N-3 ĐÃ SỬA — LangGraph backend không hỗ trợ `returns=` (không parse, không validate,
 > `Result.value` luôn `None`).** Phát hiện khi cổng bản sửa N-2 sang LangGraph để kiểm
 > parity: `build_agent()` (`lg/__init__.py`) **không có tham số `returns=` nào cả**, và
 > `lg/runtime.py` không có lời gọi `_parse_returns`/tương đương ở đâu —
 > `docs/03-public-api.md` không ghi `returns=` là "classic-loop only" ở đâu cả, nên đây
-> là một khoảng trống parity thật, không phải giới hạn có tài liệu. Chưa sửa — ngoài
-> phạm vi T-6.4 (đó là chaos testing, không phải xây tính năng mới cho backend kia); cần
-> một `finish` node mới đọc `state["messages"][-1]` và validate, cộng quyết định graph
-> shape (một cạnh lỗi riêng, hay gộp vào `FINISH` hiện có). Ghi lại để không mất, không
-> sửa vội.
+> là một khoảng trống parity thật, không phải giới hạn có tài liệu. **Sửa: `_parse_returns`
+> tách thành hàm module-level `parse_returns` (`run.py`), hai backend dùng CHUNG một định
+> nghĩa (R-17); `finish` node gọi nó khi `stop == "completed"`, ghi kết quả vào
+> `state["value"]` — một dict JSON hoá được, không phải instance dataclass (state đã
+> checkpoint, cùng lý do IDL-42 áp cho `Decimal`)** (ADR-069, `docs/12`). **Giới hạn nói
+> thẳng, không giấu:** backend này không dựng system prompt và không ràng buộc provider
+> sinh đúng schema như vòng lặp classic (`output_format` → `output_config.format` của
+> Anthropic SDK) — bản vá chỉ PARSE/VALIDATE cái model đã trả về, không ép model trả JSON.
+> `tests/test_n3_returns_graph.py` (12 test, gồm khoá identity hai hàm `parse_returns` là
+> MỘT, và cùng một câu lỗi trên cả hai backend cho cùng một câu trả lời hỏng).
 
 > **N-4 ĐÃ SỬA — lỗi provider (`ProviderTimeout`/`ProviderRateLimited`/bất kỳ raise nào
 > từ `complete()`/`invoke()`) crash thẳng ra ngoài `try_run()`/`graph.invoke()`, CẢ HAI
