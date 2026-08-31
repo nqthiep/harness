@@ -270,7 +270,7 @@ class Runtime:
         with redaction_scope():
             return self._run_tools(state)
 
-    def _regate(self, p, state) -> Ruling:
+    def _regate(self, p, state, label: Label | None = None) -> Ruling:
         """I-1 — gate là TIỀN ĐIỀU KIỆN TẠI CHỖ TIÊU THỤ, không phải một cạnh trong graph.
 
         `unguarded_paths()` chứng minh mọi đường TỪ START tới `tools` đều qua `policy`.
@@ -281,10 +281,22 @@ class Runtime:
 
         Nên node này KHÔNG tin `_pending`. Nó tính lại: engine thuần chạy lại (rẻ, không
         I/O), và bất cứ cái gì còn ASK phải có một grant SỐNG trong sổ. Không có ⇒ từ chối.
+
+        `label`: nhãn TẠI THỜI ĐIỂM NÀY trong vòng lặp `_run_tools`, không phải
+        `self._effective_label(state)` tính lại từ `state` — S-27. `state["messages"]`
+        chưa hề thấy kết quả của các call ĐÃ chạy TRƯỚC trong CÙNG batch này (chúng chỉ
+        được gộp vào `state` ở cuối `_run_tools`, sau khi cả batch xong), nên tính lại từ
+        `state` ở đây cho một nhãn CŨ hơn nhãn thật — đúng cửa sổ fail-open mà `fetch_url`
+        (external, gây taint) rồi `run_shell` (danger) CÙNG một batch minh hoạ. Gọi nơi
+        này với biến `label` đang được cập nhật sống trong vòng lặp mới đóng đúng cửa sổ
+        đó; `self._effective_label(state)` vẫn đúng cho MỌI nơi khác gọi nó (đầu batch,
+        trước khi bất kỳ call nào trong batch này chạy).
         """
         spec = self._tools.get(p["tool"])
         call = ToolCall(p["call"]["id"], p["tool"], p["call"].get("args", {}), spec)
-        ctx = _Ctx(label=self._effective_label(state), safety=self._safety(state))
+        if label is None:
+            label = self._effective_label(state)
+        ctx = _Ctx(label=label, safety=self._safety(state))
         r = self._engine_for(_run_id(state)).decide(call, ctx)
         if r.verdict is not Verdict.ASK:
             return r
@@ -320,7 +332,7 @@ class Runtime:
         label = self._effective_label(state)
         msgs: list = []
         for p in state.get("_pending", []):
-            gate = self._regate(p, state)
+            gate = self._regate(p, state, label)
             if gate.verdict is not Verdict.ALLOW:
                 self._emit(state, EventKind.POLICY_DECIDED, tool=p["tool"],
                            call_id=p["call"]["id"], verdict=gate.verdict.name,

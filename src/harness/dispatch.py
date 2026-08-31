@@ -17,7 +17,7 @@ from .context.assembler import canonical as _canonical
 from .errors import ToolContractError
 from .observe.events import EventKind
 from .policy.base import Ruling, ToolCall, Verdict
-from .policy.builtin import emits_of
+from .policy.builtin import check_flow, emits_of
 from .policy.label import Integrity, Label
 from .secrets import redact
 from .tools import EFFECT_PROFILES, ToolSpec
@@ -100,7 +100,9 @@ class Dispatcher:
 
         # The executed set, recorded where execution is actually decided.  Anything that
         # `continue`d above — unknown tool, DENY, duplicate — never reaches here (Round 38).
-        self.ran.extend(spec.name for _, _, spec in parallel + serial)
+        # `serial` is added to below, per call, once the S-27 recheck confirms it will
+        # actually run — not here, since that recheck can now still turn one into a DENY.
+        self.ran.extend(spec.name for _, _, spec in parallel)
 
         if parallel:
             done = await asyncio.gather(
@@ -109,6 +111,23 @@ class Dispatcher:
             for (i, _, _), r in zip(parallel, done):
                 out[i] = r
         for i, b, spec in serial:
+            # S-27: `d` above was decided against the label from BEFORE this batch ran —
+            # a fixed snapshot taken once, at the top of this function. The parallel
+            # batch just above (all `read`/`external`) can raise taint or confidentiality
+            # mid-batch, and so can an earlier SERIAL call in this very loop, but nothing
+            # re-checked `check_flow` before this call actually executes — the exact
+            # same-batch staleness the review's `fetch_url` (external, taints) +
+            # `run_shell` (danger, already-granted) scenario describes, except it turns
+            # out to reach every DENY branch of `check_flow`, not just the integrity one:
+            # a `write` newly blocked by SECRET rising mid-batch was just as unchecked.
+            # `_invoke`/`self._e._taint` are the live, mutating state — re-reading
+            # `.label` right here is the tools-execution-loop equivalent of `_regate`
+            # (lg/runtime.py, I-1/S-2): a gate re-checked at the point of consumption.
+            gate = check_flow(self._e._taint.label, spec, self._e._a._grants)
+            if gate.verdict is Verdict.DENY:
+                out[i] = err(b["id"], f"denied by policy: {gate.reason}")
+                continue
+            self.ran.append(spec.name)
             out[i] = await self._invoke(b, spec, step)
         for i, origin in dupes:
             out[i] = {**out[origin], "tool_use_id": planned[i][0]["id"]}
