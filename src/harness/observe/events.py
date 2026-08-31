@@ -39,7 +39,7 @@ class EventKind(str, Enum):
     TOOL_REQUESTED = "tool.requested";   POLICY_DECIDED   = "policy.decided"
     TOOL_STARTED = "tool.started";       TOOL_FINISHED    = "tool.finished"
     TAINT_RAISED = "taint.raised";       CONTEXT_MANAGED  = "context.managed"
-    ERROR_RAISED = "error.raised"
+    ERROR_RAISED = "error.raised"; PROGRESS_STALLED = "progress.stalled"
 
 
 @value

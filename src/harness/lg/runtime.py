@@ -23,6 +23,7 @@ from ..policy.base import Ruling, ToolCall, Verdict
 from ..policy.builtin import emits_of
 from ..policy.decision import POLICY_ENGINE_VERSION, Actor, Decision, DecisionLog, Scope
 from ..policy.engine import PolicyEngine
+from ..progress import STALL_AFTER, ProgressLedger, stall_reason
 from ..policy.label import Grants, Integrity, Label
 from ..result import Money, StopReason, Usage
 from ..run import CONTINUE, _MAP
@@ -166,6 +167,17 @@ class Runtime:
                     "ledger": led.snapshot(), "asks": asks}
         if led.remaining_wall_clock() <= 0:
             return {"stop_reason": "timeout", "detail": "ran out of time",
+                    "ledger": led.snapshot(), "asks": asks}
+        # Checked HERE and not in `run_tools`, even though that is where the observation
+        # is made: this gate is the only node that clears `stop_reason` (see the comment
+        # at the end of this method), so a stop set anywhere upstream of it is wiped
+        # before `_after_budget` ever reads it. Sitting beside the step and wall-clock
+        # ceilings is also where it belongs — it is a ceiling, on a different axis.
+        if state.get("stalled_steps", 0) >= STALL_AFTER:
+            self._emit(state, EventKind.PROGRESS_STALLED,
+                       stalled_steps=state.get("stalled_steps", 0))
+            return {"stop_reason": StopReason.STALLED.value,
+                    "detail": stall_reason(state.get("stalled_steps", 0)),
                     "ledger": led.snapshot(), "asks": asks}
         text = json.dumps([m.content for m in state["messages"]],
                           ensure_ascii=False, default=str)
@@ -467,7 +479,14 @@ class Runtime:
                        is_error=False)
         self._emit(state, EventKind.STEP_FINISHED, step=state.get("step", 0),
                    stop_reason="tool_use", tool_calls=[p["tool"] for p in state.get("_pending", [])])
+        # Observed on what the MODEL asked for, not on `_pending`: a model that keeps
+        # re-requesting a tool policy keeps denying is stalled in exactly the sense this
+        # detects, and `_pending` has already had those calls removed.
+        prog = ProgressLedger(seen=state.get("seen_calls", ()),
+                              stalled_steps=state.get("stalled_steps", 0))
+        prog.observe(_last_tool_calls(state["messages"]))
         return {"messages": msgs + self._manage(state["messages"] + msgs, state),
+                "seen_calls": prog.seen, "stalled_steps": prog.stalled_steps,
                 "_pending": [], "tainted": label.integrity is Integrity.UNTRUSTED,
                 # A subagent settles into THIS ledger, so its spend has to reach state or
                 # the parent's ceiling leaks exactly as it did in Round 28.
@@ -538,6 +557,17 @@ def _is_new_turn(state) -> bool:
     """True when the newest message came from the caller rather than from the loop."""
     msgs = state.get("messages") or []
     return bool(msgs) and type(msgs[-1]).__name__ == "HumanMessage"
+
+
+def _last_tool_calls(messages) -> list:
+    """The most recent batch of tool calls the model asked for. Walked backwards rather
+    than read off `messages[-1]`: the policy gate appends a `ToolMessage` for every
+    denied call, so the last message is often not the model's."""
+    for m in reversed(list(messages)):
+        calls = getattr(m, "tool_calls", None)
+        if calls:
+            return list(calls)
+    return []
 
 
 def _provider_stop(msg) -> str:

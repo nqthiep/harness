@@ -149,7 +149,10 @@ class Enforcement(unittest.TestCase):
         self.assertIn(("refund", "A"), RAN)
 
     def test_the_budget_is_still_a_ceiling(self):
-        graph, rt = mk([FakeChat.call("look", {"ma": "A"}, f"c{i}") for i in range(30)]
+        # Each call is distinct so the run reaches the SPEND ceiling, which is what this
+        # test is about; thirty identical calls now stop earlier at the stall detector
+        # (`progress.py`), covered by `tests/test_progress_stall.py`.
+        graph, rt = mk([FakeChat.call("look", {"ma": f"A{i}"}, f"c{i}") for i in range(30)]
                        + [FakeChat.text("done")], tools=[look], budget="$0.05, 40 steps")
         out = run(graph)
         from decimal import Decimal

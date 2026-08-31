@@ -1831,6 +1831,77 @@ ledger raising; durability across two `SqliteStore` opens of the same file; two 
 under different keys not colliding; and an end-to-end run through a real `Agent` with a
 scripted `FakeModel`, asserting the ledger still holds the work after the run ends.
 
+### ADR-062 — Stall detection is mechanical and free; `STALLED` is its own stop reason; the check sits in the budget gate
+
+**Status:** Accepted
+
+**Context.** A long session fails in two very different ways. The first — out of money,
+steps, or time — `Budget` has caught since Round 1. The second is more expensive: the
+agent is still running, still calling tools, still billing, but repeating what it just
+did. The budget ceiling does catch it, at the *last possible moment* and under a
+`stop_reason` (`step_limit`) that describes the wrong thing. Nothing distinguished "did
+300 steps of work" from "did the same step 300 times."
+
+**Decision — read the signal the harness already has.** `progress.py` marks a step as
+*no progress* when it made at least one tool call and **every** call in it repeats a
+`tool+args` signature seen earlier in the run. `STALL_AFTER = 6` consecutive such steps
+stops the run with `StopReason.STALLED`. No model is consulted, so this costs **zero
+tokens** — which is what keeps it clear of ADR-023: paying for a second model call to ask
+"am I stuck?" is exactly what that ADR refused, and this is not that.
+
+**Precedent, so this is not a new species of mechanism.** `MAX_PAUSES` already stops a
+model that keeps pausing ("stopping rather than paying for a loop"); `max_asks_per_run`
+(S-25) already cuts on a mechanical count; the `tool+args` dedup (T-2.5) already computes
+this exact signature, but only *within* one step. This is T-2.5 looked at across steps.
+
+**Why one new signature resets the counter.** A real coding loop is
+`write_source(file, new-body)` then `run_tests()`. `run_tests()` repeats identically every
+lap — but `write_source` carries a different body, so the step contains something new and
+the counter goes to zero. The counter only climbs when the agent has stopped changing the
+world *and* stopped reading anything it has not already read. `tests/test_progress_stall.py`
+runs twelve such laps and asserts the run completes, because a detector that kills honest
+work is worse than no detector.
+
+**Why `STALLED` and not `ERROR`.** The `MAX_PAUSES` precedent maps to `ERROR`, and that is
+the weaker choice: an agent going in circles and an agent that crashed call for different
+responses (rewrite the job or the tool set, versus fix the failure). A closed enum gaining
+a member is additive — `ok` is still `COMPLETED`-only, and every existing branch on
+`ERROR` keeps meaning what it meant.
+
+**Why the graph backend checks in the budget gate, not where it observes.** `run_tools`
+is where the calls are seen, but `budget_gate` is the only node that *clears*
+`stop_reason` (it must, or a finished thread would route straight to `finish` forever —
+Round 37). A stop set upstream of it is wiped before `_after_budget` reads it. So the tools
+node records `seen_calls`/`stalled_steps` into state, and the gate reads them beside the
+step and wall-clock ceilings — which is where a ceiling on a third axis belongs anyway.
+
+**Two things kept out of state.** The counter and the seen-set are checkpointed
+`AgentState` keys, not attributes on `Runtime` (IDL-47: a Runtime serves every thread, and
+a counter on it mixes one conversation's progress into another's). And `seen_calls` holds
+16-hex-char digests, never the arguments: a `write_file` call can carry an entire file, and
+a checkpoint is not the place for a second copy of user content.
+
+**Known limit, stated rather than discovered later.** `MAX_TRACKED = 512` bounds the
+seen-set, so a signature that falls out of the window and returns counts as new. The
+mechanism therefore errs toward *missing* a stall rather than toward killing a live run —
+the correct direction for something that can end someone else's run.
+
+**Four existing tests changed, and why that is not weakening them.**
+`test_redteam.py::RT06`, `test_walkthrough.py::rt06`, `test_lg.py::the_budget_is_still_a_ceiling`
+and `test_parity.py::the_budget_stops_both` each drove a runaway with one identical call
+repeated, and each now trips the stall detector before the ceiling it means to prove. They
+were changed to vary their arguments, so each still proves its own ceiling; the repeating
+case moved to `tests/test_progress_stall.py`, where it is the subject rather than the
+fixture.
+
+**Test.** `tests/test_progress_stall.py` — the rule computed directly; a new signature
+resetting the counter across twelve honest laps; tool-free steps not counted;
+underscore-prefixed arguments not manufacturing fake progress (they are stripped before a
+tool runs, so two calls differing only there are one call); the digest not containing the
+argument text; `input` (Anthropic) and `args` (LangChain) producing one signature; the
+stop on both backends, with the same `stop_reason` and the same sentence; and the counter
+living in `AgentState`, not on the `Runtime`.
+
 ---
 
 ## Implementation Decision Log
@@ -1891,3 +1962,4 @@ scripted `FakeModel`, asserting the ledger still holds the work after the run en
 | IDL-31 | Context-management fixtures are specified per model | Whether the budget or the context window binds first depends on the model's price and window ([§07.3](07-cost.md#3-token-discipline)) |
 | IDL-53 | `budget.unlimited` fires once, at the same `step == 0` site as `RUN_STARTED`, never inside `Ledger` itself | `Ledger` has no `EventBus` access by design (a ledger that emits telemetry is a ledger with a second reason to change); the guard lives with the caller that already fires exactly once per run/thread (ADR-041) |
 | IDL-54 | An agent's plan is durable state in a `Store`, never a key in graph state and never a second model call | ADR-023 rejected spending tokens to think about thinking; it never said the plan should be forgotten at step 40. A `Store` outlives the process, works on both backends, and adds no constructor parameter (ADR-061) |
+| IDL-55 | A run-level ceiling is checked in the node that clears `stop_reason`, never in the node that observes the signal | `budget_gate` is the only place the graph clears `stop_reason` (Round 37, or a finished thread routes to `finish` forever), so a stop set in `run_tools` is wiped before any router reads it (ADR-062) |

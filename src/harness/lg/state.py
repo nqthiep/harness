@@ -37,6 +37,13 @@ class AgentState(TypedDict, total=False):
     #: silently discards an undeclared key (IDL-41), and an undiscarded counter is what
     #: keeps a paused model from becoming an unbounded loop.
     paused: int
+    #: Mechanical stall detection (`progress.py`), checkpointed for the same reason the
+    #: ledger is (IDL-47): a `Runtime` serves every thread, so a counter held on it would
+    #: mix one conversation's progress into another's. `seen_calls` holds 16-hex-char
+    #: digests, never the arguments themselves — a `write_file` call can carry a whole
+    #: file, and a checkpoint is not the place for a second copy of it.
+    seen_calls: list[str]
+    stalled_steps: int
     #: Approval requests resolved so far THIS TURN — S-25(b). Reset like the ledger's
     #: `steps` (`Runtime._ledger`, `_is_new_turn`): a model repeatedly forcing ASKs is a
     #: per-turn attack (approval fatigue), not something a long-lived conversation should

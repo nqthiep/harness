@@ -2,10 +2,10 @@
 
 ## 1. The event taxonomy (closed)
 
-Sixteen kinds. Closed on purpose: an open taxonomy becomes a log-message dump within a
+Seventeen kinds. Closed on purpose: an open taxonomy becomes a log-message dump within a
 year, and nothing downstream can rely on it. New kinds require a minor version and a
-decision-log entry — `budget.unlimited` is the one addition since the original fifteen,
-and ADR-041 ([§12](12-decision-logs.md)) is its entry.
+decision-log entry — two have been added since the original fifteen: `budget.unlimited`
+(ADR-041) and `progress.stalled` (ADR-062), both in [§12](12-decision-logs.md).
 
 **Envelope v1** (T-8.1, ADR-048): every `Event` also carries `schema_version` (bumped
 only on a breaking shape change — an additive field with a default does not need one),
@@ -33,6 +33,7 @@ tracer/OTel exporter — T-8.3 — propagates one in), `tenant_id` and `session_
 | `taint.raised` | First tainted content | `source_tool`, `call_id` |
 | `context.managed` | Editing or compaction ran | `strategy`, `tokens_before`, `tokens_after` |
 | `error.raised` | Any handled error | `where`, `type`, `message`, `retryable`, `attempt` |
+| `progress.stalled` | N consecutive steps produced no tool call the run had not already made — the mechanical stall detector (`progress.py`) | `stalled_steps` |
 
 **Design rules for payloads**
 

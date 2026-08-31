@@ -16,6 +16,7 @@ from .context.linter import PrefixWatcher
 from .context.window import manage as manage_context
 from .models.pricing import MAX_CONTEXT
 from .observe.events import EventBus, EventKind
+from .progress import ProgressLedger
 #: `RunContext` is re-exported here on purpose — `harness/__init__.py` imports it
 #: from this module, so it is not dead however it looks to a linter (Round 39).
 from .dispatch import Dispatcher, RunContext as RunContext
@@ -34,6 +35,9 @@ class RunEngine:
         # no-approver fallback), across the whole run — a `RunEngine` is built fresh per
         # `atry_run()` so this is safely per-run, not shared state (R-4).
         self._asks = 0
+        # Mechanical stall detection (`progress.py`) — costs no tokens, built fresh per
+        # run like `_asks` above.
+        self._progress = ProgressLedger()
         self._dispatch = Dispatcher(self)
 
     async def run(self, message: str, *, messages: Sequence[Mapping[str, Any]] = (),
@@ -150,10 +154,19 @@ class RunEngine:
                     results = await self._dispatch._run_tools(resp, step, run_id)
                     msgs.append({"role": "user", "content": results})   # I-4: one message
                     msgs = self._manage_context(msgs, input_tokens, step)
+                    calls = [b for b in resp.content if b.get("type") == "tool_use"]
                     self._bus.emit(EventKind.STEP_FINISHED, step=step,
                                    stop_reason=resp.stop_reason,
-                                   tool_calls=[b["name"] for b in resp.content
-                                               if b.get("type") == "tool_use"])
+                                   tool_calls=[b["name"] for b in calls])
+                    # Observed AFTER dispatch, never before: stopping between a
+                    # `tool_use` and its `tool_result` would leave the stored
+                    # conversation in violation of invariant I-3.
+                    stalled = self._progress.observe(calls)
+                    if stalled:
+                        self._bus.emit(EventKind.PROGRESS_STALLED, step=step,
+                                       stalled_steps=self._progress.stalled_steps)
+                        stop, detail = StopReason.STALLED, stalled
+                        break
                     step += 1
                     continue
                 self._bus.emit(EventKind.STEP_FINISHED, step=step,

@@ -134,7 +134,11 @@ class RedTeam(unittest.TestCase):
         self.assertIn("truncated", payload)
 
     def test_RT06_ten_thousand_call_loop_stops_at_the_step_limit(self):
-        m = FakeModel([FakeModel.tool_call("loop_tool", {"i": 1})] * 10_000)
+        # `i` counts up so every call is a NEW one: this test is about the step ceiling,
+        # and a script repeating one identical call now trips the stall detector
+        # (`progress.py`) first — which would leave the ceiling itself unproven. The
+        # repeating case has its own test, `tests/test_progress_stall.py`.
+        m = FakeModel([FakeModel.tool_call("loop_tool", {"i": i}) for i in range(10_000)])
         a = Agent(name="T", job="j", tools=[loop_tool], provider=m, budget="$100, 20 steps")
         r = a.try_run("loop")
         self.assertIs(r.stop_reason, StopReason.STEP_LIMIT)

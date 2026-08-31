@@ -205,7 +205,29 @@ restart, which the LangGraph checkpointer alone does not give you for anything o
 graph state. Planning stays the model's job (ADR-023 is unchanged: no second model call
 for reflection); *remembering* the plan is the harness's. See ADR-061.
 
-## 6. If you want it reachable over HTTP — `harness[server]`
+## 6. Going in circles is its own failure — and it's caught for free
+
+The expensive way a long coding session fails is not "ran out of budget." It's the agent
+that keeps calling tools for another 200 steps while repeating what it just did — the
+budget still stops it, at the last possible moment, and reports `step_limit`, which
+describes the wrong thing.
+
+`harness.progress` watches for that mechanically, from the tool calls the harness already
+sees, so it costs **no extra tokens and no configuration** — it is on in both backends:
+
+```python
+result = lead.try_run("Fix the failing tests")
+if result.stop_reason is StopReason.STALLED:
+    print(result.detail)   # "đã 6 bước liên tiếp không có lời gọi tool nào mới — ..."
+```
+
+A step counts as no-progress only when *every* call in it repeats a `tool+args` signature
+already seen this run; six such steps in a row stop it. A normal edit → test → edit loop
+never trips it, because each `write_source` carries a different body and that resets the
+counter. See ADR-062, and `tests/test_progress_stall.py` for the twelve-lap case that
+proves honest work is not killed.
+
+## 7. If you want it reachable over HTTP — `harness[server]`
 
 ```python
 from harness.server import create_app

@@ -117,7 +117,11 @@ class Walkthrough(unittest.TestCase):
         self.assertIn("truncated", payload)
 
     def test_rt06_runaway_loop_hits_the_step_limit(self):
-        m = FakeModel([FakeModel.tool_call("roll_dice", {"sides": 6})] * 10_000)
+        # A NEW call each step — the step ceiling is what this test is for, and an
+        # identical call repeated now stops earlier at the stall detector (`progress.py`,
+        # covered by `tests/test_progress_stall.py`).
+        m = FakeModel([FakeModel.tool_call("roll_dice", {"sides": i + 1})
+                       for i in range(10_000)])
         a = Agent(name="T", job="j", tools=[roll_dice], provider=m, budget="$100, 20 steps")
         r = a.try_run("loop")
         self.assertIs(r.stop_reason, StopReason.STEP_LIMIT)

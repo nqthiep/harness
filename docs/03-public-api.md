@@ -230,8 +230,15 @@ is safe: `print(result.text)` had identical exposure, and `Result` defines no `_
 `"Answer: " + result` still raises rather than silently concatenating.
 
 `StopReason` is a closed enum: `COMPLETED`, `TRUNCATED`, `BUDGET_EXHAUSTED`, `STEP_LIMIT`,
-`TIMEOUT`, `DENIED_BY_POLICY`, `MODEL_REFUSAL`, `CANCELLED`, `ERROR`. Only `COMPLETED` sets
-`ok = True`.
+`TIMEOUT`, `DENIED_BY_POLICY`, `MODEL_REFUSAL`, `CANCELLED`, `STALLED`, `ERROR`. Only
+`COMPLETED` sets `ok = True`.
+
+`STALLED` (ADR-062) means the run kept calling tools but stopped producing anything new —
+`STALL_AFTER` consecutive steps in which every tool call had already been made earlier in
+the run. It is detected mechanically, from calls the harness already sees, so it costs no
+tokens; `Result.detail` says how many steps went by. It is its own value rather than
+`ERROR` because an agent going in circles and an agent that crashed want different
+responses from you.
 
 `TRUNCATED` was added in Round 18: the provider returns `stop_reason: "max_tokens"` when
 generation hits the ceiling, and without a value for it a cut-off answer was reported as
