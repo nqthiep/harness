@@ -1362,6 +1362,78 @@ than making the race merely likely.
 
 ---
 
+### ADR-054 — MCP client as tool boundary: `ServerLabel`, not `ServerIdentity`; fail-closed rug-pull; a bound description, not a filtered one
+**Status:** Accepted (M9/T-9.1)
+
+**Context.** docs/17's T-9.1 and design/03-tools-and-mcp.md §5: the harness must classify
+a third-party MCP tool itself, from an operator-controlled policy keyed to the server's
+identity, using the server's own `ToolAnnotations` hints at most as a default for a
+server the operator has explicitly marked trusted — never as the decision. Landing this
+closes five findings deferred on purpose since they had no MCP integration to attach to
+(design/07-risks-and-open-issues.md §1.1): S-7…S-10 (server identity, annotation trust,
+rug-pull, missing effect classification) and S-17 (injection through `description` before
+the first tool call).
+
+**Decision, four parts.**
+
+1. **`ServerLabel = str`, not `ServerIdentity{label, fingerprint}`.** K-12 already
+   rejected the fingerprint field for v1 — no format is settled that is the MCP-stdio
+   equivalent of a TLS SPKI pin (a subprocess has no certificate to pin). `McpServerPolicy`
+   keys on the label alone. What v1 does **not** stop, said plainly: a label re-pointed to
+   a different endpoint carries its grants with it. Revisit when a real re-pointing
+   incident is observed, not before (`07-risks §5.2`).
+
+2. **`classify_mcp_tool` is pure, and its priority order is fixed:** an explicit
+   `policy.effects[name]` always wins; failing that, `policy.trusted` gates whether
+   `ToolAnnotations` is even read (M-1); failing that, `policy.default_effect`
+   (`DANGER`). `_effect_from_hints` checks `is True`, never `!= False` — copying
+   Microsoft's own post-mortem: a real server (GitHub's MCP) sets `readOnlyHint=True` on
+   read tools and leaves it **unset**, not `False`, on write tools, so a `!= False` check
+   would misclassify them as safe. `Scope.server`/`ToolSpec.server` exist in the type
+   (`00-foundation §4.1`) since before this session but were never wired: `Scope.matches()`
+   never read `self.server`, so a grant for `search` on a trusted server matched `search`
+   on any other server sharing the name — the exact confused-deputy `server_label` exists
+   to prevent. Fixed the same session: `Scope.matches()`/`DecisionLog.lookup()` now take
+   `server=` and compare it; the one live call site (`lg/runtime.py::_regate`, the classic
+   backend has no `DecisionLog`) threads `call.spec.server` through.
+
+3. **Rug-pull is fail-closed, not "reclassify as a new tool."** design/03 §5.4's original
+   text proposed treating a tool whose `tools/list` shape changed as a new tool, reclassified
+   from scratch. Rejected on implementation: `Decision.scope` keys on the tool **name**, not
+   on a fingerprint, so silently reclassifying a tool's effect under a name that already has
+   live grants is itself a place a new confused-deputy could open — a grant issued when
+   `search` was `read` would still `lookup()` as ALLOW after the same name quietly became
+   `write`. `McpBinding.check_for_rug_pull()` instead raises `McpRugPullError` the moment a
+   bound tool's `(name, description, input_schema, annotations)` fingerprint drifts, or the
+   tool disappears from a re-list. Fail-closed beats a redefinition an operator never sees.
+
+4. **S-17's fix is a bound, not a filter — said as plainly as S-18 said DNS rebinding.**
+   `E7.1` already rejected an injection *detector* (a heuristic classifier gives false
+   confidence). There is no different answer for a tool `description`: the harness cannot
+   distinguish an server's legitimate instructions to the model from an injected one without
+   the same rejected heuristic. What it can do, cheaply and honestly, is the same thing
+   `max_result_tokens` already does for tool *results* — bound the untrusted input's size
+   (`MAX_MCP_DESCRIPTION_CHARS = 2_000`, untrusted servers only; a trusted server's
+   description is kept verbatim). This limits blast radius, not content. The actual
+   structural defense against S-17 remains M-1: an untrusted server defaults to `DANGER`,
+   so even a description that talks the model into calling it still stops at `ASK`.
+   `docs/06-safety.md` states this the way it states the `EgressPolicy` DNS-rebinding gap.
+
+**Transport.** `StdioMcpClient` hand-rolls JSON-RPC 2.0 over `asyncio.subprocess` rather
+than depending on the official `mcp` SDK — zero new dependencies, consistent with the
+project's dependency discipline for optional integrations (`viking` vendors only the
+client half of its SDK, ADR-035; `graph` is two packages). stdio only for v1; SSE/HTTP MCP
+transports are undemonstrated need, not built (`07-risks` "Chưa đủ evidence" discipline).
+
+**Test.** `tests/test_m9_t91_mcp.py` — the four laws unit-tested against `classify_mcp_tool`
+directly (pure function, no I/O needed); `Scope.server` confused-deputy proven both ways
+(grant on server A does not authorize server B, does authorize server A); the transport and
+rug-pull detection run against a real subprocess (`tests/fake_mcp_server.py`, genuine
+JSON-RPC over stdio), not a mock — the same discipline IDL-46 already states for the vendor
+SDK integration tests.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |

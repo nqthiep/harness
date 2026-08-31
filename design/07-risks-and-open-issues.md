@@ -181,15 +181,26 @@ nó thành thật.
 > của Python và client HTTP chuẩn RFC 3986 đều đồng ý `evil.example` là host thật trong cả
 > hai biến thể review nêu — `tests/test_attack_s18.py` khoá lại bằng test trực tiếp.
 
-> **S-7, S-8, S-9, S-10, S-17 — HOÃN CÓ CHỦ Ý, không phải bỏ quên.** Cả năm xoay quanh
-> `ServerIdentity`/`fingerprint`/rug-pull/injection qua metadata của tool MCP. Kiểm tra
-> `src/harness/`: **không có tích hợp MCP nào tồn tại** — `ToolSpec` không có trường
-> `server`, không có `ServerIdentity`, không có `tools/list`. Xây cơ chế so khớp server
-> ngay bây giờ là hạ tầng không ai gọi, đúng loại lỗi mà chính vòng KISS đã cắt
-> (`Quarantine`, `deps_type`, `Snapshottable` — xem `review-kiss.md` K-1/K-2/K-5). Năm
-> phát hiện này phải được đưa vào code **cùng lúc** với khi MCP thật được xây, không phải
-> trước — landing chúng trước sẽ tạo ra đúng kiểu trừu tượng "0 implementer khớp" mà K-5
-> đã cảnh báo.
+> **S-7, S-8, S-9, S-10, S-17 — ĐÃ SỬA, cùng lúc với MCP thật (T-9.1, ADR-054).** Đúng như
+> dự tính khi hoãn: cả năm đóng bằng một lượt xây `src/harness/mcp.py`, không phải năm bản
+> vá rời. `ToolSpec.server`/`Scope.server` (đã có kiểu từ trước, chưa từng được `matches()`
+> so khớp — lỗ hổng đó tự nó là một dạng S-9/S-10, sửa luôn) nay thật sự khoá grant theo
+> server (M-4). `classify_mcp_tool` áp đúng bốn luật M-1…M-4 của `design/03 §5.3`: server
+> không trusted thì hint không tham gia phân loại (S-7/S-8), trusted thì hint làm mặc định
+> với đúng bug Microsoft `is True` (không phải `!= False`) đã tránh. Rug-pull (S-9) —
+> `McpBinding.check_for_rug_pull()` — CHỌN KHÁC bản thiết kế gốc: fail-closed
+> (`McpRugPullError`) thay vì "coi là tool mới, phân loại lại", vì `Scope` khoá theo TÊN
+> tool chứ không theo fingerprint, nên phân loại lại âm thầm dưới cùng một tên có grant
+> sống tự nó có thể là một confused-deputy mới — xem ADR-054 cho lý do đầy đủ. S-17 (
+> injection qua `description`) sửa bằng CÙNG mẫu `max_result_tokens` đã dùng cho kết quả
+> tool — bound kích thước (`MAX_MCP_DESCRIPTION_CHARS`), không lọc nội dung (E7.1 đã bác
+> bỏ detector) — và nói thẳng phần không đóng được, đúng kỷ luật S-18: một description độc
+> vẫn có thể dụ model gọi tool khác, phòng thủ CẤU TRÚC (không phải nội dung) vẫn là
+> `DANGER` mặc định cho server không trusted, buộc qua `ASK`. `ServerLabel` (chuỗi), không
+> phải `ServerIdentity{label,fingerprint}` — giữ nguyên quyết định K-12: `fingerprint` cho
+> MCP stdio chưa có định dạng chốt được. `tests/test_m9_t91_mcp.py` (20 test) khoá cả bốn
+> luật, ranh giới confused-deputy hai chiều, và transport/rug-pull chạy qua một tiến trình
+> con THẬT (`tests/fake_mcp_server.py`, JSON-RPC qua stdio thật), không mock.
 
 > **S-16, S-19, và S-3 ĐÃ SỬA — trên giấy VÀ trong `src/harness/`.** Bước 0 chốt mô hình
 > (S-16: `accepts_tainted` rời `@tool`, chỉ đến từ operator; S-19: nhãn per-message +

@@ -296,6 +296,7 @@ class Runtime:
             self._decisions.record(Decision(
                 id=f"dec-{p['call']['id']}", verdict=d.verdict,
                 scope=Scope(tool=p["tool"], args=dict(p["call"].get("args", {})),
+                            server=spec.server if spec is not None else None,
                             call_id=p["call"]["id"]),
                 # S-11: `reported_actor` is real identity ONLY when the `approve=`
                 # callback returned `Approval(ok, actor=...)` instead of a plain `bool` —
@@ -360,7 +361,8 @@ class Runtime:
             return r
         v = self._decisions.lookup(p["tool"], p["call"].get("args", {}),
                                    run_id=_run_id(state), now=_now(),
-                                   call_id=p["call"]["id"])
+                                   call_id=p["call"]["id"],
+                                   server=spec.server if spec is not None else None)
         if v is Verdict.ALLOW:
             # S-29: một `Decision` (TTL 1 giờ chẳng hạn) có thể phủ N lần thực thi khác
             # nhau — trước bản vá, tái dùng một grant sống không ghi gì thêm vào sổ, nên
@@ -373,6 +375,7 @@ class Runtime:
             self._decisions.record(Decision(
                 id=f"dec-{p['call']['id']}-reuse", verdict=Verdict.ALLOW,
                 scope=Scope(tool=p["tool"], args=dict(p["call"].get("args", {})),
+                            server=spec.server if spec is not None else None,
                             call_id=p["call"]["id"]),
                 actor=Actor.policy("decision-log-reuse"), decided_at=_now(),
                 expires_at=None, run_id=_run_id(state),

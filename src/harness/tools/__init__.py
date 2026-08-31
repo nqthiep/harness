@@ -122,6 +122,11 @@ class ToolSpec:
     max_result_tokens: int = 4_000
     source: str = ""
     subagent: Any = None            # the child Agent, when this tool wraps one
+    #: T-9.1, design/03-tools-and-mcp.md §5.4 M-4 — `ServerLabel` khi tool này đến từ một
+    #: MCP server (`mcp.classify_mcp_tool`). `None` cho mọi tool khác (native, subagent).
+    #: `Scope.server`/`DecisionLog.lookup` khoá theo trường này — một grant cho `search`
+    #: trên server A không tự động khớp `search` cùng tên trên server B.
+    server: str | None = None
 
     def to_api(self) -> dict[str, Any]:
         """Provider tool definition.  strict:true — ADR-022."""

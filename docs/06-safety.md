@@ -143,6 +143,19 @@ believes they have bought immunity.
   (`http://intranet.internal@evil.example/`) does **not** fool `EgressPolicy`, because
   Python's `urlparse` and the HTTP clients this harness's `external` tools use both follow
   RFC 3986 and agree that `evil.example` is the host either way.
+- **MCP tool `description` is bounded, not filtered (T-9.1, ADR-054, review-security.md
+  S-17).** `harness.mcp.classify_mcp_tool` truncates a `description` from a server the
+  operator has not marked `trusted=True` to `MAX_MCP_DESCRIPTION_CHARS` (2 000). This is
+  the same shape of defense `max_result_tokens` already applies to tool *results* — bound
+  the size of untrusted input — not content inspection: E7.1 already rejected an injection
+  *detector* as false confidence, and there is no different, safer answer for a tool's own
+  metadata than for anything else a model reads. A malicious `description` can still try to
+  talk the model into calling another tool; the structural defense against that is
+  unchanged from every other untrusted-content case — effect classification and the
+  ASK/DENY gates. An untrusted MCP server's tools default to `DANGER`
+  (`McpServerPolicy.default_effect`) precisely so an injected instruction still has to pass
+  a human before it executes, the same way `allowed_hosts` catches the obvious egress case
+  and nothing past it.
 - **Subagents inherit restriction only.** A subagent's budget is capped by the parent's
   remaining budget, its safety level cannot be lower than the parent's, and it cannot hold
   a tool the parent's policies would deny. Checked at `as_tool()`.
