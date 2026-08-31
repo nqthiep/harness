@@ -403,6 +403,28 @@ gọn như tuyên bố.
 
 ---
 
+### 1.5 Phát hiện mới, phát sinh khi thực hiện roadmap M6…M10
+
+Không thuộc hai vòng review gốc (S-1…S-29/K-1…K-29) — tìm thấy khi làm M6, đánh số riêng
+`N-` để không va chạm với `S-`/`K-` đã có (đúng bài học K-13 đang chờ dọn: một namespace
+mới không nên tự tạo thêm va chạm).
+
+> **N-1 — LangGraph backend không thực thi timeout per-tool nào.** Phát hiện khi cổng
+> T-6.3 (retry theo effect class) sang `lg/runtime.py::_run_tools`: hàm này gọi
+> `asyncio.run(spec.fn(**args))` trực tiếp, không có `async with asyncio.timeout(...)`
+> nào bọc quanh — khác hẳn `dispatch.py::_invoke` (classic loop), nơi
+> `self._e._l.tool_timeout(spec.timeout_s)` luôn được áp (Round 23). Một tool `read`
+> chạy mãi mãi (vd. một HTTP call treo, không có timeout riêng của thư viện HTTP đó) sẽ
+> treo cả node graph vô thời hạn trên backend LangGraph — chỉ có wall-clock CẤP RUN mới
+> chặn được (`budget_gate`'s `remaining_wall_clock() <= 0`), và cấp đó chỉ kiểm ĐẦU mỗi
+> bước, không kiểm GIỮA một lời gọi tool đang chạy. Chưa sửa — ngoài phạm vi T-6.3 (retry
+> khác timeout), cần một lượt riêng cùng họ với M6 (có thể là T-6.5 nếu roadmap mở rộng,
+> hoặc gộp vào T-6.4's failure-injection harness để có một kịch bản "tool treo" đo được
+> trước khi sửa). `dispatch.py`'s `timeout = self._e._l.tool_timeout(spec.timeout_s)` là
+> khuôn cần chép sang, cùng cách nó clamp theo wall-clock còn lại của cả run.
+
+---
+
 ## 2. Ý tưởng có kiến trúc, chờ eval
 
 Cắt khỏi đường đi bắt buộc theo luật §8.4, **không vứt đi**. Nếu có ngày đo được, đây là chỗ

@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 from langchain_core.messages import ToolMessage
 from langgraph.types import interrupt
 
 from ..budget.ledger import Ledger
+from ..dispatch import MAX_ATTEMPTS, RETRY_BACKOFF_MAX_S, RETRY_BACKOFF_S
 from ..errors import BudgetExceeded
 from ..observe.events import EventBus, EventKind
 from ..policy.base import Ruling, ToolCall, Verdict
@@ -386,38 +388,59 @@ class Runtime:
                 msgs.append(ToolMessage(content=f"tool {p['tool']!r} is no longer available",
                                         tool_call_id=call["id"], status="error"))
                 continue
-            self._emit(state, EventKind.TOOL_STARTED, tool=spec.name, call_id=call["id"])
-            try:
-                args = {k: v for k, v in call.get("args", {}).items()
-                        if not k.startswith("_")}
-                if spec.subagent is not None:
-                    value = _run_subagent(spec, args, led)
-                else:
-                    value = asyncio.run(spec.fn(**args))
-                payload = value if isinstance(value, str) else json.dumps(
-                    value, sort_keys=True, ensure_ascii=False, default=str)
-                limit = spec.max_result_tokens * 4
-                if len(payload) > limit:
-                    payload = payload[:limit] + "\n[truncated]"
-                # L-1, design/00-foundation.md §3.2 — nhãn mà KẾT QUẢ tool này mang, sau
-                # override `sensitive` của operator nếu có (S-3). `emits_of` hợp nhất ba
-                # ý tưởng nghiên cứu tìm được rời rạc: ToolKind của pydantic-ai, tách
-                # read/write approval của Microsoft, readOnlyHint/destructiveHint của MCP.
-                emitted = emits_of(spec, self._grants, payload)
-                before = label
-                label = label.join(emitted)
-                if label != before:
-                    self._emit(state, EventKind.TAINT_RAISED, source_tool=spec.name)
-                result_msg = ToolMessage(content=redact(payload), tool_call_id=call["id"])
-                _stamp_label(result_msg, emitted)
-                msgs.append(result_msg)
-                self._emit(state, EventKind.TOOL_FINISHED, tool=spec.name, call_id=call["id"],
-                           is_error=False)
-            except Exception as exc:
+            # T-6.3, parity with dispatch.py::_invoke — read/external retry on failure
+            # up to MAX_ATTEMPTS, backed off; write/danger get exactly one attempt, ever
+            # (retrying a call with an unknown side-effect outcome is the double-effect
+            # class S-4/idempotency exists to guard against — see ADR-042).
+            retryable = EFFECT_PROFILES[spec.effect].retryable
+            attempts = MAX_ATTEMPTS if retryable else 1
+            ok, reason, payload = False, "", ""
+            for attempt in range(attempts):
+                self._emit(state, EventKind.TOOL_STARTED, tool=spec.name, call_id=call["id"],
+                           attempt=attempt)
+                try:
+                    args = {k: v for k, v in call.get("args", {}).items()
+                            if not k.startswith("_")}
+                    if spec.subagent is not None:
+                        value = _run_subagent(spec, args, led)
+                    else:
+                        value = asyncio.run(spec.fn(**args))
+                    payload = value if isinstance(value, str) else json.dumps(
+                        value, sort_keys=True, ensure_ascii=False, default=str)
+                    ok = True
+                    break
+                except Exception as exc:
+                    reason = f"{type(exc).__name__}: {exc}"
+                    more_left = attempt + 1 < attempts
+                    time_left = led.remaining_wall_clock() > 0
+                    if more_left and time_left:
+                        self._emit(state, EventKind.ERROR_RAISED, where="tool",
+                                   type="retrying", message=reason, retryable=True,
+                                   attempt=attempt)
+                        time.sleep(min(RETRY_BACKOFF_S * (2 ** attempt), RETRY_BACKOFF_MAX_S))
+            if not ok:
                 self._emit(state, EventKind.ERROR_RAISED, where="tool", type=spec.name,
-                           message=str(exc), retryable=EFFECT_PROFILES[spec.effect].retryable)
-                msgs.append(ToolMessage(content=redact(f"{type(exc).__name__}: {exc}"),
+                           message=reason, retryable=retryable)
+                msgs.append(ToolMessage(content=redact(reason),
                                         tool_call_id=call["id"], status="error"))
+                continue
+            limit = spec.max_result_tokens * 4
+            if len(payload) > limit:
+                payload = payload[:limit] + "\n[truncated]"
+            # L-1, design/00-foundation.md §3.2 — nhãn mà KẾT QUẢ tool này mang, sau
+            # override `sensitive` của operator nếu có (S-3). `emits_of` hợp nhất ba
+            # ý tưởng nghiên cứu tìm được rời rạc: ToolKind của pydantic-ai, tách
+            # read/write approval của Microsoft, readOnlyHint/destructiveHint của MCP.
+            emitted = emits_of(spec, self._grants, payload)
+            before = label
+            label = label.join(emitted)
+            if label != before:
+                self._emit(state, EventKind.TAINT_RAISED, source_tool=spec.name)
+            result_msg = ToolMessage(content=redact(payload), tool_call_id=call["id"])
+            _stamp_label(result_msg, emitted)
+            msgs.append(result_msg)
+            self._emit(state, EventKind.TOOL_FINISHED, tool=spec.name, call_id=call["id"],
+                       is_error=False)
         self._emit(state, EventKind.STEP_FINISHED, step=state.get("step", 0),
                    stop_reason="tool_use", tool_calls=[p["tool"] for p in state.get("_pending", [])])
         return {"messages": msgs + self._manage(state["messages"] + msgs, state),

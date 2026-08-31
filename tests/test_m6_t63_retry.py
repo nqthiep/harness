@@ -175,5 +175,58 @@ class MutationRetryCoTacDung(unittest.TestCase):
             dispatch_mod.MAX_ATTEMPTS = old
 
 
+class LangGraphCungPhaiRetryDungLuat(unittest.TestCase):
+    """Backend LangGraph có một implementation `_run_tools` RIÊNG, không dùng chung
+    `dispatch.py::Dispatcher` — parity phải được sửa/kiểm ở CẢ HAI nơi (đúng bài học
+    ADR-038/IDL-48: đây là lớp lỗi "sửa một backend, quên backend kia" đã lặp lại nhiều
+    lần trong lịch sử dự án)."""
+
+    def test_lg_read_hong_mot_lan_duoc_retry(self):
+        from fake_chat import FakeChat
+        from langgraph.checkpoint.memory import MemorySaver
+        from harness.lg import build_agent
+
+        state = {"n": 0}
+
+        @tool(effect="read")
+        def flaky(x: int) -> str:
+            """Đọc, đôi khi hỏng."""
+            state["n"] += 1
+            if state["n"] == 1:
+                raise Boom("hỏng lần đầu")
+            return "ok"
+
+        graph, _rt = build_agent(
+            model=FakeChat(script=[FakeChat.call("flaky", {"x": 1}), FakeChat.text("xong")]),
+            tools=[flaky], budget="$5", checkpointer=MemorySaver())
+        from langchain_core.messages import HumanMessage
+        graph.invoke({"messages": [HumanMessage("thử")]},
+                     config={"configurable": {"thread_id": "t1"}})
+        self.assertEqual(state["n"], 2, "read hỏng 1 lần phải được LangGraph backend gọi lại")
+
+    def test_lg_write_khong_bao_gio_duoc_retry(self):
+        from fake_chat import FakeChat
+        from langgraph.checkpoint.memory import MemorySaver
+        from harness.lg import build_agent
+
+        state = {"n": 0}
+
+        @tool(effect="write")
+        def flaky(x: int) -> str:
+            """Ghi, đôi khi hỏng."""
+            state["n"] += 1
+            if state["n"] == 1:
+                raise Boom("hỏng lần đầu")
+            return "ok"
+
+        graph, _rt = build_agent(
+            model=FakeChat(script=[FakeChat.call("flaky", {"x": 1}), FakeChat.text("xong")]),
+            tools=[flaky], budget="$5", checkpointer=MemorySaver())
+        from langchain_core.messages import HumanMessage
+        graph.invoke({"messages": [HumanMessage("thử")]},
+                     config={"configurable": {"thread_id": "t1"}})
+        self.assertEqual(state["n"], 1, "write hỏng KHÔNG được LangGraph backend gọi lại")
+
+
 if __name__ == "__main__":
     unittest.main()
