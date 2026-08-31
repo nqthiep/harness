@@ -553,17 +553,25 @@ mới không nên tự tạo thêm va chạm).
 > retryable` tồn tại từ Round 5 trước khi T-6.3 mới có ai đọc nó). Khoá bằng
 > `tests/test_m6_t64_chaos.py` (cả hai backend, cộng mutation test từng cái).
 
-> **N-5 — retry cấp PROVIDER đã có tài liệu công bố nhưng chưa cài đặt.**
+> **N-5 ĐÃ SỬA — retry cấp PROVIDER đã có tài liệu công bố nhưng chưa cài đặt.**
 > `docs/10-observability-ops.md §3`'s bảng "Vendor → Harness → Retry" viết rõ:
 > `ProviderRateLimited` retry "Yes, honoring Retry-After", `ProviderUnavailable` retry
 > "Yes, exponential backoff", `ProviderTimeout` retry "Yes, exponential backoff". Phát
 > hiện khi đọc docs/10 §2 để làm T-8.3 (OTel) — bảng này SÁT NGAY BÊN bảng OTel, đọc
 > lướt qua ban đầu. N-4 (đã sửa) chỉ biến provider error thành `Result(ERROR)`, KHÔNG tự
 > động retry gì cả — khác hẳn cam kết "Yes, honoring Retry-After" ở đây. Đây là một lớp
-> retry RIÊNG với T-6.3 (retry cấp TOOL theo effect class, đã xây) — retry cấp MODEL CALL,
-> chưa có gì. Chưa sửa — ngoài phạm vi T-8.3 (exporter, không phải retry policy); cần
-> quyết định thiết kế riêng (đọc header `Retry-After` từ đâu khi `ProviderError` không
-> mang nó hôm nay — `errors.py`'s `ProviderRateLimited` không có trường đó) trước khi cài.
+> retry RIÊNG với T-6.3 (retry cấp TOOL theo effect class, đã xây) — retry cấp MODEL CALL.
+> **Sửa (ADR-070, `docs/12`): module riêng `provider_retry.py` (không đẩy `run.py` qua
+> trần 250 dòng IDL-13) — retry bị chặn bởi WALL-CLOCK CÒN LẠI, không phải một số đếm
+> cố định, đúng nguyên văn `docs/10 §3`. `ProviderRateLimited.retry_after` đọc thật từ
+> header `Retry-After` của SDK (có sàn tối thiểu, chống một `Retry-After: 0` biến thành
+> vòng lặp dồn dập); không có header thì lùi theo hàm mũ CÙNG lịch `dispatch.py`'s T-6.3
+> đã dùng (R-17).** Lộ ra một lỗ rò rỉ thật khi thêm retry vào một `Ledger` nay dùng lại
+> qua nhiều lần thử: `reserve()` chưa từng có một "call này không xảy ra" release —
+> `Ledger.release_reservation()` vá nó, xác nhận là lỗ thật bằng cách revert rồi chạy lại
+> test (hai test đỏ). **Chỉ vòng lặp classic** — backend LangGraph nhận model LangChain
+> tuỳ ý, gọi `.invoke()` thẳng, không qua `AnthropicProvider._map()` nên không có gì để
+> nhận diện. `tests/test_n5_provider_retry.py` (17 test).
 
 > **N-6 ĐÃ SỬA — `model.response` event thiếu `usage`/`latency_ms` so với `docs/05` tự
 > hứa.** `docs/05-data-and-state.md §1`'s bảng taxonomy ghi `model.response` mang

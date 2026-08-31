@@ -11,7 +11,7 @@ import json
 import time
 from typing import Any, Mapping, Sequence
 
-from .errors import BudgetExceeded, ProviderRateLimited, ProviderTimeout, ProviderUnavailable, ToolContractError
+from .errors import BudgetExceeded, ToolContractError
 from .context.assembler import canonical as _canonical
 from .context.linter import PrefixWatcher
 from .context.window import manage as manage_context
@@ -19,6 +19,7 @@ from .models.pricing import MAX_CONTEXT
 from .observe.events import EventBus, EventKind
 from .policy.decision import DecisionLog
 from .progress import ProgressLedger
+from .provider_retry import call_with_retry
 #: `RunContext` is re-exported here on purpose — `harness/__init__.py` imports it
 #: from this module, so it is not dead however it looks to a linter (Round 39).
 from .dispatch import Dispatcher, RunContext as RunContext
@@ -90,46 +91,18 @@ class RunEngine:
                     req = self._asm.build(msgs, max_tokens=max_tokens,
                                           stream=on_delta is not None)
                     hard_in = len(canonical_len(req))   # chars >= tokens, always
-                    reservation = self._l.reserve(input_tokens, max_tokens, price,
-                                                  hard_max_input=hard_in)
                 except BudgetExceeded as exc:
                     self._bus.emit(EventKind.BUDGET_EXHAUSTED, step=step, axis="usd",
                                    spent=str(self._l.spent))
                     stop, detail = StopReason.BUDGET_EXHAUSTED, str(exc)
                     break
 
-                self._bus.emit(EventKind.BUDGET_RESERVED, step=step,
-                               estimate_usd=str(reservation.estimate),
-                               spent_usd=str(self._l.spent),
-                               exact=self._l.last_call_was_exactly_bounded)
-                self._bus.emit(EventKind.MODEL_REQUEST, step=step, model=self._a.model,
-                               input_tokens=input_tokens, max_tokens=max_tokens,
-                               n_tools=len(self._a.toolset))
-
-                # T-6.4 (chaos test "provider timeout" found this): nothing here ever
-                # caught a provider failure — `ProviderError`/`ProviderTimeout`/
-                # `ProviderRateLimited` (models/anthropic.py maps real SDK errors to
-                # these) are raised and NEVER caught anywhere in this loop, so a live
-                # rate limit or a transient timeout crashed straight out of
-                # `try_run()` — the same documented-contract violation N-2 just fixed
-                # for `returns=`, one call site over. `asyncio.CancelledError` is not an
-                # `Exception` subclass (Python's own hierarchy), so this catch cannot
-                # swallow a cancellation — T-6.2 still holds.
-                t0 = time.monotonic()
-                try:
-                    resp = await self._p.complete(req, on_delta=on_delta)
-                except Exception as exc:
-                    # Transient-by-nature provider failures are flagged retryable=True
-                    # for the audit trail even though nothing acts on it automatically
-                    # yet — same shape as EFFECT_PROFILES.retryable existing since
-                    # Round 5 before T-6.3 gave it a reader (ADR-042).
-                    transient = isinstance(exc, (ProviderTimeout, ProviderRateLimited,
-                                                 ProviderUnavailable, TimeoutError))
-                    self._bus.emit(EventKind.ERROR_RAISED, step=step, where="provider",
-                                   type=type(exc).__name__, message=str(exc),
-                                   retryable=transient)
-                    stop, detail = StopReason.ERROR, f"{type(exc).__name__}: {exc}"
+                outcome = await call_with_retry(self, step, input_tokens, max_tokens,
+                                                price, hard_in, req, on_delta)
+                if outcome.resp is None:
+                    stop, detail = outcome.stop, outcome.detail
                     break
+                resp, reservation, t0 = outcome.resp, outcome.reservation, outcome.t0
                 self._l.settle(reservation, resp.usage, price)
                 self._l.count_step()
                 usage_total = usage_total + resp.usage

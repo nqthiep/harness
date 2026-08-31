@@ -247,6 +247,23 @@ class Ledger:
         self._open[r.id] = r
         return r
 
+    def release_reservation(self, reservation: Reservation) -> None:
+        """N-5 — a reservation whose call never happened: the provider raised before a
+        response existed to `settle()`. Before this existed, a failed call's estimate
+        stayed in `self._open` forever (nothing else ever popped it), so `_committed()`
+        counted it as spend for the rest of the process — a real leak, just one no test
+        caught because nothing retried a failed call before this: the run ended right
+        there, `Ledger` and all, so the dangling entry never outlived anything. A
+        retried call reuses the SAME `Ledger` across attempts, so it does now.
+
+        Named distinctly from `release()` just below — that one is `hold()`'s
+        replace-a-hold-with-actual-spend counterpart (subagent budget accounting, a
+        different resource-accounting shape entirely) and a same-named second method
+        here would silently shadow it (Python keeps whichever `def` comes last in the
+        class body); this pops without touching `self._spent` at all, because the call
+        it reserved for never ran and so never cost anything."""
+        self._open.pop(reservation.id, None)
+
     def settle(self, reservation: Reservation, usage: Usage, price) -> Money:
         self._open.pop(reservation.id, None)
         actual = Money(

@@ -2302,6 +2302,89 @@ own branch); a run cut off at the step limit never attempting to parse partial o
 and — the sharpest test — the exact same `detail` string on both backends for the
 identical malformed answer.
 
+### ADR-070 — N-5 closed: provider-level retry, honoring `Retry-After`, bounded by wall clock not a count — classic loop only
+
+**Status:** Accepted
+
+**Context.** `docs/10 §3`'s mapping table has promised retry behaviour since it was
+written: `ProviderRateLimited` — "Yes, honoring `Retry-After`"; `ProviderUnavailable`/
+`ProviderTimeout` — "Yes, exponential backoff." N-4 (ADR-044) made a provider failure
+land as `Result(ERROR)` instead of crashing `try_run()`, but nothing ever retried — every
+transient failure, including a rate limit the server said would clear in five seconds,
+ended the run on the first attempt.
+
+**Decision 1 — retry logic lives in a new module, `provider_retry.py`, not in `run.py`
+itself.** `run.py` sits close to IDL-13's 250-line cap by design; the retry loop plus its
+`_CallOutcome` result type would have pushed it to 265. `Dispatcher` already established
+the pattern this follows: a function/class taking `engine` (the `RunEngine`, read via
+`._bus`/`._l`/`._p`/`._a`) rather than being a method on it, so the logic can live outside
+`run.py` without inventing a new way to reach the engine's state. Round 28 made the
+identical call once already, splitting tool dispatch out of the loop for the same reason.
+
+**Decision 2 — retry is bounded by the run's wall clock, never by an independent attempt
+count.** `docs/10 §3` says so verbatim, and it is the same discipline `Budget` applies
+everywhere else: a ceiling the caller set, not a number this module invents. There is
+deliberately no `MAX_ATTEMPTS` constant in `provider_retry.py` — `remaining_wall_clock()`
+is checked before every sleep, and the wait itself is clamped to whatever is left.
+
+**Decision 3 — `Retry-After` is honored, with a floor and a fallback, never trusted
+blindly.** `ProviderRateLimited` gains a `retry_after: float | None` field;
+`AnthropicProvider._map()` reads it off `exc.response.headers["retry-after"]` (an
+`httpx.Response` the SDK already attaches) when the status is 429, parsing failure or an
+HTTP-date value (which this adapter does not parse) both falling back to `None` rather
+than guessing — a caller retrying on `None` with its own default backoff is a smaller
+failure mode than misparsing a date into a nonsense wait. `retry_wait()` floors the
+honored value at `RETRY_BACKOFF_S`: a `Retry-After: 0` (or a clock-skewed negative one)
+must not collapse retry into a tight loop hammering a server that just said to slow down.
+No header at all falls back to the same exponential schedule `dispatch.py`'s tool retry
+already uses (T-6.3) — one backoff shape in this codebase, not a second one invented here
+(R-17).
+
+**Decision 4 — a real leak, found by adding retry to a `Ledger` now reused across
+attempts.** `Ledger.reserve()` has never had a matching "this call never happened" release
+— only `settle()` popped `self._open`. Harmless as long as nothing ever called `reserve()`
+twice before a `settle()`, which was always true before retry existed: a failed call ended
+the run, `Ledger` included, so a dangling reservation never outlived anything. A retried
+call reuses the same `Ledger` across attempts, so it does now — reverting the fix and
+re-running `tests/test_n5_provider_retry.py::ReservationKhongBiRoRi` proves it: two tests
+go red on a leaking release, confirming this was a real, previously-invisible bug rather
+than defensive code with nothing to defend against. `Ledger.release_reservation()` is the
+fix, named distinctly from the pre-existing `release()` (a different accounting shape —
+`hold()`'s replace-a-hold-with-actual-spend counterpart for subagent budgets) because a
+same-named second method would have silently shadowed it.
+
+**Decision 5 — classic loop only, stated in `provider_retry.py`'s own docstring.**
+`docs/10 §3`'s table describes what `AnthropicProvider` maps vendor exceptions to. The
+LangGraph backend never goes through that mapping: `build_agent(model=...)` takes an
+arbitrary caller-supplied LangChain model and calls `.invoke()` on it directly, so
+whatever that model raises is whatever its own library raises — never translated into
+this harness's `ProviderRateLimited`/`ProviderUnavailable`/`ProviderTimeout` hierarchy.
+Porting this would mean wrapping an arbitrary LangChain model in the harness's own
+exception mapping (a materially bigger change, resting on the assumption that every
+LangChain model raises exceptions this adapter's status codes even apply to) — not what
+N-5 asked for.
+
+**A pre-existing test's assumption flipped, correctly.** `tests/test_m6_t64_chaos.py`'s
+`TimeoutProvider()` scenario defaults to failing only the FIRST call
+(`fail_calls=(0,)`) — before retry existed that always ended in `Result(ERROR)`; after
+retry, a one-time transient failure now recovers on the second attempt and the run
+completes. The test was changed to fail every call (`range(10_000)`, with a short
+`0.3s` wall clock so persistent failure still exhausts quickly) to keep testing what it
+was meant to guard — no crash under sustained failure — while the recovery case gets its
+own test in `tests/test_n5_provider_retry.py`.
+
+**Test.** `tests/test_n5_provider_retry.py` (17) — `retry_wait()`'s pure decision table
+including the `Retry-After` floor, its exponential fallback, and every non-transient
+`ProviderError` never retrying; `Retry-After` extraction from a real SDK-shaped exception
+object, including a missing header and an unparseable (date-shaped) one both landing on
+`None` rather than crashing or misparsing; the reservation leak proven both ways (present
+without the fix, absent with it); a one-time transient failure recovering to a completed
+run; a sustained failure still stopping cleanly, bounded by wall clock; `error.raised`
+carrying `retryable=True` and the right `attempt` number across two real retries; each
+retry attempt reserving its own `BUDGET_RESERVED` (I-1: no model call without a
+reservation immediately before it — a retry is a new call); and a non-transient error
+(`ProviderAuthError`) making exactly one attempt, never retried.
+
 ---
 
 ## Implementation Decision Log

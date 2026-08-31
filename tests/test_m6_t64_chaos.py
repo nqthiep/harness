@@ -9,7 +9,13 @@ Round-38 bài học (`testing/__init__.py`) đã dạy.
 Đi kèm: hai lỗi THẬT tìm thấy khi viết kịch bản "model trả rác" (N-2/N-3,
 `design/07-risks-and-open-issues.md §1.5`) — N-2 (classic loop's `try_run()` raise
 `ToolContractError` không bị bắt) đã sửa trong cùng lượt này; N-3 (LangGraph không hỗ
-trợ `returns=`) ghi lại, chưa sửa (ngoài phạm vi chaos testing).
+trợ `returns=`) ghi lại lúc đó, chưa sửa — nay ĐÃ SỬA ở một lượt khác (ADR-069).
+
+N-5 (retry cấp provider, cùng `design/07 §1.5`) cũng đã sửa từ đó: `TimeoutProvider()`
+mặc định chỉ hỏng ĐÚNG MỘT LẦN (`fail_calls=(0,)`) — trước N-5, "provider timeout" luôn
+kết thúc bằng lỗi vì không gì thử lại; sau N-5, một lần hỏng thoáng qua giờ TỰ HỒI PHỤC ở
+lần thử tiếp theo, và test dưới đây đổi theo đúng hành vi mới đó — xem
+`tests/test_n5_provider_retry.py` cho bộ test đầy đủ của N-5.
 """
 import dataclasses
 import sys
@@ -37,9 +43,14 @@ def _noop_tool():
 
 
 class ProviderTimeout(unittest.TestCase):
-    def test_provider_timeout_tra_result_khong_crash(self):
+    def test_provider_timeout_lien_tuc_tra_result_khong_crash(self):
+        """N-5: một lần hỏng THOÁNG QUA nay tự hồi phục (xem
+        `tests/test_n5_provider_retry.py`), nên "không crash" ở đây phải là hỏng LIÊN
+        TỤC — `fail_calls` phủ hết mọi lần thử trong ngân sách thời gian ngắn để test
+        không phải chờ hết một wall-clock dài."""
         agent = Agent(name="A", job="j", model="claude-opus-5",
-                      provider=TimeoutProvider(), budget="$5")
+                      provider=TimeoutProvider(fail_calls=range(10_000)),
+                      budget="$5, 20 steps, 0.3s")
         try:
             r = agent.try_run("thử")
         except Exception as exc:      # chính test này cấm crash

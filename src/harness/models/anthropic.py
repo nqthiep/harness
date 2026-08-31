@@ -18,9 +18,32 @@ from . import pricing
 from .base import DeltaFn, ModelRequest, ModelResponse
 
 #: Errors this adapter maps.  Anything unmapped becomes ProviderError, never a success.
+#: 429 is handled separately in `_map()` — it is the one status that needs a field
+#: (`retry_after`) pulled off the response, not just a bare `str(exc)` construction.
 _STATUS = {401: ProviderAuthError, 403: ProviderAuthError,
            400: ProviderBadRequest, 404: ProviderBadRequest,
-           408: ProviderTimeout, 429: ProviderRateLimited}
+           408: ProviderTimeout}
+
+
+def _retry_after(exc: Exception) -> float | None:
+    """N-5 — the vendor's `Retry-After` header, in seconds, when the response carried
+    one. `exc.response` is the `httpx.Response` the Anthropic SDK attaches to every
+    `APIStatusError`; header lookup is case-insensitive on an `httpx.Headers`, so
+    `"retry-after"` matches whatever casing the server actually sent."""
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    raw = headers.get("retry-after")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        # HTTP also permits an HTTP-date value here, which this adapter does not parse
+        # — a caller retrying on `None` (its own default backoff) is a smaller failure
+        # mode than misparsing a date into a nonsense wait.
+        return None
 
 
 class AnthropicProvider:
@@ -123,6 +146,8 @@ class AnthropicProvider:
         """Vendor exception -> harness hierarchy.  A refusal is NOT an error: it arrives
         as HTTP 200 with stop_reason='refusal' and is handled by the loop (ADR-019)."""
         status = getattr(exc, "status_code", None)
+        if status == 429:
+            return ProviderRateLimited(str(exc), retry_after=_retry_after(exc))
         if status in _STATUS:
             return _STATUS[status](str(exc))
         if isinstance(status, int) and status >= 500:

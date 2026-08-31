@@ -334,11 +334,8 @@ trail cần chịu được kiểm toán bên ngoài.
 |---|---|---|
 | 1 | Pilot 2-4 tuần — cùng model, cùng task set, cùng tool set, cùng security policy | Cần triển khai thật, người dùng thật, dữ liệu nhiều tuần lịch — `docs/17 §6`'s điều kiện cuối cùng |
 
-**Không chặn v1.0, đã được xét (`design/07`) và CHỦ ĐÍCH hoãn — còn sống, chưa sửa:**
-
-| # | Việc | Vì sao hoãn | Việc thật để đóng |
-|---|---|---|---|
-| N-5 | Retry cấp PROVIDER (`Retry-After`, backoff cho rate-limit/timeout) đã công bố ở `docs/10 §3` nhưng chưa cài | Cần quyết định thiết kế riêng: đọc `Retry-After` từ đâu khi `ProviderRateLimited` hôm nay không mang trường đó | Thêm trường vào `ProviderRateLimited`, viết policy retry cấp model-call (khác T-6.3, vốn là retry cấp TOOL) |
+**Chặn v1.0 ở trên là điều kiện DUY NHẤT còn lại** — mọi phát hiện N-1…N-6 (`design/07`)
+đã đóng, xem bảng dưới.
 
 **ĐÃ ĐÓNG trong lượt trả lời này:**
 
@@ -347,6 +344,7 @@ trail cần chịu được kiểm toán bên ngoài.
 | ~~N-6~~ | `model.response` event thiếu `usage`/`latency_ms` so với `docs/05` tự hứa | **ĐÃ SỬA** — ADR-067. Tên trường phẳng (`input_tokens`/`output_tokens`/`cache_read_tokens`/`cache_write_tokens`/`latency_ms`), khớp đúng rename table `OtelExporter` đã viết sẵn, ở cả hai backend. `tests/test_n6_model_response_usage.py`. |
 | ~~N-1~~ | Backend LangGraph không có timeout PER-TOOL (chỉ có wall-clock cấp run) | **ĐÃ SỬA** — ADR-068. `led.tool_timeout(spec.timeout_s)` bọc đúng chỗ đường idempotency (ADR-064) đã đi qua, cùng thông điệp hai nhánh `dispatch.py` đã có. Xác nhận là hồi quy thật bằng cách revert rồi chạy lại test. `tests/test_n1_per_tool_timeout.py`. |
 | ~~N-3~~ | Backend LangGraph không hỗ trợ `returns=` (`Result.value` luôn `None`) | **ĐÃ SỬA** — ADR-069. `_parse_returns` → hàm module-level `parse_returns`, hai backend dùng CHUNG (R-17). `finish` node parse khi `stop=="completed"`, ghi `state["value"]` (dict JSON hoá được, không phải instance — IDL-42's lý do). Nói thẳng: backend này không ràng buộc model sinh đúng schema như classic loop — chỉ parse/validate cái đã trả về. `tests/test_n3_returns_graph.py`. |
+| ~~N-5~~ | Retry cấp PROVIDER (`Retry-After`, backoff cho rate-limit/timeout) đã công bố ở `docs/10 §3` nhưng chưa cài | **ĐÃ SỬA** — ADR-070. Module riêng `provider_retry.py` (không đẩy `run.py` qua trần IDL-13); bị chặn bởi WALL-CLOCK CÒN LẠI, không phải một số đếm; `ProviderRateLimited.retry_after` đọc thật từ header, có sàn tối thiểu; lộ ra và vá một lỗ rò rỉ reservation thật (`Ledger.release_reservation`). Chỉ vòng lặp classic — nói thẳng lý do trong ADR. `tests/test_n5_provider_retry.py` (17 test). |
 
 **Tài liệu lệch khỏi code (đã sửa trong lượt trả lời này, không phải nợ mới):** bảng tự
 chấm `docs/17 §1` (dòng Reliability, Observability) vẫn viết S-01 "đỏ" và S-02/S-03/S-14
@@ -368,34 +366,33 @@ không phải một khoảng trống.
 ### 7.2 Đã hoàn thành từ lượt trước (không lặp lại nội dung, chỉ điểm danh)
 
 Toàn bộ `S-1…S-29`/`K-1…K-29` (58 phát hiện, `design/07`), `M6…M10` (10/10 sub-task,
-`docs/17`), và sáu hạng mục "coding agent chạy dài" thoả thuận riêng ngoài hai backlog
-trên — `TaskLedger` (ADR-061), stall detector (ADR-062), `DecisionLog` bền qua restart
+`docs/17`), sáu hạng mục "coding agent chạy dài" thoả thuận riêng ngoài hai backlog trên
+— `TaskLedger` (ADR-061), stall detector (ADR-062), `DecisionLog` bền qua restart
 (ADR-063), `execute_once` có caller thật (ADR-064), `harness.tools.code` (ADR-065), nén
-context thật (ADR-066). 682 test xanh, ruff/mypy sạch trên mọi tệp đã đụng.
+context thật (ADR-066) — và bốn phát hiện N-1/N-3/N-5/N-6 (ADR-067…070). 718 test xanh,
+ruff/mypy sạch trên mọi tệp đã đụng.
 
 ### 7.3 Roadmap tới đây
 
 Không có milestone MỚI nào được đặt lịch — đúng luật `## 5`'s v1.x ("chờ bằng chứng sử
-dụng thật, không phải một v1.1 định sẵn ngày"). Thứ tự đề xuất nếu có người tiếp tục,
-[Inference: ưu tiên theo mức rủi ro/công sức tôi tự đánh giá, không phải một quyết định đã
-chốt]:
+dụng thật, không phải một v1.1 định sẵn ngày"). **Không còn phát hiện N-* nào sống** —
+việc duy nhất còn lại trước nhãn v1.0 là pilot, và nó không phải việc code:
 
 1. ~~**N-6**~~ — **ĐÃ SỬA** (`7.1`/`7.2`, ADR-067).
 2. ~~**N-1**~~ — **ĐÃ SỬA** (`7.1`/`7.2`, ADR-068).
 3. ~~**N-3**~~ — **ĐÃ SỬA** (`7.1`/`7.2`, ADR-069).
-4. **N-5** (retry cấp provider) — cần quyết định thiết kế trước khi cài (đọc `Retry-After`
-   từ đâu); không làm vội.
-5. **Pilot 2-4 tuần** — điều kiện DUY NHẤT cho nhãn v1.0, độc lập với thứ tự 4 ở trên, và
-   là việc của người vận hành, không phải của một phiên code.
+4. ~~**N-5**~~ — **ĐÃ SỬA** (`7.1`/`7.2`, ADR-070).
+5. **Pilot 2-4 tuần** — điều kiện DUY NHẤT còn lại cho nhãn v1.0, việc của người vận
+   hành, không phải của một phiên code.
 
 ### 7.4 Release plan
 
-- **v0.x (hiện tại):** thư viện đầy đủ tính năng theo `docs/17`, chưa gắn nhãn v1.0 vì
-  pilot chưa chạy. An toàn để dùng nội bộ/thử nghiệm; KHÔNG có bằng chứng production ngoài
-  test qua `FakeModel`.
-- **v1.0:** gắn nhãn khi VÀ CHỈ KHI pilot 2-4 tuần (`## 5`) hoàn tất và báo cáo lại — không
-  có đường tắt nào khác, kể cả N-5 đóng cũng không thay thế điều kiện này (N-1/N-3/N-6
-  đã đóng, không còn tính).
-- **v1.x:** N-5 (theo `## 7.3` hoặc theo nhu cầu pilot lộ ra), `AuthEvidence`
-  nếu deployment cần audit chịu kiểm toán ngoài, và bất kỳ khoảng trống nào pilot tự phát
-  hiện — **thêm vào sau khi có bằng chứng, không đoán trước.**
+- **v0.x (hiện tại):** thư viện đầy đủ tính năng theo `docs/17`, mọi phát hiện N-*
+  (`design/07`) đã đóng, chưa gắn nhãn v1.0 vì pilot chưa chạy. An toàn để dùng nội
+  bộ/thử nghiệm; KHÔNG có bằng chứng production ngoài test qua `FakeModel`.
+- **v1.0:** gắn nhãn khi VÀ CHỈ KHI pilot 2-4 tuần (`## 5`) hoàn tất và báo cáo lại —
+  không có đường tắt nào khác, và không còn việc code nào đứng giữa hôm nay và điều kiện
+  đó.
+- **v1.x:** `AuthEvidence` nếu deployment cần audit chịu kiểm toán ngoài, và bất kỳ
+  khoảng trống nào pilot tự phát hiện — **thêm vào sau khi có bằng chứng, không đoán
+  trước.**
