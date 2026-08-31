@@ -92,8 +92,11 @@ class Properties(unittest.TestCase):
                     try:
                         mt = L.size_call(input_tokens, price(model), MAX_OUTPUT[model])
                     except Exception as exc:
-                        # only acceptable when the input alone is unaffordable
-                        cost_in = input_tokens / 1e6 * float(price(model).input_per_mtok)
+                        # only acceptable when the input alone is unaffordable — priced at
+                        # cache_write_per_mtok, the same worst-case rate size_call()/
+                        # reserve() use since S-22 (settle() can bill up to that rate, and
+                        # under-pricing it was a systematic 25% miss, not a rounding error)
+                        cost_in = input_tokens / 1e6 * float(price(model).cache_write_per_mtok)
                         if cost_in < float(Budget.parse(usd).usd) * 0.9:
                             problems.append((model, usd, input_tokens, str(exc)))
                         continue

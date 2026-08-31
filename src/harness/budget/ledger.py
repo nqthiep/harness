@@ -107,7 +107,8 @@ class Ledger:
     def snapshot(self) -> dict:
         return {"spent": str(self._spent.decimal), "steps": self._steps,
                 "calibration": str(self._calibration),
-                "overshoot": str(self._overshoot.decimal)}
+                "overshoot": str(self._overshoot.decimal),
+                "blocked": self._blocked}
 
     def restore(self, snap: dict | None) -> "Ledger":
         if not snap:
@@ -117,6 +118,11 @@ class Ledger:
             self._steps = int(snap.get("steps", 0))
             self._calibration = max(Decimal(1), Decimal(str(snap.get("calibration", "1"))))
             self._overshoot = Money(Decimal(str(snap.get("overshoot", "0"))))
+            # S-21: `_blocked` used to live only on the object, so checkpoint + resume
+            # (the LangGraph backend rebuilds a `Ledger` from `snapshot()` on every node,
+            # design/04-runtime-durability.md S-1: `restore(snapshot(x)) == x`) silently
+            # un-blocked a ledger whose spend had already crossed the hard ceiling.
+            self._blocked = bool(snap.get("blocked", False))
         except (ArithmeticError, TypeError, ValueError):
             pass                    # a corrupt checkpoint starts clean rather than crashing
         return self
@@ -189,7 +195,14 @@ class Ledger:
             return model_max
         remaining = self.remaining_usd()
         assert remaining is not None
-        input_cost = Money(self._adjusted(input_tokens) / 1_000_000 * price.input_per_mtok)
+        # S-22: a reservation used to price input at `input_per_mtok` only, but `settle()`
+        # bills at up to FOUR rates (input, output, cache read, cache **write** — COST-3
+        # above). Prompt caching is exactly the case this harness optimizes for (COST-3's
+        # own words), and `cache_write_per_mtok` is always the highest per-token input
+        # rate (`_p()` in models/pricing.py: `input * 1.25`) — so a call that writes to
+        # cache was UNDER-estimated by a fixed 25%, every time, not a random rounding
+        # error. Pricing the worst case restores `reserve()` as a true upper bound.
+        input_cost = Money(self._adjusted(input_tokens) / 1_000_000 * price.cache_write_per_mtok)
         affordable_usd = remaining - input_cost
         if affordable_usd.decimal <= 0:
             raise BudgetExceeded(
@@ -211,15 +224,18 @@ class Ledger:
         call rather than merely estimated (ADR-026)."""
         estimated_in = self._adjusted(input_tokens)
         exact = False
+        # S-22: priced at `cache_write_per_mtok`, the worst-case per-token input rate —
+        # see `size_call()` above for why `input_per_mtok` alone under-estimates by a
+        # fixed, systematic 25% whenever the call actually writes to cache.
         if hard_max_input is not None:
             hard = Money(
-                Decimal(hard_max_input) / 1_000_000 * price.input_per_mtok
+                Decimal(hard_max_input) / 1_000_000 * price.cache_write_per_mtok
                 + Decimal(max_tokens) / 1_000_000 * price.output_per_mtok)
             if self._b.usd is None or (self._committed() + hard).decimal <= self._b.usd:
                 estimated_in = Decimal(hard_max_input)   # the bound fits: use it, be exact
                 exact = True
         est = Money(
-            estimated_in / 1_000_000 * price.input_per_mtok
+            estimated_in / 1_000_000 * price.cache_write_per_mtok
             + Decimal(max_tokens) / 1_000_000 * price.output_per_mtok
         )
         self._last_exact = exact
