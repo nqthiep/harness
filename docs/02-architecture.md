@@ -185,7 +185,10 @@ src/harness/
     invoke.py           Execution: timeout, truncation, error capture, taint marking
     builtin/
       web.py            search, fetch          (effect=external, pre-classified)
-      files.py          read_file, write_file  (read / write)
+      files.py          read_file, write_file  (read / write, confined to the CWD)
+    code.py             CodeTools(root=...): navigation, search, Python outline,
+                        exact-string editing, test runner, git (ADR-065). Nothing
+                        `danger` or `external` — those stay the agent author's to declare
       shell.py          run_command            (danger)
       math.py           calculate              (read)
 

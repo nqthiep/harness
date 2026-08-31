@@ -101,13 +101,40 @@ crash-safety inside a single tool call.
 
 ## 2. The tool set — narrow and correctly classified, not one `run_shell`
 
-`examples/coding_agent.py §1` builds six tools instead of one catch-all shell tool:
+**`harness.tools.code.CodeTools` now ships this**, so the table below is what you get
+rather than what you write:
+
+```python
+from harness.tools.code import CodeTools
+
+code = CodeTools(root="/path/to/repo")          # every path confined to this root
+lead = Agent(name="Lead", job="...", tools=[*code.tools(), git_push],
+             budget="$5, 300 steps, 45m")
+```
 
 | tool | effect | why |
 |---|---|---|
-| `list_files`, `read_source`, `run_tests` | `read` | look, don't change anything the agent can't just look at again |
-| `write_source`, `git_commit` | `write` | changes something, but undoable (`git reset`, overwrite again) |
-| `git_push` | `danger` | not reliably undoable once someone else has pulled |
+| `list_files`, `read_source`, `search_code`, `outline`, `git_status`, `git_diff` | `read` | look, don't change anything the agent can't just look at again |
+| `write_source`, `edit_source`, `git_commit`, `run_tests` | `write` | changes something, but undoable (`git reset`, overwrite again) |
+| `git_push` — **yours, not the module's** | `danger` | not reliably undoable once someone else has pulled |
+
+Two of those deserve their reasons said out loud.
+
+**`run_tests` is `write`, not `read`** — an earlier draft of this document had it as
+`read`, and that was wrong. A test run writes caches and artifacts, and two runs in
+parallel fight over them. `write` is the only class that states all three facts at once
+(not parallel-safe, never auto-retried, still auto-allowed outside `safety="strict"`).
+
+**`edit_source` replaces an exact string and refuses when it matches more than once.**
+Rewriting a whole file costs tokens proportional to the file and is the number-one source
+of "fixed one line, silently deleted three functions." But a string that appears twice
+means the model does not actually know which site it is editing — so that is an error with
+instructions, not a silent edit of the first match.
+
+`outline` and `search_code` are the "understands the code" half: a `read_source`-only
+agent reads an entire file to find one function, paying for all of it, every time.
+`outline` returns the class/def map with line numbers; `search_code` returns `file:line`
+hits.
 
 A single `run_shell(cmd: str)` has to be classified `danger` for the worst command it
 could ever run — every `git diff`, every `ls`, every test run then needs a human's "yes."
@@ -119,9 +146,11 @@ the part that deserves it.
 
 - **`harness.workspace.confine(root, path)`** — resolves a model-supplied path against a
   root and refuses (does not "sanitize") anything that would land outside it, including
-  absolute paths and `../` escapes. `read_file`/`write_file` in `harness.tools.builtin`
-  do **not** call this — if you use them as-is, there is no root confinement. Build your
-  own file tools around `confine()` (as the example does) or wrap the built-in ones.
+  absolute paths and `../` escapes. `CodeTools` calls it on every path. `read_file` and
+  `write_file` in `harness.tools.builtin` now call it too, against the process's current
+  working directory — they used to hand a model-supplied path straight to `Path`, which
+  made `read_file(path="../../.ssh/id_rsa")` one `tool_use` block wide on the very tools
+  the beginner path hands out. Use `CodeTools(root=...)` when the root is not the CWD.
 - **`harness.sandbox.Subprocess`** — a clean-environment child process: `argv`, never a
   shell string (nothing to inject through with `;`/`&&`), a fixed `cwd`, a hard timeout,
   and `env=` used *exactly* as given — it is never merged with the parent's `os.environ`,
@@ -284,9 +313,11 @@ is an `extra`, not core — `import harness` never pulls it in.
 
 ## Honest summary of what you still have to build
 
-- The coding-specific tools themselves (file ops, git, test runner, whatever your stack
-  needs) — the library gives you the classification/confinement/sandbox primitives, not a
-  coding toolset. `examples/coding_agent.py` is a starting shape, not a finished one.
+- Anything `CodeTools` does not cover — it ships file navigation, search, a Python
+  outline, precise editing, a test runner and read-only git plus commit. A different
+  language's structural outline, your build system, your linter, `git_push` (deliberately
+  left out: this module ships nothing `effect="danger"`, so importing it can never
+  create the lethal-trifecta refusal by itself) are yours to declare.
 - A real sandbox plugged into the `Sandbox` protocol, if `Subprocess`'s clean-env
   subprocess isn't enough isolation for what you're running (untrusted or generated code
   especially).

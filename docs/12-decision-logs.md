@@ -2020,6 +2020,73 @@ unchanged behaviour (two pushes); a `read` is deliberately NOT replayed; two dif
 proven across a genuinely new `SqliteStore` handle, which is the case the mechanism exists
 for.
 
+### ADR-065 — `CodeTools`: confinement needs a root, so it needs a constructor; and `read_file` stops being an exfiltration primitive
+
+**Status:** Accepted
+
+**Context.** `confine()` shipped with M7 (T-7.1) and was never called by the file tools
+this library actually hands out. `CODING_AGENT_BLUEPRINT.md` said so in writing — "if you
+use them as-is, there is no root confinement" — which documented the hole rather than
+closing it. `read_file(path="../../.ssh/id_rsa")` is one `tool_use` block, on the tools
+the beginner path exists to provide precisely because a beginner has not yet thought about
+path confinement.
+
+**Decision 1 — the coding tools are a class taking `root`, not module-level functions.**
+A module-level `@tool` has no root to confine against; that is the whole reason these two
+never called `confine()`. `CodeTools(root=...)` follows the shape `VikingStore.tools()`
+and `TaskLedger.tools()` already established: an object holds the resource, `tools()`
+returns tools with it closed over, effects already classified.
+
+**Decision 2 — `read_file`/`write_file` confine to the process CWD.** They needed *a*
+root and CWD is the only one a module-level tool has. It is a behaviour change (an
+absolute path now raises `WorkspaceEscapeError` instead of working), taken on the same
+ground as every other fail-closed default here: an unconfined, model-facing file tool is
+the exfiltration primitive, and "documented as unsafe" is not a safety property. An agent
+whose root is not the CWD uses `CodeTools`.
+
+**Decision 3 — `run_tests` is `write`, which corrects this project's own blueprint.** That
+document's table listed it as `read`. A test run writes caches and artifacts, and two runs
+in parallel fight over them; `write` is the only class that states all three relevant facts
+(not parallel-safe, never auto-retried, still auto-allowed outside `safety="strict"`).
+Found by implementing it, and corrected in the open rather than kept consistent with a
+sentence.
+
+**Decision 4 — `edit_source` refuses an ambiguous match.** Whole-file rewrites cost tokens
+proportional to the file and are the main source of "fixed one line, deleted three
+functions." Exact-string replacement costs tokens proportional to the change — but only
+when the string is unique. Two matches means the model does not know which site it is
+editing, so the tool returns an error that says how to disambiguate rather than editing the
+first one. Zero matches likewise says to re-read the file rather than guessing.
+
+**Decision 5 — `outline` and `search_code` exist because reading whole files is the real
+cost.** A `read_source`-only agent reads an entire file to find one function, pays for all
+of it, and fills the window with what it did not need. `outline` (Python, via `ast`)
+returns the class/def map with line numbers; `search_code` returns `file:line` hits. For a
+non-Python file `outline` says so plainly instead of guessing — there is one parser here,
+and pretending otherwise is worse than declining.
+
+**Decision 6 — nothing in this module is `danger` or `external`.** `git_push`, `deploy`,
+and anything that reaches the network are the agent author's to declare, with the
+lethal-trifecta rule and human approval that come with those classes. Importing this module
+can therefore never, by itself, produce the construction-time refusal.
+
+**Environment: an allowlist, not `os.environ`.** `Sandbox.run` uses `env` verbatim (T-7.4),
+so `PASS_ENV` is the complete list of what a child command sees: `PATH`, `HOME`, `LANG`,
+`LC_ALL`, `TZ`. No provider key, no CI token. `HOME` is in it because `git commit` reads
+`~/.gitconfig` — leaving it out is the "Author identity unknown" failure
+`examples/coding_agent.py` already hit once.
+
+**Test.** `tests/test_tools_code.py` (27) — `../`, absolute paths and a write outside the
+root all refused, with the escaping write proven not to have created the file; the two
+builtin tools refused the same way; `outline` shorter than the file it maps, honest about
+non-Python, and naming the line on a syntax error; `search_code` returning `file:line` and
+reporting a bad regex; `.git`/`__pycache__` skipped; a binary file not poured into context;
+an ambiguous edit refused with the file byte-identical afterwards; the effect table
+asserted tool by tool with `run_tests` pinned to `write`; the env allowlist proven not to
+carry a planted secret; and — not mocked — a real `git commit`, a real passing and a real
+failing `pytest` run, plus `; touch canary` passed as a `target` proving argv is argv and
+not a shell string.
+
 ---
 
 ## Implementation Decision Log
@@ -2083,3 +2150,4 @@ for.
 | IDL-55 | A run-level ceiling is checked in the node that clears `stop_reason`, never in the node that observes the signal | `budget_gate` is the only place the graph clears `stop_reason` (Round 37, or a finished thread routes to `finish` forever), so a stop set in `run_tools` is wiped before any router reads it (ADR-062) |
 | IDL-56 | An append-only record persists to an append-only file, never to a key-value `Store` | A `Store` rewrites the whole list per row, so one interrupted write loses the entire history — exactly what D-2 exists to prevent (ADR-063) |
 | IDL-57 | A recorded result is replayed only for calls that change the world, never for calls that read it | A replayed `read` returns the state from before the crash. Idempotency protects against a double effect; it must not answer a question about the present with the past (ADR-064) |
+| IDL-58 | A path-confining tool is constructed with its root; a module-level tool function confines to the CWD or not at all | `confine()` existed unused for two milestones because the tools that needed it had no root to pass — the missing constructor was the bug, not the missing call (ADR-065) |
