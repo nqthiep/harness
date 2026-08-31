@@ -91,21 +91,62 @@ khi nó thành thật.
 > dù cha không hề bị trừ), bốn con cộng dồn không vượt trần, step dư được trả
 > lại — mutation khôi phục hành vi cũ xác nhận 2 test đỏ ngay.
 
-| mã | vấn đề | vì sao chưa sửa |
-|---|---|---|
-| S-11 | `Actor` là lời tự khai, không có evidence | cần mô hình xác thực người duyệt |
-| S-12 | ba kênh resume (`answer=`, `ResumeToken`) vẫn chưa thống nhất giữa 01 và 04 | đã sửa một nửa (`ruling=` → `answer=`) |
-| S-17 | `description` của tool MCP vào prompt khi nhãn còn `TRUSTED` | injection qua metadata; cần gắn nhãn cho description |
-| S-18 | P-4 (`Policy.check` thuần) làm `DenyHosts` chỉ còn advisory ⇒ SSRF đi qua | cần tách policy thuần khỏi enforcement I/O |
+> **S-11 SỬA MỘT PHẦN.** `Actor` vẫn là lời tự khai — không có mô hình xác thực người
+> duyệt, và xây một cái (chữ ký kênh, `channel_message_id` — `AuthEvidence` review đề
+> xuất) là việc lớn, cần thiết kế riêng, ghi lại bên dưới. Phần landing được: chữ ký thật
+> của `approve=` (`ApprovalFn = Callable[[ToolCall, RunContext], bool]`) không có kênh
+> nào để callback báo DANH TÍNH — trước bản vá, backend LangGraph (backend DUY NHẤT có
+> `DecisionLog`; backend cổ điển không dùng nó) ghi cứng
+> `Actor.human("approver", via="callback")` cho MỌI lần duyệt, bất kể ai bấm. `Approval(ok,
+> actor=...)` (`policy/decision.py`) là trả về TÙY CHỌN thay cho `bool` trần — callback
+> nào thật sự biết danh tính (phiên Slack đã xác thực, OAuth) giờ báo được, callback trả
+> `bool` không đổi gì. `PolicyEngine.resolve()` trả `(Ruling, Actor | None)` thay vì chỉ
+> `Ruling`. `tests/test_attack_s11.py`: `resolve()` với `bool` trần không báo actor nào;
+> với `Approval(...)` trả đúng actor đó cho cả ALLOW/DENY; chạy graph thật xác nhận
+> `DecisionLog` ghi đúng actor callback báo, và callback `bool` cũ vẫn ra placeholder y hệt
+> trước — mutation khôi phục `resolve()` cũ xác nhận 4 test đỏ ngay. Vẫn không chặn được
+> callback TỰ KHAI GIAN danh tính — đó là phần cần `AuthEvidence` thật.
 
-> **S-7, S-8, S-9, S-10 — HOÃN CÓ CHỦ Ý, không phải bỏ quên.** Cả bốn xoay quanh
-> `ServerIdentity`/`fingerprint`/rug-pull qua re-list của tool MCP. Kiểm tra `src/harness/`:
-> **không có tích hợp MCP nào tồn tại** — `ToolSpec` không có trường `server`, không có
-> `ServerIdentity`. Xây cơ chế so khớp server ngay bây giờ là hạ tầng không ai gọi, đúng
-> loại lỗi mà chính vòng KISS đã cắt (`Quarantine`, `deps_type`, `Snapshottable` — xem
-> `review-kiss.md` K-1/K-2/K-5). Bốn phát hiện này phải được đưa vào code **cùng lúc** với
-> khi MCP thật được xây, không phải trước — landing chúng trước sẽ tạo ra đúng kiểu trừu
-> tượng "0 implementer khớp" mà K-5 đã cảnh báo.
+> **S-12 ĐÃ KIỂM — LỖI THỜI, KHÔNG CẦN SỬA.** Ba chữ ký `answer=`/`ruling=`/`ResumeToken`
+> review mô tả không có cái nào tồn tại trong `src/harness/` — `grep` toàn bộ `src/` và
+> `tests/` không thấy `ResumeToken`, `class Answer`, hay `ruling=` ở đâu cả. Cơ chế resume
+> THẬT hoàn toàn khác và không có lỗ hổng S-12 mô tả: backend cổ điển
+> (`Agent.resume(transcript)`) chạy lại các lời gọi `read`/`external` bị ngắt giữa chừng
+> từ transcript, không đụng gì tới `Decision`/grant. Backend LangGraph dùng
+> `interrupt()`/`Command(resume=<bool>)` gốc của LangGraph — `ok = bool(interrupt(...))`
+> chỉ quyết định ALLOW/DENY; `Scope`/`actor`/`expires_at` của `Decision` ghi ra đều do
+> RUNTIME tự dựng từ `_pending`, người resume không tự đặt được scope rộng hơn hay
+> `expires_at` xa hơn — đúng phần mà bản thiết kế gốc lo bị bỏ qua ("Answer.expires_at đi
+> vào từ bên ngoài") không hề tồn tại trên code hôm nay.
+
+> **S-17 — GẤP CHUNG VỚI S-7…S-10, HOÃN CÓ CHỦ Ý.** Injection qua `description` tool MCP
+> đưa vào prompt trước lời gọi tool đầu tiên là một phát hiện thật, nhưng — như S-7…S-10 —
+> hoàn toàn thuộc về phân loại tool MCP, thứ **không tồn tại trong `src/harness/` hôm
+> nay**. Không có `tools/list`, không có bước bind server, không có gì để nâng nhãn "lúc
+> bind" cả. Landing cùng lúc với khi MCP thật được xây, không trước.
+
+> **S-18 ĐÃ SỬA — bằng tài liệu, không phải code.** `EgressPolicy` (chỗ thật thay cho
+> `DenyHosts` mà review trích) đã đúng như S-18 mô tả: P-4 (`Policy.check` thuần, không
+> I/O) khiến nó chỉ so khớp CHUỖI hostname, không resolve DNS — một
+> `fetch_page(url="http://look-alike.attacker.example/")` qua được đúng phép kiểm nếu
+> chuỗi host tự nó nằm trong allowlist, DNS rebinding trỏ nó về IP nội bộ chỉ lộ ra lúc
+> THẬT SỰ gọi. Không có cách sửa ở tầng `Policy` thuần cho việc này — cần một tầng mạng
+> thật (egress proxy, network policy container), ngoài phạm vi một policy đồng bộ. Sửa
+> bằng cách nói thẳng: docstring `EgressPolicy` (`policy/builtin.py`) và
+> `docs/06-safety.md` giờ ghi rõ nó chỉ chặn trường hợp RÕ RÀNG, không hơn. Kiểm thêm phát
+> hiện phụ của S-18 (nhầm lẫn URL qua `userinfo@host`) và thấy nó đã LỖI THỜI: `urlparse`
+> của Python và client HTTP chuẩn RFC 3986 đều đồng ý `evil.example` là host thật trong cả
+> hai biến thể review nêu — `tests/test_attack_s18.py` khoá lại bằng test trực tiếp.
+
+> **S-7, S-8, S-9, S-10, S-17 — HOÃN CÓ CHỦ Ý, không phải bỏ quên.** Cả năm xoay quanh
+> `ServerIdentity`/`fingerprint`/rug-pull/injection qua metadata của tool MCP. Kiểm tra
+> `src/harness/`: **không có tích hợp MCP nào tồn tại** — `ToolSpec` không có trường
+> `server`, không có `ServerIdentity`, không có `tools/list`. Xây cơ chế so khớp server
+> ngay bây giờ là hạ tầng không ai gọi, đúng loại lỗi mà chính vòng KISS đã cắt
+> (`Quarantine`, `deps_type`, `Snapshottable` — xem `review-kiss.md` K-1/K-2/K-5). Năm
+> phát hiện này phải được đưa vào code **cùng lúc** với khi MCP thật được xây, không phải
+> trước — landing chúng trước sẽ tạo ra đúng kiểu trừu tượng "0 implementer khớp" mà K-5
+> đã cảnh báo.
 
 > **S-16, S-19, và S-3 ĐÃ SỬA — trên giấy VÀ trong `src/harness/`.** Bước 0 chốt mô hình
 > (S-16: `accepts_tainted` rời `@tool`, chỉ đến từ operator; S-19: nhãn per-message +
@@ -141,10 +182,88 @@ khi nó thành thật.
 
 ### 1.2 Bảo mật — nên sửa (S-21…S-29)
 
-`_blocked` không snapshot · `reserve()` bỏ qua cache-write · `call_key` thiếu domain
-separator · `seq` không có nguồn cấp · UI injection và approval fatigue qua `args` ·
-`canonical_args` mất kiểu · cửa sổ nhãn trong node `tools` · sub-agent cần `ASK` không có
-đường · tái dùng grant không để lại bản ghi durable.
+**Cả chín ĐÃ XONG** (S-21/22/24/25/27/29 sửa code; S-23/26/28 kiểm rồi xác nhận lỗi
+thời/đã đúng, không cần sửa). S-11 (bảng `## 1.1`) cũng sửa được phần landing được — còn
+lại duy nhất là `AuthEvidence` thật, ghi ở `## 5`.
+
+> **S-21 ĐÃ SỬA.** `Ledger.snapshot()` thiếu `blocked` — một ledger `_blocked=True` (spend
+> vượt trần cứng) phục hồi từ checkpoint về `_blocked=False`, tự "quên" nó đã bị chặn.
+> Thêm `blocked` vào cả `snapshot()`/`restore()`. `tests/test_attack_s21_s22.py`.
+
+> **S-22 ĐÃ SỬA.** `size_call()`/`reserve()` chỉ định giá theo `input_per_mtok`, trong khi
+> `settle()` có thể tính theo `cache_write_per_mtok` (`_p()` trong `models/pricing.py`:
+> luôn đắt hơn đúng 25%, cố định — không phải số đo). Mọi cuộc gọi THẬT SỰ ghi cache bị
+> ước lượng thấp hơn thực tế có hệ thống. Định giá lại theo mức TỆ NHẤT
+> (`cache_write_per_mtok`) ở cả `reserve()` lẫn nhánh `hard_max_input`.
+> `tests/test_attack_s21_s22.py`.
+
+> **S-23 ĐÃ KIỂM — LỖI THỜI, KHÔNG CẦN SỬA.** `call_key = blake2b(...)` mà review mô tả
+> thuộc giao thức idempotency ba pha (`03 §4.4`) — `IdempotencyMode`, `in_flight`,
+> `call_with_effect_log` — **không tồn tại** trong `src/harness/` (cùng tình trạng "0
+> caller" như S-7…S-10, K-25). Cơ chế dedup THẬT (T-2.5, `dispatch.py`) dùng
+> `f"{name}:{canonical_json(args)}"` chứ không phải `blake2b` nối chuỗi, và `name` là tên
+> tool do TÁC GIẢ đặt lúc bind (không phải input model/MCP điều khiển được hôm nay) — va
+> chạm domain-separator review lo chỉ thật khi `tool` là chuỗi tự do do bên ngoài đặt, đúng
+> viễn cảnh MCP namespaced mà S-7…S-10 hoãn. Không có gì để sửa cho tới khi MCP thật tồn
+> tại.
+
+> **S-24 ĐÃ SỬA — hoá ra rộng hơn "seq không có nguồn cấp" review mô tả.** Đúng lỗi Round
+> 37 đã sửa cho `Ledger`/`TaintTracker`, và S-15 sửa cho `PolicyEngine`, lần THỨ TƯ:
+> `build_agent()` từng dựng đúng MỘT `EventBus("run", exporters)`, giữ trên `Runtime`, dùng
+> chung cho MỌI thread — `event.run_id` là chuỗi cố định `"run"` cho mọi hội thoại,
+> `event.seq` là một bộ đếm chung xuyên suốt đời compiled graph. Sửa cùng khuôn
+> `_policy_cache`/`_engine_for`: `Runtime._bus_cache` giữ một `EventBus` riêng mỗi thread,
+> dựng lười, đóng dấu đúng `run_id` thật. Tìm thêm trong cùng lượt: cờ `self._started`
+> (instance trên `Runtime`) làm `RUN_STARTED` chỉ phát MỘT LẦN DUY NHẤT cho cả đời compiled
+> graph thay vì mỗi thread — bỏ cờ, chỉ dựa vào `step==0` (đã đủ, vì `step` sống trong
+> state theo từng thread). `tests/test_attack_s24.py`, mutation test xác nhận 4/5 đỏ.
+
+> **S-25 ĐÃ SỬA.** (a) `call.arguments` (thô từ model) vào thẳng `approve(call, ctx)`,
+> không escape/truncate — `secrets.safe_for_display()` mới (xuất ở top-level) escape mọi
+> ký tự không in được thành dạng chữ (`\x1b` không thực thi) và thay giá trị dài hơn 200
+> ký tự bằng độ dài + digest. (b) không có trần số lần `ASK` — `max_asks_per_run` (mặc
+> định 20) trên cả `Agent`/`build_agent`, đếm per-run (classic loop) hoặc trong
+> `AgentState.asks` reset mỗi lượt mới (graph, vì `Runtime` dùng chung giữa các thread).
+> `tests/test_attack_s25.py`, mutation test mỗi backend.
+
+> **S-26 ĐÃ KIỂM — LỖI THỜI, KHÔNG CẦN SỬA.** `Scope.args` review mô tả là
+> `Mapping[str, str]` (ép kiểu về chuỗi, `transfer(amount=10)` khớp nhầm
+> `transfer(amount="10")`) — code hôm nay là `Mapping[str, Any]`, và `Scope.matches()` so
+> `dict(self.args) == dict(args)` trực tiếp, giữ nguyên kiểu Python (`10 == "10"` là
+> `False`). `tests/test_attack_s26.py` khoá lại bằng test trực tiếp.
+
+> **S-27 ĐÃ SỬA — kịch bản gốc không dựng lại được, nhánh confidentiality thì có thật.**
+> Kịch bản gốc (`fetch_url` external + `run_shell` danger cùng lượt) bị `_check_tool_set`
+> (F9.1) chặn NGAY LÚC DỰNG agent trừ khi operator tự khai `accepts_tainted` cho tool
+> danger đó — và một khi đã khai, `check_flow` không còn gì để chặn. Nhánh CÒN SỐNG: nhánh
+> confidentiality (SECRET vào sink PUBLIC) không bị check đó chạm tới — một tool `read`
+> nhạy cảm + một tool `write` cùng lượt tái tạo đúng lỗ hổng. Backend cổ điển
+> (`dispatch.py`): mọi quyết định trong batch tính MỘT LẦN trước khi tool nào chạy; sửa
+> bằng recheck `check_flow` ngay trước mỗi lời gọi serial, dùng nhãn SỐNG. Backend LangGraph
+> (`lg/runtime.py::_regate`): tưởng đã đóng bằng I-1 (S-2) — nhưng `_regate` tính nhãn từ
+> `self._effective_label(state)`, và `state` chưa thấy kết quả của call ĐÃ chạy TRƯỚC
+> trong CÙNG `_run_tools` (chỉ gộp vào state ở cuối hàm); sửa bằng truyền `label` đang cập
+> nhật sống trong vòng lặp vào `_regate` thay vì để nó tính lại từ `state` cũ.
+> `tests/test_attack_s27.py`, mutation test mỗi backend.
+
+> **S-28 ĐÃ KIỂM — ĐÃ ĐÚNG SẴN, CHỈ THIẾU TÀI LIỆU.** Sub-agent cần `ASK` không có đường
+> tới node `approve` của cha nghe như treo — nhưng `PolicyEngine.resolve()`'s luật "không
+> có `approve=`" (đã có sẵn, áp dụng y hệt cho con lẫn cha) đã đóng đúng lỗ này mà review
+> không xét tới: con không có `approve=` riêng thì `danger` tự động DENY, mọi thứ khác tự
+> động ALLOW — không bao giờ dừng chờ. Ghi rõ vào `docs/06-safety.md`.
+> `tests/test_attack_s28.py` khoá hành vi.
+
+> **S-29 ĐÃ SỬA — chỉ tồn tại trên backend LangGraph.** Backend cổ điển không dùng
+> `DecisionLog` (mỗi `atry_run()` gọi `approve()` mới, không có khái niệm grant sống qua
+> nhiều lần thực thi), nên S-29 chỉ áp cho `lg/runtime.py::_regate`. Phạm vi thật hẹp hơn
+> văn bản gốc review mô tả ("TTL 1 giờ phủ N lần chạy khác nhau") — MỌI `Decision` từng
+> dựng (kể cả bản vá này) khoá `scope.call_id` vào đúng MỘT call cụ thể, không có
+> `scope.call_id=None`/TTL dài thật sự tồn tại trong code hôm nay. Cơ chế thật là recheck
+> tại điểm tiêu thụ của I-1 (S-2): cùng một `call_id` được duyệt ở `approval_gate` rồi
+> `_regate` tra lại lúc thực thi — khoảng cách đó có thể là mili-giây (thường) hay hàng
+> giờ (resume). Trước bản vá, lần tra lại đó KHÔNG ghi gì thêm dù tìm thấy grant sống. Sửa:
+> `_regate` ghi một `Decision` thứ hai (id `-reuse`) mỗi lần grant được tái dùng.
+> `tests/test_attack_s29.py`, mutation test xác nhận 2/3 đỏ.
 
 ### 1.3 KISS — chưa cắt
 
@@ -353,22 +472,34 @@ Từ sáu tệp thiết kế, không lặp lại lý lẽ:
 
 ## 5. Việc tiếp theo, theo thứ tự
 
-1. **S-7, S-8, S-9, S-10** — landing cùng lúc với khi tích hợp MCP thật được xây, không
-   trước (xem `## 1.1`).
-2. **K-7, K-9, K-10, K-23 — XONG.** Kiểm lại trên code hiện tại trước khi cắt (cùng kỷ
+1. **Nhóm 1 (S-11, S-12, S-17, S-18, S-21…S-29) — XONG, cả 13.** Cùng kỷ luật verify-trước
+   với mọi mục trước: sáu sửa code thật (S-21/22/24/25/27/29 — kiểm khi làm S-24/S-27 lộ
+   ra hai lỗi RỘNG hơn văn bản gốc: `EventBus` dùng chung xuyên thread ở S-24, nhánh
+   confidentiality của S-27 sống dù kịch bản gốc đã bị chặn từ chỗ khác); năm kiểm rồi xác
+   nhận lỗi thời/đã đúng, không cần sửa (S-12, S-17 gộp vào hoãn MCP, S-23, S-26, S-28);
+   S-18 sửa bằng tài liệu (không có cách sửa ở tầng `Policy` thuần); S-11 sửa được phần
+   landing được (`Approval` — channel tuỳ chọn cho `approve=` báo actor thật), phần còn lại
+   cần `AuthEvidence` — xem mục 3. Chi tiết từng mã ở `## 1.1`/`## 1.2`.
+2. **S-7, S-8, S-9, S-10, S-17** — landing cùng lúc với khi tích hợp MCP thật được xây,
+   không trước (xem `## 1.1`).
+3. **`AuthEvidence` cho S-11** — mô hình xác thực người duyệt thật (chữ ký kênh,
+   `channel_message_id`) để chặn một callback TỰ KHAI GIAN danh tính, không chỉ mở kênh
+   báo tự nguyện như bản vá vừa landing. Cần thiết kế riêng, chưa bắt đầu.
+4. **K-7, K-9, K-10, K-23 — XONG.** Kiểm lại trên code hiện tại trước khi cắt (cùng kỷ
    luật với các mục security): K-9 cắt thật (`Result.raise_for_status()`); K-7 và K-23
    hoá ra đã lỗi thời — cắt sẽ phá một consumer thật (K-7) hoặc không có gì để cắt (K-23,
    phần lớn tunable của nó chưa từng được xây); K-10 không có code, chỉ rút gọn kế hoạch
    trong design doc. Xem `## 1.3`.
-3. **`Ledger.void()`, S-16/S-19/S-3 trên backend cổ điển, S-15 trên backend cổ điển —
+5. **`Ledger.void()`, S-16/S-19/S-3 trên backend cổ điển, S-15 trên backend cổ điển —
    ĐÃ KIỂM, KHÔNG THÊM.** Cả ba được xét kỹ; xem `## 1.1` cho từng cái.
-4. **K-11, K-12, K-22, K-28 — XONG; K-13 — MỘT PHẦN.** Toàn bộ văn xuôi trong `design/*.md`,
+6. **K-11, K-12, K-22, K-28 — XONG; K-13 — MỘT PHẦN.** Toàn bộ văn xuôi trong `design/*.md`,
    không đụng `src/harness/`. K-13 chỉ đổi được ba trong bốn va chạm mã (phạm vi gọn, hai
    tệp); va chạm `P-`/`I-` để nguyên vì hoá ra RỘNG hơn ước lượng ban đầu — đụng cả code lẫn
    `docs/*.md` sống, xứng một lượt riêng chứ không phải phụ lục của lượt này. Xem `## 1.3`.
-5. **Tiếp tục viết code.** S-16/S-19/S-3 (cả hai nguồn)/S-6/S-14/S-15/S-13 đã vào
-   `src/harness/`, K-9 cắt khỏi bề mặt công khai — 318 test xanh, mỗi cơ chế chính có
-   mutation test đi kèm. Vẫn còn nhiều phát hiện review chưa chạm tới code, và nghiên
-   cứu của chính dự án đo được **23 vòng review tìm 20 lỗi và 0
+7. **Tiếp tục viết code.** S-16/S-19/S-3 (cả hai nguồn)/S-6/S-11/S-14/S-15/S-13/S-21/S-22/
+   S-24/S-25/S-27/S-29 đã vào `src/harness/`, K-9 cắt khỏi bề mặt công khai — 359 test
+   xanh, mỗi cơ chế chính có mutation test đi kèm. Vẫn còn phát hiện review chưa chạm tới
+   code (S-7…S-10/S-17 hoãn có chủ ý, `AuthEvidence` của S-11, phần P-/I- của K-13), và
+   nghiên cứu của chính dự án đo được **23 vòng review tìm 20 lỗi và 0
    lỗi bảo mật; 16 vòng chạy tìm 38+ lỗi và 4 lỗi bảo mật** — bản thiết kế là sản phẩm của
    review, nó sẽ sai ở những chỗ chỉ có chạy mới tìm ra.
