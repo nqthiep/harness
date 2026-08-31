@@ -142,6 +142,15 @@ believes they have bought immunity.
 - **Subagents inherit restriction only.** A subagent's budget is capped by the parent's
   remaining budget, its safety level cannot be lower than the parent's, and it cannot hold
   a tool the parent's policies would deny. Checked at `as_tool()`.
+- **A subagent with no `approve=` of its own never blocks waiting for one (review-security.md
+  S-18bis/S-28).** A subagent is spawned from inside the parent's `tools` node, which is not
+  the node allowed to pause for a long time (`approve` is a separate node for exactly that
+  reason). `PolicyEngine.resolve()`'s existing no-approver rule already means this never
+  becomes a hang: with no `approve=` callback, a `danger` tool (or anything under
+  `safety="strict"`) auto-**DENIES**, and everything else auto-**ALLOWS** with a one-time
+  warning event — nothing waits. Give the child agent its own `approve=` if you want its
+  `write`/`external` `ASK`s to actually reach a human; otherwise, write it assuming `danger`
+  tools are unusable and other `ASK`s pass through unattended.
 
 ### 4.1 Business workflows: the state machine governs, the model navigates
 
