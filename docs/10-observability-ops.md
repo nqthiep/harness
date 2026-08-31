@@ -123,6 +123,33 @@ either an attack or a broken tool), `budget.exhausted` rate (budgets too tight, 
 `cache.hit_ratio` drop (someone reintroduced an invalidator — cost doubles quietly),
 `error.raised{retryable:false}` rate.
 
+## 5.5 Cost per successful task (T-8.4)
+
+`harness.eval.cost_per_success(runs)` — `total_cost / P(success)`, never a bare number:
+always a `CostPerSuccess` carrying `cost_per_success_usd` alongside a Wilson-scored
+confidence interval (`ci_low_usd`/`ci_high_usd`) on the underlying success rate,
+propagated onto the cost figure itself.
+
+**Why not cost-per-task.** A run that fails still burned tokens — it is not free — so
+averaging total spend over every attempt rewards a policy that succeeds rarely but
+cheaply per attempt over one that succeeds reliably at a slightly higher per-attempt
+cost. The honest denominator is runs that actually succeeded, not runs attempted.
+
+```python
+from harness.eval import cost_per_success
+
+runs = [agent.try_run(task) for task in golden_set]
+print(cost_per_success(runs))
+# "$0.0412 per success ($0.0298–$0.0601 at 95% CI, 47/50 succeeded)"
+```
+
+`cost_per_success_usd` is `None` — not `0` and not `inf` — when nothing succeeded: money
+was spent and the number this function would otherwise report is undefined, which is a
+fact worth surfacing loudly rather than papering over with a placeholder (§45: "would
+rather say 'not enough evidence' than guess"). `runs` needs only `.ok: bool` and a
+`Money`-shaped-or-numeric `.cost` — any `Result`, or a compatible record from a
+golden-set run (M10), works without constructing one.
+
 ## 6. Upgrade & migration
 
 - Transcripts carry `harness_version` in `run.started`. The reader supports the current

@@ -1249,6 +1249,42 @@ found while reading the same section of docs/10.
 
 ---
 
+### ADR-051 — `cost_per_success` reports a Wilson-scored interval, never a bare number
+**Status:** Accepted (M8/T-8.4)
+
+**Context.** S-06 (docs/17-research-alignment.md §2.2, citing external research §10):
+cost-per-TASK is the wrong formula — a failed run still burned tokens, so averaging
+total spend over every attempt rewards a policy that fails often but cheaply per attempt.
+The right denominator is `P(success)`, and per docs/17's own T-8.4 line, the result must
+carry a confidence interval, not stand alone.
+
+**Decision.** `harness/eval/cost.py::cost_per_success(runs, confidence=0.95)` computes
+`total_cost / success_rate`, with the confidence interval built by taking a Wilson score
+interval (`_wilson_interval`) on the underlying success rate and propagating it onto the
+cost figure — cost-per-success is a decreasing function of the success rate, so the
+rate's LOW bound gives cost-per-success's HIGH bound and vice versa. Wilson, not the
+normal approximation (`p ± z·sqrt(p(1-p)/n)`): the normal approximation can produce a
+bound outside `[0, 1]` at small `n` or extreme proportions, exactly the regime a golden
+set with a handful of tasks and a near-100% or near-0% pass rate sits in.
+
+**`cost_per_success_usd` is `None`, not `0` or `inf`, when nothing succeeded.** Money was
+spent and the number is genuinely undefined — reporting a placeholder here is exactly the
+"confident empty answer" class of bug IDL-30/fail-visible exists to prevent, and
+`__str__` says so in words ("cost per success is undefined") rather than printing a
+number that looks measured.
+
+**Package shape.** `harness/eval/` (a package, not a flat module) — M10
+(`docs/17-research-alignment.md` T-10.1-10.3: trajectory contracts, golden set, bench)
+will need `harness.eval.*` too; starting as a package now avoids a reshuffle when those
+land, at zero cost today (`__init__.py` re-exports the one function that exists).
+
+**z-scores are a lookup table (`_Z_SCORES`, four values), not `scipy.stats.norm.ppf`.**
+`confidence` is restricted to `{0.80, 0.90, 0.95, 0.99}` — the standard set any
+statistics reference has memorized — rather than adding `scipy` as a dependency (NFR-05)
+for an interpolation this narrow a use case does not need.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
