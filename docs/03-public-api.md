@@ -119,6 +119,8 @@ class Agent:
         # --- observability -----------------------------------------------------
         transcript: str | Path | None = None,
         exporters: Sequence[Exporter] = (),
+        tenant_id: str | None = None,        # stamped onto every Event (T-8.1)
+        session_id: str | None = None,       # stamped onto every Event (T-8.1)
         # --- advanced ----------------------------------------------------------
         provider: ModelProvider | None = None,
         max_steps: int | None = None,        # None → from budget

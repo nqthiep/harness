@@ -36,7 +36,14 @@ class Runtime:
     def __init__(self, *, model, toolset, ledger: Ledger, builtins=(), policy_factories=(),
                  price, max_output: int, model_name: str = "claude-opus-5",
                  exporters=(), approve=None, decisions: DecisionLog | None = None,
-                 grants: Grants | None = None, max_asks_per_run: int = 20) -> None:
+                 grants: Grants | None = None, max_asks_per_run: int = 20,
+                 tenant_id: str | None = None) -> None:
+        # T-8.1 — deployment-level config, like `_grants` just below: fixed for this
+        # compiled graph, not per-thread. `session_id` needs no separate field here —
+        # LangGraph's own `thread_id` (== `run_id` per `_run_id(state)`) already IS the
+        # closest thing this backend has to a session identity (a thread spans many
+        # `invoke()` calls, the same shape T-8.6's future `Session` resource names).
+        self._tenant_id = tenant_id
         self._model, self._tools = model, toolset
         self._model_name = model_name
         self._budget = ledger.budget          # the spec; the spend lives per turn
@@ -509,7 +516,9 @@ class Runtime:
 
     def _bus_for(self, run_id: str) -> EventBus:
         if run_id not in self._bus_cache:
-            self._bus_cache[run_id] = EventBus(run_id, self._exporters)
+            self._bus_cache[run_id] = EventBus(run_id, self._exporters,
+                                               tenant_id=self._tenant_id,
+                                               session_id=run_id)
         return self._bus_cache[run_id]
 
     def _emit(self, state, kind, **data) -> None:

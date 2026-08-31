@@ -7,6 +7,14 @@ year, and nothing downstream can rely on it. New kinds require a minor version a
 decision-log entry — `budget.unlimited` is the one addition since the original fifteen,
 and ADR-041 ([§12](12-decision-logs.md)) is its entry.
 
+**Envelope v1** (T-8.1, ADR-048): every `Event` also carries `schema_version` (bumped
+only on a breaking shape change — an additive field with a default does not need one),
+`trace_id` (defaults to `run_id` — one run is one trace until a real distributed
+tracer/OTel exporter — T-8.3 — propagates one in), `tenant_id` and `session_id` (both
+`None` unless the caller supplies one via `Agent(tenant_id=..., session_id=...)` /
+`build_agent(tenant_id=...)` — the LangGraph backend's `session_id` is always its own
+`thread_id`, the closest thing that backend has to a session identity today).
+
 | Kind | When | `data` payload |
 |---|---|---|
 | `run.started` | Once, first | `agent`, `model`, `budget`, `tool_names[]`, `safety`, `harness_version` |

@@ -1136,6 +1136,37 @@ shipped tool uses it yet.
 
 ---
 
+### ADR-048 — Envelope v1: `Event` carries `schema_version`, `trace_id`, `tenant_id`, `session_id`
+**Status:** Accepted (M8/T-8.1)
+
+**Context.** `Event` (`observe/events.py`) had `seq`, `ts`, `run_id`, `kind`, `step`,
+`data` — no version field, so a future breaking change to the shape would break every
+exporter reading it with no way to detect the mismatch, and no multi-tenant or
+distributed-trace metadata, which T-8.5 (a consumable `agent.stream()`) and T-8.6 (a
+`Session` resource) both explicitly depend on before they can be built.
+
+**Decision.** Four fields, appended (not inserted) to `Event` so every existing
+positional `Event(seq, ts, run_id, kind, step, data)` construction site keeps working
+unchanged: `schema_version` (a module constant, `EVENT_SCHEMA_VERSION`, bumped only for a
+breaking shape change), `trace_id` (defaults to `run_id` inside `EventBus.__init__` —
+one run is one trace until T-8.3's real OTel exporter or a distributed caller propagates
+one in), `tenant_id` and `session_id` (both `None` unless the caller supplies one).
+`Agent`/`build_agent` both grew `tenant_id=`/`session_id=` constructor parameters
+threaded straight through to `EventBus`. On the LangGraph backend, `session_id` is
+always the thread's own `run_id` (== `thread_id`) — a thread already spans many
+`invoke()` calls, the same shape a future `Session` resource (T-8.6) would name; no
+separate storage was needed for it.
+
+**Why add fields nobody consumes yet.** Unlike T-6.1/T-7.3 (behavioral seams — ADR-043,
+ADR-047 — deliberately left unwired because no real caller exists), this is a data-shape
+change: the entire point of a schema version is to lock the shape in NOW so a later
+consumer (OTel, a multi-tenant Service API — M9) doesn't force a breaking change to
+every exporter that already reads today's `Event`. Adding optional metadata fields with
+safe defaults carries none of "speculative generality"'s cost — nothing has to change
+behavior to gain them, and every existing test kept passing unmodified.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |

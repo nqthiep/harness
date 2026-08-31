@@ -36,6 +36,7 @@ class Agent:
     __slots__ = ("name", "job", "toolset", "model", "effort", "budget", "safety",
                  "approve", "policies", "allowed_hosts", "provider", "returns",
                  "max_parallel_tools", "max_asks_per_run", "transcript", "exporters",
+                 "tenant_id", "session_id",
                  "_asm", "_watch", "_as_tool_budget", "_grants")
 
     # Declared for the type checker.  The fields are set through `object.__setattr__`
@@ -59,6 +60,8 @@ class Agent:
     max_asks_per_run: int
     transcript: str | None
     exporters: tuple[Any, ...]
+    tenant_id: str | None
+    session_id: str | None
     _asm: Any
     _grants: Grants
     _watch: Any
@@ -93,6 +96,12 @@ class Agent:
         exporters: Sequence[Any] = (),
         max_parallel_tools: int = 8,
         max_asks_per_run: int = 20,
+        # T-8.1, docs/17-research-alignment.md M8 — envelope v1 metadata. No natural
+        # default exists for either (no multi-tenancy, no Session resource — T-8.6 —
+        # built yet): `None` unless the caller supplies one, stamped onto every Event
+        # this agent's runs emit.
+        tenant_id: str | None = None,
+        session_id: str | None = None,
     ) -> None:
         if args:
             shown = ", ".join(repr(a) for a in args)
@@ -147,6 +156,8 @@ class Agent:
         object.__setattr__(self, "exporters", tuple(exporters))
         object.__setattr__(self, "max_parallel_tools", max_parallel_tools)
         object.__setattr__(self, "max_asks_per_run", max_asks_per_run)
+        object.__setattr__(self, "tenant_id", tenant_id)
+        object.__setattr__(self, "session_id", session_id)
 
         output_format = _output_format(returns) if returns is not None else None
         asm = ContextAssembler(model=model, job=job, tools=toolset, effort=effort,
@@ -186,7 +197,8 @@ class Agent:
             exporters.append(writer)
         if ConsoleExporter.should_attach():          # ADR-014: TTY only, stderr only
             exporters.append(ConsoleExporter(self.name))
-        bus = EventBus(run_id, exporters)
+        bus = EventBus(run_id, exporters, tenant_id=self.tenant_id,
+                      session_id=self.session_id)
         ledger = Ledger(self.budget)
         taint = TaintTracker()
         # A policy given as a callable is a FACTORY: a fresh instance per run.  A
@@ -301,7 +313,7 @@ class Agent:
         base = {k: getattr(self, k) for k in
                 ("name", "job", "model", "effort", "returns", "budget", "safety", "approve",
                  "policies", "allowed_hosts", "provider", "max_parallel_tools",
-                 "max_asks_per_run")}
+                 "max_asks_per_run", "tenant_id", "session_id")}
         base["tools"] = list(self.toolset)
         base.update(overrides)
         return Agent(**base)
