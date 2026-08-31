@@ -950,6 +950,44 @@ first error — no different from before this change. Only `read`/`external` beh
 
 ---
 
+### ADR-043 — `execute_once` is built as a standalone contract, not wired in yet
+**Status:** Accepted (M6/T-6.1)
+
+**Context.** T-6.1 (`docs/17-research-alignment.md`) names idempotency as the M6
+prerequisite for M9's Service API: a client that times out and retries an HTTP request
+can double an email/charge/write unless the harness can recognize the retry. `Store`
+(ADR-002 — already a seam, `memory/inmemory.py`/`memory/sqlite.py` today) already has
+exactly the `get`/`put` shape idempotency needs; no new seam is justified.
+
+**Decision.** Ship `harness/idempotency.py`'s `execute_once(store, key, fn, *,
+fail_open=False) -> (result, was_replayed)` as a tested, documented primitive — and stop
+there. Do **not** add an `Agent(idempotency_store=...)` parameter or wire it into
+`Dispatcher`/`Runtime` in this pass.
+
+**Why stop there.** `idempotency_key = f"{run_id}:{call_id}"` only dedupes calls that
+share a `run_id` — and `run_id` is generated fresh on every `atry_run()` (`agent.py`), so
+nothing in the harness today calls the same `run_id` twice. The scenario T-6.1 exists to
+prevent — an external caller retrying a whole request — needs an external key from
+outside the harness, and the only place one will ever come from is M9's Service API. A
+`write`/`danger` tool already gets exactly one attempt per call (T-6.3/ADR-042), and
+`Agent.resume()` already blanket-refuses to re-run them after a crash (docs/05 §3) — so
+wiring `execute_once` into today's dispatch path would gate calls no test could exercise
+for a real double-invocation, because none exists yet. That is precisely the
+"speculative generality" ADR-002's rejected alternative names: surface with no consumer.
+
+**What this buys M9.** When the Service API lands and a client-supplied idempotency
+key exists, wiring it in is a call to an already-tested function at the call site, not a
+new design decision made under M9's own time pressure.
+
+**Rejected alternative.** Wire it into `Dispatcher._invoke`/`lg/runtime.py::_run_tools`
+now, keyed by `f"{run_id}:{call_id}"`, even with no external caller. Rejected: it would
+be dead code by construction (nothing today produces a repeated key), and — per docs/17
+T-6.1's own failure-mode line, fail-closed for write/danger — a **store outage with no
+real duplicate call in flight** would start failing every write/danger tool call in every
+run, a regression with no corresponding safety gain until M9 exists to actually use it.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
