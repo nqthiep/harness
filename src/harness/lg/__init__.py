@@ -10,7 +10,6 @@ from typing import Any, Sequence
 
 from ..budget.ledger import Budget, Ledger
 from ..models import pricing
-from ..observe.events import EventBus
 from ..errors import ConfigError
 from ..policy.builtin import EffectPolicy, EgressPolicy, TaintPolicy
 from ..policy.label import Grants
@@ -27,13 +26,17 @@ def build_agent(*, model, tools: Sequence[Any] = (), budget: Any = None,
                 model_name: str = "claude-opus-5", safety: str = "standard",
                 policies: Sequence[Any] = (), allowed_hosts: Sequence[str] | None = None,
                 accepts_tainted: Sequence[str] = (), sensitive: Sequence[str] = (),
-                approve=None, checkpointer=None, exporters: Sequence[Any] = (),
-                bus: EventBus | None = None):
-    """Compile an agent graph.  Returns (compiled_graph, runtime)."""
-    # `exporters=` is the spelling `Agent` uses for the same seam; a caller should not
-    # have to know that one backend hands them a bus (Round 35 parity).
-    if bus is None and exporters:
-        bus = EventBus("run", exporters)
+                approve=None, checkpointer=None, exporters: Sequence[Any] = ()):
+    """Compile an agent graph.  Returns (compiled_graph, runtime).
+
+    `exporters=` is the spelling `Agent` uses for the same seam (Round 35 parity). It used
+    to build a single `EventBus` right here, held by the returned `Runtime` and shared by
+    every thread that graph would ever serve — S-24 (corrected): the same shared-state
+    mistake Round 37 found in `Ledger`/`TaintTracker` and S-15 found in `PolicyEngine`, a
+    fourth time, undetected because nothing ever asserted `event.run_id` was the real
+    thread rather than the constant it was actually stamped with. `Runtime` now builds one
+    `EventBus` per thread lazily (`_bus_for`), so `exporters` is handed through unbuilt.
+    """
     toolset = ToolSet(tools)
     # The construction-time refusals are part of the design, not of the loop: Round 35's
     # parity suite found `build_agent` accepted an external+danger tool set that `Agent`
@@ -80,7 +83,7 @@ def build_agent(*, model, tools: Sequence[Any] = (), budget: Any = None,
                  policy_factories=tuple(policies),
                  price=pricing.price(model_name),
                  max_output=pricing.MAX_OUTPUT.get(model_name, 8_000), model_name=model_name,
-                 bus=bus, approve=approve, grants=grants)
+                 exporters=exporters, approve=approve, grants=grants)
     compiled = build(rt).compile(checkpointer=checkpointer)
 
     broken = unguarded_paths(compiled)

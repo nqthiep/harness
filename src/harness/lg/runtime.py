@@ -15,7 +15,7 @@ from langgraph.types import interrupt
 
 from ..budget.ledger import Ledger
 from ..errors import BudgetExceeded
-from ..observe.events import EventKind
+from ..observe.events import EventBus, EventKind
 from ..policy.base import Ruling, ToolCall, Verdict
 from ..policy.builtin import emits_of
 from ..policy.decision import Actor, Decision, DecisionLog, Scope
@@ -33,10 +33,10 @@ from .graph import INTERRUPT, MAX_PAUSES
 class Runtime:
     def __init__(self, *, model, toolset, ledger: Ledger, builtins=(), policy_factories=(),
                  price, max_output: int, model_name: str = "claude-opus-5",
-                 bus=None, approve=None, decisions: DecisionLog | None = None,
+                 exporters=(), approve=None, decisions: DecisionLog | None = None,
                  grants: Grants | None = None) -> None:
         self._model, self._tools = model, toolset
-        self._model_name, self._started = model_name, False
+        self._model_name = model_name
         self._budget = ledger.budget          # the spec; the spend lives per turn
         self._builtins = tuple(builtins)
         # S-15: `build_agent()` từ chối bất kỳ policy nào KHÔNG phải factory (xem
@@ -51,7 +51,17 @@ class Runtime:
         self._policy_factories = tuple(policy_factories)
         self._policy_cache: dict[str, tuple] = {}
         self._price, self._max_output = price, max_output
-        self._bus, self._approve = bus, approve
+        # S-24 (corrected): a single `EventBus` built once in `build_agent()` and held
+        # here was Round 37's Ledger/TaintTracker bug a third time, never caught for
+        # observability — every thread wrote into the SAME bus, so `event.run_id` was the
+        # literal string `"run"` for every conversation and `event.seq` was one counter
+        # shared across all of them (an audit trail that cannot tell two customers'
+        # events apart is not an audit trail). Same fix shape as `_policy_cache`/
+        # `_engine_for` (S-15): cache one `EventBus` per thread, keyed and stamped with
+        # the real `run_id`, built lazily on first use.
+        self._exporters = tuple(exporters)
+        self._bus_cache: dict[str, EventBus] = {}
+        self._approve = approve
         # Đọc bởi `_run_tools` khi gắn nhãn L-1 lên kết quả tool — S-16/S-3. Cấu hình
         # mức deployment, không đổi giữa các run, nên sống trên object này là an toàn
         # (khác `Ledger`/nhãn của một run, phải sống trong state — xem R-4 ở dưới).
@@ -115,12 +125,16 @@ class Runtime:
     # ── gate 1: nothing reaches the model without a reservation ──────────────
     def budget_gate(self, state) -> dict:
         led = self._ledger(state)
-        if state.get("step", 0) == 0 and not self._started:
-            self._started = True
-            self._emit(EventKind.RUN_STARTED, model=self._model_name,
+        if state.get("step", 0) == 0:
+            # `step` lives in checkpointed state (thread-scoped), so this fires once per
+            # THREAD — not once per compiled graph. A `self._started` instance flag here
+            # was the same R-4 mistake `_bus_cache` above just fixed: it made
+            # `RUN_STARTED` fire once EVER across every conversation this Runtime serves,
+            # not once per conversation.
+            self._emit(state, EventKind.RUN_STARTED, model=self._model_name,
                        tool_names=[t.name for t in self._tools],
                        safety=self._safety(state))
-        self._emit(EventKind.STEP_STARTED, step=state.get("step", 0))
+        self._emit(state, EventKind.STEP_STARTED, step=state.get("step", 0))
         if led.remaining_steps() <= 0:
             return {"stop_reason": "step_limit", "detail": "reached the step limit",
                     "ledger": led.snapshot()}
@@ -135,10 +149,10 @@ class Runtime:
             res = led.reserve(input_tokens, max_tokens, self._price,
                               hard_max_input=len(text))
         except BudgetExceeded as exc:
-            self._emit(EventKind.BUDGET_EXHAUSTED, axis="usd", spent=str(led.spent))
+            self._emit(state, EventKind.BUDGET_EXHAUSTED, axis="usd", spent=str(led.spent))
             return {"stop_reason": "budget_exhausted", "detail": str(exc),
                     "ledger": led.snapshot()}
-        self._emit(EventKind.BUDGET_RESERVED, estimate_usd=str(res.estimate),
+        self._emit(state, EventKind.BUDGET_RESERVED, estimate_usd=str(res.estimate),
                    spent_usd=str(led.spent))
         # `stop_reason` is cleared here, and only here.  It is checkpointed like every
         # other state key, so a thread that finished a turn came back carrying
@@ -156,13 +170,13 @@ class Runtime:
         # taint hoàn hảo — xem giải thích đầy đủ ở 00-foundation §3.2 và test
         # `test_e2e_five_invariants.py`/`test_label_l2_l3.py`.
         label_at_generation = self._effective_label(state)
-        self._emit(EventKind.MODEL_REQUEST, max_tokens=state.get("max_tokens", 0))
+        self._emit(state, EventKind.MODEL_REQUEST, max_tokens=state.get("max_tokens", 0))
         msg = self._model.invoke(state["messages"])
         _stamp_label(msg, label_at_generation)
         led.settle(_RESERVED(state.get("max_tokens", 0)), _usage_of(msg), self._price)
         led.count_step()
         raw = _provider_stop(msg)
-        self._emit(EventKind.MODEL_RESPONSE, stop_reason=raw, cost_usd=str(led.spent))
+        self._emit(state, EventKind.MODEL_RESPONSE, stop_reason=raw, cost_usd=str(led.spent))
         out = {"messages": [msg], "step": state.get("step", 0) + 1,
                "spent_usd": str(led.spent.decimal), "ledger": led.snapshot()}
         out.update(_classify(raw, bool(getattr(msg, "tool_calls", None)),
@@ -175,7 +189,7 @@ class Runtime:
         ctx = _Ctx(label=self._effective_label(state), safety=self._safety(state))
         pending, denied = [], []
         for c in calls:
-            self._emit(EventKind.TOOL_REQUESTED, tool=c["name"], call_id=c["id"])
+            self._emit(state, EventKind.TOOL_REQUESTED, tool=c["name"], call_id=c["id"])
             spec = self._tools.get(c["name"])
             if spec is None:
                 denied.append(ToolMessage(
@@ -184,7 +198,7 @@ class Runtime:
                 continue
             d = self._engine_for(_run_id(state)).decide(
                 ToolCall(c["id"], c["name"], c.get("args", {}), spec), ctx)
-            self._emit(EventKind.POLICY_DECIDED, tool=c["name"], call_id=c["id"],
+            self._emit(state, EventKind.POLICY_DECIDED, tool=c["name"], call_id=c["id"],
                        verdict=d.verdict.name, reason=d.reason, policy=d.policy)
             if d.verdict is Verdict.DENY:
                 denied.append(ToolMessage(content=f"denied by policy: {d.reason}",
@@ -224,7 +238,7 @@ class Runtime:
             else:
                 d = asyncio.run(self._engine_for(_run_id(state)).resolve(
                     Ruling(Verdict.ASK, p["reason"], "policy"), call, ctx, self._approve))
-            self._emit(EventKind.POLICY_DECIDED, tool=p["tool"], call_id=p["call"]["id"],
+            self._emit(state, EventKind.POLICY_DECIDED, tool=p["tool"], call_id=p["call"]["id"],
                        verdict=d.verdict.name, reason=d.reason, policy=d.policy)
             # Phê duyệt là một SỰ KIỆN, không phải một cờ. Ghi nó ra sổ, scoped tới đúng
             # lời gọi này: `call_id` khác None nên grant không sống quá lượt — "duyệt vĩnh
@@ -293,7 +307,7 @@ class Runtime:
         for p in state.get("_pending", []):
             gate = self._regate(p, state)
             if gate.verdict is not Verdict.ALLOW:
-                self._emit(EventKind.POLICY_DECIDED, tool=p["tool"],
+                self._emit(state, EventKind.POLICY_DECIDED, tool=p["tool"],
                            call_id=p["call"]["id"], verdict=gate.verdict.name,
                            reason=gate.reason, policy=gate.policy)
                 msgs.append(ToolMessage(content=f"declined: {gate.reason}",
@@ -305,7 +319,7 @@ class Runtime:
                 msgs.append(ToolMessage(content=f"tool {p['tool']!r} is no longer available",
                                         tool_call_id=call["id"], status="error"))
                 continue
-            self._emit(EventKind.TOOL_STARTED, tool=spec.name, call_id=call["id"])
+            self._emit(state, EventKind.TOOL_STARTED, tool=spec.name, call_id=call["id"])
             try:
                 args = {k: v for k, v in call.get("args", {}).items()
                         if not k.startswith("_")}
@@ -326,18 +340,18 @@ class Runtime:
                 before = label
                 label = label.join(emitted)
                 if label != before:
-                    self._emit(EventKind.TAINT_RAISED, source_tool=spec.name)
+                    self._emit(state, EventKind.TAINT_RAISED, source_tool=spec.name)
                 result_msg = ToolMessage(content=redact(payload), tool_call_id=call["id"])
                 _stamp_label(result_msg, emitted)
                 msgs.append(result_msg)
-                self._emit(EventKind.TOOL_FINISHED, tool=spec.name, call_id=call["id"],
+                self._emit(state, EventKind.TOOL_FINISHED, tool=spec.name, call_id=call["id"],
                            is_error=False)
             except Exception as exc:
-                self._emit(EventKind.ERROR_RAISED, where="tool", type=spec.name,
+                self._emit(state, EventKind.ERROR_RAISED, where="tool", type=spec.name,
                            message=str(exc), retryable=EFFECT_PROFILES[spec.effect].retryable)
                 msgs.append(ToolMessage(content=redact(f"{type(exc).__name__}: {exc}"),
                                         tool_call_id=call["id"], status="error"))
-        self._emit(EventKind.STEP_FINISHED, step=state.get("step", 0),
+        self._emit(state, EventKind.STEP_FINISHED, step=state.get("step", 0),
                    stop_reason="tool_use", tool_calls=[p["tool"] for p in state.get("_pending", [])])
         return {"messages": msgs + self._manage(state["messages"] + msgs, state),
                 "_pending": [], "tainted": label.integrity is Integrity.UNTRUSTED,
@@ -349,14 +363,14 @@ class Runtime:
         """The single exit.  Every path out of the graph passes here, so `run.finished`
         cannot be forgotten by a branch (Round 35; the same rule as the two gates)."""
         stop = state.get("stop_reason") or "completed"
-        self._emit(EventKind.STEP_FINISHED, step=state.get("step", 0),
+        self._emit(state, EventKind.STEP_FINISHED, step=state.get("step", 0),
                    stop_reason=stop, tool_calls=[])
         led = self._ledger(state)
         # Tính lại từ message, không đọc `state["tainted"]" — L-3. Cái key đó chỉ còn là
         # quan sát cho người gọi ngoài (parity, event), không node nào trong graph đọc nó
         # để ra quyết định nữa.
         label = self._effective_label(state)
-        self._emit(EventKind.RUN_FINISHED, stop_reason=stop, steps=state.get("step", 0),
+        self._emit(state, EventKind.RUN_FINISHED, stop_reason=stop, steps=state.get("step", 0),
                    cost_usd=str(led.spent), tainted=label.integrity is Integrity.UNTRUSTED,
                    confidentiality=label.confidentiality.name)
         return {"stop_reason": stop, "spent_usd": str(led.spent.decimal)}
@@ -387,7 +401,7 @@ class Runtime:
                   for m in stale if m.content != CLEARED and m.id]
         if not edited:
             return []
-        self._emit(EventKind.CONTEXT_MANAGED, step=state.get("step", 0), strategy="edited",
+        self._emit(state, EventKind.CONTEXT_MANAGED, step=state.get("step", 0), strategy="edited",
                    tokens_before=used, messages=len(messages))
         return edited
 
@@ -395,9 +409,13 @@ class Runtime:
     def _safety(self, state) -> str:
         return state.get("workflow", {}).get("safety", "standard")
 
-    def _emit(self, kind, **data) -> None:
-        if self._bus is not None:
-            self._bus.emit(kind, **data)
+    def _bus_for(self, run_id: str) -> EventBus:
+        if run_id not in self._bus_cache:
+            self._bus_cache[run_id] = EventBus(run_id, self._exporters)
+        return self._bus_cache[run_id]
+
+    def _emit(self, state, kind, **data) -> None:
+        self._bus_for(_run_id(state)).emit(kind, **data)
 
 
 def _is_new_turn(state) -> bool:
