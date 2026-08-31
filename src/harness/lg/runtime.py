@@ -456,6 +456,14 @@ class Runtime:
             for attempt in range(attempts):
                 self._emit(state, EventKind.TOOL_STARTED, tool=spec.name, call_id=call["id"],
                            attempt=attempt)
+                # N-1 (design/07-risks-and-open-issues.md): before this, nothing here
+                # bounded a single call — only the run's wall-clock, checked once at the
+                # START of a step, never WHILE a call is in flight. A `read` tool with no
+                # timeout of its own (a hung HTTP call, say) blocked this node forever.
+                # `tool_timeout` clamps to whatever wall-clock the run has left, same as
+                # `dispatch.py::_invoke` — a per-call timeout longer than the run itself
+                # has left is not a real bound.
+                timeout = led.tool_timeout(spec.timeout_s)
                 try:
                     args = {k: v for k, v in call.get("args", {}).items()
                             if not k.startswith("_")}
@@ -468,23 +476,30 @@ class Runtime:
                         # same idempotency guard as every other one, and it costs
                         # nothing next to launching a whole child agent.
                         return await asyncio.to_thread(_run_subagent, spec, args, led)
-                    value, replayed = asyncio.run(once_if_unsafe(
-                        self._idempotency_store,
-                        idempotency_key(_run_id(state), call["id"]),
-                        _call, retryable=retryable))
+
+                    async def _guarded(_call=_call, timeout=timeout):
+                        async with asyncio.timeout(timeout):
+                            return await once_if_unsafe(
+                                self._idempotency_store,
+                                idempotency_key(_run_id(state), call["id"]),
+                                _call, retryable=retryable)
+                    value, replayed = asyncio.run(_guarded())
                     payload = value if isinstance(value, str) else json.dumps(
                         value, sort_keys=True, ensure_ascii=False, default=str)
                     ok = True
                     break
+                except TimeoutError:
+                    reason = ("timed out: run wall-clock budget reached"
+                             if timeout < spec.timeout_s else f"timed out after {spec.timeout_s}s")
                 except Exception as exc:
                     reason = f"{type(exc).__name__}: {exc}"
-                    more_left = attempt + 1 < attempts
-                    time_left = led.remaining_wall_clock() > 0
-                    if more_left and time_left:
-                        self._emit(state, EventKind.ERROR_RAISED, where="tool",
-                                   type="retrying", message=reason, retryable=True,
-                                   attempt=attempt)
-                        time.sleep(min(RETRY_BACKOFF_S * (2 ** attempt), RETRY_BACKOFF_MAX_S))
+                more_left = attempt + 1 < attempts
+                time_left = led.remaining_wall_clock() > 0
+                if more_left and time_left:
+                    self._emit(state, EventKind.ERROR_RAISED, where="tool",
+                               type="retrying", message=reason, retryable=True,
+                               attempt=attempt)
+                    time.sleep(min(RETRY_BACKOFF_S * (2 ** attempt), RETRY_BACKOFF_MAX_S))
             if not ok:
                 self._emit(state, EventKind.ERROR_RAISED, where="tool", type=spec.name,
                            message=reason, retryable=retryable)

@@ -2201,6 +2201,47 @@ rewrite.
 the span under `harness.*`; and `harness.cache.hit_ratio` actually recording a data point
 — the concrete thing that silently never happened before this fix.
 
+### ADR-068 — N-1 closed: per-tool timeout on the LangGraph backend, same clamp as the classic loop
+
+**Status:** Accepted
+
+**Context.** `dispatch.py::_invoke` has always bounded every tool call with
+`asyncio.timeout(self._e._l.tool_timeout(spec.timeout_s))`. `lg/runtime.py::_run_tools`
+never did — it called `spec.fn` (via `asyncio.run(...)`) with nothing around it. A `read`
+tool with no timeout of its own (a hung HTTP call, an infinite loop in bad tool code)
+blocked that graph node indefinitely. The only thing that could still stop it was the
+run's wall-clock ceiling, and that is checked once at the *start* of a step — never while
+a call is already in flight.
+
+**Decision — the same clamp, at the same call site the timeout already had to wrap.** The
+call already runs inside a coroutine built for `once_if_unsafe` (ADR-064's idempotency
+wiring); that coroutine is now wrapped in `async with asyncio.timeout(led.tool_timeout(
+spec.timeout_s))`, and `except TimeoutError` produces the identical two-branch message
+`dispatch.py` already used — "run wall-clock budget reached" when the run's remaining
+time was the binding constraint, "timed out after {spec.timeout_s}s" when the tool's own
+declared timeout was. `Ledger.tool_timeout` is the one function computing that clamp; both
+backends call it, so the two messages cannot drift into disagreeing about which one to
+say (R-17).
+
+**Retry behaviour was already correct and needed no change.** `retryable` tools
+(`read`/`external`) get `MAX_ATTEMPTS` tries with backoff, `write`/`danger` get exactly
+one — the loop this timeout sits inside already enforced that per T-6.3's port. A timeout
+is just one more kind of failure that loop already knew how to retry or not.
+
+**Verified as a real regression, not a theoretical one.** The fix was reverted and the new
+test suite run against the unpatched code: all three tests failed within 16 seconds (not
+an infinite hang — `asyncio.sleep(5.0)` always returns eventually; the timeout's whole job
+is to not wait for that), each failing on exactly the evidence the fix produces (no `timed
+out` in the tool result, elapsed time far past the tool's declared ceiling). Restoring the
+fix turns all three green in under a second.
+
+**Test.** `tests/test_n1_per_tool_timeout.py` — a `write` tool cut at its declared timeout,
+with the run still completing normally rather than hanging, and only one attempt (never
+retried); a `read` tool cut on all `MAX_ATTEMPTS` attempts, each independently bounded
+rather than the total call getting one shared clock; and the two-branch message,
+distinguishing a tool's own slow timeout from the run's wall-clock actually being what ran
+out.
+
 ---
 
 ## Implementation Decision Log

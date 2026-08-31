@@ -487,19 +487,21 @@ Không thuộc hai vòng review gốc (S-1…S-29/K-1…K-29) — tìm thấy kh
 `N-` để không va chạm với `S-`/`K-` đã có (đúng bài học K-13 đang chờ dọn: một namespace
 mới không nên tự tạo thêm va chạm).
 
-> **N-1 — LangGraph backend không thực thi timeout per-tool nào.** Phát hiện khi cổng
-> T-6.3 (retry theo effect class) sang `lg/runtime.py::_run_tools`: hàm này gọi
+> **N-1 ĐÃ SỬA — LangGraph backend không thực thi timeout per-tool nào.** Phát hiện khi
+> cổng T-6.3 (retry theo effect class) sang `lg/runtime.py::_run_tools`: hàm này gọi
 > `asyncio.run(spec.fn(**args))` trực tiếp, không có `async with asyncio.timeout(...)`
 > nào bọc quanh — khác hẳn `dispatch.py::_invoke` (classic loop), nơi
 > `self._e._l.tool_timeout(spec.timeout_s)` luôn được áp (Round 23). Một tool `read`
 > chạy mãi mãi (vd. một HTTP call treo, không có timeout riêng của thư viện HTTP đó) sẽ
 > treo cả node graph vô thời hạn trên backend LangGraph — chỉ có wall-clock CẤP RUN mới
 > chặn được (`budget_gate`'s `remaining_wall_clock() <= 0`), và cấp đó chỉ kiểm ĐẦU mỗi
-> bước, không kiểm GIỮA một lời gọi tool đang chạy. Chưa sửa — ngoài phạm vi T-6.3 (retry
-> khác timeout), cần một lượt riêng cùng họ với M6 (có thể là T-6.5 nếu roadmap mở rộng,
-> hoặc gộp vào T-6.4's failure-injection harness để có một kịch bản "tool treo" đo được
-> trước khi sửa). `dispatch.py`'s `timeout = self._e._l.tool_timeout(spec.timeout_s)` là
-> khuôn cần chép sang, cùng cách nó clamp theo wall-clock còn lại của cả run.
+> bước, không kiểm GIỮA một lời gọi tool đang chạy. **Sửa: `led.tool_timeout(spec.
+> timeout_s)` bọc đúng chỗ đường idempotency (ADR-064) đã đi qua, cùng thông điệp hai
+> nhánh `dispatch.py` đã có** (ADR-068, `docs/12`). Xác nhận đây là hồi quy thật, không
+> phải lý thuyết: revert bản vá rồi chạy test mới — cả ba test đỏ trong 16 giây (không
+> treo vô hạn — `asyncio.sleep(5.0)` luôn trả về sau cùng, đó chính là lý do timeout cần
+> tồn tại), phục hồi bản vá thì cả ba xanh dưới một giây.
+> `tests/test_n1_per_tool_timeout.py`.
 
 > **N-2 ĐÃ SỬA — classic loop's `try_run()` từng raise `ToolContractError` KHÔNG BỊ BẮT
 > khi model trả rác khớp sai `returns=`.** Phát hiện khi làm T-6.4 (chaos test "model trả
