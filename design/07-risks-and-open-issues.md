@@ -471,6 +471,27 @@ mới không nên tự tạo thêm va chạm).
 > retryable` tồn tại từ Round 5 trước khi T-6.3 mới có ai đọc nó). Khoá bằng
 > `tests/test_m6_t64_chaos.py` (cả hai backend, cộng mutation test từng cái).
 
+> **N-5 — retry cấp PROVIDER đã có tài liệu công bố nhưng chưa cài đặt.**
+> `docs/10-observability-ops.md §3`'s bảng "Vendor → Harness → Retry" viết rõ:
+> `ProviderRateLimited` retry "Yes, honoring Retry-After", `ProviderUnavailable` retry
+> "Yes, exponential backoff", `ProviderTimeout` retry "Yes, exponential backoff". Phát
+> hiện khi đọc docs/10 §2 để làm T-8.3 (OTel) — bảng này SÁT NGAY BÊN bảng OTel, đọc
+> lướt qua ban đầu. N-4 (đã sửa) chỉ biến provider error thành `Result(ERROR)`, KHÔNG tự
+> động retry gì cả — khác hẳn cam kết "Yes, honoring Retry-After" ở đây. Đây là một lớp
+> retry RIÊNG với T-6.3 (retry cấp TOOL theo effect class, đã xây) — retry cấp MODEL CALL,
+> chưa có gì. Chưa sửa — ngoài phạm vi T-8.3 (exporter, không phải retry policy); cần
+> quyết định thiết kế riêng (đọc header `Retry-After` từ đâu khi `ProviderError` không
+> mang nó hôm nay — `errors.py`'s `ProviderRateLimited` không có trường đó) trước khi cài.
+
+> **N-6 — `model.response` event thiếu `usage`/`latency_ms` so với `docs/05` tự hứa.**
+> `docs/05-data-and-state.md §1`'s bảng taxonomy ghi `model.response` mang
+> `stop_reason, usage{in,out,cache_read,cache_write}, cost_usd, latency_ms` — code thật
+> (`run.py`, `lg/runtime.py::call_model`) chỉ emit `stop_reason`/`cost_usd`. Phát hiện khi
+> viết `OtelExporter` (T-8.3): `gen_ai.usage.output_tokens`/`harness.cache_read_tokens`
+> (docs/10 §2's mapping) không bao giờ có dữ liệu để đọc — không phải lỗi của exporter,
+> exporter chỉ đọc đúng những gì event mang. Chưa sửa — cần thêm `usage`/`latency_ms` vào
+> lời gọi `emit(MODEL_RESPONSE, ...)` ở cả hai backend, ngoài phạm vi T-8.3.
+
 ---
 
 ## 2. Ý tưởng có kiến trúc, chờ eval

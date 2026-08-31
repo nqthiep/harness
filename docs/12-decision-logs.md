@@ -1200,6 +1200,55 @@ tracks). The doc never caught up to the rename. Corrected to `Ruling` in place.
 
 ---
 
+### ADR-050 — `OtelExporter` follows docs/10 §2's already-published mapping, not a fresh design
+**Status:** Accepted (M8/T-8.3)
+
+**Context.** `[otel]` was a named extra with zero implementation. `docs/10-observability-
+ops.md §2` had already published the exact mapping before this session — span names,
+attribute names (GenAI semantic conventions), and metric names — the first draft of this
+exporter did not check that table first and used different, invented names. Caught before
+committing, the same discipline as every fix this session: verify the already-published
+contract before writing code.
+
+**Decision.** `observe/otel.py::OtelExporter` follows docs/10 §2 verbatim: span
+`harness.run` (`gen_ai.agent.name`, `gen_ai.request.model`), child span `harness.step`,
+child span `gen_ai.chat` (`gen_ai.usage.input_tokens`/`.output_tokens`,
+`harness.cache_read_tokens`, `harness.cost_usd`), child span `harness.tool`
+(`harness.tool.name`, `.effect`, `.truncated`); `policy.decided` as a span event ON THE
+TOOL SPAN; `budget.exhausted`/`taint.raised`/`error.raised` as span events with span
+status `ERROR` where applicable. Metrics: `harness.run.cost` (histogram, USD),
+`harness.run.steps`, `harness.tool.duration`, `harness.cache.hit_ratio`,
+`harness.policy.denials` (counter, by tool/reason). `include_content=False` (default)
+strips any data key recognized as carrying raw text before it reaches a span attribute.
+
+**A real sequencing problem this surfaced, not invented.** `policy.decided` fires BEFORE
+`tool.started` for an ALLOWed call (`dispatch.py` resolves policy for every planned call
+before any of them run) — so attaching it to "the tool span" per the documented mapping
+is impossible at the moment it arrives; that span doesn't exist yet. Fixed by buffering
+pending `policy.decided` events keyed like the tool-span store, flushed the instant
+`tool.started` creates the span; a DENYed call (no tool span ever comes) attaches
+immediately instead, and a duplicate call that is decided but never dispatched (T-2.5/
+S-26) is flushed onto the step span at `step.finished` rather than leaking forever.
+
+**Two real bugs the exporter's own test suite caught before commit.** `cost_usd` in
+event data is `str(Money(...))` — a `$`-prefixed string (`"$0.0050"`) — and a bare
+`float(v)` raises `ValueError` on the `$`, silently swallowed by the surrounding
+try/except into "no cost recorded"; `_parse_float` now strips a leading `$` first. A
+`pending`/`flushed_ev` variable-name collision across two branches of the same `emit()`
+method confused mypy's flow-sensitive typing into rejecting a valid `.pop(key, None)`
+call — renamed rather than suppressed.
+
+**Deferred, and named honestly rather than silently worked around:** `gen_ai.usage.
+output_tokens`/`harness.cache_read_tokens` populate only when the source event carries
+that data — which, per N-6 (design/07 §1.5), it never does today on either backend
+(docs/05's own table promises `model.response` carries `usage`/`latency_ms`; the actual
+emit sites only pass `stop_reason`/`cost_usd`). Fixing that is a `run.py`/
+`lg/runtime.py` change, out of scope for an exporter that can only read what's emitted.
+Provider-level retry (N-5, docs/10 §3's Retry column) is a similarly out-of-scope gap
+found while reading the same section of docs/10.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
