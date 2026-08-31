@@ -122,10 +122,23 @@ believes they have bought immunity.
   anything the user pasted. Tools receive their own arguments and nothing else. This was
   challenged in Round 7 ("but a summarizer tool needs history") and upheld: a summarizer
   should be a subagent, which is given content explicitly.
-- **Egress allowlist.** `Agent(allowed_hosts=[...])` makes `EgressPolicy` deny any
-  `external` tool call whose URL/host argument falls outside the list. Default `None`
-  (inactive) because a default allowlist that blocks the getting-started example would be
-  turned off wholesale — a rule people disable is worse than one they opt into.
+- **Egress allowlist — advisory, not network enforcement (review-security.md S-18).**
+  `Agent(allowed_hosts=[...])` makes `EgressPolicy` deny any `external` tool call whose
+  URL/host argument falls outside the list. Default `None` (inactive) because a default
+  allowlist that blocks the getting-started example would be turned off wholesale — a rule
+  people disable is worse than one they opt into. `Policy.check` is required to be pure
+  and synchronous (P-4, [§02](02-architecture.md)) — no I/O, no DNS — so `EgressPolicy`
+  can only ever compare the **hostname string** the model supplied against the allowlist.
+  It does not, and structurally cannot, resolve DNS: `fetch_page(url="http://look-alike.attacker.example/")`
+  passes the same check `fetch_page(url="http://docs.python.org/")` does if the hostname
+  itself is on the list or the check is loose, and only DNS resolution at request time
+  reveals it actually points at an internal IP. A real network-layer control (an egress
+  proxy, a container network policy) is the only thing that closes that gap; `EgressPolicy`
+  catches the *obvious* case (a host never on the list at all) and nothing past it. One
+  narrower worry turned out unfounded on inspection: userinfo-based host confusion
+  (`http://intranet.internal@evil.example/`) does **not** fool `EgressPolicy`, because
+  Python's `urlparse` and the HTTP clients this harness's `external` tools use both follow
+  RFC 3986 and agree that `evil.example` is the host either way.
 - **Subagents inherit restriction only.** A subagent's budget is capped by the parent's
   remaining budget, its safety level cannot be lower than the parent's, and it cannot hold
   a tool the parent's policies would deny. Checked at `as_tool()`.
