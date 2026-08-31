@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from ..secrets import redact
+from .canonical import to_canonical_json
 from .events import Event, EventKind
 
 FSYNC_EVERY = 64
@@ -40,14 +41,17 @@ class TranscriptWriter:
     def emit(self, event: Event) -> None:
         if self.disabled or self._fh is None:
             return
-        data = dict(event.data)
+        # T-9.3 — MỘT hình dạng JSON, đúng hàm mọi transport khác cũng gọi (SSE,
+        # harness.server). Trước bản vá, dict được dựng tay ở ngay đây, đánh rơi bốn
+        # trường envelope v1 mà `Event` đã mang từ T-8.1 (schema_version/trace_id/
+        # tenant_id/session_id) — transcript JSONL và `Agent.stream()` đọc CÙNG một
+        # `Event` nhưng cho ra hai hình dạng khác nhau.
+        payload = to_canonical_json(event)
         if event.kind is EventKind.TOOL_REQUESTED and self._level != "debug":
-            if "arguments" in data:
-                data["arguments_digest"] = digest(data.pop("arguments"))
-        line = json.dumps(
-            {"seq": event.seq, "ts": round(event.ts, 6), "run_id": event.run_id,
-             "kind": event.kind.value, "step": event.step, "data": data},
-            sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+            if "arguments" in payload["data"]:
+                payload["data"]["arguments_digest"] = digest(payload["data"].pop("arguments"))
+        line = json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                          ensure_ascii=False, default=str)
         try:
             self._fh.write(redact(line) + "\n")     # redact BEFORE the bytes exist
             self._n += 1

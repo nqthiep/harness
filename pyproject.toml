@@ -14,7 +14,12 @@ graph = ["langgraph>=1.0", "langchain-core>=1.0"]
 # and you run it as a process rather than vendoring it into a library (ADR-035).
 viking = ["openviking-sdk>=0.1.9"]
 otel = ["opentelemetry-api", "opentelemetry-sdk"]
-dev  = ["pytest", "mypy", "ruff", "hypothesis"]
+# T-9.2, docs/17-research-alignment.md M9 — ASGI only, no bundled server: `harness[server]`
+# hands back an app object (`harness.server.create_app`), the operator brings their own
+# uvicorn/hypercorn (§01 "library-first", docs/17 W-08).  Starlette's own dependency count
+# is one (`anyio`) — same discipline as `viking` vendoring the client half only (ADR-035).
+server = ["starlette"]
+dev  = ["pytest", "mypy", "ruff", "hypothesis", "httpx"]
 
 [build-system]
 requires = ["hatchling"]

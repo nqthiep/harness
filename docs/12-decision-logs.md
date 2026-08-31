@@ -1434,6 +1434,71 @@ SDK integration tests.
 
 ---
 
+### ADR-055 — Service API is an ASGI app object, not a bundled server; approvals bridge only where a `Future` can cross the loop it was created on
+**Status:** Accepted (M9/T-9.2, T-9.3)
+
+**Context.** docs/17's T-9.2: `POST /v1/runs`, `GET /v1/runs/{id}`, `GET
+/v1/runs/{id}/events` (SSE), `POST .../approvals/{id}`, `POST .../cancel`, `POST
+.../resume`, as an **extra**, core unchanged. T-9.3: one event model, multiple
+transports, none with its own semantics.
+
+**Decision, four parts.**
+
+1. **`harness.server.create_app(agents)` returns a Starlette `app`; the package never
+   imports or runs a server itself.** `docs/01-requirements.md §1.5` already chose
+   library-first, and `docs/17` W-08 restates it for exactly this task: "Service API is an
+   extra, not core. Core stays 3 dependencies, import 87 ms." The `server` extra pulls in
+   Starlette alone (one hard dependency of its own, `anyio`) — the operator supplies
+   uvicorn/hypercorn/whatever they already run in production, the same reasoning `viking`
+   used to vendor only the SDK's client half (ADR-035).
+
+2. **`RunStore` is in-process, one dict, no external queue or database.** Same scope
+   `Session` (ADR-053) chose for the same reason: this is the naming/wiring pass the
+   research asks for, not a distributed-systems rewrite nobody asked for. A Service API
+   that needs to survive a process restart or scale across workers needs a real store —
+   undemonstrated need today (`07-risks` "Chưa đủ evidence" discipline), not built.
+
+3. **`GET /v1/runs/{id}/events` and `TranscriptWriter` (CLI/JSON) call the same
+   `to_canonical_json(event)` (`observe/canonical.py`).** Extracting it surfaced a real,
+   pre-existing bug rather than a hypothetical one worth guarding against: `TranscriptWriter.
+   emit()` built its own `{"seq","ts","run_id","kind","step","data"}` dict by hand, dropped
+   since before this session — the four envelope-v1 fields (`schema_version`, `trace_id`,
+   `tenant_id`, `session_id`, T-8.1/ADR-048) that `Event` has carried on every field since
+   T-8.1 landed were never written to a persisted transcript. `Agent.stream()` (in-process)
+   and the JSONL transcript disagreed about what an `Event` looks like — exactly the defect
+   T-9.3 exists to name. Fixed by construction: one function, both callers.
+
+4. **The HTTP approvals bridge is wired only for an agent registered with no `approve=` of
+   its own, and this is a real, load-bearing restriction, not a shortcut.**
+   `ApprovalBridge.__call__` creates an `asyncio.Future` on the Service API's event loop and
+   awaits it; `PolicyEngine.resolve()` already awaits whatever `approve(call, ctx)` returns
+   (H19.1), so this works for the classic backend without any new plumbing there. It does
+   **not** work for the LangGraph backend: `lg/runtime.py`'s `_regate` resolves approval
+   through `asyncio.run(self._engine_for(...).resolve(...))` — a **nested** event loop — and
+   a `Future` created on the outer (Service API) loop cannot be awaited from that inner one
+   (`RuntimeError: Future attached to a different loop`). Rather than build a cross-loop
+   bridge (a queue plus `run_coroutine_threadsafe`, more moving parts for a v1 nobody has
+   asked to scale yet), `RunStore.start()` only injects the bridge when
+   `base.approve is None`; an agent built with its own `approve=`/`INTERRUPT` keeps running
+   exactly as constructed, and `POST .../approvals/{id}` returns 409 naming why. Same
+   discipline as N-1/N-3: a real backend asymmetry, stated, not silently painted over with a
+   half-working bridge that appears to work until the first LangGraph deployment hits it.
+
+**`POST .../resume` returns 501, not a fake implementation.** v1's `RunStore` does not keep
+a transcript path per run id — `Agent.resume(transcript)` already exists and works; wiring
+it through this route needs the store to track where each run's transcript went, which
+nothing in T-9.2's four-line spec asked for. Said plainly rather than stubbed silently.
+
+**Test.** `tests/test_m9_t92_t93_service.py` — happy path, 404/400 error shapes, SSE
+carries the full envelope on every event (a canonical-adapter regression, not just a
+Service API smoke test), a slow tool genuinely cancelled mid-flight, the approvals bridge
+both approving and denying a pending `danger` call end-to-end over HTTP, the 409 when an
+agent supplies its own `approve=`, and a direct `TranscriptWriter` test proving the
+previously-dropped envelope fields now land in the JSONL line. All against Starlette's
+`TestClient` (ASGI transport, no socket opened).
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
