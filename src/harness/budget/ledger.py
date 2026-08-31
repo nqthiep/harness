@@ -279,6 +279,31 @@ class Ledger:
             self._overshoot = Money(self._spent.decimal - self._b.usd)
             self._blocked = True
 
+    def hold_steps(self, want: int) -> int:
+        """`hold()`'s TOCTOU fix (Round 28), mở rộng sang trục step — design/07 S-13.
+
+        `_run_subagent` chỉ giữ `usd` trước khi bản vá này; `steps` và `wall_clock_s`
+        của con được kế thừa NGUYÊN VẸN từ `Budget` con tự khai, không liên quan gì tới
+        số step cha còn lại. Bốn sub-agent spawn trong một lượt, mỗi đứa tự khai
+        `steps=20`, tiêu tới 80 step trong khi trần của run gốc chỉ có 20 — đúng lỗi
+        TOCTOU mà `hold()` đã sửa cho `usd`, chưa từng sửa cho `steps`. Trả về số step
+        THẬT được giữ, có thể ít hơn `want`.
+        """
+        held = min(want, max(self.remaining_steps(), 0))
+        self._steps += held
+        return held
+
+    def release_steps(self, held: int, actual: int) -> None:
+        """Trả lại phần step không dùng hết — cùng ngữ nghĩa `release()` cho usd."""
+        self._steps += actual - held
+
+    def child_wall_clock(self, want: float) -> float:
+        """Trần thời gian cho sub-agent — không phải hold/release, vì wall-clock không
+        phải một hồ tài nguyên bị chia sẻ (hai con chạy song song không "tốn" thời gian
+        gấp đôi của cha): mỗi con chỉ cần không được hứa nhiều thời gian hơn cha THẬT SỰ
+        còn lại tại thời điểm spawn — một cận trên, không phải một khoản giữ trước."""
+        return min(want, max(self.remaining_wall_clock(), 0.0))
+
     def charge(self, amount: Money) -> None:
         """Record spend that happened on another ledger — a subagent's run.
 

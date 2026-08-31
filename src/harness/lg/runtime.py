@@ -519,21 +519,32 @@ def _run_subagent(spec, args: dict, led: Ledger) -> str:
     The budget rule is the part that matters: the child is capped by the parent's
     remaining headroom, and the headroom is **held**, not read — parallel children each
     reading `remaining_usd()` all claimed the whole of it (Round 28).
+
+    S-13: đó chỉ đúng cho trục `usd`. Trước bản vá này, `steps`/`wall_clock_s` của con
+    được kế thừa NGUYÊN VẸN từ `Budget` con tự khai — bốn sub-agent spawn trong một lượt,
+    mỗi đứa tự khai `steps=20`, có thể tiêu tới 80 step trong khi trần của run gốc chỉ có
+    20. `hold_steps()`/`release_steps()` áp đúng lý luận TOCTOU của `hold()` sang trục
+    step; `wall_clock_s` không cần hold/release (không phải hồ tài nguyên bị chia — hai
+    con chạy song song không cộng dồn thời gian của nhau), chỉ cần một cận trên tại thời
+    điểm spawn (`child_wall_clock`).
     """
     from dataclasses import replace as _replace
 
     child = spec.subagent
     remaining = led.remaining_usd()
     want = Money(child.budget.usd) if child.budget.usd is not None else None
-    run_child, held = child, None
-    if remaining is not None and want is not None:
-        held = led.hold(want)
-        run_child = child.with_(budget=_replace(child.budget, usd=held.decimal))
+    held = led.hold(want) if remaining is not None and want is not None else None
+    held_steps = led.hold_steps(child.budget.steps)
+    child_wc = led.child_wall_clock(child.budget.wall_clock_s)
+    run_child = child.with_(budget=_replace(
+        child.budget, usd=(held.decimal if held is not None else child.budget.usd),
+        steps=held_steps, wall_clock_s=child_wc))
     r = asyncio.run(run_child.atry_run(args.get("task", "")))
     if held is not None:
         led.release(held, r.cost)
     else:
         led.charge(r.cost)
+    led.release_steps(held_steps, r.steps)
     return r.text if r.ok else f"{child.name} stopped: {r.stop_reason.value}. {r.text}"
 
 

@@ -53,11 +53,25 @@ khi nó thành thật.
 > instance, chạy graph thật hai thread không lây đếm — cộng mutation test (khôi
 > phục một `PolicyEngine` chia sẻ) xác nhận 3 test đỏ ngay.
 
+> **S-13 ĐÃ SỬA — cả hai backend.** `_run_subagent` chỉ `hold()` trục `usd`;
+> `steps`/`wall_clock_s` của con được kế thừa nguyên vẹn từ `Budget` con tự khai,
+> không liên quan gì tới số còn lại của cha — bốn sub-agent spawn trong một lượt,
+> mỗi đứa tự khai `steps=20`, có thể tiêu 80 step trong khi trần cha chỉ có 20/8.
+> `Ledger.hold_steps()`/`release_steps()` áp đúng lý luận TOCTOU của `hold()`
+> (Round 28) sang trục step; `child_wall_clock()` cắt trần thời gian con xuống
+> đúng số cha còn lại tại thời điểm spawn — không cần hold/release vì wall-clock
+> không phải hồ tài nguyên bị chia (hai con chạy song song không cộng dồn thời
+> gian của nhau). `tests/test_attack_s13.py`: con bị cap đúng xuống step cha còn
+> lại (đo bằng SỐ LẦN TOOL THẬT SỰ CHẠY, không phải số học `Ledger` — lần thử
+> mutation đầu tiên vô tình triệt tiêu vì `release_steps` tính theo hiệu số nên
+> "bỏ hold + bỏ cap" khớp nhau về 0, khiến `remaining_steps()` trông vẫn an toàn
+> dù cha không hề bị trừ), bốn con cộng dồn không vượt trần, step dư được trả
+> lại — mutation khôi phục hành vi cũ xác nhận 2 test đỏ ngay.
+
 | mã | vấn đề | vì sao chưa sửa |
 |---|---|---|
 | S-11 | `Actor` là lời tự khai, không có evidence | cần mô hình xác thực người duyệt |
 | S-12 | ba kênh resume (`answer=`, `ResumeToken`) vẫn chưa thống nhất giữa 01 và 04 | đã sửa một nửa (`ruling=` → `answer=`) |
-| S-13 | `slice_for_child` nhân bội `steps`/`wall_clock`, mâu thuẫn `04 §7.2` | cần chốt ngữ nghĩa sub-agent budget |
 | S-17 | `description` của tool MCP vào prompt khi nhãn còn `TRUSTED` | injection qua metadata; cần gắn nhãn cho description |
 | S-18 | P-4 (`Policy.check` thuần) làm `DenyHosts` chỉ còn advisory ⇒ SSRF đi qua | cần tách policy thuần khỏi enforcement I/O |
 
@@ -223,20 +237,19 @@ Từ sáu tệp thiết kế, không lặp lại lý lẽ:
 
 ## 5. Việc tiếp theo, theo thứ tự
 
-1. **S-13** — ngữ nghĩa `slice_for_child` cho ngân sách sub-agent, đang mâu thuẫn `04 §7.2`.
-2. **`Secret[T]`** — nguồn nâng confidentiality thứ nhất (S-3), chưa cài; chỉ có
+1. **`Secret[T]`** — nguồn nâng confidentiality thứ nhất (S-3), chưa cài; chỉ có
    `Grants.sensitive` (nguồn thứ hai).
-3. **S-15 trên backend cổ điển — kiểm lại, có thể không cần.** Backend cổ điển đã có
+2. **S-15 trên backend cổ điển — kiểm lại, có thể không cần.** Backend cổ điển đã có
    `_check_shared_policy_state` từ Round 34 và nó đúng cho ranh giới `run()` sạch mà
    backend đó có. Chưa kiểm: có đáng thêm CÙNG luật "từ chối instance, chỉ nhận factory"
    ở đó để hai backend nhất quán, hay để nguyên vì cơ chế dò-sau-khi-chạy đã đủ và không
    cần siết thêm.
-4. **S-7, S-8, S-9, S-10** — landing cùng lúc với khi tích hợp MCP thật được xây, không
+3. **S-7, S-8, S-9, S-10** — landing cùng lúc với khi tích hợp MCP thật được xây, không
    trước (xem `## 1.1`).
-5. **Cắt K-7, K-9, K-10, K-23** — giảm đường tới production từ ~38 xuống ~33 tên.
-6. **`Ledger.void()`, S-16/S-19/S-3 trên backend cổ điển — ĐÃ KIỂM, KHÔNG THÊM.** Cả hai
+4. **Cắt K-7, K-9, K-10, K-23** — giảm đường tới production từ ~38 xuống ~33 tên.
+5. **`Ledger.void()`, S-16/S-19/S-3 trên backend cổ điển — ĐÃ KIỂM, KHÔNG THÊM.** Cả hai
    được xét kỹ và có 0 caller trong `src/harness/` hôm nay; xem `## 1.1` cho `void()`.
-7. **Tiếp tục viết code.** S-16/S-19/S-3/S-6/S-14/S-15 đã vào `src/harness/` — 294 test
+6. **Tiếp tục viết code.** S-16/S-19/S-3/S-6/S-14/S-15/S-13 đã vào `src/harness/` — 303 test
    xanh, mỗi cơ chế chính có mutation test đi kèm. Vẫn còn nhiều phát hiện review chưa
    chạm tới code, và nghiên cứu của chính dự án đo được **23 vòng review tìm 20 lỗi và 0
    lỗi bảo mật; 16 vòng chạy tìm 38+ lỗi và 4 lỗi bảo mật** — bản thiết kế là sản phẩm của
