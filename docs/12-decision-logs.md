@@ -1322,6 +1322,46 @@ of `stream()` itself — this is a bug `with_()`'s own callers hit regardless of
 
 ---
 
+### ADR-053 — `Session` names what Round 37 already isolated; scoped to the classic backend
+**Status:** Accepted (M8/T-8.6)
+
+**Context.** docs/17's T-8.6: "`Session` là resource — id, ownership, TTL, fork, resume,
+và ranh giới đồng thời. Vòng 37 đã sửa phần rò rỉ; đây là phần đặt tên cho thứ đã tồn tại
+ngầm." The state isolation this depends on already exists — one `Ledger`/`TaintTracker`/
+`EventBus`/`DecisionLog` per run or thread, never shared (Round 37's original fix, and
+S-15/S-24/S-29 in this session's own history for the LangGraph backend specifically).
+What's missing is a name and a handful of resource-lifecycle properties.
+
+**Decision.** `harness/session.py::Session` wraps `Chat` (ADR-020, the classic backend's
+existing multi-turn object) rather than reinventing multi-turn state: `id` (`"sess_" +
+uuid`), `owner`, `ttl_s`/`expires_at`/`expired()`, `.fork()` (a new `Session`, new id,
+whose history starts as a value-copy of the original — mutating one never touches the
+other), `.resume_from()` (wraps the EXISTING `Agent.resume()` transcript-replay
+mechanism in the Session lifecycle, honestly — it does not build a richer resume than
+what already exists; `Agent.resume()` re-issues the original message with an
+interrupted-tool note, it does not reconstruct full history from a transcript, and
+nothing in this codebase does that yet), and a `threading.Lock` for the concurrency
+boundary (`threading`, not `asyncio`: `Chat.say()` is synchronous — it calls
+`Agent.try_run()`, which itself runs `asyncio.run()` internally — so the lock matches
+the primitive it protects rather than forcing an async boundary onto a sync one).
+
+**Scoped to the classic backend, not built symmetrically for LangGraph.** On that
+backend, `thread_id` (checkpointer-durable) is already the session primitive —
+`session_id` is set to it (T-8.1, ADR-048). A symmetric `Session` there would need
+checkpointer-level metadata storage (ownership, TTL) this library does not build; that
+is new infrastructure, not the naming pass T-8.6 describes, and building it here would
+have meant inventing a design decision beyond what was asked.
+
+**Concurrency boundary, proven with a forced (not timing-based) race.** The test
+suite reproduces the exact race `Session._lock` prevents deterministically: two threads
+are held inside a controlled provider until BOTH have read `Chat._messages` (empty), then
+released in order — without the lock, the second thread's write overwrites the first's,
+leaving 2 messages instead of 4. A `time.sleep`-based version of the same test also
+exists and passes, but the forced version is what actually PROVES the mechanism rather
+than making the race merely likely.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |

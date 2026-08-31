@@ -429,6 +429,16 @@ class Chat:
         self._spent = self._spent + r.cost
         return r
 
+    def fork(self) -> "Chat":
+        """T-8.6 — an independent copy of this conversation's history and spend so
+        far: mutating the fork (further `.say()` calls) never touches the original,
+        and vice versa. `Chat` is not frozen (unlike `Agent`, ADR-004) so this copies
+        by value rather than needing `with_()`."""
+        new = Chat(self._agent, budget=self._budget)
+        new._messages = list(self._messages)
+        new._spent = self._spent
+        return new
+
 
 def _output_format(returns: type) -> dict:
     """Build the response schema from `returns=`, using the SAME generator as tools so
