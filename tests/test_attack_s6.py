@@ -58,9 +58,12 @@ class HopThanhDayDu(unittest.TestCase):
     grant ALLOW còn sống, grant DENY (đã thu hồi)}."""
 
     def _rt(self, verdict: Verdict):
+        """`Runtime` không còn giữ một `self._engine` cố định — mỗi thread nhận một
+        `PolicyEngine` riêng qua `_engine_for()` (S-15, `lg/__init__.py`). Mock đúng chỗ
+        đó thay vì một attribute không còn tồn tại."""
         graph, rt = build_agent(model=FakeChat(script=[]), tools=[refund], budget="$5",
                                 checkpointer=MemorySaver())
-        rt._engine = _FakeEngine(verdict)
+        rt._engine_for = lambda run_id: _FakeEngine(verdict)
         return rt
 
     def _with_grant(self, rt, verdict: Verdict, run_id="r-1", call_id="c1"):

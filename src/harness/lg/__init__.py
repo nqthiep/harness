@@ -11,8 +11,8 @@ from typing import Any, Sequence
 from ..budget.ledger import Budget, Ledger
 from ..models import pricing
 from ..observe.events import EventBus
+from ..errors import ConfigError
 from ..policy.builtin import EffectPolicy, EgressPolicy, TaintPolicy
-from ..policy.engine import PolicyEngine
 from ..policy.label import Grants
 from ..tools.registry import ToolSet
 from ..agent import _check_subagent_safety, _check_tool_set
@@ -44,11 +44,40 @@ def build_agent(*, model, tools: Sequence[Any] = (), budget: Any = None,
     _check_tool_set(toolset, grants)
     _check_subagent_safety(toolset, safety)
     ledger = Ledger(Budget.parse(budget))
-    user = tuple(p() if _is_factory(p) else p for p in policies)
-    engine = PolicyEngine(
-        (EffectPolicy(), TaintPolicy(grants), EgressPolicy(allowed_hosts)), user)
+    # S-15: KHÔNG dựng `PolicyEngine` một lần ở đây với các instance policy người dùng đưa
+    # vào. `build_agent()` chạy đúng MỘT LẦN và `Runtime` nó tạo ra phục vụ MỌI thread sau
+    # đó (docstring `Runtime` ở dưới) — nên một policy có state (đếm, cache theo tool) mà
+    # người dùng lỡ truyền instance thay vì factory sẽ bị MỌI thread dùng chung, không
+    # cách nào phát hiện được (không có ranh giới "hết một run" để so trước/sau như backend
+    # cổ điển có, vì graph phục vụ nhiều thread đồng thời, không phải tuần tự).
+    #
+    # Backend cổ điển giải quyết bằng cách dò state thay đổi SAU MỖI run() — "dò ở đây
+    # thay vì đoán lúc dựng" (agent.py, Round 34), vì một static check kiểu "có attribute
+    # là từ chối" sẽ từ chối nhầm `EgressPolicy` (có cấu hình, không có state). Backend này
+    # không có một ranh giới run() sạch để dò như thế, nên đổi chiến lược: BẮT BUỘC mọi
+    # policy người dùng phải là factory, và mỗi THREAD (không phải mỗi node, không phải
+    # mỗi lần build_agent) nhận đúng MỘT instance riêng — xem `Runtime._engine_for`.
+    not_factory = [p for p in policies if not _is_factory(p)]
+    if not_factory:
+        names = ", ".join(type(p).__name__ for p in not_factory)
+        raise ConfigError(
+            f"build_agent() nhận một INSTANCE policy ({names}), không phải một class.\n"
+            f"\n"
+            f"  Trên backend LangGraph, build_agent() chạy đúng MỘT LẦN và agent nó trả về\n"
+            f"  phục vụ MỌI cuộc hội thoại sau đó — một instance policy có state (đếm,\n"
+            f"  cache) sẽ bị mọi khách hàng dùng chung, không cách nào phát hiện được\n"
+            f"  (design/review-security.md S-15).\n"
+            f"\n"
+            f"  Truyền CLASS thay vì instance, để mỗi thread nhận một bản mới:\n"
+            f"\n"
+            f"      policies=[{names}]        ← không {names}()\n"
+            f"\n"
+            f"  -> docs/06-safety.md#4-least-privilege"
+        )
     rt = Runtime(model=model.bind_tools([_lc_tool(s) for s in toolset]) if len(toolset) else model,
-                 toolset=toolset, ledger=ledger, engine=engine,
+                 toolset=toolset, ledger=ledger,
+                 builtins=(EffectPolicy(), TaintPolicy(grants), EgressPolicy(allowed_hosts)),
+                 policy_factories=tuple(policies),
                  price=pricing.price(model_name),
                  max_output=pricing.MAX_OUTPUT.get(model_name, 8_000), model_name=model_name,
                  bus=bus, approve=approve, grants=grants)

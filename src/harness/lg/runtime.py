@@ -19,6 +19,7 @@ from ..observe.events import EventKind
 from ..policy.base import Ruling, ToolCall, Verdict
 from ..policy.builtin import emits_of
 from ..policy.decision import Actor, Decision, DecisionLog, Scope
+from ..policy.engine import PolicyEngine
 from ..policy.label import Grants, Integrity, Label
 from ..result import Money, StopReason, Usage
 from ..run import CONTINUE, _MAP
@@ -30,14 +31,25 @@ from .graph import INTERRUPT, MAX_PAUSES
 
 
 class Runtime:
-    def __init__(self, *, model, toolset, ledger: Ledger, engine, price,
-                 max_output: int, model_name: str = "claude-opus-5",
+    def __init__(self, *, model, toolset, ledger: Ledger, builtins=(), policy_factories=(),
+                 price, max_output: int, model_name: str = "claude-opus-5",
                  bus=None, approve=None, decisions: DecisionLog | None = None,
                  grants: Grants | None = None) -> None:
         self._model, self._tools = model, toolset
         self._model_name, self._started = model_name, False
         self._budget = ledger.budget          # the spec; the spend lives per turn
-        self._engine = engine
+        self._builtins = tuple(builtins)
+        # S-15: `build_agent()` từ chối bất kỳ policy nào KHÔNG phải factory (xem
+        # lg/__init__.py), nên mọi thứ ở đây là callable, chưa gọi. `_engine_for` gọi mỗi
+        # cái đúng MỘT LẦN cho mỗi thread, cache theo `run_id` — cùng thread thấy lại đúng
+        # instance của chính nó qua các lượt (state hợp lệ, đếm/rate-limit trong MỘT cuộc
+        # hội thoại vẫn đúng), một thread khác không bao giờ thấy state của thread này.
+        #
+        # Cache này KHÔNG vi phạm R-4 theo cách nguy hiểm: nó không phải nguồn sự thật
+        # (mất qua restart chỉ khiến policy đó "quên" tiến độ, tự tái tạo sạch ở lần gọi
+        # kế — khác `Ledger`/nhãn, nơi mất là sai lệch tiền hoặc bảo mật thật).
+        self._policy_factories = tuple(policy_factories)
+        self._policy_cache: dict[str, tuple] = {}
         self._price, self._max_output = price, max_output
         self._bus, self._approve = bus, approve
         # Đọc bởi `_run_tools` khi gắn nhãn L-1 lên kết quả tool — S-16/S-3. Cấu hình
@@ -59,6 +71,18 @@ class Runtime:
     # `stop_reason` made every turn after the first do nothing at all.
     #
     # The rule this replaced them with: **the thread's state is the only memory.**
+    def _engine_for(self, run_id: str) -> PolicyEngine:
+        """`PolicyEngine` riêng cho thread này — S-15.
+
+        Builtin luôn dùng chung (đã kiểm không mutate `self` trong `check()`); mỗi factory
+        policy người dùng được gọi đúng MỘT LẦN cho `run_id` này rồi cache lại, nên các
+        lượt sau của CÙNG thread thấy lại đúng instance cũ (rate-limit/đếm trong một cuộc
+        hội thoại vẫn đúng) mà một thread khác không bao giờ thấy được.
+        """
+        if run_id not in self._policy_cache:
+            self._policy_cache[run_id] = tuple(f() for f in self._policy_factories)
+        return PolicyEngine(self._builtins, self._policy_cache[run_id])
+
     def _ledger(self, state) -> Ledger:
         """This conversation's ledger, rebuilt from state on every node.
 
@@ -158,7 +182,8 @@ class Runtime:
                     content=f"no tool called {c['name']!r} is available",
                     tool_call_id=c["id"], status="error"))
                 continue
-            d = self._engine.decide(ToolCall(c["id"], c["name"], c.get("args", {}), spec), ctx)
+            d = self._engine_for(_run_id(state)).decide(
+                ToolCall(c["id"], c["name"], c.get("args", {}), spec), ctx)
             self._emit(EventKind.POLICY_DECIDED, tool=c["name"], call_id=c["id"],
                        verdict=d.verdict.name, reason=d.reason, policy=d.policy)
             if d.verdict is Verdict.DENY:
@@ -197,7 +222,7 @@ class Runtime:
                 d = Ruling(Verdict.ALLOW if ok else Verdict.DENY,
                              "approved" if ok else "declined by approver", "approval")
             else:
-                d = asyncio.run(self._engine.resolve(
+                d = asyncio.run(self._engine_for(_run_id(state)).resolve(
                     Ruling(Verdict.ASK, p["reason"], "policy"), call, ctx, self._approve))
             self._emit(EventKind.POLICY_DECIDED, tool=p["tool"], call_id=p["call"]["id"],
                        verdict=d.verdict.name, reason=d.reason, policy=d.policy)
@@ -246,7 +271,7 @@ class Runtime:
         spec = self._tools.get(p["tool"])
         call = ToolCall(p["call"]["id"], p["tool"], p["call"].get("args", {}), spec)
         ctx = _Ctx(label=self._effective_label(state), safety=self._safety(state))
-        r = self._engine.decide(call, ctx)
+        r = self._engine_for(_run_id(state)).decide(call, ctx)
         if r.verdict is not Verdict.ASK:
             return r
         v = self._decisions.lookup(p["tool"], p["call"].get("args", {}),

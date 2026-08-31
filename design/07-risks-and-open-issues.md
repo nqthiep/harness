@@ -28,17 +28,36 @@ khi nó thành thật.
 > trước khi cái đầu `settle()`) sẽ mỗi lần đọc cùng ngân sách còn trống và đều "vừa đủ" độc
 > lập. `tests/test_attack_s14.py` chứng minh bằng cách gọi `reserve()` hai lần liên tiếp
 > chưa `settle()`, cộng mutation test bỏ `_committed()` xác nhận nó load-bearing.
-> **Chưa sửa:** không có `void()`/`cancel()` — một reservation bị bỏ dở (lời gọi thất bại
-> giữa `reserve()` và `settle()`) vẫn nằm trong `_open` tới hết đời `Ledger`. Vô hại hôm
-> nay (không có gì `reserve()` tiếp sau một lần thất bại trong cùng `Ledger`), nhưng sẽ cần
-> khi `Retry` plugin được xây — xem `## 5` bên dưới.
+> **`void()` — ĐÃ KIỂM, KHÔNG THÊM.** Truy hết cả hai backend (`run.py:69→86`,
+> `lg/runtime.py:111`+`138`): không có `try/except` nào giữa `reserve()` và `settle()` mà
+> cho phép CÙNG một `Ledger` sống tiếp để `reserve()` lần nữa sau một lần thất bại —
+> `run.py` chỉ bắt `asyncio.CancelledError` ở tầng ngoài, một lỗi provider khác propagate
+> thẳng ra khỏi `run()` và mang theo cả `Ledger`; backend graph còn triệt để hơn, mỗi node
+> dựng một `Ledger` MỚI từ checkpoint nên `budget_gate`'s reservation không bao giờ tới
+> được `call_model` để mà cần huỷ. `void()` có **0 caller** trong `src/harness/` hôm nay —
+> đúng bằng chứng đã dùng để hoãn S-7..S-10, nên áp cùng luật: không xây trước khi có
+> caller thật. Sẽ cần lại khi `Retry` plugin tồn tại — xem `## 5`.
+
+> **S-15 ĐÃ SỬA — trên backend LangGraph.** `build_agent()` chạy đúng một lần và
+> `PolicyEngine` nó dựng phục vụ mọi thread sau đó, nên một policy có state (đếm,
+> cache) mà người dùng lỡ truyền INSTANCE thay vì factory sẽ bị mọi thread dùng
+> chung — không có ranh giới "hết một run()" sạch để dò như backend cổ điển có
+> (`agent.py:_check_shared_policy_state`, Round 34, vẫn nguyên vẹn và vẫn đúng cho
+> backend đó). Sửa bằng chiến lược khác cho backend này: `build_agent()` giờ **từ
+> chối construction** bất kỳ policy nào không phải factory (`ConfigError`, chỉ đúng
+> cách sửa); `Runtime._engine_for(run_id)` dựng một `PolicyEngine` riêng cho mỗi
+> thread, gọi factory đúng một lần, cache theo `run_id` — cùng thread qua nhiều lượt
+> thấy lại đúng instance của mình (rate-limit trong một cuộc hội thoại vẫn đúng),
+> thread khác không bao giờ thấy được. `tests/test_attack_s15.py`: từ chối instance
+> lúc dựng, cùng thread giữ state qua nhiều lượt, hai thread không dùng chung
+> instance, chạy graph thật hai thread không lây đếm — cộng mutation test (khôi
+> phục một `PolicyEngine` chia sẻ) xác nhận 3 test đỏ ngay.
 
 | mã | vấn đề | vì sao chưa sửa |
 |---|---|---|
 | S-11 | `Actor` là lời tự khai, không có evidence | cần mô hình xác thực người duyệt |
 | S-12 | ba kênh resume (`answer=`, `ResumeToken`) vẫn chưa thống nhất giữa 01 và 04 | đã sửa một nửa (`ruling=` → `answer=`) |
 | S-13 | `slice_for_child` nhân bội `steps`/`wall_clock`, mâu thuẫn `04 §7.2` | cần chốt ngữ nghĩa sub-agent budget |
-| S-15 | `Policy` dùng chung mọi run; không luật nào cấm state trong `self` ⇒ R-4 có lỗ | sửa được bằng một câu luật + test |
 | S-17 | `description` của tool MCP vào prompt khi nhãn còn `TRUSTED` | injection qua metadata; cần gắn nhãn cho description |
 | S-18 | P-4 (`Policy.check` thuần) làm `DenyHosts` chỉ còn advisory ⇒ SSRF đi qua | cần tách policy thuần khỏi enforcement I/O |
 
@@ -204,17 +223,21 @@ Từ sáu tệp thiết kế, không lặp lại lý lẽ:
 
 ## 5. Việc tiếp theo, theo thứ tự
 
-1. **`Ledger.void()`** — hoàn phần còn thiếu của S-14: giải phóng một reservation bị bỏ
-   dở (lời gọi thất bại giữa `reserve()` và `settle()`) trước khi `Retry` plugin cần đến nó.
-2. **S-15** — chốt một câu luật cấm `Policy` giữ state trong `self`, cộng test.
-3. **S-13** — ngữ nghĩa `slice_for_child` cho ngân sách sub-agent, đang mâu thuẫn `04 §7.2`.
-4. **`Secret[T]`** — nguồn nâng confidentiality thứ nhất (S-3), chưa cài; chỉ có
+1. **S-13** — ngữ nghĩa `slice_for_child` cho ngân sách sub-agent, đang mâu thuẫn `04 §7.2`.
+2. **`Secret[T]`** — nguồn nâng confidentiality thứ nhất (S-3), chưa cài; chỉ có
    `Grants.sensitive` (nguồn thứ hai).
-5. **S-7, S-8, S-9, S-10** — landing cùng lúc với khi tích hợp MCP thật được xây, không
+3. **S-15 trên backend cổ điển — kiểm lại, có thể không cần.** Backend cổ điển đã có
+   `_check_shared_policy_state` từ Round 34 và nó đúng cho ranh giới `run()` sạch mà
+   backend đó có. Chưa kiểm: có đáng thêm CÙNG luật "từ chối instance, chỉ nhận factory"
+   ở đó để hai backend nhất quán, hay để nguyên vì cơ chế dò-sau-khi-chạy đã đủ và không
+   cần siết thêm.
+4. **S-7, S-8, S-9, S-10** — landing cùng lúc với khi tích hợp MCP thật được xây, không
    trước (xem `## 1.1`).
-6. **Cắt K-7, K-9, K-10, K-23** — giảm đường tới production từ ~38 xuống ~33 tên.
-7. **Tiếp tục viết code.** S-16/S-19/S-3/S-6/S-14 đã vào `src/harness/` — 288 test xanh,
-   mỗi cơ chế chính có mutation test đi kèm. Vẫn còn nhiều phát hiện review chưa chạm tới
-   code, và nghiên cứu của chính dự án đo được **23 vòng review tìm 20 lỗi và 0 lỗi bảo
-   mật; 16 vòng chạy tìm 38+ lỗi và 4 lỗi bảo mật** — bản thiết kế là sản phẩm của review,
-   nó sẽ sai ở những chỗ chỉ có chạy mới tìm ra.
+5. **Cắt K-7, K-9, K-10, K-23** — giảm đường tới production từ ~38 xuống ~33 tên.
+6. **`Ledger.void()`, S-16/S-19/S-3 trên backend cổ điển — ĐÃ KIỂM, KHÔNG THÊM.** Cả hai
+   được xét kỹ và có 0 caller trong `src/harness/` hôm nay; xem `## 1.1` cho `void()`.
+7. **Tiếp tục viết code.** S-16/S-19/S-3/S-6/S-14/S-15 đã vào `src/harness/` — 294 test
+   xanh, mỗi cơ chế chính có mutation test đi kèm. Vẫn còn nhiều phát hiện review chưa
+   chạm tới code, và nghiên cứu của chính dự án đo được **23 vòng review tìm 20 lỗi và 0
+   lỗi bảo mật; 16 vòng chạy tìm 38+ lỗi và 4 lỗi bảo mật** — bản thiết kế là sản phẩm của
+   review, nó sẽ sai ở những chỗ chỉ có chạy mới tìm ra.
