@@ -1733,6 +1733,51 @@ real SSE response; a second test proves the buffer never exceeds the bound and
 
 ---
 
+### ADR-060 — `AuthEvidence`: a correct crypto primitive, not a channel integration
+**Status:** Accepted (S-11's remaining gap)
+
+**Context.** S-11's landing (T-8.2 session, `Approval(ok, actor=...)`) closed "no channel
+for `approve=` to report a real identity" but explicitly left open "nothing stops that
+identity from being self-declared" — `design/07-risks-and-open-issues.md` names the full
+fix as `AuthEvidence` (channel signature, `channel_message_id`), "cần thiết kế riêng,
+chưa bắt đầu."
+
+**Decision — scope stops at the primitive; verification stays in the callback.**
+`policy/auth_evidence.py` provides `AuthEvidence` (a value type: channel, message id,
+signed payload, signature, timestamp), `sign_evidence()`, and `verify_auth_evidence()` —
+HMAC-SHA256, `hmac.compare_digest` throughout (not `==`, which leaks timing information a
+real attacker can use to forge a signature byte-by-byte), and a replay window
+(`max_age_s`, default 300s) so a signature captured once (a log line, a network trace)
+cannot be replayed indefinitely. `Actor` gains `verified: bool = False`; `Approval` gains
+`evidence: AuthEvidence | None = None`.
+
+**What this deliberately does NOT do: wire verification into `PolicyEngine.resolve()`,
+or add a secret-management parameter to `Agent`/`build_agent()`.** The callback an
+operator writes for `approve=` is the party that received the actual channel event (a
+Slack interactive-message payload, an OAuth callback) and holds that channel's secret —
+the harness does not and should not know Slack's signing-secret format, OAuth's token
+introspection endpoint, or any other channel's shape. Building that abstraction now, with
+zero channel integrations anywhere in `src/harness/` to validate it against, is exactly
+the "0 implementer" pattern `review-kiss.md` K-5 already cut once. The contract instead:
+the callback calls `verify_auth_evidence()` itself, and only THEN constructs
+`Approval(ok, actor=Actor.human(id, via=..., verified=True), evidence=...)` — `evidence`
+travels with the `Decision` so a later audit can re-verify the claim independently, which
+is the actual goal ("chứng minh", not "trust because the field says so"). Nothing
+technically stops a callback from setting `verified=True` without calling
+`verify_auth_evidence()` first — that residual trust-the-callback-author gap is inherent
+to any approval mechanism that terminates in operator code, named here rather than implied
+away by the field's existence.
+
+**Test.** `tests/test_s11_auth_evidence.py` — round-trip sign/verify; wrong secret,
+tampered payload, tampered signature, and evidence issued for a different `actor_id` all
+correctly fail (the last one is the concrete attack S-11 names: evidence valid for one
+identity reused to "prove" another); the replay window rejects both stale evidence and
+evidence claiming a future timestamp (clock skew in the attacker's favor); `Actor`/
+`Approval` carry the new fields without disturbing the existing S-11 contract for a
+callback that supplies neither.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |

@@ -10,7 +10,14 @@ thành một danh sách, vì tới hôm nay không tệp nào đọc chung cả 
 
 ## 0. Tình trạng hiện tại, tóm tắt trung thực
 
-- **359 test xanh**, ruff/mypy sạch trên mọi tệp đã đụng, mọi `examples/*.py` chạy được.
+> **Mục này là snapshot TỪ TRƯỚC M6…M10 — giữ nguyên làm hồ sơ, không viết lại theo thì
+> hiện tại** (cùng quy ước `## 4` đã áp dụng cho roadmap). Trạng thái THẬT hôm nay: M6…M10
+> xong 10/10 sub-task, K-13 dọn xong, S-4/S-23 re-verify xong (ADR-057), S-01/S-02/S-03/
+> S-14/C-04 đóng (ADR-058/059), S-11's `AuthEvidence` xong (ADR-060) — **586 test xanh**,
+> không phải 359. Đọc `docs/17 §1`/`§2.2` và `design/07 §1.1` cho số liệu sống; các dòng
+> bên dưới đúng tại thời điểm chúng được viết.
+
+- **359 test xanh** (tại thời điểm viết mục này), ruff/mypy sạch trên mọi tệp đã đụng, mọi `examples/*.py` chạy được.
 - **Toàn bộ 58 phát hiện của hai vòng review (S-1…S-29, K-1…K-29) đã được xét qua** —
   không có nghĩa "đã sửa hết". Phân loại thật:
   - **Đã sửa bằng code, có test + mutation test:** phần lớn S-2…S-29 còn lại
@@ -22,8 +29,8 @@ thành một danh sách, vì tới hôm nay không tệp nào đọc chung cả 
     một cơ chế khác, đơn giản hơn, khi thật sự cài đặt.
   - **Đã sửa bằng tài liệu, không phải code (không có cách sửa ở tầng đang xét):** S-18,
     S-28's phần tài liệu.
-  - **Sửa được một phần, phần còn lại cần thiết kế mới:** S-11 (kênh `Approval` xong,
-    `AuthEvidence` thật thì chưa).
+  - ~~**Sửa được một phần, phần còn lại cần thiết kế mới:** S-11 (kênh `Approval` xong,
+    `AuthEvidence` thật thì chưa).~~ **NAY XONG CẢ HAI PHẦN** — ADR-060, xem `design/07 §1.1`.
   - **CÒN SỐNG, chưa sửa:** S-4 (xem `## 2`; chờ M6/idempotency để re-verify).
   - **Hoãn có chủ ý, chờ hạ tầng chưa tồn tại:** S-7…S-10, S-17 (chờ M9/MCP); K-13's va
     chạm `P-`/`I-` (chờ một lượt riêng, đụng cả code lẫn `docs/*.md` sống).

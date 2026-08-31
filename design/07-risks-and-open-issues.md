@@ -153,9 +153,22 @@ nó thành thật.
 > dù cha không hề bị trừ), bốn con cộng dồn không vượt trần, step dư được trả
 > lại — mutation khôi phục hành vi cũ xác nhận 2 test đỏ ngay.
 
-> **S-11 SỬA MỘT PHẦN.** `Actor` vẫn là lời tự khai — không có mô hình xác thực người
-> duyệt, và xây một cái (chữ ký kênh, `channel_message_id` — `AuthEvidence` review đề
-> xuất) là việc lớn, cần thiết kế riêng, ghi lại bên dưới. Phần landing được: chữ ký thật
+> **S-11 — ĐÃ SỬA thêm một phần nữa (ADR-060, `AuthEvidence`), phần lõi crypto XONG,
+> phần "harness tự verify hộ" CỐ Ý KHÔNG LÀM.** `policy/auth_evidence.py`:
+> `AuthEvidence`/`sign_evidence`/`verify_auth_evidence` (HMAC-SHA256,
+> `hmac.compare_digest` hằng thời gian, cửa sổ chống replay). `Actor.verified: bool =
+> False`, `Approval.evidence: AuthEvidence | None`. Callback tự verify bằng chứng từ kênh
+> CỦA NÓ (Slack, OAuth, …) rồi mới tự báo `verified=True` — harness không wire việc verify
+> vào `PolicyEngine.resolve()`, vì harness không biết gì về bí mật/hình dạng của một kênh
+> mà `src/harness/` không hề tích hợp (0 implementer, đúng loại K-5 đã cắt). Phần CÒN LẠI,
+> vẫn đúng như review gốc nói: không gì ngăn một callback tự đặt `verified=True` mà không
+> gọi `verify_auth_evidence()` — đó là giới hạn cố hữu của bất kỳ cơ chế approval nào kết
+> thúc ở code của operator, không phải lỗ hổng thêm bản vá này tạo ra.
+> `tests/test_s11_auth_evidence.py` (14 test): round-trip, sai secret, payload/signature
+> bị sửa, evidence của actor A dùng cho actor B (đúng kịch bản S-11 lo) đều thất bại đúng
+> cách; cửa sổ replay chặn cả evidence quá cũ lẫn "ký trong tương lai."
+>
+> **Phần landing trước đó (T-8.2, giữ nguyên).** Chữ ký thật
 > của `approve=` (`ApprovalFn = Callable[[ToolCall, RunContext], bool]`) không có kênh
 > nào để callback báo DANH TÍNH — trước bản vá, backend LangGraph (backend DUY NHẤT có
 > `DecisionLog`; backend cổ điển không dùng nó) ghi cứng
@@ -166,8 +179,9 @@ nó thành thật.
 > `Ruling`. `tests/test_attack_s11.py`: `resolve()` với `bool` trần không báo actor nào;
 > với `Approval(...)` trả đúng actor đó cho cả ALLOW/DENY; chạy graph thật xác nhận
 > `DecisionLog` ghi đúng actor callback báo, và callback `bool` cũ vẫn ra placeholder y hệt
-> trước — mutation khôi phục `resolve()` cũ xác nhận 4 test đỏ ngay. Vẫn không chặn được
-> callback TỰ KHAI GIAN danh tính — đó là phần cần `AuthEvidence` thật.
+> trước — mutation khôi phục `resolve()` cũ xác nhận 4 test đỏ ngay. Lúc đó vẫn không chặn
+> được callback TỰ KHAI GIAN danh tính — `AuthEvidence` (đoạn trên, ADR-060) là phần sửa
+> đó, sau này.
 
 > **S-12 ĐÃ KIỂM — LỖI THỜI, KHÔNG CẦN SỬA.** Ba chữ ký `answer=`/`ruling=`/`ResumeToken`
 > review mô tả không có cái nào tồn tại trong `src/harness/` — `grep` toàn bộ `src/` và
@@ -256,8 +270,9 @@ nó thành thật.
 ### 1.2 Bảo mật — nên sửa (S-21…S-29)
 
 **Cả chín ĐÃ XONG** (S-21/22/24/25/27/29 sửa code; S-23/26/28 kiểm rồi xác nhận lỗi
-thời/đã đúng, không cần sửa). S-11 (bảng `## 1.1`) cũng sửa được phần landing được — còn
-lại duy nhất là `AuthEvidence` thật, ghi ở `## 5`.
+thời/đã đúng, không cần sửa). S-11 (bảng `## 1.1`) nay ĐÃ XONG phần lõi `AuthEvidence`
+(ADR-060) — phần cố ý không làm (harness tự verify hộ) đã ghi rõ lý do ngay tại đó, không
+phải một việc còn treo.
 
 > **S-21 ĐÃ SỬA.** `Ledger.snapshot()` thiếu `blocked` — một ledger `_blocked=True` (spend
 > vượt trần cứng) phục hồi từ checkpoint về `_blocked=False`, tự "quên" nó đã bị chặn.
@@ -685,14 +700,16 @@ Từ sáu tệp thiết kế, không lặp lại lý lẽ:
    ra hai lỗi RỘNG hơn văn bản gốc: `EventBus` dùng chung xuyên thread ở S-24, nhánh
    confidentiality của S-27 sống dù kịch bản gốc đã bị chặn từ chỗ khác); năm kiểm rồi xác
    nhận lỗi thời/đã đúng, không cần sửa (S-12, S-17 gộp vào hoãn MCP, S-23, S-26, S-28);
-   S-18 sửa bằng tài liệu (không có cách sửa ở tầng `Policy` thuần); S-11 sửa được phần
-   landing được (`Approval` — channel tuỳ chọn cho `approve=` báo actor thật), phần còn lại
-   cần `AuthEvidence` — xem mục 3. Chi tiết từng mã ở `## 1.1`/`## 1.2`.
-2. **S-7, S-8, S-9, S-10, S-17** — landing cùng lúc với khi tích hợp MCP thật được xây,
-   không trước (xem `## 1.1`).
-3. **`AuthEvidence` cho S-11** — mô hình xác thực người duyệt thật (chữ ký kênh,
-   `channel_message_id`) để chặn một callback TỰ KHAI GIAN danh tính, không chỉ mở kênh
-   báo tự nguyện như bản vá vừa landing. Cần thiết kế riêng, chưa bắt đầu.
+   S-18 sửa bằng tài liệu (không có cách sửa ở tầng `Policy` thuần); S-11 nay XONG cả phần
+   landing (`Approval` — channel tuỳ chọn cho `approve=` báo actor thật) LẪN
+   `AuthEvidence` (ADR-060, mục 3 dưới, phần lõi crypto — phần "harness tự verify hộ" cố ý
+   không làm, lý do ghi tại `## 1.1`). Chi tiết từng mã ở `## 1.1`/`## 1.2`.
+2. **S-7, S-8, S-9, S-10, S-17 — XONG (T-9.1, ADR-054).**
+3. **`AuthEvidence` cho S-11 — XONG (ADR-060).** `policy/auth_evidence.py`:
+   `sign_evidence`/`verify_auth_evidence` (HMAC-SHA256, chữ ký kênh, `channel_message_id`)
+   để một callback tự xác minh rồi mới báo `Actor(verified=True)` — chặn được kịch bản cụ
+   thể S-11 nêu (evidence của actor A dùng lại cho actor B). Không wire verify vào
+   `PolicyEngine.resolve()` — quyết định có chủ đích, xem ADR-060.
 4. **K-7, K-9, K-10, K-23 — XONG.** Kiểm lại trên code hiện tại trước khi cắt (cùng kỷ
    luật với các mục security): K-9 cắt thật (`Result.raise_for_status()`); K-7 và K-23
    hoá ra đã lỗi thời — cắt sẽ phá một consumer thật (K-7) hoặc không có gì để cắt (K-23,

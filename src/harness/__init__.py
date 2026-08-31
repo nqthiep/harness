@@ -9,6 +9,7 @@ from .errors import (BudgetExceeded, ConfigError, DuplicateToolError, HarnessErr
                      ToolContractError, ToolSchemaError, UnknownModelError,
                      UnsafeToolSetError)
 from .models.base import ModelProvider
+from .policy.auth_evidence import AuthEvidence, sign_evidence, verify_auth_evidence
 from .policy.base import Ruling, Policy, ToolCall, Verdict
 from .policy.decision import Actor, Approval, Decision
 from .result import Money, Result, StopReason, Step, Usage
@@ -30,6 +31,7 @@ __all__ = [
     "Agent", "tool", "Result", "StopReason", "Usage", "Step", "Money", "RunContext",
     "Effect", "Secret", "safe_for_display", "Policy", "Verdict", "Ruling", "ToolCall",
     "ToolSpec", "Actor", "Approval", "Decision", "ApprovalRecord",
+    "AuthEvidence", "sign_evidence", "verify_auth_evidence",
     "Session", "SessionExpiredError",
     "Budget", "DEFAULT_BUDGET", "ModelProvider",
     "HarnessError", "ConfigError", "MissingEffectError", "ToolSchemaError",

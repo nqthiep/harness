@@ -15,10 +15,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from .._value import value
 from .base import Verdict
+
+if TYPE_CHECKING:                       # breaks a decision <-> auth_evidence import cycle
+    from .auth_evidence import AuthEvidence
 
 #: T-8.2 — the shape of `PolicyEngine.decide()`/`.resolve()` that produced a `Decision`,
 #: stamped by callers that record one. Bumped only when composition itself changes (how
@@ -28,14 +31,24 @@ POLICY_ENGINE_VERSION = "1.0"
 
 @value
 class Actor:
-    """AI đã quyết định. Không có biến thể `Model` — đó chính là chỗ agno sai."""
+    """AI đã quyết định. Không có biến thể `Model` — đó chính là chỗ agno sai.
+
+    `verified` — S-11's phần còn lại (`07-risks-and-open-issues.md`). `False` mặc định:
+    một `Actor` do CALLBACK tự dựng là lời tự khai cho tới khi CHÍNH callback đó xác minh
+    được bằng chứng thật (`auth_evidence.verify_auth_evidence`) và tự đặt `verified=True`
+    — harness không đặt cờ này thay callback, vì harness không biết gì về kênh (Slack,
+    OAuth, …) callback đang dùng. `verified=True` không có nghĩa "harness đã kiểm tra" —
+    nó có nghĩa "callback này tự báo đã kiểm tra, và có `AuthEvidence` đi kèm để một audit
+    sau này tự xác minh lại nếu cần" (xem `Approval.evidence`).
+    """
     kind: str          # "human" | "operator" | "policy"
     id: str
     via: str | None = None
+    verified: bool = False
 
     @classmethod
-    def human(cls, id: str, *, via: str) -> "Actor":
-        return cls("human", id, via)
+    def human(cls, id: str, *, via: str, verified: bool = False) -> "Actor":
+        return cls("human", id, via, verified)
 
     @classmethod
     def operator(cls, id: str) -> "Actor":
@@ -57,14 +70,19 @@ class Approval:
     trả về) — `Decision.actor` ghi đúng danh tính đó thay vì placeholder chung
     `Actor.human("approver", via="callback")` mọi callback trả `bool` đều nhận.
 
-    Vẫn chưa phải bằng chứng đã xác thực (`AuthEvidence` — chữ ký kênh, `channel_message_id`
-    — mà review đề xuất là bản sửa đầy đủ): đây chỉ mở đường cho callback TỰ báo danh tính
-    thật, không ép buộc nó phải chứng minh. Rẻ hơn, và đóng đúng phần "harness không có
-    cách nào nhận identity" — phần "callback tự khai gian" vẫn còn nguyên, ghi lại ở
-    `07-risks`.
+    `evidence` — S-11's phần còn lại. Callback dùng `auth_evidence.verify_auth_evidence()`
+    (kênh-độc lập: HMAC-SHA256 hằng-thời-gian + cửa sổ chống replay, không tự viết crypto)
+    để tự xác minh chữ ký từ kênh của NÓ (Slack signing secret, OAuth token introspection,
+    …) TRƯỚC KHI dựng `Approval(ok, actor=Actor.human(id, via=..., verified=True),
+    evidence=...)` — `evidence` đi kèm để một audit SAU NÀY tự xác minh lại được, không
+    phải để harness verify tại chỗ (harness không giữ bí mật kênh của ai). Không có
+    `evidence` thì `actor.verified` nên là `False` — đó là hợp đồng, không phải luật cưỡng
+    chế được (không gì ngăn một callback tự đặt `verified=True` mà không xác minh gì —
+    xem `07-risks` S-11 cho lý do đây vẫn là giới hạn đã biết, không phải lỗ hổng mới).
     """
     ok: bool
     actor: "Actor | None" = None
+    evidence: "AuthEvidence | None" = None
 
 
 @value
