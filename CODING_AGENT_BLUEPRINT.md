@@ -227,7 +227,32 @@ never trips it, because each `write_source` carries a different body and that re
 counter. See ADR-062, and `tests/test_progress_stall.py` for the twelve-lap case that
 proves honest work is not killed.
 
-## 7. If you want it reachable over HTTP — `harness[server]`
+## 7. Who approved the `git push` — and can you still prove it tomorrow?
+
+A long coding session accumulates approvals: a push here, a migration there, each one a
+human's decision that an auditor may ask about weeks later. `DecisionLog` records them —
+`Scope` locks a grant to the **argument values**, so approving `push(branch="main")` does
+not approve `push(branch="release")`, which is the part most frameworks skip.
+
+```python
+from harness import Agent, DecisionLog
+
+log = DecisionLog(journal="approvals.jsonl")     # append-only, created 0600
+lead = Agent(name="Lead", job="...", tools=[...], approve=my_callback, decisions=log)
+...
+for d in log.all():
+    print(d.decided_at, d.actor, d.verdict, d.scope.tool, d.scope.args)
+```
+
+Without `journal=`, the book is in memory and dies with the process — fine for one
+session, not for an audit trail. With it, the record survives a restart, and a grant a
+human gave "for the next hour" is still there when the process comes back. Denials are
+recorded too, including the approval-fatigue cap. Revoking is appending a `DENY`, never
+editing a row. The same `decisions=` argument works on `build_agent()`. See ADR-063 — and
+note that the journal holds real argument values (it must, to match a scope), so treat the
+file as credential-adjacent.
+
+## 8. If you want it reachable over HTTP — `harness[server]`
 
 ```python
 from harness.server import create_app

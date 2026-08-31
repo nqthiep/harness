@@ -19,6 +19,7 @@ from .idempotency import idempotency_key
 from .observe.events import EventKind
 from .policy.base import Ruling, ToolCall, Verdict
 from .policy.builtin import check_flow, emits_of
+from .policy.decision import POLICY_ENGINE_VERSION, Actor, Decision, Scope
 from .policy.label import Integrity, Label
 from .secrets import redact
 from .tools import EFFECT_PROFILES, ToolSpec
@@ -94,21 +95,50 @@ class Dispatcher:
             d = self._e._engine.decide(call, ctx)
             if d.verdict is Verdict.ASK:
                 self._e._asks += 1
-            # S-25(b): approval fatigue is a channel the model controls — injected content
-            # can make it call a `write` tool 40 times with slightly different args, 40
-            # ASKs later the 41st gets approved on reflex. A cap that DENIES once crossed,
-            # rather than silently auto-approving, is the fail-closed direction.
-            if d.verdict is Verdict.ASK and self._e._asks > self._e._a.max_asks_per_run:
-                d = Ruling(Verdict.DENY,
-                          f"more than {self._e._a.max_asks_per_run} approval requests in "
-                          f"this run — refusing rather than risk reflex-approval fatigue",
-                          "ask-cap")
-            else:
-                # Actor discarded here: the classic loop has no DecisionLog to record
-                # into (agent.py builds/tears down state per atry_run(), nothing persists
-                # a grant across calls the way the LangGraph backend's checkpointed
-                # DecisionLog does) — S-11's reported-actor channel has nowhere to land.
-                d, _actor = await self._e._engine.resolve(d, call, ctx, self._e._a.approve)
+            if d.verdict is Verdict.ASK:
+                actor: Actor | None = None
+                # S-25(b): approval fatigue is a channel the model controls — injected
+                # content can make it call a `write` tool 40 times with slightly
+                # different args, 40 ASKs later the 41st gets approved on reflex. A cap
+                # that DENIES once crossed, rather than silently auto-approving, is the
+                # fail-closed direction.
+                if self._e._asks > self._e._a.max_asks_per_run:
+                    d = Ruling(Verdict.DENY,
+                              f"more than {self._e._a.max_asks_per_run} approval requests in "
+                              f"this run — refusing rather than risk reflex-approval fatigue",
+                              "ask-cap")
+                else:
+                    # Parity with the graph's `_regate` (S-29): a grant already recorded
+                    # for THIS run answers without asking a person the same question
+                    # twice, and a DENY recorded later revokes it — `lookup` composes
+                    # with max(), so revocation needs no second rule. Fail-closed: no
+                    # matching live row means ASK, which falls through to the callback
+                    # exactly as before.
+                    prior = self._e._decisions.lookup(
+                        b["name"], b.get("input", {}), run_id=run_id, now=_utcnow(),
+                        call_id=b["id"], server=spec.server)
+                    if prior is Verdict.ASK:
+                        d, actor = await self._e._engine.resolve(
+                            d, call, ctx, self._e._a.approve)
+                    else:
+                        d = Ruling(prior, "a live row in the decision log answers this",
+                                   "decision-log")
+                        actor = Actor.policy("decision-log-reuse")
+                # Every resolved ASK becomes a row — including the ask-cap denial. An
+                # audit log that records only what was permitted cannot answer "what did
+                # we refuse, and why" (docs/05 §1, the same rule `policy.decided` follows
+                # by being emitted for ALLOW as well as DENY). Scoped to THIS call_id, so
+                # a grant here never silently covers the next call: `Decision` refuses to
+                # be constructed any other way without an `expires_at` (ForeverAllow).
+                self._e._decisions.record(Decision(
+                    id=f"dec-{b['id']}", verdict=d.verdict,
+                    scope=Scope(tool=b["name"], args=dict(b.get("input", {})),
+                                server=spec.server, call_id=b["id"]),
+                    actor=(actor if actor is not None else
+                           (Actor.human("approver", via="callback")
+                            if self._e._a.approve is not None else Actor.policy(d.policy))),
+                    decided_at=_utcnow(), expires_at=None, run_id=run_id, reason=d.reason,
+                    policy_version=POLICY_ENGINE_VERSION))
             self._e._bus.emit(EventKind.POLICY_DECIDED, step=step, tool=b["name"],
                            call_id=b["id"], verdict=d.verdict.name, reason=d.reason,
                            policy=d.policy)
@@ -279,6 +309,11 @@ def canonical_len(req) -> str:
     input token count — no tokenizer emits more tokens than characters (ADR-026)."""
     return _canonical({"system": list(req.system), "tools": list(req.tools),
                        "messages": list(req.messages)})
+
+
+def _utcnow():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc)
 
 
 def err(call_id: str, message: str) -> dict[str, Any]:

@@ -36,7 +36,7 @@ class Agent:
     __slots__ = ("name", "job", "toolset", "model", "effort", "budget", "safety",
                  "approve", "policies", "allowed_hosts", "provider", "returns",
                  "max_parallel_tools", "max_asks_per_run", "transcript", "exporters",
-                 "tenant_id", "session_id", "principal",
+                 "tenant_id", "session_id", "principal", "decisions",
                  "_asm", "_watch", "_as_tool_budget", "_grants")
 
     # Declared for the type checker.  The fields are set through `object.__setattr__`
@@ -63,6 +63,7 @@ class Agent:
     tenant_id: str | None
     session_id: str | None
     principal: str | None
+    decisions: Any
     _asm: Any
     _grants: Grants
     _watch: Any
@@ -108,6 +109,13 @@ class Agent:
         # `tenant_id`/`session_id` right above; flows into `RunContext.principal`
         # (`dispatch.py`) for a tool/policy to read, never onto anything the model sees.
         principal: str | None = None,
+        # The approval audit book (`policy/decision.py`). `None` — the default — means a
+        # fresh in-memory `DecisionLog` per run, built in `RunEngine`: an `Agent` is a
+        # frozen template shared across concurrent runs, so a log held here would grow
+        # for the life of the process and mix every run's rows into one object's memory.
+        # Pass one explicitly (`DecisionLog(journal="approvals.jsonl")`) when you want
+        # the record to outlive the run — then its lifetime is yours, not the agent's.
+        decisions: Any | None = None,
     ) -> None:
         if args:
             shown = ", ".join(repr(a) for a in args)
@@ -165,6 +173,7 @@ class Agent:
         object.__setattr__(self, "tenant_id", tenant_id)
         object.__setattr__(self, "session_id", session_id)
         object.__setattr__(self, "principal", principal)
+        object.__setattr__(self, "decisions", decisions)
 
         output_format = _output_format(returns) if returns is not None else None
         asm = ContextAssembler(model=model, job=job, tools=toolset, effort=effort,
@@ -389,7 +398,7 @@ class Agent:
                 ("name", "job", "model", "effort", "returns", "budget", "safety", "approve",
                  "policies", "allowed_hosts", "provider", "max_parallel_tools",
                  "max_asks_per_run", "tenant_id", "session_id", "principal", "transcript",
-                 "exporters")}
+                 "exporters", "decisions")}
         base["tools"] = list(self.toolset)
         base["accepts_tainted"] = self._grants.accepts_tainted
         base["sensitive"] = self._grants.sensitive

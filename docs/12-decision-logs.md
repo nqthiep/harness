@@ -1902,6 +1902,75 @@ argument text; `input` (Anthropic) and `args` (LangChain) producing one signatur
 stop on both backends, with the same `stop_reason` and the same sentence; and the counter
 living in `AgentState`, not on the `Runtime`.
 
+### ADR-063 — The decision log is an append-only JSONL journal, and the classic loop finally has one
+
+**Status:** Accepted
+
+**Context.** Two gaps with one root. `dispatch.py` said the first out loud in a comment:
+*"the classic loop has no DecisionLog to record into … S-11's reported-actor channel has
+nowhere to land"* — on the hand-written backend, `resolve()` computed who approved a
+`danger` call and threw the answer away. The second: the graph backend does keep a book,
+in RAM, on the `Runtime`. A process restart erases every approval in it — including one a
+human pressed a button for thirty seconds earlier. `approve=INTERRUPT` is sold as a
+durable wait that survives a restart; the *record* of what that wait produced did not.
+
+**Decision 1 — persistence is an append-only JSONL journal, not a `Store`.** D-2 says this
+book is append-only. A key-value `Store` forces read-modify-write of the entire list for
+every new row, so one interrupted write loses the whole approval history — precisely what
+D-2 exists to prevent. A file opened `O_APPEND` degrades to one bad line, not zero good
+ones. `observe/transcript.py` already chose this shape for the same reason
+([§05.2](05-data-and-state.md#2-transcript-format): "An audit log you can edit is not an
+audit log"). `DecisionLog(journal=path)` loads on construction and appends one line per
+`record()`, `flush` + `fsync` each time — a run writes a handful of rows, not one per
+event, so the transcript's every-64-events compromise does not apply here.
+
+**Decision 2 — sync, not async.** `record`/`lookup` are called from `_regate`, synchronous
+code inside a LangGraph node, *and* from the classic loop's async dispatch path. An async
+API would force `asyncio.run()` in the middle of a graph node. Synchronous file I/O is
+what lets one implementation serve both backends — the alternative is two, which is how
+the two backends drift (R-17).
+
+**Decision 3 — the classic loop records every resolved ASK, including denials.** Same
+shape the graph's `approval_gate` already used: one row per resolved ASK, scoped to that
+`call_id`, carrying the actor the callback reported (S-11) instead of discarding it. The
+ask-cap denial is recorded too — a log that only records what was permitted cannot answer
+"what did we refuse, and why", the same rule that makes `policy.decided` fire for `ALLOW`
+as well as `DENY` ([§05.1](05-data-and-state.md)). The loop also gains the graph's S-29
+reuse: a live row answers without asking a person the same question twice, and a later
+`DENY` row revokes it, because `lookup` composes with `max()` and needs no second rule.
+An empty log returns `ASK`, so behaviour with no seeded grant is exactly what it was.
+
+**Decision 4 — the default is a fresh in-memory log per run, and `Agent` keeps its shape.**
+`Agent(decisions=...)` is optional; `None` builds one per run inside `RunEngine`. An
+`Agent` is a frozen template shared across concurrent runs, so a book living on it would
+accumulate every run's rows for the life of the process. An operator who wants the record
+to outlive the run passes their own and owns its lifetime. `build_agent(decisions=...)`
+now forwards to the parameter `Runtime` has accepted since S-29 but that nothing passed —
+it existed and was unreachable.
+
+**The privacy trade-off, stated rather than discovered.** `Scope.args` is written to the
+journal as the **real argument values**, not a digest — it has to be, because
+`Scope.matches` locks a grant to those exact values (that ternary is the design this
+project took from Microsoft's `ToolApprovalRule` precisely because everyone else approves
+the verb and ignores the object). That makes this file more sensitive than a transcript,
+which digests arguments by default ([§05.1](05-data-and-state.md)). Mitigation: the
+journal is created `0600`. It is not encryption, and the file should be treated as
+credential-adjacent.
+
+**A corrupt row raises; it is never skipped.** Skipping means continuing with an approval
+book that is missing rows — possibly missing the `DENY` that just revoked something
+(IDL-30). The error names the file and the line number.
+
+**Test.** `tests/test_decision_journal.py` — JSON round-trip preserving every field;
+`Verdict` written as a NAME, not an `IntEnum` number, so the file still parses if the
+lattice is reordered; an unknown schema version refused rather than guessed; write-then-
+reopen recovering the grant; append-only proved by asserting the new file content starts
+with the old; revocation by appending a `DENY`; a corrupt line raising with `file:line`;
+mode `0600`; the classic loop recording the reported actor, recording denials, reusing a
+live grant without asking twice, not leaking another run's grant into this one, and still
+falling through to the callback when the book is empty; `with_()` not dropping the field
+(the N-7 class); and `build_agent(decisions=...)` reaching the `Runtime`.
+
 ---
 
 ## Implementation Decision Log
@@ -1963,3 +2032,4 @@ living in `AgentState`, not on the `Runtime`.
 | IDL-53 | `budget.unlimited` fires once, at the same `step == 0` site as `RUN_STARTED`, never inside `Ledger` itself | `Ledger` has no `EventBus` access by design (a ledger that emits telemetry is a ledger with a second reason to change); the guard lives with the caller that already fires exactly once per run/thread (ADR-041) |
 | IDL-54 | An agent's plan is durable state in a `Store`, never a key in graph state and never a second model call | ADR-023 rejected spending tokens to think about thinking; it never said the plan should be forgotten at step 40. A `Store` outlives the process, works on both backends, and adds no constructor parameter (ADR-061) |
 | IDL-55 | A run-level ceiling is checked in the node that clears `stop_reason`, never in the node that observes the signal | `budget_gate` is the only place the graph clears `stop_reason` (Round 37, or a finished thread routes to `finish` forever), so a stop set in `run_tools` is wiped before any router reads it (ADR-062) |
+| IDL-56 | An append-only record persists to an append-only file, never to a key-value `Store` | A `Store` rewrites the whole list per row, so one interrupted write loses the entire history — exactly what D-2 exists to prevent (ADR-063) |

@@ -259,6 +259,7 @@ __all__ = [
     "Agent", "Chat", "tool", "Result", "StopReason", "Usage", "Money",
     # safety
     "Effect", "Secret", "Policy", "Verdict", "Allow", "Ask", "Deny", "RunContext",
+    "Actor", "Approval", "Decision", "ApprovalRecord", "DecisionLog",
     # cost
     "Budget", "DEFAULT_BUDGET",
     # extension points

@@ -29,7 +29,13 @@ def build_agent(*, model, tools: Sequence[Any] = (), budget: Any = None,
                 policies: Sequence[Any] = (), allowed_hosts: Sequence[str] | None = (),
                 accepts_tainted: Sequence[str] = (), sensitive: Sequence[str] = (),
                 approve=None, checkpointer=None, exporters: Sequence[Any] = (),
-                max_asks_per_run: int = 20, tenant_id: str | None = None):
+                max_asks_per_run: int = 20, tenant_id: str | None = None,
+                # The approval audit book. `Runtime` has accepted one since S-29 but
+                # nothing here passed it through, so no caller could actually supply one:
+                # the parameter existed and was unreachable. `None` keeps the previous
+                # behaviour (a fresh in-memory log per compiled graph);
+                # `DecisionLog(journal=...)` makes the record outlive the process.
+                decisions: Any | None = None):
     """Compile an agent graph.  Returns (compiled_graph, runtime).
 
     `exporters=` is the spelling `Agent` uses for the same seam (Round 35 parity). It used
@@ -87,7 +93,8 @@ def build_agent(*, model, tools: Sequence[Any] = (), budget: Any = None,
                  price=pricing.price(model_name),
                  max_output=pricing.MAX_OUTPUT.get(model_name, 8_000), model_name=model_name,
                  exporters=exporters, approve=approve, grants=grants,
-                 max_asks_per_run=max_asks_per_run, tenant_id=tenant_id)
+                 max_asks_per_run=max_asks_per_run, tenant_id=tenant_id,
+                 decisions=decisions)
     compiled = build(rt).compile(checkpointer=checkpointer)
 
     broken = unguarded_paths(compiled)

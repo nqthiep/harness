@@ -11,7 +11,7 @@ from .errors import (BudgetExceeded, ConfigError, DuplicateToolError, HarnessErr
 from .models.base import ModelProvider
 from .policy.auth_evidence import AuthEvidence, sign_evidence, verify_auth_evidence
 from .policy.base import Ruling, Policy, ToolCall, Verdict
-from .policy.decision import Actor, Approval, Decision
+from .policy.decision import Actor, Approval, Decision, DecisionLog
 from .result import Money, Result, StopReason, Step, Usage
 from .run import RunContext
 from .secrets import Secret, safe_for_display
@@ -30,7 +30,7 @@ ApprovalRecord = Decision
 __all__ = [
     "Agent", "tool", "Result", "StopReason", "Usage", "Step", "Money", "RunContext",
     "Effect", "Secret", "safe_for_display", "Policy", "Verdict", "Ruling", "ToolCall",
-    "ToolSpec", "Actor", "Approval", "Decision", "ApprovalRecord",
+    "ToolSpec", "Actor", "Approval", "Decision", "ApprovalRecord", "DecisionLog",
     "AuthEvidence", "sign_evidence", "verify_auth_evidence",
     "Session", "SessionExpiredError",
     "Budget", "DEFAULT_BUDGET", "ModelProvider",
