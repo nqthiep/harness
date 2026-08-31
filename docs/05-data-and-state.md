@@ -2,9 +2,10 @@
 
 ## 1. The event taxonomy (closed)
 
-Fifteen kinds. Closed on purpose: an open taxonomy becomes a log-message dump within a
+Sixteen kinds. Closed on purpose: an open taxonomy becomes a log-message dump within a
 year, and nothing downstream can rely on it. New kinds require a minor version and a
-decision-log entry.
+decision-log entry — `budget.unlimited` is the one addition since the original fifteen,
+and ADR-041 ([§12](12-decision-logs.md)) is its entry.
 
 | Kind | When | `data` payload |
 |---|---|---|
@@ -16,6 +17,7 @@ decision-log entry.
 | `model.response` | After each call | `stop_reason`, `usage{in,out,cache_read,cache_write}`, `cost_usd`, `latency_ms` |
 | `budget.reserved` | Before each call | `estimate_usd`, `spent_usd`, `remaining_usd` |
 | `budget.exhausted` | Ceiling hit | `axis` (`usd`\|`steps`\|`time`\|`tokens`), `spent`, `limit` |
+| `budget.unlimited` | Once, right after `run.started`, only when `budget.usd is None` | `reason` |
 | `tool.requested` | Model asked | `tool`, `call_id`, `arguments_digest` (sha256, not the arguments) |
 | `policy.decided` | Per call, always | `tool`, `call_id`, `verdict`, `reason`, `policy` |
 | `tool.started` | Only if ALLOW | `tool`, `call_id`, `parallel` |

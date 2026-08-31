@@ -14,7 +14,7 @@ thành một danh sách, vì tới hôm nay không tệp nào đọc chung cả 
 - **Toàn bộ 58 phát hiện của hai vòng review (S-1…S-29, K-1…K-29) đã được xét qua** —
   không có nghĩa "đã sửa hết". Phân loại thật:
   - **Đã sửa bằng code, có test + mutation test:** phần lớn S-2…S-29 còn lại
-    (S-3/S-6/S-11/S-13/S-14/S-15/S-16/S-19/S-21/S-22/S-24/S-25/S-27/S-29), K-9.
+    (S-3/S-6/S-11/S-13/S-14/S-15/S-16/S-19/S-20/S-21/S-22/S-24/S-25/S-27/S-29), K-9.
   - **Đã kiểm, xác nhận lỗi thời hoặc đã đúng sẵn — không cần sửa:** S-1, S-5, S-6, S-7…
     S-10 (hoãn, không phải lỗi thời), S-12, S-15 (backend cổ điển), S-17 (hoãn), S-23,
     S-26, S-28, K-7, K-23. Tất cả đều được xác nhận **bằng cách đọc code hôm nay**, không
@@ -24,7 +24,7 @@ thành một danh sách, vì tới hôm nay không tệp nào đọc chung cả 
     S-28's phần tài liệu.
   - **Sửa được một phần, phần còn lại cần thiết kế mới:** S-11 (kênh `Approval` xong,
     `AuthEvidence` thật thì chưa).
-  - **CÒN SỐNG, chưa sửa — xem `## 1`:** S-20, S-4 (xem `## 2`).
+  - **CÒN SỐNG, chưa sửa:** S-4 (xem `## 2`; chờ M6/idempotency để re-verify).
   - **Hoãn có chủ ý, chờ hạ tầng chưa tồn tại:** S-7…S-10, S-17 (chờ M9/MCP); K-13's va
     chạm `P-`/`I-` (chờ một lượt riêng, đụng cả code lẫn `docs/*.md` sống).
 - **Toàn bộ M6…M10 của `docs/17-research-alignment.md` (idempotency, isolation/sandbox,
@@ -33,10 +33,20 @@ thành một danh sách, vì tới hôm nay không tệp nào đọc chung cả 
 
 ---
 
-## 1. PHÁT HIỆN MỚI, SỐNG — `Budget(usd=None)` vòng qua "budget bắt buộc có trục tiền"
+## 1. S-20 — ĐÃ SỬA. `Budget(usd=None)` vòng qua "budget bắt buộc có trục tiền"
+
+> **Trạng thái: ĐÃ SỬA, có test + mutation test, cả hai backend.** `EventKind.BUDGET_UNLIMITED`
+> (`"budget.unlimited"`, ADR-041 ở `docs/12-decision-logs.md`) phát đúng một lần mỗi
+> run/thread ngay sau `RUN_STARTED`, khi `budget.usd is None` — `src/harness/run.py`
+> (classic loop) và `src/harness/lg/runtime.py::budget_gate` (LangGraph, cùng chỗ
+> `RUN_STARTED` đã dùng để phát một lần mỗi thread, không phải một lần mỗi compiled
+> graph). Khoá bằng `tests/test_attack_s20.py` (6 test, gồm một mutation test xác nhận bỏ
+> nhánh check thì cảnh báo biến mất). `usd: Decimal | None` không đổi kiểu, construction
+> không bị chặn — xem lý do bên dưới.
 
 Kiểm S-20 khi soát lại toàn bộ danh sách cho tệp này (S-1…S-29 chưa từng được đối chiếu
-đầy đủ với code cho tới hôm nay) và thấy nó **vẫn còn sống, y hệt mô tả gốc**:
+đầy đủ với code cho tới hôm nay) và thấy nó **vẫn còn sống, y hệt mô tả gốc** (trước khi
+sửa):
 
 ```python
 >>> from harness import Agent
@@ -68,18 +78,29 @@ phải lỗi đánh máy; nó phục vụ một ca dùng thật (`FakeModel`/mod
 Vấn đề không phải giá trị `None` tồn tại — là **không có gì phân biệt "tôi cố ý dùng
 provider miễn phí" với "tôi (hoặc một dependency) vô tình bỏ trục tiền."**
 
-**Sửa tối thiểu (theo đúng đề xuất gốc, áp cho code hôm nay):** không xoá `usd: Decimal |
-None` khỏi kiểu (phá `FakeModel`), mà bắt `Agent.__init__`/`build_agent()` từ chối construction
-khi `budget.usd is None` **và** `provider` không tự khai "miễn phí" (`price(...).input_per_mtok
-== 0`, đã có sẵn — `pricing.py`'s bảng `"fake": Price(0,0,0,0)` chính là cách phân biệt
-này). Thông báo lỗi trỏ đúng chỗ: nếu thật sự muốn chạy không trần tiền với một provider
-trả phí, dùng `budget="0 steps"`-kiểu tường minh không tồn tại hôm nay — cần quyết định có
-xây nó không, hay bắt buộc luôn phải có `usd` cho mọi provider trả phí (đơn giản hơn, đúng
-tinh thần "budget bắt buộc" như tài liệu công khai vẫn tuyên bố).
+**SỬA LẠI đề xuất ban đầu ở đây — không phải hard-reject.** Bản nháp đầu của mục này từng
+đề xuất bắt `Agent.__init__`/`build_agent()` từ chối construction khi `budget.usd is
+None`. Kiểm lại với thiết kế đã CÔNG BỐ trước khi viết code thì thấy đề xuất đó **sai** —
+`docs/04-interfaces.md:451-452` và `docs/07-cost.md:74-75` đã quyết định rõ, bằng câu chữ:
+"`Budget(usd=None)` is permitted but requires passing `None` explicitly, and emits a
+`budget.unlimited` warning event on every run. Unlimited is possible; it is not silent."
+Đây là chủ đích, không phải sơ sót: `usd=None` là escape hatch tường minh (đúng ca dùng
+`FakeModel`/model local ở trên), Poka-Yoke kiểu "làm cho thấy được, không làm cho không
+thể" — nhất quán với phần còn lại của thiết kế (vd. S-11's `Approval` ghi lại thay vì cấm).
 
-**Đây là việc nên làm TRƯỚC bất kỳ mục nào khác trong roadmap** — nó phá đúng lời hứa
-trung tâm nhất của cả thiết kế ("budget bắt buộc, không mặc định, không unlimited") và là
-phát hiện "chặn phát hành" duy nhất còn sống.
+**Sửa tối thiểu đúng theo hợp đồng đã công bố:** không đổi kiểu `usd: Decimal | None`,
+không chặn construction. Thêm cơ chế phát sự kiện cảnh báo `budget.unlimited` — một
+`EventKind` mới, phát đúng một lần mỗi run/thread khi `budget.usd is None`, ở cả hai
+backend (classic loop và LangGraph). Cơ chế này **được tài liệu hứa nhưng chưa từng được
+xây** — `grep "unlimited\|UNLIMITED"` trên toàn bộ `src/harness/` chỉ ra đúng MỘT chỗ
+(`run.py:141`), và đó chỉ là một f-string hiển thị, không phải event. Đây chính là lỗi
+S-20 thật sự: không phải "có thể unlimited" (được phép, có chủ đích) mà là "unlimited
+nhưng im lặng" — đúng câu tài liệu tự phủ định: "Unlimited is possible; it is not silent."
+
+**Đây là lý do nó được làm TRƯỚC bất kỳ mục nào khác trong roadmap** — nó phá đúng lời
+hứa trung tâm nhất của cả thiết kế ("budget bắt buộc, không mặc định, không unlimited") và
+là phát hiện "chặn phát hành" duy nhất còn sống — nay đã sửa, xem callout trạng thái ở
+đầu mục này.
 
 ---
 
@@ -117,7 +138,7 @@ không cần code hay test mới — cả ba đã "đóng" theo đúng nghĩa "�
 
 | Mã | Việc | Vì sao chưa làm | Phụ thuộc |
 |---|---|---|---|
-| **S-20** | `Budget(usd=None)` bypass | Chưa làm — xem `## 1` | Không (làm ngay được) |
+| ~~**S-20**~~ | ~~`Budget(usd=None)` bypass~~ | **ĐÃ SỬA** — xem `## 1` | — |
 | **S-4** | Idempotency key thật | Cơ chế chưa tồn tại | M6 (T-6.1) |
 | **S-7, S-8, S-9, S-10** | `ServerIdentity`/rug-pull/hint-hạ-effect/`proposed_scope` cho MCP | Không có tích hợp MCP nào để mà sửa | M9 (T-9.1) |
 | **S-17** | Injection qua `description` tool MCP trước lời gọi đầu | Cùng lý do trên | M9 (T-9.1) |
@@ -155,16 +176,18 @@ ngày đo được nhu cầu thật — không đưa vào roadmap dưới đây.
 ## 4. Roadmap — thứ tự đề xuất, và vì sao
 
 ```
-Bây giờ ──► M6 ──► M7 ──► M8 ──► M9 ──► M10
-S-20         Reliability  Isolation    Observ.      Integration   Eval
-(giờ)        + S-4/S-23   + M7 đảo     + K-13       + S-7…S-10    + trajectory
-             (idempotency) egress-deny  namespace    /S-17/S-23-  contract
-                                                      MCP-part
+S-20 ──► M6 ──► M7 ──► M8 ──► M9 ──► M10
+(ĐÃ XONG)  Reliability  Isolation    Observ.      Integration   Eval
+           + S-4/S-23   + M7 đảo     + K-13       + S-7…S-10    + trajectory
+           (idempotency) egress-deny  namespace    /S-17/S-23-  contract
+                                                    MCP-part
 ```
 
-**S-20 trước tất cả.** Không phụ thuộc gì, sửa nhanh (một guard lúc construction), và là
+**S-20 trước tất cả — ĐÃ XONG.** Không phụ thuộc gì, sửa nhanh (một sự kiện cảnh báo, đúng
+hợp đồng đã công bố ở `docs/04`/`docs/07`, không phải một guard chặn construction), và là
 phát hiện "chặn phát hành" DUY NHẤT còn sống trong toàn bộ 58 phát hiện — để một lỗ hổng
-như vậy tồn tại trong lúc lên kế hoạch cho M6…M10 là sai thứ tự ưu tiên.
+như vậy tồn tại trong lúc lên kế hoạch cho M6…M10 sẽ là sai thứ tự ưu tiên; nay không còn
+là vấn đề, roadmap tiếp tục từ M6.
 
 **M6 trước M7.** Đúng lý do `docs/17 §5` đã ghi: idempotency là điều kiện tiên quyết cho
 retry, cho Service API (idempotency key trong header — M9), và cho M10's contract "retry
@@ -196,11 +219,13 @@ ms. Mọi thứ ở M6 trở đi là `extra`, và phép thử ranh giới plugin
 
 ## 5. Release plan
 
-### v0.9 — "budget thật, an toàn thật" (điều kiện: hết `## 1`)
+### v0.9 — "budget thật, an toàn thật" — ĐẠT (điều kiện: hết `## 1`)
 
-Sửa S-20. Đây là điều kiện TỐI THIỂU để bất kỳ ai gọi đây là "sẵn sàng cho môi trường thật"
-— một thư viện tuyên bố "budget bắt buộc" mà một keyword argument vòng qua được thì chưa
-xứng đáng bất kỳ nhãn phiên bản nào cao hơn 0.x.
+S-20 đã sửa (`EventKind.BUDGET_UNLIMITED`, ADR-041). Đây là điều kiện TỐI THIỂU để bất kỳ
+ai gọi đây là "sẵn sàng cho môi trường thật" — một thư viện tuyên bố "budget bắt buộc" mà
+một keyword argument vòng qua được, im lặng, thì chưa xứng đáng bất kỳ nhãn phiên bản nào
+cao hơn 0.x. Nay `usd=None` vẫn được phép (chủ đích, đúng hợp đồng công bố) nhưng không
+còn im lặng.
 
 ### v1.0 — "an toàn cho một quy trình, không phải một hạm đội"
 
@@ -240,10 +265,12 @@ trail cần chịu được kiểm toán bên ngoài.
 
 ## 6. Việc cần làm ngay, theo thứ tự (tóm tắt điều hành)
 
-1. **S-20** — sửa (`## 1`). Nhỏ, không phụ thuộc, chặn phát hành.
-2. **Ghi S-1/S-4/S-5 vào `07-risks-and-open-issues.md`** (`## 2`). Tài liệu, vài phút.
-3. **Quyết định: có bắt đầu M6 (Reliability) không, và khi nào.** Đây là điểm rẽ nhánh
-   thật — mọi thứ từ đây là XÂY TÍNH NĂNG MỚI (idempotency, sandbox, MCP, Service API,
-   eval harness), không còn là "sửa lỗi trong code có sẵn" như toàn bộ phiên làm việc vừa
-   qua. Cần quyết định của người vận hành dự án về phạm vi/thời gian, không phải thứ suy
-   ra được từ chính code.
+1. ~~**S-20**~~ — **ĐÃ SỬA** (`## 1`). Nhỏ, không phụ thuộc, chặn phát hành — không còn
+   chặn.
+2. ~~**Ghi S-1/S-4/S-5 vào `07-risks-and-open-issues.md`**~~ — **ĐÃ GHI** (`## 2`).
+3. **M6 (Reliability) trở đi — được lệnh tiến hành, không còn là điểm chờ quyết định.**
+   Người vận hành dự án đã quyết định: thực hiện toàn bộ roadmap này (`M6 → M7 → M8 →
+   K-13 → M9 → M10`) cho đến khi hoàn thành. Đây là XÂY TÍNH NĂNG MỚI (idempotency,
+   sandbox, MCP, Service API, eval harness), khác về bản chất công việc so với "sửa lỗi
+   trong code có sẵn" của giai đoạn S-1…S-29 — nhưng không còn là một nhánh rẽ cần hỏi lại
+   giữa chừng cho từng milestone.

@@ -145,6 +145,11 @@ class Runtime:
             self._emit(state, EventKind.RUN_STARTED, model=self._model_name,
                        tool_names=[t.name for t in self._tools],
                        safety=self._safety(state))
+            # S-20: same one-time-per-thread warning as the classic loop (run.py) —
+            # `Budget(usd=None)` is permitted (free providers, IDL-36) but must not be
+            # silent (docs/04-interfaces.md, docs/07-cost.md).
+            if self._budget.usd is None:
+                self._emit(state, EventKind.BUDGET_UNLIMITED, reason="budget.usd is None")
         self._emit(state, EventKind.STEP_STARTED, step=state.get("step", 0))
         if led.remaining_steps() <= 0:
             return {"stop_reason": "step_limit", "detail": "reached the step limit",

@@ -881,6 +881,40 @@ this had inverted it for the whole data layer.
 **Scope.** Not `mypy --strict`. The remaining six diagnostics are narrowing and
 monkeypatch limitations, each proved safe and each carrying a one-line reason at the site.
 
+### ADR-041 — `budget.unlimited` is the taxonomy's 16th kind, added for S-20
+**Status:** Accepted (S-20 fix)
+
+**Context.** `Budget(usd=None)` is a deliberate escape hatch, not a defect: a free
+provider (`FakeModel`, a local model) has nothing to divide by and nothing to spend
+(IDL-36). `docs/04-interfaces.md`/`docs/07-cost.md` already committed, in prose, to a
+specific promise before any code kept it: "`Budget(usd=None)` is permitted but requires
+passing `None` explicitly, and emits a `budget.unlimited` warning event on every run.
+Unlimited is possible; it is not silent." An audit this session found the mechanism did
+not exist — `Ledger.size_call()`/`reserve()` both silently skip their ceiling check when
+`usd is None`, and nothing downstream could tell "chose unlimited on purpose" from
+"budget axis dropped by accident" (the exact ambiguity S-20 in `design/review-security.md`
+flags, and K-17 in `design/review-kiss.md` flags independently).
+
+**Decision.** Add `EventKind.BUDGET_UNLIMITED` (`"budget.unlimited"`). Fire it exactly
+once per run (classic loop) / once per thread (LangGraph, same `step == 0` guard
+`RUN_STARTED` already uses), immediately after `RUN_STARTED`, whenever `budget.usd is
+None`. Do not touch `Budget`'s type or construction — `usd: Decimal | None` stays exactly
+as documented.
+
+**Rejected alternative.** An earlier draft of this fix (`design/08-roadmap-and-release-
+plan.md §1`, first pass) proposed rejecting construction outright — `Agent.__init__`/
+`build_agent()` raising unless the provider self-declares free. Rejected on discovering it
+contradicts the already-published contract above: the two living docs had settled on
+"visible, not impossible" (the same Poka-Yoke shape as `Approval` in S-11 — record the
+choice, don't forbid it) before this fix was written. Implementing the hard-reject would
+have shipped a THIRD, undocumented design for the same knob.
+
+**Cost accepted.** The taxonomy goes from fifteen to sixteen kinds — the exact churn
+`docs/05-data-and-state.md §1`'s closed-taxonomy rule warns against, spent on making a
+promise the docs had already made in prose keep its side of the bargain in code.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
@@ -937,3 +971,4 @@ monkeypatch limitations, each proved safe and each carrying a one-line reason at
 | IDL-51 | Ruff is configured to the package's own style, not the default | 62 of 162 findings were one-line accessors written that way on purpose. Rewriting working lines to satisfy a default is churn; the config records the choice instead |
 | IDL-52 | An automatic fix is a change, and the suite runs immediately after | `ruff --fix` removed a re-export and broke `import harness` (H39.4) |
 | IDL-31 | Context-management fixtures are specified per model | Whether the budget or the context window binds first depends on the model's price and window ([§07.3](07-cost.md#3-token-discipline)) |
+| IDL-53 | `budget.unlimited` fires once, at the same `step == 0` site as `RUN_STARTED`, never inside `Ledger` itself | `Ledger` has no `EventBus` access by design (a ledger that emits telemetry is a ledger with a second reason to change); the guard lives with the caller that already fires exactly once per run/thread (ADR-041) |

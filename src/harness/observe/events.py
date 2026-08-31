@@ -1,7 +1,11 @@
 """Event taxonomy and bus — docs/05-data-and-state.md §1, task T-3.1.
 
-Fifteen kinds, closed.  A raising exporter is disabled for the rest of the run: a
+Sixteen kinds, closed.  A raising exporter is disabled for the rest of the run: a
 telemetry bug must never take down an agent.
+
+`BUDGET_UNLIMITED` (`budget.unlimited`) is the 16th, added for S-20 (ADR-041,
+docs/12-decision-logs.md) — `docs/04-interfaces.md`/`docs/07-cost.md` had already
+promised it ("Unlimited is possible; it is not silent") before any code emitted it.
 """
 from __future__ import annotations
 
@@ -18,6 +22,7 @@ class EventKind(str, Enum):
     STEP_STARTED = "step.started";       STEP_FINISHED    = "step.finished"
     MODEL_REQUEST = "model.request";     MODEL_RESPONSE   = "model.response"
     BUDGET_RESERVED = "budget.reserved"; BUDGET_EXHAUSTED = "budget.exhausted"
+    BUDGET_UNLIMITED = "budget.unlimited"
     TOOL_REQUESTED = "tool.requested";   POLICY_DECIDED   = "policy.decided"
     TOOL_STARTED = "tool.started";       TOOL_FINISHED    = "tool.finished"
     TAINT_RAISED = "taint.raised";       CONTEXT_MANAGED  = "context.managed"

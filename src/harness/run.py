@@ -45,6 +45,13 @@ class RunEngine:
         self._bus.emit(EventKind.RUN_STARTED, agent=self._a.name, model=self._a.model,
                        tool_names=[t.name for t in self._a.toolset], safety=self._a.safety,
                        message=message)
+        # S-20: `Budget(usd=None)` is a deliberate escape hatch (free providers have
+        # nothing to divide by, IDL-36) — permitted, but docs/04-interfaces.md/
+        # docs/07-cost.md already promised "Unlimited is possible; it is not silent."
+        # Fire exactly once per run, right after RUN_STARTED, so a real spend ceiling's
+        # absence shows up in every transcript instead of only in `size_call`'s comment.
+        if self._l.budget.usd is None:
+            self._bus.emit(EventKind.BUDGET_UNLIMITED, reason="budget.usd is None")
 
         stop, detail = StopReason.COMPLETED, ""
         step = 0

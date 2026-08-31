@@ -11,23 +11,28 @@ trong sáu tệp kia dưới dạng câu văn tự tin.
 Hai vòng review đối kháng cho **58 phát hiện**. Đã sửa trước khi tệp này bắt đầu theo dõi:
 5 lỗi chặn phát hành và 16 lỗi nhất quán. **Một lỗi chặn phát hành thứ sáu (S-20) đã lọt
 qua đợt đó** — kiểm lại toàn bộ S-1…S-29 với code hôm nay (không phải chỉ nhóm đang được
-sửa từng đợt) tìm thấy nó vẫn sống, xem `## 1.1` và `design/08-roadmap-and-release-plan.md`.
+sửa từng đợt) tìm thấy nó vẫn sống. **S-20 nay đã sửa** (`EventKind.BUDGET_UNLIMITED`,
+`docs/12-decision-logs.md` ADR-041) — xem callout ở `## 1.1` và
+`design/08-roadmap-and-release-plan.md §1`.
 **Còn lại dưới đây chưa sửa** — liệt kê đầy đủ, vì một danh sách rủi ro chỉ có giá trị khi
 nó thành thật.
 
 ### 1.1 Bảo mật — nghiêm trọng
 
-> **S-20 CÒN SỐNG — CHƯA SỬA.** `Budget.usd: Decimal | None` (`budget/ledger.py`) vẫn
-> cho `None`. Việc bắt buộc "phải có trục tiền" chỉ nằm trong `Budget.parse()` — con
-> đường qua CHUỖI (`budget="$0.05"`). Dựng `Budget(usd=None, steps=100, wall_clock_s=3600)`
-> trực tiếp rồi `Agent(budget=...)` không bị chặn ở đâu cả — kiểm trực tiếp: không
-> `ConfigError`, không cảnh báo. `Ledger.size_call()`/`reserve()` cả hai đều có nhánh
-> `if self._b.usd is None: ...` bỏ qua trần hoàn toàn. Với một provider THẬT (không phải
-> `FakeModel`, thứ `usd=None` được thiết kế RIÊNG cho — xem comment Round 24 trong code),
-> đây là "loop limit không kèm spend ceiling" đạt được bằng một keyword argument, đúng
-> mô tả gốc của review. Đây là phát hiện "chặn phát hành" DUY NHẤT trong toàn bộ 58 phát
-> hiện còn sống chưa sửa — xem `design/08-roadmap-and-release-plan.md §1` cho bản sửa đề
-> xuất và vì sao nó đứng đầu danh sách việc cần làm.
+> **S-20 ĐÃ SỬA.** `Budget.usd: Decimal | None` (`budget/ledger.py`) vẫn cho `None` —
+> việc bắt buộc "phải có trục tiền" vẫn chỉ nằm trong `Budget.parse()` (con đường qua
+> CHUỖI, `budget="$0.05"`), và `Budget(usd=None, ...)` dựng trực tiếp vẫn không bị
+> `ConfigError` nào chặn — **đúng như thiết kế**: `docs/04-interfaces.md`/`docs/07-cost.md`
+> đã công bố `usd=None` là escape hatch có chủ đích (provider miễn phí/local, IDL-36),
+> không phải lỗi cần cấm. Cái ĐÃ sửa là phần hai của lời hứa tài liệu — "emits a
+> `budget.unlimited` warning event on every run... Unlimited is possible; it is not
+> silent" — chưa từng được cài đặt trước bản vá này. `EventKind.BUDGET_UNLIMITED`
+> (`docs/12-decision-logs.md` ADR-041) nay phát đúng một lần mỗi run/thread ngay sau
+> `RUN_STARTED`, ở cả hai backend, khi `budget.usd is None` — khoá bằng
+> `tests/test_attack_s20.py` (6 test, gồm mutation test). Đây từng là phát hiện "chặn
+> phát hành" DUY NHẤT trong toàn bộ 58 phát hiện còn sống chưa sửa — xem
+> `design/08-roadmap-and-release-plan.md §1` cho chi tiết bản sửa, gồm cả việc bản đề
+> xuất đầu tiên (chặn construction) bị bác bỏ vì sai với hợp đồng đã công bố.
 
 > **S-1 ĐÃ KIỂM — LỖI THỜI, KHÔNG CẦN SỬA.** Cả hai nhánh của kịch bản gốc dựa vào cơ chế
 > không tồn tại: (a) `Quarantine` — K-1 đã cắt, `0 caller`; (b) chiến lược nén
