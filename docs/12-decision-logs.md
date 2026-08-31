@@ -915,6 +915,41 @@ promise the docs had already made in prose keep its side of the bargain in code.
 
 ---
 
+### ADR-042 — Retry is bounded, backed off, and reads `EffectProfile.retryable`
+**Status:** Accepted (M6/T-6.3)
+
+**Context.** `EFFECT_PROFILES[...].retryable` (ADR-003, Round 5) already derives the right
+answer per effect class — `read`/`external` `True`, `write`/`danger` `False` — but nothing
+in the dispatch path read it. A transient tool failure (a flaky HTTP call, a momentary
+store timeout) surfaced as a single `is_error` tool result and left the model to decide
+whether to try again itself, at the cost of a full extra model round trip for something
+the harness already had enough information to retry on its own.
+
+**Decision.** `Dispatcher._invoke()` retries a failing call up to `MAX_ATTEMPTS` (3) total
+attempts, with a doubling backoff (`RETRY_BACKOFF_S * 2**attempt`, capped at
+`RETRY_BACKOFF_MAX_S`), but only when `EFFECT_PROFILES[spec.effect].retryable` is `True`
+**and** wall-clock budget remains. `write`/`danger` get exactly one attempt, unconditionally
+— `attempts = 1`, no branch that could extend it. `asyncio.CancelledError` is never caught
+by the retry loop; it still propagates on the first raise (T-6.2 depends on this).
+
+**Why never retry write/danger.** A tool that raised after starting a side effect has an
+UNKNOWN outcome — did the write land before the exception, or not? Retrying assumes "not,"
+which is the exact double-effect S-4 warns about. Without a real idempotency key (T-6.1,
+not yet built), a silent auto-retry of `write`/`danger` would manufacture the very bug class
+docs/05 §3's resume semantics already refuse to guess at ("never re-executed... let the
+model decide how to proceed"). Retry for write/danger is out of scope here **on purpose**,
+not an oversight — T-6.1 landing is the precondition for ever revisiting this.
+
+**Rejected alternative.** Retry every effect class uniformly (simpler code, one code path).
+Rejected: the entire point of `EffectProfile.retryable` existing since Round 5 is that this
+decision is not uniform, and a harness that already computed the right answer and then
+ignored it is worse than one that never computed it — it looks safe on inspection.
+
+**Cost accepted.** A flaky `write`/`danger` tool fails fast, in full, to the model on the
+first error — no different from before this change. Only `read`/`external` behavior moved.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |

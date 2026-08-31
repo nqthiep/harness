@@ -20,7 +20,7 @@ and ADR-041 ([§12](12-decision-logs.md)) is its entry.
 | `budget.unlimited` | Once, right after `run.started`, only when `budget.usd is None` | `reason` |
 | `tool.requested` | Model asked | `tool`, `call_id`, `arguments_digest` (sha256, not the arguments) |
 | `policy.decided` | Per call, always | `tool`, `call_id`, `verdict`, `reason`, `policy` |
-| `tool.started` | Only if ALLOW | `tool`, `call_id`, `parallel` |
+| `tool.started` | Only if ALLOW; once per attempt (T-6.3 retry) | `tool`, `call_id`, `parallel`, `attempt` |
 | `tool.finished` | Per executed call | `tool`, `call_id`, `duration_ms`, `is_error`, `result_tokens`, `truncated` |
 | `taint.raised` | First tainted content | `source_tool`, `call_id` |
 | `context.managed` | Editing or compaction ran | `strategy`, `tokens_before`, `tokens_after` |

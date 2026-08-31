@@ -22,6 +22,16 @@ from .policy.label import Integrity, Label
 from .secrets import redact
 from .tools import EFFECT_PROFILES, ToolSpec
 
+#: T-6.3, docs/17-research-alignment.md — `EFFECT_PROFILES[...].retryable` was already
+#: derived per effect class (ADR-003: read/external True, write/danger False) but nothing
+#: read it to actually retry anything; it only ever reached an `ERROR_RAISED` event's
+#: `retryable=` field and a resume-time "was this safe to skip re-running" check
+#: (`Agent.aresume`). `MAX_ATTEMPTS` total tries (1 + this many retries), backed off —
+#: never applied to `write`/`danger`, which always get exactly one attempt.
+MAX_ATTEMPTS = 3
+RETRY_BACKOFF_S = 0.05
+RETRY_BACKOFF_MAX_S = 1.0
+
 
 @dataclass(slots=True)
 class RunContext:
@@ -157,39 +167,56 @@ class Dispatcher:
             return await self._invoke(b, spec, step)
 
     async def _invoke(self, b: Mapping[str, Any], spec: ToolSpec, step: int) -> dict[str, Any]:
-        self._e._bus.emit(EventKind.TOOL_STARTED, step=step, tool=spec.name, call_id=b["id"])
-        t0 = time.monotonic()
-        timeout = self._e._l.tool_timeout(spec.timeout_s)          # Round 23: clamped
-        try:
-            # Model-supplied arguments can never contain an internal name: the schema
-            # excludes "_"-prefixed parameters, and strict:true rejects anything extra.
-            kwargs = {k: v for k, v in b.get("input", {}).items() if not k.startswith("_")}
-            async with asyncio.timeout(timeout):
-                if spec.subagent is not None:
-                    value = await self._run_subagent(spec, kwargs)
-                else:
-                    value = await spec.fn(**kwargs)
+        # T-6.3: attempts is 1 for write/danger — always exactly one try, ever. Retrying
+        # a call whose outcome is unknown (did the write land before it raised?) is
+        # exactly the double-effect class S-4/idempotency exists to guard against; without
+        # a real idempotency key (T-6.1, not yet built) a silent auto-retry of write/danger
+        # would be worse than the failure it's trying to paper over.
+        retryable = EFFECT_PROFILES[spec.effect].retryable
+        attempts = MAX_ATTEMPTS if retryable else 1
+        reason, t0 = "", time.monotonic()
+        for attempt in range(attempts):
+            self._e._bus.emit(EventKind.TOOL_STARTED, step=step, tool=spec.name,
+                              call_id=b["id"], attempt=attempt)
+            t0 = time.monotonic()
+            timeout = self._e._l.tool_timeout(spec.timeout_s)      # Round 23: clamped
             try:
-                payload = value if isinstance(value, str) else json.dumps(value, sort_keys=True, ensure_ascii=False)
-            except (TypeError, ValueError) as exc:
-                raise ToolContractError(
-                    f"tool {spec.name!r} returned something that cannot be sent to a model: {exc}"
-                ) from None
-            payload, truncated = truncate(payload, spec.max_result_tokens)
-            if self._e._taint.raise_from(emits_of(spec, self._e._a._grants, payload), spec.name):
-                self._e._bus.emit(EventKind.TAINT_RAISED, step=step, source_tool=spec.name)
-            self._e._bus.emit(EventKind.TOOL_FINISHED, step=step, tool=spec.name, call_id=b["id"],
-                           duration_ms=(time.monotonic() - t0) * 1000, is_error=False,
-                           truncated=truncated)
-            return {"type": "tool_result", "tool_use_id": b["id"], "content": redact(payload)}
-        except asyncio.CancelledError:
-            raise                                                # never a tool error
-        except TimeoutError:
-            reason = ("timed out: run wall-clock budget reached"
-                      if timeout < spec.timeout_s else f"timed out after {spec.timeout_s}s")
-            return self._tool_error(b, spec, step, reason, t0)
-        except Exception as exc:
-            return self._tool_error(b, spec, step, f"{type(exc).__name__}: {exc}", t0)
+                # Model-supplied arguments can never contain an internal name: the schema
+                # excludes "_"-prefixed parameters, and strict:true rejects anything extra.
+                kwargs = {k: v for k, v in b.get("input", {}).items() if not k.startswith("_")}
+                async with asyncio.timeout(timeout):
+                    if spec.subagent is not None:
+                        value = await self._run_subagent(spec, kwargs)
+                    else:
+                        value = await spec.fn(**kwargs)
+                try:
+                    payload = value if isinstance(value, str) else json.dumps(value, sort_keys=True, ensure_ascii=False)
+                except (TypeError, ValueError) as exc:
+                    raise ToolContractError(
+                        f"tool {spec.name!r} returned something that cannot be sent to a model: {exc}"
+                    ) from None
+                payload, truncated = truncate(payload, spec.max_result_tokens)
+                if self._e._taint.raise_from(emits_of(spec, self._e._a._grants, payload), spec.name):
+                    self._e._bus.emit(EventKind.TAINT_RAISED, step=step, source_tool=spec.name)
+                self._e._bus.emit(EventKind.TOOL_FINISHED, step=step, tool=spec.name, call_id=b["id"],
+                               duration_ms=(time.monotonic() - t0) * 1000, is_error=False,
+                               truncated=truncated)
+                return {"type": "tool_result", "tool_use_id": b["id"], "content": redact(payload)}
+            except asyncio.CancelledError:
+                raise                                            # never a tool error
+            except TimeoutError:
+                reason = ("timed out: run wall-clock budget reached"
+                          if timeout < spec.timeout_s else f"timed out after {spec.timeout_s}s")
+            except Exception as exc:
+                reason = f"{type(exc).__name__}: {exc}"
+            more_attempts_left = attempt + 1 < attempts
+            time_left = self._e._l.remaining_wall_clock() > 0
+            if more_attempts_left and time_left:
+                self._e._bus.emit(EventKind.ERROR_RAISED, step=step, where="tool",
+                                  type="retrying", message=reason, retryable=True,
+                                  attempt=attempt)
+                await asyncio.sleep(min(RETRY_BACKOFF_S * (2 ** attempt), RETRY_BACKOFF_MAX_S))
+        return self._tool_error(b, spec, step, reason, t0)
 
     async def _run_subagent(self, spec: ToolSpec, kwargs: dict) -> str:
         """§06.4: a subagent is capped by the parent's REMAINING budget, and its spend
