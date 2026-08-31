@@ -213,11 +213,23 @@ soonest, so T-2.6's fixtures are specified per model rather than from the defaul
 1. Under 60 % of the model's context: do nothing.
 2. 60–80 %: **context editing** — clear old tool results (`clear_tool_uses`), oldest first,
    keeping the most recent 3 steps intact. Cheap, lossless for recent work, no model call.
-3. Over 80 %: **compaction** — server-side summarization of earlier context. Emits
-   `context.managed`. The response content is appended back verbatim, including the
-   compaction blocks, because dropping them silently loses the compaction state.
-4. Editing is always attempted before compaction: editing is free, compaction costs a
-   summarization pass.
+3. Over 80 %: **compaction** — the oldest whole steps are dropped. Emits
+   `context.managed` with `messages_dropped`. **Not summarization** (ADR-066): a
+   summarization pass costs a model call out of the budget the caller set as a ceiling,
+   and a summary of UNTRUSTED tool results would have to carry the join of their labels
+   or become a taint-laundering path. Dropping is free and has neither problem. What it
+   loses — the model's own earlier reasoning — is survivable because
+   `harness.tasks.TaskLedger` keeps the plan in a `Store`, not in the transcript.
+4. Editing is attempted first, but compaction is triggered by the **ratio**, not by
+   editing running out of work: every step makes one more tool result stale, so editing
+   always has something to clear, and a compaction gated on that would never run at all.
+5. When nothing can be cleared and nothing can be dropped, the run stops with
+   `StopReason.ERROR` and a `detail` naming the cause — rather than letting the provider
+   reject the next request.
+
+A step is dropped whole (the assistant turn plus the user message holding its
+`tool_result` blocks — invariant I-3), and the first user message, which is the task, is
+never dropped.
 
 ## 4. Model spend
 

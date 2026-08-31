@@ -28,10 +28,16 @@ from ..policy.label import Grants, Integrity, Label
 from ..result import Money, StopReason, Usage
 from ..run import CONTINUE, _MAP
 from ..secrets import redact, redaction_scope
-from ..context.window import CLEARED, EDIT_AT, KEEP_RECENT_STEPS
+from ..context.window import CLEARED, COMPACT_AT, EDIT_AT, KEEP_RECENT_STEPS
 from ..models.pricing import MAX_CONTEXT
 from ..tools import EFFECT_PROFILES
 from .graph import INTERRUPT, MAX_PAUSES
+
+#: Bao nhiêu message CUỐI được giữ nguyên khi nén. Đếm bằng message chứ không bằng
+#: "bước", vì ở backend này một bước là một `AIMessage` cộng N `ToolMessage` (mỗi lời gọi
+#: một cái) — không phải hai như ở vòng lặp classic, nơi mọi `tool_result` gộp vào MỘT
+#: message (I-4). Ba bước × (1 + trung bình 2 lời gọi) là khoảng con số này.
+_KEEP_RECENT_MESSAGES = KEEP_RECENT_STEPS * 3
 
 
 class Runtime:
@@ -535,9 +541,16 @@ class Runtime:
         and the tool_use/tool_result pairing stays intact (invariant I-3).
         """
         window = MAX_CONTEXT.get(self._model_name, 200_000)
-        used = sum(len(str(m.content)) for m in messages) // 4
+        used = _context_chars(messages) // 4
         if used / window < EDIT_AT:
             return []
+        # Ngưỡng nén đọc theo TỈ LỆ, không theo "xoá nội dung đã hết chỗ để xoá": mỗi
+        # bước lại làm đúng một kết quả tool cũ đi, nên nhánh xoá LUÔN có việc để làm và
+        # nhánh nén sẽ không bao giờ chạy — trong khi cửa sổ vẫn phình, vì một message đã
+        # xoá nội dung vẫn tốn phần vỏ và các `AIMessage` mang tool_calls thì không bao
+        # giờ được xoá. Ở 80% cửa sổ, xoá thêm một kết quả cũ không phải một phương án.
+        if used / window >= COMPACT_AT:                       # noqa: SIM102
+            return self._compact(messages, state, used=used, window=window)
         results = [m for m in messages if isinstance(m, ToolMessage)]
         stale = results[:-KEEP_RECENT_STEPS] if len(results) > KEEP_RECENT_STEPS else []
         # `additional_kwargs=dict(m.additional_kwargs)` giữ nguyên nhãn L-1 của message
@@ -551,9 +564,42 @@ class Runtime:
                   for m in stale if m.content != CLEARED and m.id]
         if not edited:
             return []
-        self._emit(state, EventKind.CONTEXT_MANAGED, step=state.get("step", 0), strategy="edited",
-                   tokens_before=used, messages=len(messages))
+        self._emit(state, EventKind.CONTEXT_MANAGED, step=state.get("step", 0),
+                   strategy="edited", tokens_before=used, messages=len(messages))
         return edited
+
+    def _compact(self, messages, state, *, used: int, window: int) -> list:
+        """Bỏ hẳn những bước cũ nhất khi không còn gì để xoá nội dung — nhưng KHÔNG được
+        bỏ nhãn theo (S-19).
+
+        Nhãn hiệu dụng ở backend này được TÍNH LẠI từ các message còn trong context
+        (`_effective_label`, L-3), nên xoá một `ToolMessage` UNTRUSTED khỏi state chính là
+        hạ nhãn của cả run xuống — một đường rửa taint hoàn hảo, bằng đúng thao tác mà
+        việc nén context gọi là dọn dẹp. Bản cài này vì thế không xoá trắng: nó gộp nhãn
+        của MỌI message bị bỏ vào một `ToolMessage` bia mộ duy nhất, rỗng nội dung nhưng
+        mang `join` của các nhãn đó, và giữ bia mộ ấy lại trong context.
+
+        Cặp `tool_use`/`tool_result` luôn đi cùng nhau (I-3): một `AIMessage` mang
+        tool_calls chỉ bị bỏ khi mọi `ToolMessage` trả lời nó cũng bị bỏ trong cùng lượt.
+        """
+        from langchain_core.messages import RemoveMessage
+
+        # `messages[1:...]` — chỉ số 1 là chỗ nhiệm vụ gốc được giữ lại, không phải một
+        # lát cắt tuỳ tiện: bỏ nó đi thì model mất luôn việc nó đang làm.
+        keep_from = len(messages) - _KEEP_RECENT_MESSAGES
+        droppable = [m for m in messages[1:keep_from] if getattr(m, "id", None)]
+        if not droppable:
+            return []
+        label = Label()
+        for m in droppable:
+            label = label.join(_msg_label(m))
+        tomb = ToolMessage(content=CLEARED, tool_call_id="compacted",
+                           id="harness-compaction-tombstone")
+        _stamp_label(tomb, label)
+        self._emit(state, EventKind.CONTEXT_MANAGED, step=state.get("step", 0),
+                   strategy="compacted", tokens_before=used, messages=len(messages),
+                   messages_dropped=len(droppable))
+        return [RemoveMessage(id=m.id) for m in droppable] + [tomb]
 
     # ── helpers ──────────────────────────────────────────────────────────────
     def _safety(self, state) -> str:
@@ -574,6 +620,25 @@ def _is_new_turn(state) -> bool:
     """True when the newest message came from the caller rather than from the loop."""
     msgs = state.get("messages") or []
     return bool(msgs) and type(msgs[-1]).__name__ == "HumanMessage"
+
+
+def _context_chars(messages) -> int:
+    """Kích thước context, tính cả THAM SỐ của tool_call.
+
+    Bản trước cộng đúng `len(str(m.content))`. Trên LangChain, một `AIMessage` chỉ mang
+    tool_calls có `content == ""` — tham số nằm ở `.tool_calls`, không nằm ở `.content`.
+    Nên phép đo cũ bỏ sót đúng cái phần KHÔNG BAO GIỜ được xoá nội dung: một agent code
+    gọi `edit_source(path, old, new)` bốn mươi lần được tính là ~0 ký tự, và việc nén
+    context không bao giờ chạy — cho tới lúc provider từ chối request. Vòng lặp classic
+    không có lỗi này vì nó đo bằng `canonical(message)`, tức cả khối `tool_use`.
+    """
+    total = 0
+    for m in messages:
+        total += len(str(m.content))
+        calls = getattr(m, "tool_calls", None)
+        if calls:
+            total += len(str(calls))
+    return total
 
 
 def _last_tool_calls(messages) -> list:

@@ -296,7 +296,30 @@ editing a row. The same `decisions=` argument works on `build_agent()`. See ADR-
 note that the journal holds real argument values (it must, to match a scope), so treat the
 file as credential-adjacent.
 
-## 8. If you want it reachable over HTTP — `harness[server]`
+## 8. What happens when the conversation stops fitting
+
+At 60% of the model's window the harness blanks old tool-result content; at 80% it drops
+the oldest whole steps. Neither costs a model call, and the second is what makes a
+multi-hour coding session finish instead of ending in a provider rejection — a coding
+agent's context weight is mostly `edit_source(path, old, new)` **arguments**, which live
+in assistant turns and are never blanked, so a run like that climbs no matter how much
+result content you clear.
+
+What compaction drops is the agent's own earlier reasoning. That is survivable only
+because the things that matter are kept somewhere else:
+
+| what survives | where it lives |
+|---|---|
+| the task itself | `messages[0]`, never dropped |
+| what's done and what's left | `TaskLedger` → a `Store` (§5) |
+| who approved what | `DecisionLog` → an append-only journal (§7) |
+| what has already been executed | the idempotency store (§1) |
+
+If nothing can be cleared and nothing dropped, the run stops with `StopReason.ERROR` and
+a `detail` telling you the window is full — rather than the provider rejecting the next
+request for a reason you have to reverse-engineer. See ADR-066.
+
+## 9. If you want it reachable over HTTP — `harness[server]`
 
 ```python
 from harness.server import create_app

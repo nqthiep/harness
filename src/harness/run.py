@@ -161,7 +161,18 @@ class RunEngine:
                 if resp.stop_reason == "tool_use" or has_calls:
                     results = await self._dispatch._run_tools(resp, step, run_id)
                     msgs.append({"role": "user", "content": results})   # I-4: one message
-                    msgs = self._manage_context(msgs, input_tokens, step)
+                    msgs, context_full = self._manage_context(msgs, input_tokens, step)
+                    if context_full:
+                        # Nothing left to blank and nothing left to drop. Stopping here
+                        # with a reason beats letting the provider reject the next
+                        # request for a cause the caller has to guess at (IDL-30). Not
+                        # its own `StopReason`: it is a run that cannot continue, which
+                        # is what `ERROR` means — same call as MAX_PAUSES makes.
+                        stop, detail = StopReason.ERROR, (
+                            "the conversation no longer fits in this model's context "
+                            "window, and there is nothing left to clear or drop — give "
+                            "the agent a smaller job, or a model with a bigger window")
+                        break
                     calls = [b for b in resp.content if b.get("type") == "tool_use"]
                     self._bus.emit(EventKind.STEP_FINISHED, step=step,
                                    stop_reason=resp.stop_reason,
@@ -257,7 +268,7 @@ class RunEngine:
             )
         return want(**{k: v for k, v in data.items() if k in fields})
 
-    def _manage_context(self, msgs: list, _unused: int, step: int) -> list:
+    def _manage_context(self, msgs: list, _unused: int, step: int) -> tuple[list, bool]:
         """T-2.6, wired.  Round 27 found window.manage() was built, tested, and never
         called from the loop — so `context.managed` was one of three event kinds the
         code could not emit.
@@ -270,10 +281,11 @@ class RunEngine:
         used = sum(len(_canonical(m)) for m in msgs) // 4
         out, action = manage_context(msgs, used_tokens=used, context_window=window)
         if action == "none":
-            return msgs
+            return msgs, False
         self._bus.emit(EventKind.CONTEXT_MANAGED, step=step, strategy=action,
-                       tokens_before=used, messages=len(msgs))
-        return out
+                       tokens_before=used, messages=len(msgs),
+                       messages_dropped=len(msgs) - len(out))
+        return out, action == "compact_needed"
 
 
 def canonical_len(req) -> str:

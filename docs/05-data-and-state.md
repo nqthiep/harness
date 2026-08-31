@@ -31,7 +31,7 @@ tracer/OTel exporter — T-8.3 — propagates one in), `tenant_id` and `session_
 | `tool.started` | Only if ALLOW; once per attempt (T-6.3 retry) | `tool`, `call_id`, `parallel`, `attempt` |
 | `tool.finished` | Per executed call | `tool`, `call_id`, `duration_ms`, `is_error`, `result_tokens`, `truncated` |
 | `taint.raised` | First tainted content | `source_tool`, `call_id` |
-| `context.managed` | Editing or compaction ran | `strategy`, `tokens_before`, `tokens_after` |
+| `context.managed` | Editing or compaction ran | `strategy` (`edited` \| `compacted`), `tokens_before`, `messages`, `messages_dropped` |
 | `error.raised` | Any handled error | `where`, `type`, `message`, `retryable`, `attempt` |
 | `progress.stalled` | N consecutive steps produced no tool call the run had not already made — the mechanical stall detector (`progress.py`) | `stalled_steps` |
 

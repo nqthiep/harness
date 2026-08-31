@@ -194,19 +194,33 @@ class M3(unittest.TestCase):
         """T-2.6 cannot trigger on defaults — see test_context_management_is_not_reachable
         on defaults below.  It engages for long-running agents that raise both limits,
         which is the configuration this exercises."""
-        @tool(effect="read", max_result_tokens=40_000)
-        def bulky(i: int) -> str:
-            """Bulky."""
-            return "R" * 400_000
-        m = FakeModel([FakeModel.tool_call("bulky", {"i": i}, call_id=f"c{i}")
-                       for i in range(12)] + [FakeModel.text("done")])
-        a = Agent(name="T", job="j", tools=[bulky], provider=m,
+        # ADR-066: the ARGUMENT is what makes a configuration need compaction and not
+        # just editing. Editing blanks tool RESULTS, so a run whose weight is all in its
+        # results reaches a steady state and never escalates — measured, and correct.
+        # A coding agent's weight is in its arguments (`edit_source(path, old, new)`),
+        # which live in assistant messages and are never blanked. That run climbs.
+        @tool(effect="write")
+        def write_source(path: str, body: str) -> str:
+            """Ghi một file."""
+            return "ok"
+
+        m = FakeModel([FakeModel.tool_call("write_source",
+                                           {"path": f"f{i}.py", "body": "B" * 40_000},
+                                           call_id=f"c{i}") for i in range(40)]
+                      + [FakeModel.text("done")])
+        a = Agent(name="T", job="j", tools=[write_source], provider=m,
                   budget="$500, 60 steps", model="claude-haiku-4-5",
                   transcript=self.path)
         a.try_run("go")
         managed = [e for e in read(self.path) if e["kind"] == "context.managed"]
         self.assertTrue(managed, "context management never ran even at raised limits")
         self.assertEqual(managed[0]["data"]["strategy"], "edited")
+        # ADR-066: editing is the first rung, not the only one. Past COMPACT_AT the
+        # oldest whole steps are dropped — before this, `manage()` returned
+        # "compact_needed" and the loop did nothing with it, so a long run edited until
+        # there was nothing left to blank and then walked into the provider's limit.
+        self.assertIn("compacted", [e["data"]["strategy"] for e in managed],
+                      "editing still never escalates to compaction")
 
     def test_context_management_is_documented_as_not_default_reachable(self):
         """Round 27: max_result_tokens(4,000) x budget.steps(20) = 80,000 tokens, and the

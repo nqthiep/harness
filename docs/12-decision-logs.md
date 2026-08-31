@@ -2087,6 +2087,75 @@ carry a planted secret; and — not mocked — a real `git commit`, a real passi
 failing `pytest` run, plus `; touch canary` passed as a `target` proving argv is argv and
 not a shell string.
 
+### ADR-066 — Compaction drops whole steps; it does not summarize, and it is driven by the ratio, not by editing running dry
+
+**Status:** Accepted
+
+**Context.** `manage()` had returned `"compact_needed"` since T-2.6 and no caller did
+anything with it but emit an event. A long run therefore edited (blanking old tool-result
+content) until there was nothing left to blank, then walked into the provider's context
+limit and had the request rejected — a failure at exactly the point this feature exists to
+prevent.
+
+**Decision 1 — drop the oldest whole steps; do not summarize.** Summarizing costs a model
+call out of the same budget the caller set as a ceiling, for a gain nobody here has
+measured: the trade ADR-023 refused. Worse, a summary is model output derived from tool
+results that may be UNTRUSTED, so it would have to carry the `join` of every label it
+summarizes or compaction becomes a perfect taint-laundering path (the S-19 class). That is
+a design, not a helper. What dropping actually loses is the model's own earlier reasoning
+and the record of tools it already called — survivable precisely because
+`harness.tasks.TaskLedger` (ADR-061) keeps the plan in a `Store` rather than in the
+transcript: one cheap `list_tasks` rebuilds it.
+
+**Decision 2 — a step is dropped whole, and `messages[0]` never is.** An assistant turn
+and the user message carrying its `tool_result` blocks go together or not at all; half a
+pair is the I-3 violation the editing path exists to avoid. The first user message is the
+task, and an agent that forgets the task is worse than one with a short memory.
+
+**Decision 3 — no "[n steps were dropped]" marker.** It would need a role. A second
+consecutive `user` message right after the task is a shape not every provider accepts, and
+folding the note into the task itself would invalidate the cached prefix — the single
+largest cost lever in the system ([§02.1](02-architecture.md)). The drop is recorded in
+`context.managed` (`messages_dropped`), which is where a person looks anyway.
+
+**Decision 4 — compaction is driven by the RATIO, and the first version got this wrong.**
+It only ran when editing found nothing left to blank. But every step makes exactly one more
+tool result stale, so editing ALWAYS has something to clear — compaction would never have
+run at all, while the window kept growing, because a blanked result still costs its
+envelope and the assistant turns holding the `tool_use` blocks are never blanked. Past
+`COMPACT_AT` (80%), blanking one more old result is not a plan. `tests/test_context_
+compaction.py::test_nen_KHONG_cho_toi_khi_het_cho_xoa` pins the corrected order.
+
+**A measurement bug this surfaced on the graph backend.** `_manage` sized the context as
+`sum(len(str(m.content)))`. On LangChain an `AIMessage` carrying only tool calls has
+`content == ""` — the arguments live in `.tool_calls`. So the estimate missed exactly the
+part that is never blanked: an agent calling `edit_source(path, old, new)` forty times
+measured as roughly zero characters, and context management never ran at all on that
+backend. The classic loop was never affected because it measures with `canonical(message)`,
+which includes the whole `tool_use` block. Fixed in `_context_chars`.
+
+**The graph backend does not delete; it leaves a labelled tombstone.** Its effective label
+is recomputed from the messages still in context (L-3), so removing an UNTRUSTED
+`ToolMessage` from state lowers the whole run's label — taint laundering performed by the
+operation that calls itself cleanup. Compaction there emits `RemoveMessage` for each
+dropped message plus ONE empty `ToolMessage` stamped with the `join` of every label it
+removed. Verified end to end: after a forty-step run of an `external` tool, compaction has
+cut 82 messages to 12 and the effective label is still UNTRUSTED.
+
+**When nothing can be cleared and nothing can be dropped, the run stops with a sentence.**
+Not a new `StopReason` — this is a run that cannot continue, which is what `ERROR` means,
+the same call `MAX_PAUSES` makes. `Result.detail` names the cause and the two things a
+person can do about it (smaller job, bigger window), instead of letting the provider reject
+the next request for a reason the caller has to guess at (IDL-30).
+
+**Test.** `tests/test_context_compaction.py` (16) — the unit rules (task kept, recent steps
+kept, no orphaned `tool_result`, a short conversation untouched); the full ladder
+`none → edited → compacted → compact_needed`; the corrected ordering pinned; a forty-step
+classic run completing with a bounded message count and both strategies observed; the
+stop-with-a-sentence path; `_context_chars` counting a tool call's arguments; and on the
+graph — compaction running, the task preserved, exactly one tombstone, and the run still
+UNTRUSTED afterwards.
+
 ---
 
 ## Implementation Decision Log
@@ -2151,3 +2220,5 @@ not a shell string.
 | IDL-56 | An append-only record persists to an append-only file, never to a key-value `Store` | A `Store` rewrites the whole list per row, so one interrupted write loses the entire history — exactly what D-2 exists to prevent (ADR-063) |
 | IDL-57 | A recorded result is replayed only for calls that change the world, never for calls that read it | A replayed `read` returns the state from before the crash. Idempotency protects against a double effect; it must not answer a question about the present with the past (ADR-064) |
 | IDL-58 | A path-confining tool is constructed with its root; a module-level tool function confines to the CWD or not at all | `confine()` existed unused for two milestones because the tools that needed it had no root to pass — the missing constructor was the bug, not the missing call (ADR-065) |
+| IDL-59 | An escalating policy escalates on the SIGNAL, never on "the cheaper rung ran out of work" | Editing always has one more stale result to blank, so compaction gated on that would never have run once (ADR-066) |
+| IDL-60 | Context size is measured over the whole request payload, arguments included — never over `message.content` alone | A LangChain `AIMessage` carrying only tool calls has empty `content`; the arguments are the part that never gets blanked, and they measured as zero (ADR-066) |
