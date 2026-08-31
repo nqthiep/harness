@@ -120,7 +120,11 @@ mà vẫn được liệt kê là điểm mạnh sẽ bị người vận hành 
 ([review-security.md](review-security.md) S-3). Hai nguồn, cả hai trên đường đi bắt buộc:
 
 1. **`Secret[T]` do người dùng đưa vào.** Bất kỳ giá trị nào bọc trong `Secret` (định nghĩa ở
-   [04 §7bis](04-runtime-durability.md)) nâng nhãn run lên `SECRET` khi nó vào context.
+   [04 §7bis](04-runtime-durability.md)) nâng nhãn run lên `SECRET` khi nó vào context. Không
+   có cơ chế `deps` riêng ở harness này (K-1/K-2 đã cắt), nên đường thật là: tool tự
+   `.reveal()` một `Secret` rồi giá trị đó xuất hiện nguyên văn trong payload trả về —
+   `emits_of(spec, grants, payload)` (`policy/builtin.py`) dò bằng `contains_live_secret`
+   (`secrets.py`, cùng phép so khớp `redact()` dùng) và nâng nhãn MESSAGE đó lên `SECRET`.
 2. **`ToolSpec.emits`, chỉ operator đặt được.** Suy ra từ `effect` theo mặc định; operator —
    **không** phải tác giả tool — nâng riêng cho tool đọc vùng nhạy cảm (bảng lương, hồ sơ bệnh
    án). Đặt ở cấu hình deployment, không ở decorator, vì cờ trong decorator đúng hình dạng

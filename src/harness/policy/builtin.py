@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any, Sequence
 from urllib.parse import urlparse
 
+from ..secrets import contains_live_secret
 from ..tools import EFFECT_PROFILES, Effect, ToolSpec
 from .base import Ruling, ToolCall, Verdict
 from .label import Confidentiality, Grants, Integrity, Label
@@ -22,15 +23,25 @@ class EffectPolicy:
         return Ruling(v, f"effect={call.spec.effect.value}", self.name)
 
 
-def emits_of(spec: ToolSpec, grants: Grants) -> Label:
+def emits_of(spec: ToolSpec, grants: Grants, payload: str | None = None) -> Label:
     """Nhãn mà KẾT QUẢ của tool này mang — L-1, design/00-foundation.md §3.2.
 
     `sensitive` chỉ nâng CONFIDENTIALITY (dữ liệu nhạy cảm, không phải dữ liệu đáng ngờ);
     nó không đổi integrity — một tool đọc bảng lương nội bộ không vì thế mà trở thành
     "untrusted", nó chỉ trở thành "secret" (design/00-foundation §3.2, S-3).
+
+    `payload`, khi có, là kết quả THÔ (trước `redact()`) của chính lời gọi này — nguồn
+    nâng confidentiality THỨ NHẤT của S-3: `Secret[T]` người dùng đưa vào. Không có cơ
+    chế deps riêng ở harness này, nên đường đi thật của nó là tool tự `.reveal()` một
+    `Secret` (vd. để ký request) rồi vô tình (hoặc cố ý) trả nguyên giá trị đó về —
+    đúng khoảnh khắc `redact()` đã canh sẵn để chặn trước khi bytes tới model. Gắn
+    `contains_live_secret` vào đúng chỗ đó, dùng đúng phép so khớp `redact()` dùng, thay
+    vì dựng thêm một cơ chế deps mới: một `Secret` không bao giờ redact-nhưng-quên-gắn-nhãn,
+    hay ngược lại.
     """
     base = EFFECT_PROFILES[spec.effect].emits
-    if spec.name in grants.sensitive:
+    secret = spec.name in grants.sensitive or (payload is not None and contains_live_secret(payload))
+    if secret:
         return Label(base.integrity, Confidentiality.SECRET)
     return base
 

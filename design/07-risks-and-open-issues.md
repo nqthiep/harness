@@ -93,10 +93,28 @@ khi nó thành thật.
 > nội dung). Backend cổ điển (`run.py`/`dispatch.py`) nâng `TaintTracker` lên `Label` hai
 > trục nhưng GIỮ sticky-per-run — nó miễn nhiễm với chính kiểu rửa taint mà per-message
 > phải phòng, vì nó không tính lại theo message; đây là khác biệt có chủ ý giữa hai
-> backend, không phải việc chưa xong. `Secret[T]` (nguồn nâng confidentiality thứ nhất,
-> S-3) **chưa cài** — chỉ có nguồn thứ hai (`Grants.sensitive`, operator đánh dấu tool).
-> 11 test tấn công mới ở `tests/test_attack_s19.py`, mỗi cơ chế chính có một mutation test
-> đi kèm (xoá đúng dòng code thì test phải đỏ) — cùng kỷ luật với bước 1/2.
+> backend, không phải việc chưa xong. 11 test tấn công mới ở `tests/test_attack_s19.py`,
+> mỗi cơ chế chính có một mutation test đi kèm (xoá đúng dòng code thì test phải đỏ) —
+> cùng kỷ luật với bước 1/2.
+
+> **S-3 nguồn thứ nhất (`Secret[T]`) ĐÃ SỬA — cả hai backend.** Bước trên chỉ landing
+> nguồn thứ hai (`Grants.sensitive`, operator đánh dấu tool). Không có cơ chế `deps`
+> riêng ở harness này (K-1/K-2 đã cắt), nên đường thật của `Secret[T]` là: tool tự
+> `.reveal()` một `Secret` (`secrets.py`) rồi giá trị đó xuất hiện nguyên văn trong
+> payload trả về — đúng khoảnh khắc `redact()` đã canh sẵn để chặn trước khi bytes tới
+> model (RT-13, Round 35). `secrets.contains_live_secret()` dùng lại đúng phép so khớp
+> đó để phát hiện (không `.reveal()` khi chỉ dò — không tự đăng ký thêm); `emits_of(spec,
+> grants, payload)` (`policy/builtin.py`) nâng nhãn MESSAGE đó lên `SECRET` khi phát hiện,
+> dù `redact()` đã xoá đúng token khỏi bytes model thấy — phần còn lại của cùng message
+> không bị xoá, nên `check_flow` vẫn cần nhãn SECRET để chặn nó rời qua sink `PUBLIC` ở
+> bước sau, cùng độ chi tiết "theo message" mà `Label` dùng ở khắp nơi khác. Cả hai chỗ
+> gọi (`dispatch.py::_invoke`, `lg/runtime.py::_run_tools`) truyền payload thô (trước
+> `redact()`) vào `emits_of`; tham số mới có mặc định `None` nên không phá chữ ký cũ.
+> `tests/test_attack_s3.py`: `contains_live_secret` đơn vị, `emits_of` đơn vị với/không
+> payload, chạy thật qua cả hai backend (`Agent.try_run` và `build_agent().invoke`) xác
+> nhận secret lộ qua một tool `read` chặn được sink `PUBLIC` kế tiếp — mutation gọi
+> `emits_of` không kèm payload (đúng chữ ký cũ) ở cả hai chỗ xác nhận 2 test đỏ ngay,
+> mỗi backend một cái.
 
 ### 1.2 Bảo mật — nên sửa (S-21…S-29)
 
@@ -237,20 +255,19 @@ Từ sáu tệp thiết kế, không lặp lại lý lẽ:
 
 ## 5. Việc tiếp theo, theo thứ tự
 
-1. **`Secret[T]`** — nguồn nâng confidentiality thứ nhất (S-3), chưa cài; chỉ có
-   `Grants.sensitive` (nguồn thứ hai).
-2. **S-15 trên backend cổ điển — kiểm lại, có thể không cần.** Backend cổ điển đã có
+1. **S-15 trên backend cổ điển — kiểm lại, có thể không cần.** Backend cổ điển đã có
    `_check_shared_policy_state` từ Round 34 và nó đúng cho ranh giới `run()` sạch mà
    backend đó có. Chưa kiểm: có đáng thêm CÙNG luật "từ chối instance, chỉ nhận factory"
    ở đó để hai backend nhất quán, hay để nguyên vì cơ chế dò-sau-khi-chạy đã đủ và không
    cần siết thêm.
-3. **S-7, S-8, S-9, S-10** — landing cùng lúc với khi tích hợp MCP thật được xây, không
+2. **S-7, S-8, S-9, S-10** — landing cùng lúc với khi tích hợp MCP thật được xây, không
    trước (xem `## 1.1`).
-4. **Cắt K-7, K-9, K-10, K-23** — giảm đường tới production từ ~38 xuống ~33 tên.
-5. **`Ledger.void()`, S-16/S-19/S-3 trên backend cổ điển — ĐÃ KIỂM, KHÔNG THÊM.** Cả hai
+3. **Cắt K-7, K-9, K-10, K-23** — giảm đường tới production từ ~38 xuống ~33 tên.
+4. **`Ledger.void()`, S-16/S-19/S-3 trên backend cổ điển — ĐÃ KIỂM, KHÔNG THÊM.** Cả hai
    được xét kỹ và có 0 caller trong `src/harness/` hôm nay; xem `## 1.1` cho `void()`.
-6. **Tiếp tục viết code.** S-16/S-19/S-3/S-6/S-14/S-15/S-13 đã vào `src/harness/` — 303 test
-   xanh, mỗi cơ chế chính có mutation test đi kèm. Vẫn còn nhiều phát hiện review chưa
+5. **Tiếp tục viết code.** S-16/S-19/S-3 (cả hai nguồn)/S-6/S-14/S-15/S-13 đã vào
+   `src/harness/` — 312 test xanh, mỗi cơ chế chính có mutation test đi kèm. Vẫn còn
+   nhiều phát hiện review chưa
    chạm tới code, và nghiên cứu của chính dự án đo được **23 vòng review tìm 20 lỗi và 0
    lỗi bảo mật; 16 vòng chạy tìm 38+ lỗi và 4 lỗi bảo mật** — bản thiết kế là sản phẩm của
    review, nó sẽ sai ở những chỗ chỉ có chạy mới tìm ra.

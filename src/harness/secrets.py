@@ -101,3 +101,22 @@ def redact(text: str) -> str:
         if v and v in text:
             text = text.replace(v, "<secret hidden>")
     return text
+
+
+def contains_live_secret(text: str) -> bool:
+    """S-3's first confidentiality source: a `Secret`'s plaintext appearing verbatim in
+    `text` means a value the user wrapped in `Secret` has flowed into a tool result that
+    is about to enter context. `emits_of` (policy/builtin.py) calls this on a tool's raw,
+    pre-redaction payload and raises the message's `Label` to SECRET when it fires — the
+    same matching `redact()` does, just reporting instead of replacing, so the two stay
+    exactly in sync (one `Secret` never redacted-but-unlabeled, or vice versa).
+
+    Same rule as `redact()`: no `.reveal()`, so detection itself never registers a value.
+    """
+    for s in _live():
+        if s._v and s._v in text:
+            return True
+    for v in (_run_values.get() or ()):
+        if v and v in text:
+            return True
+    return False

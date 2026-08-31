@@ -322,7 +322,7 @@ class Runtime:
                 # override `sensitive` của operator nếu có (S-3). `emits_of` hợp nhất ba
                 # ý tưởng nghiên cứu tìm được rời rạc: ToolKind của pydantic-ai, tách
                 # read/write approval của Microsoft, readOnlyHint/destructiveHint của MCP.
-                emitted = emits_of(spec, self._grants)
+                emitted = emits_of(spec, self._grants, payload)
                 before = label
                 label = label.join(emitted)
                 if label != before:

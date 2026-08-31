@@ -56,8 +56,10 @@ class Grants:
 
     `accepts_tainted`: tool `danger` này được phép chạy dù context đang UNTRUSTED.
     `sensitive`: output của tool này luôn coi là SECRET — nguồn thứ hai nâng trục
-        confidentiality (nguồn thứ nhất, `Secret[T]` do người dùng đưa vào, chưa cài —
-        xem design/07-risks-and-open-issues.md).
+        confidentiality. Nguồn thứ nhất, `Secret[T]` do người dùng đưa vào (S-3), không
+        ở đây — nó nâng nhãn qua `emits_of(..., payload=...)` phát hiện giá trị `Secret`
+        còn sống xuất hiện nguyên văn trong kết quả tool (`secrets.contains_live_secret`,
+        policy/builtin.py), không qua cấu hình `Grants`.
     """
     accepts_tainted: frozenset[str] = frozenset()
     sensitive: frozenset[str] = frozenset()

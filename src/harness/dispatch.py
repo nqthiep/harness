@@ -141,7 +141,7 @@ class Dispatcher:
                     f"tool {spec.name!r} returned something that cannot be sent to a model: {exc}"
                 ) from None
             payload, truncated = truncate(payload, spec.max_result_tokens)
-            if self._e._taint.raise_from(emits_of(spec, self._e._a._grants), spec.name):
+            if self._e._taint.raise_from(emits_of(spec, self._e._a._grants, payload), spec.name):
                 self._e._bus.emit(EventKind.TAINT_RAISED, step=step, source_tool=spec.name)
             self._e._bus.emit(EventKind.TOOL_FINISHED, step=step, tool=spec.name, call_id=b["id"],
                            duration_ms=(time.monotonic() - t0) * 1000, is_error=False,
