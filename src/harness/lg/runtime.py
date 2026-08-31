@@ -244,6 +244,7 @@ class Runtime:
             spec = self._tools.get(p["tool"])
             call = ToolCall(p["call"]["id"], p["tool"], p["call"].get("args", {}), spec)
             ctx = _Ctx(label=self._effective_label(state), safety=self._safety(state))
+            reported_actor: Actor | None = None
             if asks > self._max_asks_per_run:
                 # Approval fatigue is a channel the model controls — deny once the cap is
                 # crossed rather than let the (asks+1)-th request get approved on reflex.
@@ -252,13 +253,18 @@ class Runtime:
                           f"turn — refusing rather than risk reflex-approval fatigue",
                           "ask-cap")
             elif self._approve is INTERRUPT:
+                # S-11: `interrupt()`'s resume payload is a raw value handed back through
+                # `Command(resume=...)` — LangGraph's own mechanism, not `resolve()` — so
+                # it has no `Approval` channel to report an actor through. Left as the
+                # generic placeholder below; extending THIS path would need its own design
+                # (07-risks), since `Command(resume=...)`'s shape isn't this harness's.
                 ok = bool(interrupt({"tool": p["tool"],
                                      "arguments": p["call"].get("args", {}),
                                      "reason": p["reason"]}))
                 d = Ruling(Verdict.ALLOW if ok else Verdict.DENY,
                              "approved" if ok else "declined by approver", "approval")
             else:
-                d = asyncio.run(self._engine_for(_run_id(state)).resolve(
+                d, reported_actor = asyncio.run(self._engine_for(_run_id(state)).resolve(
                     Ruling(Verdict.ASK, p["reason"], "policy"), call, ctx, self._approve))
             self._emit(state, EventKind.POLICY_DECIDED, tool=p["tool"], call_id=p["call"]["id"],
                        verdict=d.verdict.name, reason=d.reason, policy=d.policy)
@@ -269,8 +275,14 @@ class Runtime:
                 id=f"dec-{p['call']['id']}", verdict=d.verdict,
                 scope=Scope(tool=p["tool"], args=dict(p["call"].get("args", {})),
                             call_id=p["call"]["id"]),
-                actor=(Actor.human("approver", via="callback")
-                       if self._approve is not None else Actor.policy(d.policy)),
+                # S-11: `reported_actor` is real identity ONLY when the `approve=`
+                # callback returned `Approval(ok, actor=...)` instead of a plain `bool` —
+                # the common case still falls back to this placeholder, which is a
+                # self-declared "someone called the callback", not verified identity
+                # (07-risks: the full fix needs AuthEvidence, not built here).
+                actor=(reported_actor if reported_actor is not None else
+                       (Actor.human("approver", via="callback")
+                        if self._approve is not None else Actor.policy(d.policy))),
                 decided_at=_now(), expires_at=None, run_id=_run_id(state), reason=d.reason))
             out.append({**p, "verdict": int(d.verdict), "reason": d.reason})
         denied = [ToolMessage(content=f"declined: {p['call']['name']}",

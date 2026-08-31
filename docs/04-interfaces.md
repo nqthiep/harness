@@ -378,17 +378,28 @@ policies (sync, pure, fast)  →  composed verdict  →  if ASK: engine awaits a
 ```
 
 ```python
-ApprovalFn = Callable[[ToolCall, RunContext], bool | Awaitable[bool]]
+ApprovalFn = Callable[[ToolCall, RunContext], bool | Approval | Awaitable[bool | Approval]]
 ```
 
 The engine — not a policy — resolves a surviving `ASK`:
 
 | `approve` callback | Verdict |
 |---|---|
-| provided | `ALLOW` / `DENY` from its return value |
+| provided, returns `bool` | `ALLOW` / `DENY` from the value |
+| provided, returns `Approval(ok, actor=...)` | `ALLOW` / `DENY` from `ok`, `Decision.actor` set to the reported `actor` |
 | absent, `safety="strict"` | **DENY** |
 | absent, effect is `danger` | **DENY** |
 | absent, otherwise | `ALLOW`, plus a one-time warning event |
+
+**`Actor` is a self-declaration, not verified identity (review-security.md S-11).** A
+callback returning a plain `bool` (the common case) gives the engine no way to know who
+actually approved — `Decision.actor` records a generic placeholder
+(`Actor.human("approver", via="callback")`), the same for every call that callback ever
+resolves. Return `Approval(ok, actor=Actor.human(id=..., via=...))` instead when the
+callback genuinely knows who clicked — an authenticated Slack interaction, an OAuth
+session — and the audit log records that identity instead. This closes "the harness has
+no channel for real identity"; it does not close "a callback can still lie about who
+approved" — that needs an authenticated-evidence model this design hasn't built (07-risks).
 
 Relaxing `Policy.check` to async was the alternative and was rejected: purity is what makes
 policies cheap enough to evaluate on every call, and hidden I/O from a third-party policy on

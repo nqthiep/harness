@@ -42,6 +42,27 @@ class Actor:
 
 
 @value
+class Approval:
+    """Bọc trả về TÙY CHỌN cho callback `approve=` — S-11.
+
+    `Actor` là lời tự khai của bên nào đang giữ callback: `Approver(fn, actor=...)` cố
+    định danh tính LÚC DỰNG, còn ai thật sự bấm nút là chuyện khác — một callback trả
+    thẳng `bool` không có cách nào nói CHO harness biết ai vừa duyệt. Trả `Approval` thay
+    vì `bool` khi callback THẬT SỰ biết danh tính (id phiên Slack đã xác thực, user OAuth
+    trả về) — `Decision.actor` ghi đúng danh tính đó thay vì placeholder chung
+    `Actor.human("approver", via="callback")` mọi callback trả `bool` đều nhận.
+
+    Vẫn chưa phải bằng chứng đã xác thực (`AuthEvidence` — chữ ký kênh, `channel_message_id`
+    — mà review đề xuất là bản sửa đầy đủ): đây chỉ mở đường cho callback TỰ báo danh tính
+    thật, không ép buộc nó phải chứng minh. Rẻ hơn, và đóng đúng phần "harness không có
+    cách nào nhận identity" — phần "callback tự khai gian" vẫn còn nguyên, ghi lại ở
+    `07-risks`.
+    """
+    ok: bool
+    actor: "Actor | None" = None
+
+
+@value
 class Scope:
     """Cái gì được duyệt.
 

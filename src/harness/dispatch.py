@@ -83,7 +83,11 @@ class Dispatcher:
                           f"this run — refusing rather than risk reflex-approval fatigue",
                           "ask-cap")
             else:
-                d = await self._e._engine.resolve(d, call, ctx, self._e._a.approve)
+                # Actor discarded here: the classic loop has no DecisionLog to record
+                # into (agent.py builds/tears down state per atry_run(), nothing persists
+                # a grant across calls the way the LangGraph backend's checkpointed
+                # DecisionLog does) — S-11's reported-actor channel has nowhere to land.
+                d, _actor = await self._e._engine.resolve(d, call, ctx, self._e._a.approve)
             self._e._bus.emit(EventKind.POLICY_DECIDED, step=step, tool=b["name"],
                            call_id=b["id"], verdict=d.verdict.name, reason=d.reason,
                            policy=d.policy)

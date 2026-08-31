@@ -9,6 +9,7 @@ import inspect
 from typing import Any, Sequence
 
 from .base import Ruling, Policy, ToolCall, Verdict
+from .decision import Actor, Approval
 
 
 class PolicyEngine:
@@ -28,20 +29,33 @@ class PolicyEngine:
                 break
         return worst
 
-    async def resolve(self, decision: Ruling, call: ToolCall, ctx: Any, approve) -> Ruling:
-        """Turn a surviving ASK into ALLOW/DENY.  The engine may await; a policy may not."""
+    async def resolve(self, decision: Ruling, call: ToolCall, ctx: Any,
+                       approve) -> "tuple[Ruling, Actor | None]":
+        """Turn a surviving ASK into ALLOW/DENY.  The engine may await; a policy may not.
+
+        Returns the actor the callback reported, if any — S-11. A plain `bool` return
+        (the common case) reports nothing: the caller falls back to a generic placeholder
+        actor, same as before this existed. Returning `Approval(ok, actor=...)` instead
+        is how a callback that actually knows who approved (an authenticated Slack click,
+        an OAuth session) gets that identity into the audit log instead of the
+        placeholder every `bool`-returning callback is stuck with.
+        """
         if decision.verdict is not Verdict.ASK:
-            return decision
+            return decision, None
         if approve is None:
             from ..tools import Effect
             if ctx.safety == "strict" or call.spec.effect is Effect.DANGER:
                 return Ruling(
                     Verdict.DENY,
                     f"{call.name} needs approval and no approve= callback was given",
-                    "approval")
-            return Ruling(Verdict.ALLOW, "no approval callback; allowed", "approval")
+                    "approval"), None
+            return Ruling(Verdict.ALLOW, "no approval callback; allowed", "approval"), None
         out = approve(call, ctx)
         if inspect.isawaitable(out):
             out = await out
-        return Ruling(Verdict.ALLOW if out else Verdict.DENY,
-                        "approved" if out else "declined by approver", "approval")
+        if isinstance(out, Approval):
+            ok, actor = out.ok, out.actor
+        else:
+            ok, actor = bool(out), None
+        return Ruling(Verdict.ALLOW if ok else Verdict.DENY,
+                        "approved" if ok else "declined by approver", "approval"), actor
