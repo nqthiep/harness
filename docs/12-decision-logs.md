@@ -1971,6 +1971,55 @@ live grant without asking twice, not leaking another run's grant into this one, 
 falling through to the callback when the book is empty; `with_()` not dropping the field
 (the N-7 class); and `build_agent(decisions=...)` reaching the `Runtime`.
 
+### ADR-064 — `execute_once` gets its caller: the LangGraph backend only, and only for `write`/`danger`
+
+**Status:** Accepted (supersedes ADR-043's "not wired yet", and corrects one line of T-6.1's spec)
+
+**Context.** ADR-043 shipped `execute_once` as a standalone contract and refused to wire
+it, on a specific ground: the key is `f"{run_id}:{call_id}"`, and nothing could supply a
+`run_id` that spans two executions of the same call, so any wiring would be dead code. The
+condition it named has since become false on one backend — and stayed true on the other.
+
+**Decision 1 — wire the graph backend.** LangGraph writes a checkpoint *after* a node
+completes, so a crash inside `run_tools` re-executes the entire batch on resume: a
+`git_push` that already succeeded runs a second time. Both halves of the key survive that
+restart — `run_id` is the `thread_id`, and `call_id` comes from an AIMessage checkpointed
+*before* the tools node ran. That is a real, nameable bug with a real key, which is exactly
+what ADR-043 said it was waiting for. `build_agent(idempotency_store=...)` (a `Store`;
+`SqliteStore` for it to mean anything across a process) turns it on; without it nothing
+changes and nothing extra is read or written.
+
+**Decision 2 — do not wire the classic loop.** `run_id` is generated fresh in every
+`atry_run()`, and `aresume()` goes through `atry_run()`. Reusing the old id is not a small
+fix: [§05.2](05-data-and-state.md#2-transcript-format) guarantees `seq` is gap-free within
+a run, and a resumed run restarts `seq` at 0. So the key could only ever catch a duplicate
+`call_id` inside one run — which the T-2.5 dedup in `dispatch.py` already handles a step
+earlier, for free. ADR-043's reasoning still holds there, and is left in force rather than
+quietly overridden for symmetry.
+
+**Decision 3 — `read`/`external` do NOT go through it, which contradicts T-6.1's spec on
+purpose.** T-6.1 says read/external pass through `execute_once` with `fail_open=True`.
+Replaying a recorded `read` after a restart returns the file *as it was before the crash*.
+For a coding agent that is not a weaker guarantee, it is a wrong answer — and re-running a
+read is precisely what its effect class already promises is safe. So `fail_open` has no
+caller on the dispatch path; it stays part of the tested primitive. A spec line that turns
+out to be wrong is better corrected in the open than implemented because it was written
+down.
+
+**A bug this wiring introduced, and the fix.** Routing the call through a coroutine broke
+subagent tools: `_run_subagent` is synchronous and spins its own `asyncio.run`, which
+raises inside a running loop (`tests/test_lg.py::test_a_subagent_tool_actually_runs` caught
+it immediately). Rather than exempt subagents from the guard, the call goes through
+`asyncio.to_thread` — a thread hop costs nothing next to launching a whole child agent, and
+a subagent tool whose effect is `danger` is exactly the kind that must not run twice.
+
+**Test.** `tests/test_idempotency_wired.py` — the same thread and call id running the tools
+node twice pushes once; the replayed result equals the first result exactly; no store means
+unchanged behaviour (two pushes); a `read` is deliberately NOT replayed; two different
+`call_id`s are two real pushes; two threads do not share a record; and the whole thing
+proven across a genuinely new `SqliteStore` handle, which is the case the mechanism exists
+for.
+
 ---
 
 ## Implementation Decision Log
@@ -2033,3 +2082,4 @@ falling through to the callback when the book is empty; `with_()` not dropping t
 | IDL-54 | An agent's plan is durable state in a `Store`, never a key in graph state and never a second model call | ADR-023 rejected spending tokens to think about thinking; it never said the plan should be forgotten at step 40. A `Store` outlives the process, works on both backends, and adds no constructor parameter (ADR-061) |
 | IDL-55 | A run-level ceiling is checked in the node that clears `stop_reason`, never in the node that observes the signal | `budget_gate` is the only place the graph clears `stop_reason` (Round 37, or a finished thread routes to `finish` forever), so a stop set in `run_tools` is wiped before any router reads it (ADR-062) |
 | IDL-56 | An append-only record persists to an append-only file, never to a key-value `Store` | A `Store` rewrites the whole list per row, so one interrupted write loses the entire history — exactly what D-2 exists to prevent (ADR-063) |
+| IDL-57 | A recorded result is replayed only for calls that change the world, never for calls that read it | A replayed `read` returns the state from before the crash. Idempotency protects against a double effect; it must not answer a question about the present with the past (ADR-064) |

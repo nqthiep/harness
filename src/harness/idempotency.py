@@ -5,19 +5,30 @@ implementations at `memory/inmemory.py`, `memory/sqlite.py`) is reused as the ba
 store. `execute_once` is the whole contract this module exists to hold — check the key,
 replay on a hit, run-and-record on a miss.
 
-**Not wired into `Agent`/`Dispatcher`/`Runtime` yet, on purpose.** The scenario T-6.1's
-own "Why" names — "client timeout rồi retry có thể gửi email hai lần" — is a caller
-(an HTTP client hitting a Service API) retrying a request the harness has no way to
-recognize as a retry, because `run_id` is generated fresh every `atry_run()` call
-(`agent.py`): `idempotency_key = f"{run_id}:{call_id}"` only protects against replay
-within work that shares a `run_id`, and nothing shares one across two separate calls
-today. That external key has to come from somewhere — M9's Service API is the first
-real source of one. Wiring `execute_once` into the dispatch path with no caller that can
-ever supply a meaningful key would be dead code no test exercises for real, the exact
-"speculative generality" ADR-002's rejected alternative warns against. This module is
-the tested, documented primitive M9 wires in when it lands (docs/17 §5: M6 is listed
-before M9 for exactly this reason — idempotency is the prerequisite, not the
-integration).
+**Wired into the LangGraph backend, and deliberately NOT into the classic loop.** The key
+is `f"{run_id}:{call_id}"`, so it is only worth anything where BOTH halves survive a
+process restart. On the graph backend they do: `run_id` is LangGraph's `thread_id`, and
+`call_id` comes from an AIMessage that was checkpointed *before* the tools node ran. That
+makes a real, nameable bug fixable — a crash inside the tools node re-executes the whole
+batch on resume, including a `git_push` that already succeeded. `Runtime(idempotency_store=...)`
+(and `build_agent(idempotency_store=...)`) closes it: the second execution replays the
+recorded result instead of pushing twice.
+
+The classic loop is not a target, because `run_id` is generated fresh in every
+`atry_run()` call (`agent.py`) and `aresume()` goes through `atry_run()` too. Reusing the
+old id there is not a small fix: `docs/05 §2` guarantees `seq` is gap-free within a run,
+and a resumed run restarts `seq` at 0. So within one classic run the key can only ever
+catch a duplicate `call_id`, which the T-2.5 dedup in `dispatch.py` already handles a
+step earlier and for free. Wiring it there would be dead code no test exercises for real
+— the "speculative generality" ADR-002's rejected alternative warns against.
+
+**Only `write`/`danger` calls go through `execute_once`, and that is a correction to
+T-6.1's own spec, not an economy.** T-6.1 describes `read`/`external` going through it
+with `fail_open=True`. Replaying a recorded `read` across a restart returns the file as it
+was *before* the crash — for a coding agent that is not a safety feature, it is a
+correctness bug. Re-running a read is what its effect class means: safe, and current.
+`fail_open` therefore has no caller in the dispatch path; it stays part of the tested
+primitive for a caller that has a use for it (see ADR-064).
 """
 from __future__ import annotations
 
@@ -111,3 +122,20 @@ async def execute_once(
             # record means a future replay of this same key won't be caught, but returning
             # an error here for a call that SUCCEEDED would be strictly worse.
         return result, False
+
+
+async def once_if_unsafe(
+    store: Store | None, key: str, fn: Callable[[], Awaitable[T]], *, retryable: bool,
+) -> tuple[T, bool]:
+    """`execute_once` for the calls that need it, a plain call for the rest.
+
+    Returns `(result, was_replayed)`. A `retryable` (`read`/`external`) call, or any call
+    at all when no store is configured, runs normally — see the module docstring for why
+    replaying a recorded read is a bug rather than a guarantee. `fail_open=False` is not a
+    parameter here: the only calls that reach `execute_once` through this path are exactly
+    the ones where an unrecorded execution risks an undetectable double effect, and that
+    is the definition of fail-closed.
+    """
+    if store is None or retryable:
+        return await fn(), False
+    return await execute_once(store, key, fn, fail_open=False)

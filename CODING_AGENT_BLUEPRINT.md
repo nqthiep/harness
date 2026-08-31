@@ -77,7 +77,22 @@ shell command is running, that command's result is lost, and — because `write`
 tools are never auto-retried by design (a retried `git push` is not idempotent) — the
 agent does not blindly re-run it either. On resume it sees a normal "was this actually
 applied?" situation, the same one a human developer resuming someone else's half-finished
-change faces. This is `docs/01-requirements.md`'s stated assumption (typical runs ≤ 50
+change faces.
+
+**What you can get, on the LangGraph backend, for one argument:** protection against the
+*other* half of that problem. LangGraph checkpoints after a node finishes, so a crash
+inside the tools node re-runs the whole batch on resume — including the `git_push` that
+already succeeded. Pass a store and a `write`/`danger` call is recorded under
+`thread_id:call_id`, so the resumed run replays the recorded result instead of pushing
+twice:
+
+```python
+graph, _ = build_agent(model=..., tools=[...], checkpointer=SqliteSaver...,
+                       idempotency_store=SqliteStore("idempotency.db"))
+```
+
+`read` calls deliberately do **not** replay — after a crash you want the file as it is
+now, not as it was (ADR-064). This is `docs/01-requirements.md`'s stated assumption (typical runs ≤ 50
 steps / 10 minutes; **longer runs need durable execution, and that's an explicit
 non-goal**) — the three mechanisms above get you real session-level durability, not
 crash-safety inside a single tool call.

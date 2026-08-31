@@ -17,7 +17,7 @@ from langgraph.types import interrupt
 from ..budget.ledger import Ledger
 from ..dispatch import MAX_ATTEMPTS, RETRY_BACKOFF_MAX_S, RETRY_BACKOFF_S
 from ..errors import BudgetExceeded
-from ..idempotency import idempotency_key
+from ..idempotency import idempotency_key, once_if_unsafe
 from ..observe.events import EventBus, EventKind
 from ..policy.base import Ruling, ToolCall, Verdict
 from ..policy.builtin import emits_of
@@ -39,7 +39,7 @@ class Runtime:
                  price, max_output: int, model_name: str = "claude-opus-5",
                  exporters=(), approve=None, decisions: DecisionLog | None = None,
                  grants: Grants | None = None, max_asks_per_run: int = 20,
-                 tenant_id: str | None = None) -> None:
+                 tenant_id: str | None = None, idempotency_store=None) -> None:
         # T-8.1 — deployment-level config, like `_grants` just below: fixed for this
         # compiled graph, not per-thread. `session_id` needs no separate field here —
         # LangGraph's own `thread_id` (== `run_id` per `_run_id(state)`) already IS the
@@ -84,6 +84,14 @@ class Runtime:
         # Sổ quyết định. Nó KHÔNG phải trạng thái của một run — nó là audit sink, chung
         # cho graph, và mọi tra cứu đều keyed theo run_id, nên R-4 vẫn giữ.
         self._decisions = decisions if decisions is not None else DecisionLog()
+        # T-6.1, finally wired. A crash inside `run_tools` loses the checkpoint for the
+        # whole node, so a resumed thread re-executes every call in that batch — a
+        # `git_push` that already succeeded included. `thread_id` and the checkpointed
+        # `call_id` both survive that restart, which is what makes `f"{run_id}:{call_id}"`
+        # worth anything here and worth nothing in the classic loop (see
+        # `idempotency.py`'s docstring). Deployment-level config like `_grants`, so it
+        # lives on the Runtime; the per-key record lives in the Store the caller supplies.
+        self._idempotency_store = idempotency_store
 
     # ── everything mutable is derived from graph state ───────────────────────
     #
@@ -437,10 +445,19 @@ class Runtime:
                 try:
                     args = {k: v for k, v in call.get("args", {}).items()
                             if not k.startswith("_")}
-                    if spec.subagent is not None:
-                        value = _run_subagent(spec, args, led)
-                    else:
-                        value = asyncio.run(spec.fn(**args))
+                    async def _call(spec=spec, args=args, led=led):
+                        if spec.subagent is None:
+                            return await spec.fn(**args)
+                        # `_run_subagent` is synchronous and spins its own `asyncio.run`,
+                        # so it cannot be called from inside the loop `once_if_unsafe`
+                        # runs on — a thread hop is what lets a subagent tool get the
+                        # same idempotency guard as every other one, and it costs
+                        # nothing next to launching a whole child agent.
+                        return await asyncio.to_thread(_run_subagent, spec, args, led)
+                    value, replayed = asyncio.run(once_if_unsafe(
+                        self._idempotency_store,
+                        idempotency_key(_run_id(state), call["id"]),
+                        _call, retryable=retryable))
                     payload = value if isinstance(value, str) else json.dumps(
                         value, sort_keys=True, ensure_ascii=False, default=str)
                     ok = True
@@ -476,7 +493,7 @@ class Runtime:
             _stamp_label(result_msg, emitted)
             msgs.append(result_msg)
             self._emit(state, EventKind.TOOL_FINISHED, tool=spec.name, call_id=call["id"],
-                       is_error=False)
+                       is_error=False, replayed=replayed)
         self._emit(state, EventKind.STEP_FINISHED, step=state.get("step", 0),
                    stop_reason="tool_use", tool_calls=[p["tool"] for p in state.get("_pending", [])])
         # Observed on what the MODEL asked for, not on `_pending`: a model that keeps

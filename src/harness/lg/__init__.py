@@ -35,7 +35,12 @@ def build_agent(*, model, tools: Sequence[Any] = (), budget: Any = None,
                 # the parameter existed and was unreachable. `None` keeps the previous
                 # behaviour (a fresh in-memory log per compiled graph);
                 # `DecisionLog(journal=...)` makes the record outlive the process.
-                decisions: Any | None = None):
+                decisions: Any | None = None,
+                # T-6.1 wired (ADR-064). A `Store` — `SqliteStore` for it to mean anything
+                # across a restart — in which a `write`/`danger` call's result is recorded
+                # under `thread_id:call_id`, so a thread resumed after a crash inside the
+                # tools node replays that result instead of running the call twice.
+                idempotency_store: Any | None = None):
     """Compile an agent graph.  Returns (compiled_graph, runtime).
 
     `exporters=` is the spelling `Agent` uses for the same seam (Round 35 parity). It used
@@ -94,7 +99,7 @@ def build_agent(*, model, tools: Sequence[Any] = (), budget: Any = None,
                  max_output=pricing.MAX_OUTPUT.get(model_name, 8_000), model_name=model_name,
                  exporters=exporters, approve=approve, grants=grants,
                  max_asks_per_run=max_asks_per_run, tenant_id=tenant_id,
-                 decisions=decisions)
+                 decisions=decisions, idempotency_store=idempotency_store)
     compiled = build(rt).compile(checkpointer=checkpointer)
 
     broken = unguarded_paths(compiled)

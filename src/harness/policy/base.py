@@ -38,10 +38,12 @@ class ToolCall:
     #: S-01 re-check (design/07-risks-and-open-issues.md) — `f"{run_id}:{id}"`
     #: (`idempotency.py::idempotency_key`), stamped by the caller (`dispatch.py`/
     #: `lg/runtime.py`) that already has both. `None` only in tests that build a
-    #: `ToolCall` directly without a run — never in a real dispatch path. Read-only
-    #: information for a `Policy`/tool author that wants a stable per-call key; nothing
-    #: in the dispatch path consumes it yet (`execute_once` still has no caller inside
-    #: `Agent`/`Dispatcher` — see `idempotency.py`'s own docstring for why).
+    #: `ToolCall` directly without a run — never in a real dispatch path. A stable
+    #: per-call key a `Policy`/tool author can read. The LangGraph backend now also
+    #: CONSUMES it: a `write`/`danger` call there goes through `execute_once` under this
+    #: key when `build_agent(idempotency_store=...)` is set, so a thread resumed after a
+    #: crash inside the tools node replays instead of running the call twice (ADR-064).
+    #: The classic loop still does not — `idempotency.py`'s docstring says why.
     idempotency_key: str | None = None
     __hash__ = None                     # holds a Mapping — docs/04 §0 Hashability
 
