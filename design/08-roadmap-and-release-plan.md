@@ -154,7 +154,7 @@ trong `src/harness/`:**
 
 | Milestone | Trọng số × khoảng trống | Việc chính | Trạng thái hôm nay |
 |---|---|---|---|
-| **M6 — Reliability** | 12% × gap 2/5 | Idempotency key, cancellation đúng chuẩn (không nuốt `CancelledError`), retry theo effect class, failure injection | `grep -rl idempot src/` → chỉ 1 dòng comment. Chưa có gì. |
+| **M6 — Reliability** | 12% × gap 2/5 | Idempotency key, cancellation đúng chuẩn (không nuốt `CancelledError`), retry theo effect class, failure injection | **Đang làm.** T-6.2 (cancellation) ĐÃ XONG — `run.py`'s `except CancelledError` giờ dọn dẹp rồi `raise`, khoá bằng `tests/test_m6_t62_cancellation.py` (mutation-tested). T-6.1/T-6.3/T-6.4 chưa. |
 | **M7 — Isolation** | 15% × gap — **nặng ký nhất theo trọng số nghiên cứu** | Workspace root, egress mặc định CHẶN (đảo `allowed_hosts=None` từ "cho tất cả" sang "chặn tất cả" — breaking change), seam `Sandbox`, secret không vào sandbox | `grep -rl sandbox src/` → không có gì. `EgressPolicy` (S-18) đã đúng NHƯNG mặc định vẫn `None`=cho-tất-cả. |
 | **M8 — Observability** | 10% × gap | Envelope v1 (`schema_version`/`trace_id`/`tenant_id`), `Approval` là bản ghi đầy đủ (K-đã landing một phần qua S-11's `Approval`, chưa có TTL/policy_version), OTel exporter thật, cost-per-successful-task | `Event` vẫn `['seq','ts','run_id','kind','step','data']` — thiếu 3 trường nghiên cứu đòi. Không OTel. |
 | **M9 — Integration** | 8% × gap 3/5 — **khoảng trống lớn nhất theo tự chấm** | MCP client làm tool boundary, Service API (`POST /v1/runs`...), canonical event adapter | `grep -rl mcp src/` → chỉ comment. Không route HTTP nào. |

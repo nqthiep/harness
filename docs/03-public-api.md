@@ -158,7 +158,7 @@ error.** A Poka-Yoke whose message is incomprehensible is only half-built.
 | Method | Returns | Notes |
 |---|---|---|
 | `run(message, *, stream=None) -> Result` | Result | Raises `RunFailed` on non-success. Sync facade. |
-| `try_run(message, *, stream=None) -> Result` | Result | Never raises for run outcomes; check `result.ok`. |
+| `try_run(message, *, stream=None) -> Result` | Result | Never raises for run outcomes; check `result.ok`. **Exception:** `asyncio.CancelledError` propagates instead of returning a `stop_reason="cancelled"` Result — cancellation is a control signal from the caller, not a run outcome (T-6.2, docs/17-research-alignment.md Y-01); an outer `TaskGroup`/`wait_for` must see it happen. |
 | `arun(...)` / `atry_run(...)` | Awaitable[Result] | Async originals. |
 | `chat(*, budget=None) -> Chat` | Chat | Stateful multi-turn session with **one ledger for the whole session**, defaulting to 10 × the agent's run budget (ADR-020). As it depletes, answers shorten before the chat ends. |
 | `as_tool(*, name=None, description=None) -> ToolSpec` | ToolSpec | Turns this agent into a subagent tool. |

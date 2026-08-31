@@ -150,7 +150,14 @@ class RunEngine:
                     detail = "the model declined this request"
                 break
         except asyncio.CancelledError:
-            stop, detail = StopReason.CANCELLED, "cancelled"
+            # T-6.2/Y-01: cancellation is a control signal, not a run outcome — swallowing
+            # it here and returning a normal Result broke asyncio's cancellation protocol
+            # (an outer TaskGroup/wait_for awaiting this run would never see the
+            # cancellation happen). Clean up — same as every other stop reason, an
+            # observability record — but re-raise instead of returning.
+            self._bus.emit(EventKind.RUN_FINISHED, stop_reason=StopReason.CANCELLED.value,
+                           steps=step, cost_usd=str(self._l.spent), tainted=self._taint.tainted)
+            raise
 
         self._bus.emit(EventKind.RUN_FINISHED, stop_reason=stop.value, steps=step,
                        cost_usd=str(self._l.spent), tainted=self._taint.tainted)
