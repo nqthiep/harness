@@ -180,7 +180,32 @@ is not automatically the cheaper one.
 
 ---
 
-## 5. If you want it reachable over HTTP — `harness[server]`
+## 5. Keeping the plan when the context window can't — `harness.tasks.TaskLedger`
+
+An hour into a session the conversation no longer fits, and `context/window.py` starts
+clearing old tool results at 60% of the window. If "what I've done and what's left" only
+existed in those results, the agent forgets its own task list at exactly the moment the
+task gets long. `TaskLedger` is the fix, and it costs **zero extra tokens** — it is
+durable state, not a planning model call:
+
+```python
+from harness.memory import SqliteStore
+from harness.tasks import TaskLedger
+
+tasks = TaskLedger(SqliteStore("session.db"))
+lead = Agent(name="Lead", job="Work through the task list; keep it updated.",
+             tools=[read_source, write_source, run_tests, *tasks.tools()],
+             budget="$5, 300 steps, 45m")
+```
+
+The model gets five tools — `list_tasks` (`read`), `add_task`, `start_task`,
+`finish_task`, `block_task` (`write`) — and one cheap `list_tasks` call rebuilds the whole
+picture after a compaction. Backed by a `SqliteStore` the list also survives a process
+restart, which the LangGraph checkpointer alone does not give you for anything outside
+graph state. Planning stays the model's job (ADR-023 is unchanged: no second model call
+for reflection); *remembering* the plan is the harness's. See ADR-061.
+
+## 6. If you want it reachable over HTTP — `harness[server]`
 
 ```python
 from harness.server import create_app

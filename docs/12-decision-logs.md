@@ -1776,6 +1776,61 @@ evidence claiming a future timestamp (clock skew in the attacker's favor); `Acto
 `Approval` carry the new fields without disturbing the existing S-11 contract for a
 callback that supplies neither.
 
+### ADR-061 — `TaskLedger`: the plan is durable state, not a second model call; it lives in `Store`, not in graph state
+
+**Status:** Accepted
+
+**Context.** A long-running coding session is not one question — it is a list of things to
+do, worked over hours, across a restart. ADR-023 rejected a planner: "a second model call
+for an unmeasured quality gain." That rejection is about *spending tokens to think about
+thinking*. It is not an argument that an agent's plan should be forgotten between steps,
+and the two were being conflated.
+
+**Decision — no model call is added; a fourth ledger is.** `harness/tasks.py` holds
+`TaskLedger`, exposed to the model as five tools (`list_tasks` `read`; `add_task`,
+`start_task`, `finish_task`, `block_task` `write`). Planning stays where ADR-023 put it:
+in the model, prompted by `job=`. What is new is that the plan is *written down* — the
+harness owns durability, exactly as it already does for spend (`Ledger`), for approvals
+(`DecisionLog`) and for trust (`Label`). `TaskLedger` is the fourth of that family, and
+the boundary is sharp: **it never calls a model, so it costs zero tokens.**
+
+**Why `Store` and not `AgentState`.** Three reasons, in order of weight. (a) `Store` is
+already a seam (ADR-002) with two real implementations, so `SqliteStore` gives the ledger
+durability that outlives the *process*, not merely the graph's checkpointer. (b) A key in
+`AgentState` would exist on the LangGraph backend only; a `Store` works identically on
+both, and IDL-41 makes every added state key a liability that must be declared in exactly
+the right place. (c) It adds **no parameter to `Agent(...)` or `build_agent(...)`** — an
+author passes `*ledger.tools()` in the `tools=` list they already have. That last point
+was the governing constraint of this whole line of work ("không đổi coding interface").
+
+**Why the whole ledger sits under one key.** One JSON array, one key, no index table to
+drift out of sync with it. A coding session has tens of tasks, not millions. Named here so
+that whoever needs a different scale knows this is the line to change, rather than
+discovering the assumption by measuring it.
+
+**Why no lock.** Every mutating tool is `effect="write"`, and
+`EFFECT_PROFILES[Effect.WRITE].parallel_safe` is `False` — the dispatcher already
+serialises them within a step, so no two calls can read-modify-write over each other.
+`tests/test_task_ledger.py` asserts that profile directly, so if `write` ever becomes
+parallel-safe the ledger's assumption goes red before a write is silently lost.
+
+**Two fail-visible choices (IDL-30).** A corrupt ledger raises rather than starting from a
+blank one — losing the record of completed work is worse than a readable error. An unknown
+task id raises `UnknownTaskError` naming the ids that do exist, rather than creating the
+task the model invented; the same for a status outside the closed `STATUSES` vocabulary,
+whose message lists the four valid words so the model can correct itself.
+
+**The context connection.** `context/window.py` clears old tool results at 60% of the
+window. That is only safe if progress does not live *in* those results. With the ledger,
+`list_tasks` reconstructs the full picture in one cheap `read` call after a compaction —
+which is the mechanism that makes a multi-hour session survivable at all.
+
+**Test.** `tests/test_task_ledger.py` — counting and the closed status vocabulary; a
+fabricated id refused; notes preserved across a status change that omits one; a corrupt
+ledger raising; durability across two `SqliteStore` opens of the same file; two ledgers
+under different keys not colliding; and an end-to-end run through a real `Agent` with a
+scripted `FakeModel`, asserting the ledger still holds the work after the run ends.
+
 ---
 
 ## Implementation Decision Log
@@ -1835,3 +1890,4 @@ callback that supplies neither.
 | IDL-52 | An automatic fix is a change, and the suite runs immediately after | `ruff --fix` removed a re-export and broke `import harness` (H39.4) |
 | IDL-31 | Context-management fixtures are specified per model | Whether the budget or the context window binds first depends on the model's price and window ([§07.3](07-cost.md#3-token-discipline)) |
 | IDL-53 | `budget.unlimited` fires once, at the same `step == 0` site as `RUN_STARTED`, never inside `Ledger` itself | `Ledger` has no `EventBus` access by design (a ledger that emits telemetry is a ledger with a second reason to change); the guard lives with the caller that already fires exactly once per run/thread (ADR-041) |
+| IDL-54 | An agent's plan is durable state in a `Store`, never a key in graph state and never a second model call | ADR-023 rejected spending tokens to think about thinking; it never said the plan should be forgotten at step 40. A `Store` outlives the process, works on both backends, and adds no constructor parameter (ADR-061) |
