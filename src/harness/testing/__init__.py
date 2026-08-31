@@ -10,9 +10,11 @@ from contextlib import contextmanager
 from typing import Iterator
 
 from ..models.fake import FakeModel
+from .trajectory import Trajectory, TrajectoryReport, TrajectoryViolation
 
 __all__ = ["FakeModel", "no_network", "NetworkAccessInTest",
-           "approve_all", "deny_all", "assert_tool_called", "assert_no_tool"]
+           "approve_all", "deny_all", "assert_tool_called", "assert_no_tool",
+           "Trajectory", "TrajectoryReport", "TrajectoryViolation"]
 
 
 class NetworkAccessInTest(RuntimeError):

@@ -1499,6 +1499,68 @@ previously-dropped envelope fields now land in the JSONL line. All against Starl
 
 ---
 
+### ADR-056 — Trajectory contract reads `Result` first, `Event` only where `Result` can't answer; golden set reuses the Wilson interval; benchmark measures, it does not grade
+**Status:** Accepted (M10/T-10.1, T-10.2, T-10.3)
+
+**Context.** docs/17's M10, the last unbuilt milestone: `Trajectory` (`must_call`,
+`must_not_call`, `requires_approval`, `max_model_calls`, `max_tokens`, `max_cost`,
+`output_schema`, `no_duplicate_side_effects`, runnable against `FakeModel`); a golden set
+with pass rate at a 95% CI, never a bare number; a p50/p95/throughput/cold-start benchmark
+(Y-05).
+
+**Decision, three parts.**
+
+1. **`Trajectory.check(result, events=(), *, effect_of=None)` reads `Result` for six of
+   eight rules, `Event` only for the two it cannot otherwise answer.** `must_call`/
+   `must_not_call` read `result.tools_run` (already the record of what EXECUTED, not what
+   the model merely requested — IDL-49); `max_model_calls` reads `result.steps + 1` (steps
+   is zero-indexed — a single-turn run has `steps=0`, one call, not zero); `max_tokens`
+   reads `result.usage.total`; `max_cost_usd` reads `result.cost`; `output_schema` reads
+   `result.value`. Only `requires_approval` and `no_duplicate_side_effects` need `events`,
+   because only they need data `Result` does not carry (which tool actually went through
+   an approval round-trip; the full argument history of every call, not just which tools
+   ran). Passing `events=()` when either rule is set raises rather than silently reporting
+   pass — a trajectory contract that can silently under-check itself is worse than one that
+   refuses to run.
+
+2. **`requires_approval` matches on `policy=="approval"`, not `verdict=="ASK"`.** The first
+   draft checked for a `policy.decided` event with `verdict=="ASK"` and found none in any
+   real run: `PolicyEngine.resolve()` (`policy/engine.py`) already converts ASK to
+   ALLOW/DENY before `dispatch.py`/`lg/runtime.py` emit `POLICY_DECIDED` — by the time the
+   event exists, the verdict it carries is the *resolved* one. `resolve()` does mark every
+   call that genuinely went through `approve()` with `policy="approval"` (win or lose),
+   which is the actual signal "this call needed a human" — a fact discovered by running the
+   check against a real approved call and watching it wrongly report a violation, the same
+   discipline this whole package insists on (execute the twenty lines, IDL-34).
+
+3. **Golden set and cost-per-success share one Wilson-interval implementation.**
+   `run_golden_set` imports `_wilson_interval`/`_Z_SCORES` from `eval/cost.py` rather than
+   restating the formula — a second confidence-interval implementation in the same package
+   is a second place for the Round-24-style arithmetic mistake ADR-026 exists to prevent.
+   Each case runs against a **freshly-constructed** `Agent` (`agent_factory()` called once
+   per case, not once total) for the same reason a `Policy` must be a factory across runs
+   (Round 34): a golden set measures whether each case passes independently, not whether it
+   passes after the previous case has already warmed the cache/ledger/policy state.
+
+**Benchmark reports, it does not pass/fail.** `run_latency_benchmark` separates cold start
+(constructing the `Agent`, the `ContextAssembler`, the `PrefixWatcher`) from warm calls on
+purpose — they measure different things, and averaging them together distorts both; a
+single-sample run reports `warm_ms=()` and `NaN` percentiles rather than crashing.
+`run_throughput_benchmark` bounds concurrency with a real `asyncio.Semaphore`, not `n` free
+tasks racing each other — proven in the test by tracking actual concurrent tool
+invocations, since `Agent` is frozen (`@value`, `slots=True`) and cannot be monkeypatched
+to instrument directly. No module here asserts a benchmark number is "good" — per `07-risks`
+"Chưa đủ evidence" discipline, a number the operator's own deployment produced is the
+only evidence that means anything; this module's job ends at producing the number honestly.
+
+**Test.** `tests/test_m10_t101_trajectory.py` (15), `tests/test_m10_t102_golden.py` (5, one
+exercising all five case kinds docs/17 names — positive, negative, adversarial,
+tool_failure, policy_violation — end to end against `FakeModel`), `tests/test_m10_t103_
+benchmark.py` (7). `S-05` in `tests/test_roadmap.py` (docs/17's own gap-tracker) flips green
+with `harness.testing.Trajectory` now importable.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
