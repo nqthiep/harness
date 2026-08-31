@@ -153,7 +153,10 @@ Applied:
 | Retry | ❌ | ✅ | ❌ SDK does it | **CORE** |
 | Model router | ❌ | — | ❌ | **CORE** (and mostly deferred, ADR-006) |
 
-**Five seams. Everything else is core.** Three of the core items are core specifically
+**Six seams** (`Sandbox` added M7/T-7.3, ADR-047 — the table above was updated then but
+this sentence wasn't; caught in the T-9.1 pass, K-13's "verify before fixing" discipline
+applied to prose staleness rather than a bug). **Everything else is core.** Three of the
+core items are core specifically
 because making them overridable would let a plugin *defeat* an invariant: a replaceable
 ledger can be replaced with one that always says yes; a replaceable assembler can
 reintroduce cache invalidation; a replaceable loop can skip the policy check. Extension

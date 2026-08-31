@@ -171,6 +171,9 @@ class ToolSpec:
     timeout_s: float = 30.0
     max_result_tokens: int = 4_000
     source: str = ""                   # "module.py:41" — used in every error message
+    subagent: object = None            # the child Agent, when this tool wraps one (as_tool())
+    server: str | None = None          # T-9.1 — a ServerLabel when this came from
+                                       # harness.mcp.connect(); None for a local tool
 
 def tool(
     *,
@@ -210,6 +213,44 @@ wrong answer (contrast IDL-22).
 **Anything else raises `ToolSchemaError` at import**, naming the parameter and its type.
 There is no "best effort" fallback: a silently-wrong schema produces malformed tool calls
 that fail at runtime and cost money to discover.
+
+### MCP — tools from a third-party server (T-9.1)
+
+`harness[mcp]` — an extra, `import harness` never imports the `mcp` SDK. Full contract
+and rationale: `design/03-tools-and-mcp.md §5`, ADR-054.
+
+```python
+# harness/mcp/__init__.py
+
+ServerLabel = NewType("ServerLabel", str)
+
+@dataclass(frozen=True, slots=True)
+class McpServerPolicy:
+    identity: ServerLabel
+    trusted: bool = False                                   # hint may set the DEFAULT
+    default_effect: Effect = Effect.DANGER                   # used when not trusted
+    effects: Mapping[str, Effect] = field(default_factory=dict)   # always wins
+    accepts_tainted: frozenset[str] = frozenset()             # never from a hint
+    allow: frozenset[str] | None = None                       # None = every tool listed
+
+def classify_mcp_tool(tool: "mcp.types.Tool", policy: McpServerPolicy,
+                      call: Callable[[str, Mapping], Awaitable[str]]) -> ToolSpec: ...
+
+async def connect(session: "mcp.ClientSession", policy: McpServerPolicy) -> list[ToolSpec]: ...
+```
+
+- **Precedence:** `policy.effects[name]` > (`policy.trusted` ? hint : `policy.default_effect`).
+- **Naming:** `f"{server}__{tool}"`, slugged — two servers never collide on the same
+  protocol tool name in one `ToolSet`.
+- **`accepts_tainted`** is read by the CALLER, merged into `Agent(accepts_tainted=...)` —
+  this module never sets it on an `Agent` itself, same separation `Grants` already
+  enforces for local tools (S-16).
+- **`connect()` calls `tools/list` exactly once.** No live re-listing — a rug-pull
+  (§5.4) is handled by never giving it a chance to reclassify a tool mid-run, not by
+  detecting and rejecting it after the fact.
+- **`Scope.server`** (already a `Decision`/`policy/decision.py` field, unused before
+  T-9.1) now participates in grant matching: an approval for a tool on one server never
+  authorizes the same-named tool on another.
 
 ---
 

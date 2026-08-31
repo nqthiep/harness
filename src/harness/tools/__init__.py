@@ -122,6 +122,12 @@ class ToolSpec:
     max_result_tokens: int = 4_000
     source: str = ""
     subagent: Any = None            # the child Agent, when this tool wraps one
+    #: T-9.1, design/03-tools-and-mcp.md §5 — `None` for a local tool; a `ServerLabel`
+    #: (opaque string, v1 — no `fingerprint`, K-12) for a tool `harness.mcp.connect()`
+    #: classified from a third-party server. `policy/decision.py`'s `Scope.server` keys
+    #: a grant to this same string, so approving `search(query="x")` on one server never
+    #: approves the same-named tool on another (design/03 §5.3 M-4).
+    server: str | None = None
 
     def to_api(self) -> dict[str, Any]:
         """Provider tool definition.  strict:true — ADR-022."""

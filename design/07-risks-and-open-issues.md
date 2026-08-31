@@ -162,11 +162,9 @@ nó thành thật.
 > `expires_at` xa hơn — đúng phần mà bản thiết kế gốc lo bị bỏ qua ("Answer.expires_at đi
 > vào từ bên ngoài") không hề tồn tại trên code hôm nay.
 
-> **S-17 — GẤP CHUNG VỚI S-7…S-10, HOÃN CÓ CHỦ Ý.** Injection qua `description` tool MCP
-> đưa vào prompt trước lời gọi tool đầu tiên là một phát hiện thật, nhưng — như S-7…S-10 —
-> hoàn toàn thuộc về phân loại tool MCP, thứ **không tồn tại trong `src/harness/` hôm
-> nay**. Không có `tools/list`, không có bước bind server, không có gì để nâng nhãn "lúc
-> bind" cả. Landing cùng lúc với khi MCP thật được xây, không trước.
+> **S-17 — ĐÃ SỬA, gộp chung với S-7…S-10 khi `harness.mcp` landing (T-9.1) — xem block
+> dưới đây, sau S-7…S-10.** Giữ nguyên tại đây lúc còn hoãn vì khi đó "không tồn tại trong
+> `src/harness/`" là đúng; nay đã có `tools/list` thật.
 
 > **S-18 ĐÃ SỬA — bằng tài liệu, không phải code.** `EgressPolicy` (chỗ thật thay cho
 > `DenyHosts` mà review trích) đã đúng như S-18 mô tả: P-4 (`Policy.check` thuần, không
@@ -181,15 +179,26 @@ nó thành thật.
 > của Python và client HTTP chuẩn RFC 3986 đều đồng ý `evil.example` là host thật trong cả
 > hai biến thể review nêu — `tests/test_attack_s18.py` khoá lại bằng test trực tiếp.
 
-> **S-7, S-8, S-9, S-10, S-17 — HOÃN CÓ CHỦ Ý, không phải bỏ quên.** Cả năm xoay quanh
-> `ServerIdentity`/`fingerprint`/rug-pull/injection qua metadata của tool MCP. Kiểm tra
-> `src/harness/`: **không có tích hợp MCP nào tồn tại** — `ToolSpec` không có trường
-> `server`, không có `ServerIdentity`, không có `tools/list`. Xây cơ chế so khớp server
-> ngay bây giờ là hạ tầng không ai gọi, đúng loại lỗi mà chính vòng KISS đã cắt
-> (`Quarantine`, `deps_type`, `Snapshottable` — xem `review-kiss.md` K-1/K-2/K-5). Năm
-> phát hiện này phải được đưa vào code **cùng lúc** với khi MCP thật được xây, không phải
-> trước — landing chúng trước sẽ tạo ra đúng kiểu trừu tượng "0 implementer khớp" mà K-5
-> đã cảnh báo.
+> **S-7, S-8, S-9 (một phần), S-10, S-17 — ĐÃ SỬA, landing CÙNG LÚC với `harness.mcp`
+> (T-9.1, ADR-054), đúng như ghi ở đây khi hoãn.** `ToolSpec` giờ có `server`;
+> `harness.mcp.connect()` là lời gọi `tools/list` thật đầu tiên trong `src/harness/`;
+> `classify_mcp_tool()` phân loại `effect` theo đúng M-1..M-3 (`design/03 §5.3`) — server
+> không trusted thì hint không tham gia (S-8's "hint hạ effect" không còn khả thi: hint
+> hoàn toàn bị bỏ qua trừ khi operator tự đặt `trusted=True`), `accepts_tainted` chỉ từ
+> `policy`, chưa bao giờ từ hint (S-10's "proposed_scope" tương đương — operator giữ toàn
+> quyền, tool không tự khai được gì ảnh hưởng taint). S-17 (injection qua `description`)
+> đóng bằng TÀI LIỆU chứ không phải bộ lọc — đúng như S-18 trước đó: không có cách chặn
+> description tới model trước lời gọi tool đầu tiên mà không phá vỡ chính giao thức
+> tool-calling, nên `default_effect=DANGER` cho server chưa duyệt (M-1) là hàng rào thật
+> duy nhất, ghi rõ trong docstring `classify_mcp_tool`. `Scope.server` (trường đã có từ
+> trước, chưa ai gọi) giờ tham gia so khớp `DecisionLog.lookup()` — một grant cấp trên
+> server A không khớp lời gọi tới tool CÙNG TÊN trên server B (M-4). Test:
+> `tests/test_m9_t91_mcp.py`, 32 test, mỗi cơ chế chính có mutation.
+>
+> **S-9 phần CÒN LẠI vẫn hoãn, đúng lý do cũ.** `Scope.server` chặn được va chạm giữa
+> HAI NHÃN khác nhau, không chặn được MỘT nhãn bị trỏ lại sang endpoint khác — đó vẫn cần
+> `ServerIdentity`+`fingerprint`, và K-12's lý do hoãn (định dạng `fingerprint` chưa chốt
+> cho MCP stdio) không đổi. Chờ tới khi quan sát được một lần re-pointing thật.
 
 > **S-16, S-19, và S-3 ĐÃ SỬA — trên giấy VÀ trong `src/harness/`.** Bước 0 chốt mô hình
 > (S-16: `accepts_tainted` rời `@tool`, chỉ đến từ operator; S-19: nhãn per-message +
@@ -647,8 +656,9 @@ Từ sáu tệp thiết kế, không lặp lại lý lẽ:
    S-18 sửa bằng tài liệu (không có cách sửa ở tầng `Policy` thuần); S-11 sửa được phần
    landing được (`Approval` — channel tuỳ chọn cho `approve=` báo actor thật), phần còn lại
    cần `AuthEvidence` — xem mục 3. Chi tiết từng mã ở `## 1.1`/`## 1.2`.
-2. **S-7, S-8, S-9, S-10, S-17** — landing cùng lúc với khi tích hợp MCP thật được xây,
-   không trước (xem `## 1.1`).
+2. **S-7, S-8, S-9 (một phần), S-10, S-17 — XONG**, landing cùng lúc với `harness.mcp`
+   (T-9.1, ADR-054) đúng như dự tính khi hoãn. S-9's phần re-pointing-nhãn vẫn hoãn, cùng
+   lý do K-12 (xem `## 1.1`).
 3. **`AuthEvidence` cho S-11** — mô hình xác thực người duyệt thật (chữ ký kênh,
    `channel_message_id`) để chặn một callback TỰ KHAI GIAN danh tính, không chỉ mở kênh
    báo tự nguyện như bản vá vừa landing. Cần thiết kế riêng, chưa bắt đầu.
@@ -664,9 +674,9 @@ Từ sáu tệp thiết kế, không lặp lại lý lẽ:
    `src/harness/policy/builtin.py` (hai comment) lẫn `design/06`'s ma trận tham chiếu. Xem
    `## 1.3`.
 7. **Tiếp tục viết code.** S-16/S-19/S-3 (cả hai nguồn)/S-6/S-11/S-14/S-15/S-13/S-21/S-22/
-   S-24/S-25/S-27/S-29 đã vào `src/harness/`, K-9 cắt khỏi bề mặt công khai — 502 test
-   xanh, mỗi cơ chế chính có mutation test đi kèm. Vẫn còn phát hiện review chưa chạm tới
-   code (S-7…S-10/S-17 hoãn có chủ ý, `AuthEvidence` của S-11), và
+   S-24/S-25/S-27/S-29/S-7…S-10/S-17 đã vào `src/harness/`, K-9 cắt khỏi bề mặt công khai —
+   534 test xanh, mỗi cơ chế chính có mutation test đi kèm. Vẫn còn phát hiện review chưa
+   chạm tới code (S-9's phần re-pointing-nhãn hoãn có chủ ý, `AuthEvidence` của S-11), và
    nghiên cứu của chính dự án đo được **23 vòng review tìm 20 lỗi và 0
    lỗi bảo mật; 16 vòng chạy tìm 38+ lỗi và 4 lỗi bảo mật** — bản thiết kế là sản phẩm của
    review, nó sẽ sai ở những chỗ chỉ có chạy mới tìm ra.

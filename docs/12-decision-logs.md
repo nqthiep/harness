@@ -1362,6 +1362,75 @@ than making the race merely likely.
 
 ---
 
+### ADR-054 — `harness.mcp` classifies third-party tools itself; hints are a default, never the decision
+
+**Status:** Accepted (M9/T-9.1)
+
+**Context.** `design/03-tools-and-mcp.md §5` specified this in full before any MCP
+integration existed in code — the same "living design, no code yet" situation T-8.3's
+OTel mapping was in. Five review findings sat on hold for exactly this reason
+(`07-risks-and-open-issues.md §1.1`): S-7, S-8, S-9, S-10 (`ServerIdentity`, rug-pull,
+hint-downgrade, `proposed_scope`) and S-17 (description injection). None could be fixed
+before something in `src/harness/` actually called `tools/list` — landing them
+individually earlier would have been patches with no real caller to test against, the
+same anti-pattern ADR-043/047 name for `execute_once`/`Sandbox`.
+
+**Decision.** `harness/mcp/` (an extra — `pyproject.toml`'s `mcp` group, `mcp>=1.9`;
+`import harness` never imports it, ADR-032's rule extended) ships:
+
+- `McpServerPolicy` — operator-held, keyed to a `ServerLabel` (v1: a bare string, no
+  `fingerprint` — K-12's reasoning carried over unchanged: a field whose format never
+  settled has no business in a public type).
+- `classify_mcp_tool(tool, policy, call) -> ToolSpec` — M-1 (untrusted server: hint
+  never participates, `policy.effects` or `default_effect` decide), M-2 (trusted server:
+  hint becomes the default, mapped fail-closed — `readOnlyHint is True` exactly, not
+  "anything but `False`", the bug-for-bug fix chép lại from Microsoft's own
+  `_map_mcp_annotations_to_labels`), M-3 (`accepts_tainted` only from `policy`, never a
+  hint — kept a `McpServerPolicy` field the caller merges into `Agent(accepts_tainted=)`,
+  not something this module wires in on its own, matching how `Grants` already works for
+  local tools). Prefixes every tool name `f"{server}__{tool}"` (through `slug()`) so
+  `ToolSet`'s existing duplicate-name guard can never silently merge two servers' tools
+  of the same protocol name.
+- `connect(session, policy) -> list[ToolSpec]` — calls `tools/list` exactly once, never
+  again on its own initiative. That is §5.4's rug-pull requirement ("phân loại được chốt
+  tại thời điểm bind") implemented as an absence rather than a check: nothing in this
+  module re-lists mid-run, and `ToolSpec` is frozen, so a stale spec is never mutated in
+  place — a fresh `connect()` call is the only way to get a new classification, and it
+  returns wholly new objects.
+- `ToolSpec.server: str | None` (new field, default `None` — every existing construction
+  site is unaffected) and `Scope.server` (existing field, unused until now) now
+  participate in `Scope.matches()`/`DecisionLog.lookup()`: a grant recorded for a tool on
+  server A never satisfies a lookup for the same-named tool on server B. Only the
+  LangGraph backend's `DecisionLog` needed the wiring (`lg/runtime.py`'s three call
+  sites) — the classic backend never persists a `Decision` across calls (S-11's finding,
+  unchanged).
+
+**S-17, closed by documentation, not a filter.** A tool's `description` reaching the
+model before any tool call is not a bug a harness can patch out — that is how
+tool-calling APIs work, and no policy or taint mechanism runs before the first turn.
+`classify_mcp_tool`'s docstring and `McpServerPolicy.trusted`'s fail-closed default
+(§5.3 M-1: an unlisted server gets `DANGER` for everything) are the actual mitigation:
+an operator who has not reviewed a server's tool descriptions has, by construction, not
+granted it anything beyond DANGER-gated tools requiring an ASK on every call.
+
+**S-9's gap stays open, correctly.** `Scope.server` matching stops a grant crossing
+between two DIFFERENT server labels. It does not stop a label being re-pointed at a
+different endpoint while keeping its name — that still needs `ServerIdentity` +
+`fingerprint`, still deferred to when a real re-pointing is observed (K-12).
+
+**Tests.** `tests/test_m9_t91_mcp.py` — hint-mapping table (including the Microsoft `is
+True` bug-compat case, with a mutation restoring `!= False` and showing it misclassifies
+a write tool as read), policy-precedence (override > trusted-hint > untrusted-default,
+each direction), `ToolSpec` construction (name prefix, `server=`, `fn` calling the
+PROTOCOL name not the harness-facing one — mutation confirms a wrong-name `fn` is
+detectable), `CallToolResult` unwrapping (`isError` raises, does not silently succeed),
+`connect()` against a fake `ClientSession` (allowlist filtering, round-trip through
+`call_tool`), and `Scope.server`/`DecisionLog.lookup()` cross-server isolation both as a
+direct unit test and as an `lg/runtime.py::_regate()` integration test — each with a
+mutation restoring the pre-T-9.1 behavior and confirming it goes red.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |

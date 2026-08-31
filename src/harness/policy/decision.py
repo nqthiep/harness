@@ -86,8 +86,14 @@ class Scope:
     call_id: str | None = None
     __hash__ = None                       # giữ một Mapping
 
-    def matches(self, tool: str, args: Mapping[str, Any], *, call_id: str | None) -> bool:
+    def matches(self, tool: str, args: Mapping[str, Any], *, call_id: str | None,
+                server: str | None = None) -> bool:
         if self.tool != tool:
+            return False
+        # T-9.1, design/03 §5.3 M-4: một grant ghi cho tool local (`server=None`) không
+        # bao giờ khớp một lời gọi MCP, và một grant ghi cho server A không khớp lời gọi
+        # tới tool CÙNG TÊN trên server B — so khớp CHẶT, không có ký hiệu "mọi server".
+        if self.server != server:
             return False
         if self.call_id is not None and self.call_id != call_id:
             return False
@@ -154,7 +160,8 @@ class DecisionLog:
         return tuple(self._rows)
 
     def lookup(self, tool: str, args: Mapping[str, Any], *, run_id: str,
-               now: datetime, call_id: str | None = None) -> Verdict:
+               now: datetime, call_id: str | None = None,
+               server: str | None = None) -> Verdict:
         """Hợp thành bằng `max()` — cùng phép với Verdict lattice, cùng lý do.
 
         DENY thắng mọi grant còn hạn mà không cần một luật ưu tiên thứ hai: thu hồi
@@ -164,7 +171,7 @@ class DecisionLog:
         for d in self._rows:
             if d.run_id != run_id or not d.live_at(now):
                 continue
-            if not d.scope.matches(tool, args, call_id=call_id):
+            if not d.scope.matches(tool, args, call_id=call_id, server=server):
                 continue
             worst = d.verdict if worst is None else max(worst, d.verdict)
         return Verdict.ASK if worst is None else worst
