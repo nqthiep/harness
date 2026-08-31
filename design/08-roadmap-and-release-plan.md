@@ -317,3 +317,82 @@ trail cần chịu được kiểm toán bên ngoài.
    sandbox, MCP, Service API, eval harness), khác về bản chất công việc so với "sửa lỗi
    trong code có sẵn" của giai đoạn S-1…S-29 — nhưng không còn là một nhánh rẽ cần hỏi lại
    giữa chừng cho từng milestone.
+---
+
+## 7. Snapshot 2026-08-31 — sau lượt "long-running coding agent" (ADR-061…066)
+
+> Cùng quy ước `## 0`: các mục `## 1`…`## 6` ở trên là hồ sơ lịch sử, giữ nguyên. Mục này
+> là trạng thái THẬT tại thời điểm viết, xác nhận bằng cách chạy `pytest -q` +
+> `tests/test_roadmap.py` + đọc trực tiếp `design/07-risks-and-open-issues.md`, không
+> phải đọc lại văn xuôi cũ.
+
+### 7.1 Việc chưa hoàn thành — đầy đủ, không lọc bớt
+
+**Chặn v1.0, không có cách nào một phiên agent tự làm được (không đổi từ `## 5`):**
+
+| # | Việc | Vì sao không tự làm được |
+|---|---|---|
+| 1 | Pilot 2-4 tuần — cùng model, cùng task set, cùng tool set, cùng security policy | Cần triển khai thật, người dùng thật, dữ liệu nhiều tuần lịch — `docs/17 §6`'s điều kiện cuối cùng |
+
+**Không chặn v1.0, đã được xét (`design/07`) và CHỦ ĐÍCH hoãn — còn sống, chưa sửa:**
+
+| # | Việc | Vì sao hoãn | Việc thật để đóng |
+|---|---|---|---|
+| N-1 | Backend LangGraph không có timeout PER-TOOL (chỉ có wall-clock cấp run) | Ngoài phạm vi T-6.3 (retry khác timeout); cần một lượt riêng | Chép khuôn `dispatch.py`'s `asyncio.timeout(self._e._l.tool_timeout(...))` sang `lg/runtime.py::_run_tools` |
+| N-3 | Backend LangGraph không hỗ trợ `returns=` (`Result.value` luôn `None`) | Ngoài phạm vi T-6.4 (chaos testing, không phải tính năng mới) | Một `finish` node đọc `state["messages"][-1]`, gọi `_parse_returns` tương đương, quyết định graph shape cho nhánh lỗi |
+| N-5 | Retry cấp PROVIDER (`Retry-After`, backoff cho rate-limit/timeout) đã công bố ở `docs/10 §3` nhưng chưa cài | Cần quyết định thiết kế riêng: đọc `Retry-After` từ đâu khi `ProviderRateLimited` hôm nay không mang trường đó | Thêm trường vào `ProviderRateLimited`, viết policy retry cấp model-call (khác T-6.3, vốn là retry cấp TOOL) |
+| N-6 | `model.response` event thiếu `usage`/`latency_ms` so với `docs/05` tự hứa | Phát hiện khi viết OTel exporter, chưa quay lại sửa event gốc | Thêm hai trường vào `EventKind.MODEL_RESPONSE`'s `data=` ở cả `run.py` và `lg/runtime.py::call_model` |
+
+**Tài liệu lệch khỏi code (đã sửa trong lượt trả lời này, không phải nợ mới):** bảng tự
+chấm `docs/17 §1` (dòng Reliability, Observability) vẫn viết S-01 "đỏ" và S-02/S-03/S-14
+"còn mở" — cả bốn đã đóng từ ADR-058/059, trước khi bảng đó được viết. Đã sửa lại nội
+dung ô, KHÔNG đổi điểm (điểm đã ở mức tối đa/gần tối đa của dòng đó từ trước).
+
+**Không chặn v1.0, tự nguyện, chờ bằng chứng sử dụng thật (`## 5`'s v1.x, không đổi):**
+`AuthEvidence` (S-11) đã xây (ADR-060) nhưng việc DÙNG nó (một callback thật xác minh chữ
+ký kênh) là việc của người triển khai, không phải của thư viện.
+
+**Ranh giới phạm vi, không phải nợ (`CODING_AGENT_BLUEPRINT.md`'s "what you still have to
+build") — liệt kê để không ai tưởng nhầm là backlog:** một sandbox container thật (Docker/
+Firecracker) cắm vào seam `Sandbox`; công cụ coding ngoài `CodeTools` (ngôn ngữ khác Python
+cho `outline`, `git_push`, build system, linter); và điều phối nhiều `thread_id`/nhiều
+phiên thành một đơn vị công việc lớn hơn — harness chạy bền MỘT phiên, xâu chuỗi nhiều
+phiên là tầng orchestration của người dùng thư viện, một chủ đích thiết kế (`docs/01 §5`),
+không phải một khoảng trống.
+
+### 7.2 Đã hoàn thành từ lượt trước (không lặp lại nội dung, chỉ điểm danh)
+
+Toàn bộ `S-1…S-29`/`K-1…K-29` (58 phát hiện, `design/07`), `M6…M10` (10/10 sub-task,
+`docs/17`), và sáu hạng mục "coding agent chạy dài" thoả thuận riêng ngoài hai backlog
+trên — `TaskLedger` (ADR-061), stall detector (ADR-062), `DecisionLog` bền qua restart
+(ADR-063), `execute_once` có caller thật (ADR-064), `harness.tools.code` (ADR-065), nén
+context thật (ADR-066). 682 test xanh, ruff/mypy sạch trên mọi tệp đã đụng.
+
+### 7.3 Roadmap tới đây
+
+Không có milestone MỚI nào được đặt lịch — đúng luật `## 5`'s v1.x ("chờ bằng chứng sử
+dụng thật, không phải một v1.1 định sẵn ngày"). Thứ tự đề xuất nếu có người tiếp tục,
+[Inference: ưu tiên theo mức rủi ro/công sức tôi tự đánh giá, không phải một quyết định đã
+chốt]:
+
+1. **N-6** (thêm hai trường event) — nhỏ nhất, không rủi ro, mở khoá được OTel attribute
+   đang thiếu dữ liệu.
+2. **N-1** (timeout per-tool trên graph) — rủi ro an toàn thật (một tool treo vô thời hạn
+   trên backend graph), khuôn sửa đã có sẵn ở backend kia.
+3. **N-3** (`returns=` trên graph) — công sức lớn hơn (một node graph mới), không phải lỗ
+   hổng an toàn, chỉ là thiếu tính năng.
+4. **N-5** (retry cấp provider) — cần quyết định thiết kế trước khi cài (đọc `Retry-After`
+   từ đâu); không làm vội.
+5. **Pilot 2-4 tuần** — điều kiện DUY NHẤT cho nhãn v1.0, độc lập với thứ tự 1-4 ở trên,
+   và là việc của người vận hành, không phải của một phiên code.
+
+### 7.4 Release plan
+
+- **v0.x (hiện tại):** thư viện đầy đủ tính năng theo `docs/17`, chưa gắn nhãn v1.0 vì
+  pilot chưa chạy. An toàn để dùng nội bộ/thử nghiệm; KHÔNG có bằng chứng production ngoài
+  test qua `FakeModel`.
+- **v1.0:** gắn nhãn khi VÀ CHỈ KHI pilot 2-4 tuần (`## 5`) hoàn tất và báo cáo lại — không
+  có đường tắt nào khác, kể cả N-1/N-3/N-5/N-6 đóng hết cũng không thay thế điều kiện này.
+- **v1.x:** N-1/N-3/N-5/N-6 (theo thứ tự `## 7.3` hoặc theo nhu cầu pilot lộ ra),
+  `AuthEvidence` nếu deployment cần audit chịu kiểm toán ngoài, và bất kỳ khoảng trống nào
+  pilot tự phát hiện — **thêm vào sau khi có bằng chứng, không đoán trước.**
