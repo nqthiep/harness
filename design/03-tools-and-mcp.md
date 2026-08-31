@@ -403,7 +403,13 @@ async def call_with_effect_log(
    - **Mọi exception khác giữ nguyên `in_flight`.** Đây là điểm quan trọng nhất của mục này:
      không biết thì không giải phóng.
 
-**Bất biến I-1 (thứ tự):** effect log ghi **trước** khi tool chạy; checkpoint ghi **sau** khi
+**Bất biến IDEM-1 (thứ tự)** — đổi tên từ `I-1` gốc (K-13, `07-risks-and-open-issues.md`
+§1.5): số `I-1` đã bị `docs/02-architecture.md §2.3` dùng cho một bất biến KHÁC hẳn (budget
+reservation trước mỗi lời gọi model — cũng là ý `design/04 §3.3`'s "Bất biến I-1" dùng,
+viết trước khi có `docs/02`, cùng nghĩa). Bất biến NÀY nói về thứ tự ghi effect
+log/checkpoint cho idempotency (T-6.1, chưa xây trong `src/harness/`), không liên quan gì
+tới budget — hai khái niệm khác nhau tình cờ trùng số. `IDEM-1`: effect log ghi **trước**
+khi tool chạy; checkpoint ghi **sau** khi
 tool xong. Nên mọi cửa sổ hỏng đều nghiêng về phía an toàn: crash sau khi commit effect log mà
 trước khi checkpoint → resume sinh lại đúng key, gặp `committed`, trả kết quả đã lưu, không
 chạy lại. Đảo thứ tự là mất tính chất đó.

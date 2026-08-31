@@ -452,7 +452,11 @@ Hai quy tắc, phát biểu gọn:
   **bên trong** handler. Một `Retry` gọi handler ba lần thì reserve ba lần, ghi audit ba
   lần. Retry không dodge được ngân sách.
 
-**Tính chất P-3 (plugin chỉ làm yếu đi).** Với mọi danh sách plugin `P`, tập tác dụng phụ
+**Tính chất PLUG-1 (plugin chỉ làm yếu đi)** — đổi tên từ `P-3` gốc (K-13,
+`07-risks-and-open-issues.md` §1.5): số `P-3` va chạm với `design/02 §1.2`'s P-3 riêng
+("fail closed khi policy ném lỗi", nay `POL-3`) và `docs/09-testing.md`'s P-3 riêng
+(property-test ID, "mỗi `tool_use` đúng một `tool_result`") — ba nghĩa khác nhau, cùng
+một số. `PLUG-1`: với mọi danh sách plugin `P`, tập tác dụng phụ
 mà một run thực hiện được khi cài `P` là **tập con** của tập khi không cài gì. Plugin có
 thể bỏ qua, không thể nới rộng. Chứng minh được bằng property-based test, cùng cách P-2
 được chứng minh ([`00`](00-foundation.md) §3.1) — vì lý do ở R-2: 23 vòng review tìm ra

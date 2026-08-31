@@ -10,7 +10,11 @@ thành một danh sách, vì tới hôm nay không tệp nào đọc chung cả 
 
 ## 0. Tình trạng hiện tại, tóm tắt trung thực
 
-- **359 test xanh**, ruff/mypy sạch trên mọi tệp đã đụng, mọi `examples/*.py` chạy được.
+*(Cập nhật sau khi M6, M7, M8, và K-13's phần còn lại đều đã XONG — xem `## 3` cho việc còn
+lại, `## 4`/`## 5` cho thứ tự và điều kiện release.)*
+
+- **502 test xanh**, `ruff check .` sạch, mypy sạch (qua `test_conformance.py`), mọi
+  `examples/*.py` chạy được — kiểm lại lần cuối cùng lượt K-13.
 - **Toàn bộ 58 phát hiện của hai vòng review (S-1…S-29, K-1…K-29) đã được xét qua** —
   không có nghĩa "đã sửa hết". Phân loại thật:
   - **Đã sửa bằng code, có test + mutation test:** phần lớn S-2…S-29 còn lại
@@ -24,12 +28,20 @@ thành một danh sách, vì tới hôm nay không tệp nào đọc chung cả 
     S-28's phần tài liệu.
   - **Sửa được một phần, phần còn lại cần thiết kế mới:** S-11 (kênh `Approval` xong,
     `AuthEvidence` thật thì chưa).
-  - **CÒN SỐNG, chưa sửa:** S-4 (xem `## 2`; chờ M6/idempotency để re-verify).
-  - **Hoãn có chủ ý, chờ hạ tầng chưa tồn tại:** S-7…S-10, S-17 (chờ M9/MCP); K-13's va
-    chạm `P-`/`I-` (chờ một lượt riêng, đụng cả code lẫn `docs/*.md` sống).
-- **Toàn bộ M6…M10 của `docs/17-research-alignment.md` (idempotency, isolation/sandbox,
-  observability envelope v1, MCP, Service API, evaluation) chưa có DÒNG CODE NÀO** — kiểm
-  lại bằng `grep` hôm nay, không phải bằng đọc lại tài liệu cũ (xem `## 3.2`).
+  - **CÒN SỐNG, chưa sửa:** S-4 (xem `## 2`; chờ M6/idempotency để re-verify — M6 đã xong,
+    re-verify vẫn chưa làm, xem `## 3.1`).
+  - **Hoãn có chủ ý, chờ hạ tầng chưa tồn tại:** S-7…S-10, S-17 (chờ M9/MCP — chưa tới lượt).
+  - **K-13's va chạm `P-`/`I-` — ĐÃ SỬA XONG (hai lượt)**, xem `07 §1.3`. Không còn mục nào
+    của K-13 ở trạng thái hoãn.
+- **M6 (Reliability), M7 (Isolation), M8 (Observability) đều ĐÃ XONG** (4/4, 4/4, 6/6
+  sub-task) — xem `## 3.2`. Bốn phát hiện phụ tự bắt lúc làm các milestone này vẫn CHƯA
+  sửa, ghi lại làm N-series, độc lập với milestone đã đóng: **N-1** (LangGraph không có
+  timeout per-tool), **N-3** (LangGraph không hỗ trợ `returns=`), **N-5** (retry cấp
+  provider công bố ở docs/10 §3 nhưng chưa cài), **N-6** (`model.response` thiếu
+  `usage`/`latency_ms`).
+- **M9 (Integration) và M10 (Evaluation) chưa có DÒNG CODE NÀO** — kiểm lại bằng `grep`
+  hôm nay, không phải bằng đọc lại tài liệu cũ (xem `## 3.2`). Đây là hai việc lớn còn lại
+  trước khi có thể tự chấm lại theo `docs/17`.
 
 ---
 
@@ -144,7 +156,7 @@ không cần code hay test mới — cả ba đã "đóng" theo đúng nghĩa "�
 | **S-17** | Injection qua `description` tool MCP trước lời gọi đầu | Cùng lý do trên | M9 (T-9.1) |
 | **S-23** | `call_key` domain separator cho idempotency | Cơ chế chưa tồn tại (giống S-4) | M6 (T-6.1) |
 | **S-11 (phần còn lại)** | `AuthEvidence` — xác thực người duyệt thật, không chỉ tự khai | Cần mô hình xác thực riêng, chưa thiết kế | Độc lập, ưu tiên theo nhu cầu deployment thật |
-| **K-13 (phần còn lại)** | Va chạm namespace `P-`/`I-` giữa `01`/`02`/`docs/09` và `04`/`05` | Rộng hơn ước lượng ban đầu — đụng cả `src/harness/policy/*.py` (comment trích `P-2`/`P-4`) lẫn 7+ tệp `docs/*.md` sống (`docs/09-testing.md`'s property-test-ID series) | Không phụ thuộc gì, nhưng cần một lượt riêng, cẩn thận |
+| ~~**K-13 (phần còn lại)**~~ | ~~Va chạm namespace `P-`/`I-` giữa `01`/`02`/`docs/09` và `04`/`05`~~ | **ĐÃ SỬA** — `01`'s `P-3`→`PLUG-1`, `02`'s `P-1`/`P-3`/`P-4`→`POL-1`/`POL-3`/`POL-4` (`P-2` giữ nguyên, không va chạm thật), `03`'s `I-1` gốc (idempotency)→`IDEM-1`, `04`'s "bất biến thay thế I-1/I-2" bỏ chữ "thay thế", chú thích chéo tới `docs/02 §2.3`; sửa kéo theo `src/harness/policy/builtin.py` + `design/06`. Xem `07 §1.3` | — |
 
 ### 3.2 Tính năng/trưởng thành còn thiếu (từ `docs/17-research-alignment.md`, M6…M10)
 
@@ -156,7 +168,7 @@ trong `src/harness/`:**
 |---|---|---|---|
 | **M6 — Reliability** | 12% × gap 2/5 | Idempotency key, cancellation đúng chuẩn (không nuốt `CancelledError`), retry theo effect class, failure injection | **XONG (4/4 sub-task, theo đúng nghĩa "Done" mỗi task tự đặt ra).** T-6.2 (cancellation) — `tests/test_m6_t62_cancellation.py`. T-6.3 (retry theo effect class, cả hai backend) — `tests/test_m6_t63_retry.py`, 8 test. T-6.1 (idempotency) — contract `execute_once` xong và khoá bằng `tests/test_m6_t61_idempotency.py` (8 test), CHỦ ĐÍCH chưa gắn vào `Agent`/`Dispatcher`/`Runtime` (ADR-043 — không có caller thật cho tới M9). T-6.4 (chaos) — `harness.testing.chaos` (5 kịch bản: provider timeout, tool raise, store chết, policy raise, model trả rác) + `tests/test_m6_t64_chaos.py` (9 test); viết kịch bản chaos lộ ra **hai lỗi thật, cả hai đã sửa ngay trong lượt này** — N-2 (`try_run()` raise `ToolContractError` không bắt khi `returns=` sai) và **N-4 (nghiêm trọng hơn): lỗi provider — timeout, rate limit — crash thẳng ra ngoài `try_run()`/`graph.invoke()`, KHÔNG có `except` nào bắt ở CẢ HAI backend, trước bản vá này** (ADR-044, `docs/12`). Hai phát hiện phụ ghi lại, CHƯA sửa (ngoài phạm vi M6): **N-1** — LangGraph không có timeout per-tool; **N-3** — LangGraph không hỗ trợ `returns=` (`Result.value` luôn `None`). |
 | **M7 — Isolation** | 15% × gap — **nặng ký nhất theo trọng số nghiên cứu** | Workspace root, egress mặc định CHẶN (đảo `allowed_hosts=None` từ "cho tất cả" sang "chặn tất cả" — breaking change), seam `Sandbox`, secret không vào sandbox | **XONG (4/4 sub-task).** T-7.1 (workspace root) — `workspace.py::confine`, `tests/test_m7_t71_workspace.py` (14 test, ADR-045). T-7.2 (egress mặc định chặn, breaking change có chủ đích) — `allowed_hosts` mặc định `None`→`()`, `None` tường minh vẫn escape hatch, `tests/test_m7_t72_egress_default.py` (6 test), ADR-046 giải thích vì sao không làm chu kỳ deprecation nhiều phiên bản. T-7.3+T-7.4 (seam `Sandbox`, secret không vào sandbox) — `sandbox.py`: `Protocol Sandbox`, hai cài đặt `InProcess`/`Subprocess` (env sạch, không kế thừa `os.environ`, `Secret` object bị từ chối tường minh), seam THỨ SÁU đạt phép thử 3 phần `§02.4` (bảng ở `docs/02-architecture.md` đã cập nhật), ADR-047. KHÔNG gắn vào `Agent`/`dispatch.py` — chủ đích, cùng lý do T-6.1 (ADR-043): chưa có tool nào trong codebase cần chạy shell command, gắn dây bây giờ là surface không ai dùng. Khoá bằng `tests/test_m7_t73_t74_sandbox.py` (14 test, gồm bản cài đặt bên thứ ba đúng khuôn `proof.py §I.1`, cộng red-team test secret-không-lộ, mutation-tested). |
-| **M8 — Observability** | 10% × gap | Envelope v1 (`schema_version`/`trace_id`/`tenant_id`), `Approval` là bản ghi đầy đủ, OTel exporter thật, cost-per-successful-task, event stream tiêu thụ được, `Session` resource | **Đang làm.** T-8.1 (envelope v1) ĐÃ XONG — ADR-048, `tests/test_m8_t81_envelope.py` (12 test). T-8.2 (Approval là bản ghi) ĐÃ XONG — chỉ thiếu `policy_version`, hai tiêu chí "Failure"/"Test" T-8.2 tự đặt hoá ra đã đúng sẵn, ADR-049, `tests/test_m8_t82_approval_record.py` (7 test). Sẵn tiện sửa lỗi tài liệu: `docs/04` gọi nhầm `Ruling` là `Decision`. T-8.3 (OTel exporter) ĐÃ XONG — `observe/otel.py::OtelExporter`, đọc `docs/10-observability-ops.md §2` (mapping đã công bố sẵn TRƯỚC bản nháp đầu, phải sửa lại theo đúng bảng đó) thay vì tự bịa tên span/attribute; xử lý đúng thứ tự `policy.decided` phát TRƯỚC `tool.started` bằng buffer-rồi-flush; hai lỗi thật tự bắt (parse `$`-prefixed `cost_usd`, một xung đột tên biến làm mypy từ chối sai); metrics thật (`harness.run.cost`, `.steps`, `harness.tool.duration`, `.cache.hit_ratio`, `harness.policy.denials`) qua OTel Meter thật. ADR-050. `tests/test_m8_t83_otel.py` (16 test, SDK OTel thật không mock, cả hai backend, mutation-tested). Hai phát hiện phụ ghi lại khi đọc docs/10, CHƯA sửa: **N-5** — retry cấp provider (rate limit/timeout) đã công bố ở docs/10 §3 nhưng chưa cài; **N-6** — event `model.response` thiếu `usage`/`latency_ms` so với `docs/05` tự hứa, khiến một phần attribute/metric của chính OTel exporter không có dữ liệu để đọc. T-8.4 (cost-per-success) ĐÃ XONG — `harness.eval.cost_per_success(runs)` (gói mới `harness/eval/`, chuẩn bị chỗ cho M10's `harness.eval.*`), `total_cost / P(thành công)`, khoảng tin cậy Wilson-scored (không phải xấp xỉ chuẩn — sai ở n nhỏ/tỉ lệ cực đoan, đúng miền một golden set nhỏ hay gặp), `cost_per_success_usd=None` (không phải 0 hay inf) khi 0 thành công. ADR-051, `tests/test_m8_t84_cost_per_success.py` (12 test, mutation-tested). T-8.5 (event stream) ĐÃ XONG — `Agent.stream(message, on_delta=None)`, async generator yield `Event` thật (16 kind, envelope v1 đầy đủ) qua một exporter riêng dùng `with_()` gắn thêm (không mutate, ADR-004); `on_delta=` giữ nguyên là cơ chế delta text riêng, không gộp vào stream; mọi phân biệt T-8.5 đòi (tool-call/tool result/approval/retry/cancellation/final) đã có sẵn trên taxonomy hiện tại, không cần kind mới. ADR-052. **Phát hiện phụ khi viết test transcript cho `stream()`, ĐÃ SỬA NGAY: N-7** — `Agent.with_()` âm thầm làm mất `transcript`/`exporters`/`accepts_tainted`/`sensitive` ở MỌI lời gọi (không phải lỗi riêng của `stream()` — bất kỳ ai gọi `with_()` cũng gặp). `tests/test_m8_t85_stream.py` (8 test) + `tests/test_n7_with_preserves_fields.py` (7 test), cả hai mutation-tested. T-8.6 (`Session` resource) ĐÃ XONG — `harness/session.py::Session` bọc `Chat` (không xây lại state isolation Round 37 đã có), id/owner/TTL/`fork()`/`resume_from()` (bọc `Agent.resume()` có sẵn, không phải resume phong phú hơn) + `threading.Lock` cho ranh giới đồng thời (không phải `asyncio.Lock` — khớp `Chat.say()` vốn đồng bộ). Chủ đích CHỈ cho backend cổ điển — LangGraph's `thread_id` đã là session primitive của nó (T-8.1). Test đua tất định (không dựa timing may rủi) chứng minh khoá thật sự cần thiết. ADR-053, `tests/test_m8_t86_session.py` (13 test, mutation-tested). **M8 hoàn thành 6/6 sub-task.** |
+| **M8 — Observability** | 10% × gap | Envelope v1 (`schema_version`/`trace_id`/`tenant_id`), `Approval` là bản ghi đầy đủ, OTel exporter thật, cost-per-successful-task, event stream tiêu thụ được, `Session` resource | **XONG (6/6 sub-task).** T-8.1 (envelope v1) ĐÃ XONG — ADR-048, `tests/test_m8_t81_envelope.py` (12 test). T-8.2 (Approval là bản ghi) ĐÃ XONG — chỉ thiếu `policy_version`, hai tiêu chí "Failure"/"Test" T-8.2 tự đặt hoá ra đã đúng sẵn, ADR-049, `tests/test_m8_t82_approval_record.py` (7 test). Sẵn tiện sửa lỗi tài liệu: `docs/04` gọi nhầm `Ruling` là `Decision`. T-8.3 (OTel exporter) ĐÃ XONG — `observe/otel.py::OtelExporter`, đọc `docs/10-observability-ops.md §2` (mapping đã công bố sẵn TRƯỚC bản nháp đầu, phải sửa lại theo đúng bảng đó) thay vì tự bịa tên span/attribute; xử lý đúng thứ tự `policy.decided` phát TRƯỚC `tool.started` bằng buffer-rồi-flush; hai lỗi thật tự bắt (parse `$`-prefixed `cost_usd`, một xung đột tên biến làm mypy từ chối sai); metrics thật (`harness.run.cost`, `.steps`, `harness.tool.duration`, `.cache.hit_ratio`, `harness.policy.denials`) qua OTel Meter thật. ADR-050. `tests/test_m8_t83_otel.py` (16 test, SDK OTel thật không mock, cả hai backend, mutation-tested). Hai phát hiện phụ ghi lại khi đọc docs/10, CHƯA sửa: **N-5** — retry cấp provider (rate limit/timeout) đã công bố ở docs/10 §3 nhưng chưa cài; **N-6** — event `model.response` thiếu `usage`/`latency_ms` so với `docs/05` tự hứa, khiến một phần attribute/metric của chính OTel exporter không có dữ liệu để đọc. T-8.4 (cost-per-success) ĐÃ XONG — `harness.eval.cost_per_success(runs)` (gói mới `harness/eval/`, chuẩn bị chỗ cho M10's `harness.eval.*`), `total_cost / P(thành công)`, khoảng tin cậy Wilson-scored (không phải xấp xỉ chuẩn — sai ở n nhỏ/tỉ lệ cực đoan, đúng miền một golden set nhỏ hay gặp), `cost_per_success_usd=None` (không phải 0 hay inf) khi 0 thành công. ADR-051, `tests/test_m8_t84_cost_per_success.py` (12 test, mutation-tested). T-8.5 (event stream) ĐÃ XONG — `Agent.stream(message, on_delta=None)`, async generator yield `Event` thật (16 kind, envelope v1 đầy đủ) qua một exporter riêng dùng `with_()` gắn thêm (không mutate, ADR-004); `on_delta=` giữ nguyên là cơ chế delta text riêng, không gộp vào stream; mọi phân biệt T-8.5 đòi (tool-call/tool result/approval/retry/cancellation/final) đã có sẵn trên taxonomy hiện tại, không cần kind mới. ADR-052. **Phát hiện phụ khi viết test transcript cho `stream()`, ĐÃ SỬA NGAY: N-7** — `Agent.with_()` âm thầm làm mất `transcript`/`exporters`/`accepts_tainted`/`sensitive` ở MỌI lời gọi (không phải lỗi riêng của `stream()` — bất kỳ ai gọi `with_()` cũng gặp). `tests/test_m8_t85_stream.py` (8 test) + `tests/test_n7_with_preserves_fields.py` (7 test), cả hai mutation-tested. T-8.6 (`Session` resource) ĐÃ XONG — `harness/session.py::Session` bọc `Chat` (không xây lại state isolation Round 37 đã có), id/owner/TTL/`fork()`/`resume_from()` (bọc `Agent.resume()` có sẵn, không phải resume phong phú hơn) + `threading.Lock` cho ranh giới đồng thời (không phải `asyncio.Lock` — khớp `Chat.say()` vốn đồng bộ). Chủ đích CHỈ cho backend cổ điển — LangGraph's `thread_id` đã là session primitive của nó (T-8.1). Test đua tất định (không dựa timing may rủi) chứng minh khoá thật sự cần thiết. ADR-053, `tests/test_m8_t86_session.py` (13 test, mutation-tested). **M8 hoàn thành 6/6 sub-task.** |
 | **M9 — Integration** | 8% × gap 3/5 — **khoảng trống lớn nhất theo tự chấm** | MCP client làm tool boundary, Service API (`POST /v1/runs`...), canonical event adapter | `grep -rl mcp src/` → chỉ comment. Không route HTTP nào. |
 | **M10 — Evaluation** | 12% (phần Testability còn thiếu) | Trajectory contract khai báo được, golden set + pass rate có khoảng tin cậy, benchmark p50/p95/throughput | Không có. |
 
@@ -176,11 +188,11 @@ ngày đo được nhu cầu thật — không đưa vào roadmap dưới đây.
 ## 4. Roadmap — thứ tự đề xuất, và vì sao
 
 ```
-S-20 ──► M6 ──► M7 ──► M8 ──► M9 ──► M10
-(ĐÃ XONG)  Reliability  Isolation    Observ.      Integration   Eval
-           + S-4/S-23   + M7 đảo     + K-13       + S-7…S-10    + trajectory
-           (idempotency) egress-deny  namespace    /S-17/S-23-  contract
-                                                    MCP-part
+S-20 ──► M6 ──► M7 ──► M8 ──► K-13 ──► M9 ──► M10
+(ĐÃ XONG)  Reliability  Isolation    Observ.   (ĐÃ XONG)  Integration   Eval
+           + S-4/S-23   + M7 đảo     6/6                  + S-7…S-10    + trajectory
+           (idempotency) egress-deny sub-task             /S-17/S-23-  contract
+                                                            MCP-part
 ```
 
 **S-20 trước tất cả — ĐÃ XONG.** Không phụ thuộc gì, sửa nhanh (một sự kiện cảnh báo, đúng
@@ -199,9 +211,10 @@ patch riêng, mà xây đúng cơ chế rồi kiểm S-4/S-23 lại trên nó).
 Isolation là mở rộng bề mặt tấn công trước khi dựng tường — cảnh báo này đã có sẵn trong
 `docs/17`. M7 cũng có trọng số × khoảng trống CAO NHẤT (15% × gap) trong toàn bộ M6…M10.
 
-**K-13's phần còn lại chen vào trước M9.** Không phụ thuộc M6/M7, nhưng đáng làm trước khi
-MCP tới — MCP sẽ cần đặt tên invariant mới của riêng nó (rug-pull, re-list) và dọn namespace
-trước sẽ tránh chồng thêm một namespace thứ ba lên hai cái đã va chạm.
+**K-13's phần còn lại chen vào trước M9 — ĐÃ XONG.** Không phụ thuộc M6/M7, làm trước khi
+MCP tới đúng như dự tính — MCP sẽ cần đặt tên invariant mới của riêng nó (rug-pull, re-list)
+và dọn namespace trước tránh chồng thêm một namespace thứ ba lên hai cái đã va chạm. Xem
+`07 §1.3` cho chi tiết từng số đổi.
 
 **M9 đóng được S-7…S-10, S-17, phần MCP của S-23 CÙNG LÚC.** Đây là lý do bốn phát hiện đó
 bị hoãn thay vì bị vá non — landing `T-9.1` (MCP client làm tool boundary, `ServerIdentity`,
@@ -242,7 +255,7 @@ còn im lặng.
   S-23 hoặc đã tự đóng (đúng cách, qua M6/M9) hoặc lộ ra là VẪN sống trên hạ tầng mới và
   cần một bản vá riêng — cả hai đều phải được xác nhận, không được để mặc định là "chắc
   ổn."
-- K-13's va chạm namespace đã dọn (không phụ thuộc gì khác, chỉ là kỷ luật).
+- K-13's va chạm namespace đã dọn (không phụ thuộc gì khác, chỉ là kỷ luật) — **ĐÃ XONG**.
 - `AuthEvidence` cho S-11: **không phải điều kiện bắt buộc cho v1.0** trừ khi deployment
   mục tiêu cần audit trail chịu được kiểm toán bên ngoài — ghi rõ trong changelog là giới
   hạn đã biết, theo đúng luật §45 ("thà nói 'chưa đủ evidence' còn hơn đoán") thay vì âm

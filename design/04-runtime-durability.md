@@ -265,7 +265,11 @@ checkpoint và chạy tiếp **từ node `tools`** — không phải một đư�
 trước, hoặc đã bị thu hồi bằng `Decision(verdict=DENY)` ghi trong lúc pause, mà tool vẫn
 chạy. Mất **cùng lúc** TTL (02 §2.5), thu hồi (02 §2.4 D-2) và R-2 — và mất **im lặng**.
 
-> **Bất biến thay thế I-1.** *Gate là tiền điều kiện tại chỗ tiêu thụ, không phải một cạnh.*
+> **Bất biến I-1** (K-13: đúng số với `docs/02-architecture.md §2.3`'s I-1 — bản nháp
+> này viết trước, dùng chữ khác, nhưng tả cùng một bất biến; không phải "thay thế" một
+> I-1 nào khác — I-1 GỐC của [`03`](03-tools-and-mcp.md §4.4) là một bất biến khác hẳn
+> [idempotency, effect-log/checkpoint], đã đổi tên thành `IDEM-1` để hết va chạm).
+> *Gate là tiền điều kiện tại chỗ tiêu thụ, không phải một cạnh.*
 > Node `tools` gọi `DecisionLog.lookup(call, run_id, now=clock())` **ngay trước từng lời gọi**
 > và fail-closed nếu kết quả không còn `ALLOW`. Node `policy` vẫn tồn tại — nó là chỗ *hỏi*
 > — nhưng quyền được kiểm lại ở chỗ *dùng*. Một tra cứu thừa trên đường đi thuận là cái giá
@@ -280,7 +284,8 @@ chính, nên lời gọi tóm tắt tiêu **ngoài** trần. Kẻ tấn công ch
 lượt sinh thêm một model call không có ceiling — tức đẩy thẳng vào khuyết điểm #4 mà bản
 thiết kế tuyên bố sửa.
 
-> **Bất biến thay thế I-2.** *Không lời gọi `ModelProvider` nào chạy mà không có
+> **Bất biến I-2** (đúng số với `docs/02-architecture.md §2.3`'s I-2, cùng lý do trên).
+> *Không lời gọi `ModelProvider` nào chạy mà không có
 > `Reservation` đang mở.* Cưỡng chế ở **seam**, không ở tên node: `ModelProvider` được bọc
 > một lần trên đường đi bắt buộc, và wrapper raise nếu `ctx.reservation is None`. Kiểm ở
 > tầng seam bắt được mọi lời gọi bất kể nó phát ra từ node nào, kể cả node do plugin thêm.

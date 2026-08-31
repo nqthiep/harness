@@ -361,24 +361,43 @@ LÚC OTel thật được xây, xây đúng bốn ngay từ đầu.
 > hoãn (`## 1.1`). Thêm lại `ServerIdentity`/`fingerprint` khi quan sát được một lần
 > re-pointing thật.
 
-> **K-13 SỬA MỘT PHẦN.** Ba trong bốn va chạm mã có phạm vi gọn, chỉ nằm trong đúng hai
-> tệp `design/*.md`, không đụng `src/harness/` hay `docs/*.md` — đổi tên an toàn: `03 §6.3`
-> bốn luật cancel `C-1…4` → `CAN-1…4`; `05 §A.1` bốn bất biến cost `C-1…4` → `COST-1…4`;
-> `05` "Luật đọc" (memory) `R-1…3` → `MEM-R1…3`, giữ nguyên `00-foundation.md §5 R-1…4` (toàn
-> cục, không đổi). Còn lại KHÔNG sửa, và hoá ra RỘNG hơn K-13 mô tả: va chạm `P-` không chỉ
-> hai namespace (`01` plugin, `02` policy) mà BA — `docs/09-testing.md` có hẳn một series
-> `P-1…P-10` (property test ID) được `docs/00-council.md`, `docs/08-poka-yoke.md`,
-> `docs/09-testing.md`, `docs/11-implementation-plan.md`, `docs/12-decision-logs.md`,
-> `docs/13-risk-register.md`, `docs/14-validation-plan.md` tham chiếu vài chục lần — đó rõ
-> ràng là namespace THẬT, đang sống, không phải bản nháp. Và `02`'s `P-1…4` (policy) được
-> chính `src/harness/policy/{base,engine,builtin}.py` trích trong comment. Đổi bất kỳ series
-> nào trong ba cũng kéo theo sửa code hoặc sửa 7+ tệp `docs/` — vượt xa phạm vi một lần dọn
-> `design/*.md`. Tương tự, va chạm `I-1`/`I-2` (`04`, "gate là tiền điều kiện tại chỗ tiêu
-> thụ" — invariant chính bản thân `04` gọi là "bất biến THAY THẾ I-1", tự thú đang dùng lại
-> số của `03 §4.4`'s I-1 khác hẳn) và `I-3` (`05`, pairing tool_call/tool_result) đều đã là
-> từ vựng sống trong `dispatch.py`, `lg/runtime.py`, `context/window.py`, và nhiều
-> `tests/test_attack_*.py` của CHÍNH bản vá phiên này — đổi sẽ là một PR tách riêng, không
-> phải phần của lượt dọn KISS này. Để nguyên, ghi lại đây cho lần sau.
+> **K-13 ĐÃ SỬA (hai lượt).** Lượt 1: ba va chạm mã phạm vi gọn, chỉ nằm trong đúng hai tệp
+> `design/*.md`, không đụng `src/harness/` hay `docs/*.md` — đổi tên an toàn: `03 §6.3` bốn
+> luật cancel `C-1…4` → `CAN-1…4`; `05 §A.1` bốn bất biến cost `C-1…4` → `COST-1…4`; `05`
+> "Luật đọc" (memory) `R-1…3` → `MEM-R1…3`, giữ nguyên `00-foundation.md §5 R-1…4` (toàn cục,
+> không đổi).
+>
+> Lượt 2 (phiên này) dọn nốt phần `P-`/`I-` mà lượt 1 để lại, sau khi xác minh lại qua
+> `docs/*.md` VÀ `src/harness/**/*.py` (không chỉ `design/*.md`) để biết số nào đang SỐNG
+> trong code/docs thật, số nào chỉ là bản nháp — theo đúng kỷ luật "verify trước khi sửa"
+> của toàn phiên:
+>
+> - `docs/09-testing.md`'s `P-1…P-10` (property-test-ID) là namespace sống nhất — 7+ tệp
+>   `docs/*.md` tham chiếu — **giữ nguyên, không đổi**, làm mốc neo.
+> - `design/00-foundation.md §3.1`'s `P-2` ("thêm policy không bao giờ nới verdict") và
+>   `design/02`'s `P-2` cùng mô tả MỘT tính chất (không phải va chạm thật, chỉ là cùng một
+>   fact được trích ở hai nơi) — **giữ nguyên `P-2`** ở cả hai, kể cả trong
+>   `src/harness/policy/{base,engine}.py`'s docstring/comment.
+> - `design/02`'s `P-1`, `P-3`, `P-4` (ba bất biến còn lại của policy engine) → đổi thành
+>   `POL-1`, `POL-3`, `POL-4`. Kéo theo sửa comment trích dẫn trong
+>   `src/harness/policy/builtin.py` (hai chỗ, `TaintPolicy`/`EgressPolicy`) và tham chiếu
+>   trong `design/06-poka-yoke-matrix.md` hàng #2.
+> - `design/01`'s `P-3` (plugin chỉ làm yếu đi) → `PLUG-1` — va chạm với `design/02`'s `P-3`
+>   gốc (nay `POL-3`) VÀ với `docs/09`'s `P-3` riêng (một property test khác hẳn).
+> - `design/03 §4.4`'s `I-1` gốc (idempotency, thứ tự effect-log/checkpoint — miền của
+>   T-6.1, chưa xây trong code) → `IDEM-1`. Xác minh qua grep: `dispatch.py`, `lg/runtime.py`
+>   trích "I-1" theo nghĩa của `docs/02-architecture.md §2.3` (gate-là-tiền-điều-kiện), NGHĨA
+>   ĐÓ mới là bên đang sống trong code — nên `03`'s I-1 là bên phải đổi, không phải ngược lại.
+> - `design/04`'s "bất biến THAY THẾ I-1/I-2" hoá ra KHÔNG va chạm thật: đó chỉ là bản nháp
+>   sớm hơn, diễn đạt khác, của cùng bất biến mà `docs/02-architecture.md §2.3` sau này viết
+>   gọn lại — không "thay thế" gì cả một khi `03`'s I-1 gốc đã đổi tên đi. Sửa bằng cách bỏ
+>   chữ "thay thế", thêm chú thích tham chiếu chéo tới `docs/02 §2.3`, giữ nguyên số `I-1`/
+>   `I-2`.
+> - `design/05`'s `I-3` (pairing tool_call/tool_result) — xác nhận không va chạm, không đổi.
+>
+> Đã chạy `python -m pytest -q` (502 passed), `ruff check .` (sạch), và toàn bộ
+> `examples/*.py` sau lượt 2 — đây chỉ là đổi văn xuôi/comment, không đổi hành vi, nên xanh
+> là kỳ vọng, không phải bất ngờ, nhưng vẫn xác minh theo đúng kỷ luật của phiên.
 >
 > **K-22 ĐÃ SỬA.** `01 §1` tuyên bố "toàn bộ bề mặt là 14 tên, một import" rồi chính ví dụ
 > Mức 3 trong CÙNG tệp `import` 20 tên từ 4 module — tự mâu thuẫn. Sửa bằng cách nói đúng
@@ -640,14 +659,14 @@ Từ sáu tệp thiết kế, không lặp lại lý lẽ:
    trong design doc. Xem `## 1.3`.
 5. **`Ledger.void()`, S-16/S-19/S-3 trên backend cổ điển, S-15 trên backend cổ điển —
    ĐÃ KIỂM, KHÔNG THÊM.** Cả ba được xét kỹ; xem `## 1.1` cho từng cái.
-6. **K-11, K-12, K-22, K-28 — XONG; K-13 — MỘT PHẦN.** Toàn bộ văn xuôi trong `design/*.md`,
-   không đụng `src/harness/`. K-13 chỉ đổi được ba trong bốn va chạm mã (phạm vi gọn, hai
-   tệp); va chạm `P-`/`I-` để nguyên vì hoá ra RỘNG hơn ước lượng ban đầu — đụng cả code lẫn
-   `docs/*.md` sống, xứng một lượt riêng chứ không phải phụ lục của lượt này. Xem `## 1.3`.
+6. **K-11, K-12, K-22, K-28, K-13 — XONG.** Toàn bộ văn xuôi trong `design/*.md`, cộng một
+   lượt riêng (lượt 2, phiên roadmap) dọn nốt va chạm `P-`/`I-` mà lượt 1 để lại — đụng cả
+   `src/harness/policy/builtin.py` (hai comment) lẫn `design/06`'s ma trận tham chiếu. Xem
+   `## 1.3`.
 7. **Tiếp tục viết code.** S-16/S-19/S-3 (cả hai nguồn)/S-6/S-11/S-14/S-15/S-13/S-21/S-22/
-   S-24/S-25/S-27/S-29 đã vào `src/harness/`, K-9 cắt khỏi bề mặt công khai — 359 test
+   S-24/S-25/S-27/S-29 đã vào `src/harness/`, K-9 cắt khỏi bề mặt công khai — 502 test
    xanh, mỗi cơ chế chính có mutation test đi kèm. Vẫn còn phát hiện review chưa chạm tới
-   code (S-7…S-10/S-17 hoãn có chủ ý, `AuthEvidence` của S-11, phần P-/I- của K-13), và
+   code (S-7…S-10/S-17 hoãn có chủ ý, `AuthEvidence` của S-11), và
    nghiên cứu của chính dự án đo được **23 vòng review tìm 20 lỗi và 0
    lỗi bảo mật; 16 vòng chạy tìm 38+ lỗi và 4 lỗi bảo mật** — bản thiết kế là sản phẩm của
    review, nó sẽ sai ở những chỗ chỉ có chạy mới tìm ra.

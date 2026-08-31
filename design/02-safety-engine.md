@@ -75,7 +75,7 @@ class Policy(Protocol):
     name: str
 
     def check(self, call: ToolCall, ctx: PolicyContext) -> Ruling:
-        """Thuần, đồng bộ, không I/O. Xem P-4."""
+        """Thuần, đồng bộ, không I/O. Xem POL-4."""
 ```
 
 `PolicyContext` là **view chỉ đọc** trên state đã checkpoint của run: `label`, `ledger`
@@ -114,9 +114,15 @@ class PolicyEngine:
         return worst
 ```
 
-Bốn quyết định, mỗi cái sửa một khuyết điểm đo được:
+Bốn quyết định, mỗi cái sửa một khuyết điểm đo được. Đánh số lại `POL-1…4` (K-13,
+`07-risks-and-open-issues.md` §1.5) — `P-1`/`P-3`/`P-4` gốc va chạm với `design/01`'s
+plugin invariant (nay `PLUG-1`) và `docs/09-testing.md`'s property-test-ID catalog
+(P-1..P-10, không đổi — namespace đó sống nhất, được 7+ tệp `docs/*.md` tham chiếu).
+`P-2` giữ nguyên tên cũ có chủ đích: nó là bất biến GỐC định nghĩa ở
+[`00`](00-foundation.md) §3.1, không va chạm gì (docs/09's P-2 test-ID mô tả đúng CÙNG
+bất biến này, không phải một bất biến khác trùng số).
 
-**P-1 — sàn theo `Effect`, không phải `ALLOW`.** Engine khởi tạo từ `EFFECT_FLOOR`, nên
+**POL-1 — sàn theo `Effect`, không phải `ALLOW`.** Engine khởi tạo từ `EFFECT_FLOOR`, nên
 một run **không có policy nào** vẫn hỏi trước khi `write`/`danger`.
 *Sửa khuyết điểm:* ở Microsoft, gate là per-tool và phải suy lại đúng cho từng tool —
 `_file_access.py` làm đúng, `mode_set` làm sai trong **cùng một module**
@@ -125,11 +131,11 @@ suy ra gate thì không thể có mâu thuẫn đó.
 
 **P-2 — hợp thành bằng `max()`, thêm policy không bao giờ nới.** §1.3 chứng minh.
 
-**P-3 — fail closed khi policy ném lỗi.** Đối lập với `threading.local()` của Microsoft:
+**POL-3 — fail closed khi policy ném lỗi.** Đối lập với `threading.local()` của Microsoft:
 lỗi ở đó **fail open và im lặng** ([§09](../research/09-memory-context-multiagent-hitl.md)
 §16bis). Một policy hỏng ở đây thành `DENY` kèm tên policy trong `reason`.
 
-**P-4 — `Policy.check` là hàm thuần, đồng bộ.** Không `async`, không I/O, không gọi
+**POL-4 — `Policy.check` là hàm thuần, đồng bộ.** Không `async`, không I/O, không gọi
 model. Lý do có thể đo: (a) một hàm thuần enumerate được nên P-2 chứng minh được bằng
 test tính chất chứ không bằng review — và nghiên cứu đã cho thấy 23 vòng *đọc* tìm ra
 **0 lỗi bảo mật** còn 16 vòng *chạy* tìm ra **4** (foundation §5, R-2); (b) một policy

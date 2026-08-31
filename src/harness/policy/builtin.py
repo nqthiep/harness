@@ -75,7 +75,7 @@ def check_flow(label: Label, spec: ToolSpec, grants: Grants) -> Ruling:
 
 class TaintPolicy:
     """Config lấy lúc construction — cùng mẫu với `EgressPolicy(allowed_hosts)` bên dưới,
-    nên `check()` vẫn thuần (P-4: không I/O, không phụ thuộc thời gian gọi)."""
+    nên `check()` vẫn thuần (POL-4: không I/O, không phụ thuộc thời gian gọi)."""
     name = "taint"
 
     def __init__(self, grants: Grants = Grants()) -> None:
@@ -88,7 +88,7 @@ class TaintPolicy:
 class EgressPolicy:
     """Advisory, không phải kiểm soát mạng thật — design/review-security.md S-18.
 
-    `Policy.check` bắt buộc thuần + đồng bộ (P-4: không I/O, không DNS), nên chỗ này chỉ
+    `Policy.check` bắt buộc thuần + đồng bộ (POL-4: không I/O, không DNS), nên chỗ này chỉ
     so khớp CHUỖI hostname model đưa ra với allowlist. Nó KHÔNG resolve DNS: một
     `fetch_page(url="http://look-alike.attacker.example/")` qua được đúng phép kiểm mà
     `fetch_page(url="http://docs.python.org/")` qua, nếu chuỗi host tự nó nằm trong
