@@ -22,7 +22,7 @@ event table promises `model.response` carries `usage{in,out,cache_read,cache_wri
 `latency_ms` — the actual event (`run.py`, `lg/runtime.py::call_model`) only ever emits
 `stop_reason`/`cost_usd`. `gen_ai.usage.output_tokens`/`harness.cache_read_tokens` below
 are populated only when that data is present — which today it never is, on either
-backend. Recorded as N-6 (`design/07-risks-and-open-issues.md` §1.5); fixing the event
+backend. Recorded as N-6 (`design/07-risks-and-open-issues.md` §3); fixing the event
 emission site is a `run.py`/`lg/runtime.py` change, out of scope for an exporter.
 
 **`include_content=False` (default)** strips any data key this module recognizes as

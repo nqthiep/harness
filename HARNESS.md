@@ -8,6 +8,27 @@
 > diễn giải của hội đồng đều được đánh dấu rõ. Cột **Ở đâu** trỏ tới nơi yêu cầu đó
 > được đáp ứng, để một yêu cầu không thể "được đồng ý" mà không có địa chỉ.
 
+> **Trạng thái hôm nay (đọc trước §XIX, phần dưới vẫn đứng nguyên như một bản ghi
+> lịch sử — không sửa lại các Round 0-39, chỉ nói tiếp câu chuyện):** Round 0-39 đưa
+> package tới trạng thái "Ready for Implement". Sau đó là **hai giai đoạn build thật**,
+> không nằm trong §VII's vòng đếm gốc:
+>
+> 1. **58 phát hiện từ hai vòng review đối kháng** (`design/review-kiss.md`,
+>    `design/review-security.md`) — soát lại từng cái trên code thật, sửa những cái
+>    còn sống. Xem `design/07-risks-and-open-issues.md`.
+> 2. **Kế hoạch tăng trưởng M6-M10** (`docs/17-research-alignment.md`, đối chiếu với
+>    một nghiên cứu độc lập 12 framework/9 harness) — idempotency, cancellation đúng
+>    chuẩn, chaos testing (M6); workspace confinement, egress mặc định chặn, seam
+>    `Sandbox` (M7); envelope sự kiện v1, OTel thật, cost/successful-task (M8); MCP
+>    client, Service API, event model chung ba transport (M9); trajectory contract,
+>    golden set, benchmark hiệu năng (M10). **Cả năm milestone đã xong** — xem
+>    `design/08-roadmap-and-release-plan.md`.
+>
+> §XIX bên dưới dừng ở "vòng 39" theo đúng bản ghi gốc; ba mục "Còn mở" của nó (SC-1b,
+> OI-10, OI-11 — cần trẻ em thật, server OpenViking thật, API key thật) **vẫn còn mở
+> hôm nay**, không đổi — không việc nào trong hai giai đoạn trên chạm tới chúng, vì cả
+> ba đều cần MỘT NGƯỜI THẬT ở ngoài vòng lặp code/test, không phải thêm code sửa được.
+
 **Nguồn:** toàn bộ hội thoại thiết kế, hội đồng chạy từ Round 0 đến Round 39.
 **Phạm vi:** thư viện Python `harness`, nhánh `claude/ai-agent-harness-design-ti5vk3`.
 

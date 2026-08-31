@@ -1,723 +1,350 @@
 # Rủi ro, đánh đổi, và vấn đề còn mở
 
 Tệp này tồn tại vì luật §45 của nghiên cứu: **thà nói "Chưa đủ evidence" còn hơn đoán.**
-Áp lên chính bản thiết kế, nó có nghĩa: mọi thứ chưa chắc phải nằm ở đây, không nằm rải rác
-trong sáu tệp kia dưới dạng câu văn tự tin.
+Mọi phát hiện từ hai vòng review đối kháng ([review-kiss.md](review-kiss.md),
+[review-security.md](review-security.md) — 58 phát hiện, `S-`/`K-`) và mọi lỗi tự bắt được
+trong lúc xây roadmap M6-M10 (`N-`) đều được xét ở đây, kiểm lại trên **code thật hôm nay**
+trước khi ghi "đã sửa" hay "lỗi thời" — không đoán từ văn bản review gốc.
+
+**Kỷ luật chung:** mỗi mục dưới đây trả lời — còn đúng không? sửa được ở đâu? cái gì
+KHÔNG sửa và vì sao? Chi tiết kỹ thuật sâu (code, ADR, test) nằm ở `docs/12-decision-logs.md`;
+tệp này chỉ giữ đủ để hiểu quyết định, không lặp lại toàn bộ lý luận.
 
 ---
 
-## 1. Phát hiện review CHƯA được sửa
+## 0. Trạng thái tóm tắt
 
-Hai vòng review đối kháng cho **58 phát hiện**. Đã sửa trước khi tệp này bắt đầu theo dõi:
-5 lỗi chặn phát hành và 16 lỗi nhất quán. **Một lỗi chặn phát hành thứ sáu (S-20) đã lọt
-qua đợt đó** — kiểm lại toàn bộ S-1…S-29 với code hôm nay (không phải chỉ nhóm đang được
-sửa từng đợt) tìm thấy nó vẫn sống. **S-20 nay đã sửa** (`EventKind.BUDGET_UNLIMITED`,
-`docs/12-decision-logs.md` ADR-041) — xem callout ở `## 1.1` và
-`design/08-roadmap-and-release-plan.md §1`. **Khi thực hiện M6 (roadmap), chaos testing
-(T-6.4) lộ ra một lỗi nghiêm trọng KHÔNG thuộc S-1…S-29 gốc — N-4 ở `## 1.5`: lỗi
-provider (timeout, rate limit) crash thẳng ra ngoài `try_run()`/`graph.invoke()`, cả hai
-backend, không có `except` nào bắt — nay đã sửa.**
-**Còn lại dưới đây chưa sửa** — liệt kê đầy đủ, vì một danh sách rủi ro chỉ có giá trị khi
-nó thành thật.
+**Tất cả 58 phát hiện gốc đã được xét. 9 phát hiện mới (N-1…N-9) tự bắt được trong lúc
+xây M6-M10.** Còn mở thật sự, hôm nay: **6 mục** — xem `## 7`.
 
-### 1.1 Bảo mật — nghiêm trọng
+### Bảo mật (S-1…S-29)
 
-> **S-20 ĐÃ SỬA.** `Budget.usd: Decimal | None` (`budget/ledger.py`) vẫn cho `None` —
-> việc bắt buộc "phải có trục tiền" vẫn chỉ nằm trong `Budget.parse()` (con đường qua
-> CHUỖI, `budget="$0.05"`), và `Budget(usd=None, ...)` dựng trực tiếp vẫn không bị
-> `ConfigError` nào chặn — **đúng như thiết kế**: `docs/04-interfaces.md`/`docs/07-cost.md`
-> đã công bố `usd=None` là escape hatch có chủ đích (provider miễn phí/local, IDL-36),
-> không phải lỗi cần cấm. Cái ĐÃ sửa là phần hai của lời hứa tài liệu — "emits a
-> `budget.unlimited` warning event on every run... Unlimited is possible; it is not
-> silent" — chưa từng được cài đặt trước bản vá này. `EventKind.BUDGET_UNLIMITED`
-> (`docs/12-decision-logs.md` ADR-041) nay phát đúng một lần mỗi run/thread ngay sau
-> `RUN_STARTED`, ở cả hai backend, khi `budget.usd is None` — khoá bằng
-> `tests/test_attack_s20.py` (6 test, gồm mutation test). Đây từng là phát hiện "chặn
-> phát hành" DUY NHẤT trong toàn bộ 58 phát hiện còn sống chưa sửa — xem
-> `design/08-roadmap-and-release-plan.md §1` cho chi tiết bản sửa, gồm cả việc bản đề
-> xuất đầu tiên (chặn construction) bị bác bỏ vì sai với hợp đồng đã công bố.
+| Mã | Tóm tắt | Trạng thái |
+|---|---|---|
+| S-1 | Nén ngữ cảnh gọi model thiếu `reserve()` | Lỗi thời — cơ chế review mô tả không tồn tại |
+| S-3 | `Secret[T]` lộ qua tool result | **Đã sửa**, cả hai nguồn (`Grants.sensitive` + `.reveal()`) |
+| S-4 | Idempotency ở mức MỘT lời gọi tool | **Còn mở** — cơ chế (`execute_once`) đã xây nhưng chưa gắn vào `Dispatcher` (N-8) |
+| S-5 | Memory provenance giả mạo được | Lỗi thời — cơ chế thật đơn giản hơn, không có lỗ hổng đó |
+| S-6 | Grant cũ thắng một DENY taint mới | Đã đúng sẵn, chỉ thiếu test khoá lại |
+| S-7, S-8, S-10 | `ServerIdentity`/hint hạ effect/`proposed_scope` cho MCP | **Đã sửa** — `harness.mcp` (T-9.1) |
+| S-9 | Grant MCP rò giữa hai server | **Đã sửa một phần** — khác nhãn thì chặn được; MỘT nhãn bị trỏ lại endpoint khác thì chưa |
+| S-11 | `Actor` là lời tự khai, không xác thực | **Sửa một phần** — kênh báo danh tính có rồi; xác thực thật (`AuthEvidence`) chưa |
+| S-12 | Ba chữ ký resume mâu thuẫn | Lỗi thời — không tồn tại trong code |
+| S-13 | Sub-agent không bị cap step/wall-clock cha | **Đã sửa** |
+| S-14 | Reservation chồng nhau không bị chặn | **Đã sửa một phần** — race đã chặn; `Ledger.void()` chưa cần (0 caller) |
+| S-15 | Policy có state bị dùng chung xuyên request | **Đã sửa** (LangGraph); backend cổ điển đã đúng sẵn, khác cơ chế có chủ ý |
+| S-16 | `accepts_tainted` khai được trong `@tool` | **Đã sửa** — chỉ operator đặt được |
+| S-17 | Injection qua `description` tool MCP | **Đã sửa** — cùng lúc T-9.1, đóng bằng tài liệu + fail-closed default |
+| S-18 | `EgressPolicy` không chặn DNS rebinding | **Đã sửa bằng tài liệu** — không có cách sửa ở tầng policy đồng bộ |
+| S-19 | Taint sticky-per-run rửa được | **Đã sửa** — nhãn per-message (LangGraph); sticky có chủ ý (backend cổ điển) |
+| S-20 | `Budget(usd=None)` bỏ qua cảnh báo đã hứa | **Đã sửa** |
+| S-21 | `Ledger.snapshot()` mất cờ `blocked` | **Đã sửa** |
+| S-22 | Định giá thấp hơn thực tế khi có cache write | **Đã sửa** |
+| S-23 | `call_key` thiếu domain separator | Lỗi thời — cơ chế review mô tả không tồn tại |
+| S-24 | `EventBus`/`seq` dùng chung xuyên thread | **Đã sửa** — rộng hơn mô tả gốc |
+| S-25 | Argument không escape tới approver + không trần số ASK | **Đã sửa** |
+| S-26 | `Scope.args` ép kiểu về chuỗi | Lỗi thời — đã là `Any`, so khớp giữ kiểu |
+| S-27 | Taint/confidentiality cũ trong cùng batch | **Đã sửa** — nhánh confidentiality có thật |
+| S-28 | Sub-agent ASK không có đường tới `approve` cha | Đã đúng sẵn, chỉ thiếu tài liệu |
+| S-29 | Tái dùng grant không ghi audit | **Đã sửa** — chỉ áp cho backend LangGraph |
 
-> **S-1 ĐÃ KIỂM — LỖI THỜI, KHÔNG CẦN SỬA.** Cả hai nhánh của kịch bản gốc dựa vào cơ chế
-> không tồn tại: (a) `Quarantine` — K-1 đã cắt, `0 caller`; (b) chiến lược nén
-> `SummarizeOldPrefix` (gọi model để tóm tắt, ngoài node `model` nên thiếu `reserve()`) —
-> chiến lược nén THẬT SỰ được xây là `ClearToolResults` (`context/window.py`, hằng số
-> `CLEARED`), chỉ xoá nội dung, không gọi model nào. Không có lời gọi model nào ngoài
-> node `model` để mà thiếu reservation.
+### KISS (K-series)
 
-> **S-4 — CHƯA LỖI THỜI, nhưng chưa áp dụng được vì cơ chế nó bàn chưa tồn tại.** Giao
-> thức idempotency ba pha (`IdempotencyMode`, `in_flight`, `call_with_effect_log`) không
-> có trong `src/harness/` — đúng khoảng trống `docs/17-research-alignment.md` M6/T-6.1 đã
-> ghi nhận và xếp lịch xây. Không đóng bây giờ: cần RE-VERIFY khi M6 build idempotency,
-> xem `design/08-roadmap-and-release-plan.md §2`.
+| Mã | Tóm tắt | Trạng thái |
+|---|---|---|
+| K-6 | `Confidentiality` không có nguồn dữ liệu | Hết hiệu lực — S-3 đã cho nó nguồn |
+| K-7 | `Reservation.exact` không ai đọc | Lỗi thời — **không cắt**, có consumer thật |
+| K-9 | `Result.raise_for_status()` thừa | **Đã cắt** |
+| K-10 | Taxonomy OTel 9 span quá nhiều | Rút gọn kế hoạch xuống 4 span — chưa có code OTel lúc đó để cắt |
+| K-11 | `end_strategy` đặt tên va chạm | **Đã sửa** (đổi tên) |
+| K-12 | `ServerIdentity{label,fingerprint}` chưa chốt được `fingerprint` | **Đã sửa** — hạ xuống `ServerLabel` cho v1 |
+| K-13 | Va chạm số hiệu bất biến giữa các tệp `design/*.md` | **Đã sửa**, hai lượt |
+| K-22 | "14 tên, một import" tự mâu thuẫn với ví dụ Mức 3 | **Đã sửa** |
+| K-23 | Chín tunable quá nhiều | **Không cắt** — bảy trong chín đã lỗi thời hoặc chưa từng tồn tại |
+| K-28 | Interface mẫu thiếu "năm thứ" | **Đã sửa** — sửa lại thành đúng ba, nói rõ `session` là tầng service |
 
-> **S-5 ĐÃ KIỂM — LỖI THỜI, và may mắn theo hướng an toàn.** Cơ chế `Provenance`/nhãn-theo-
-> bản-ghi mà S-5 phê phán (dữ liệu trong store tự khai `label`, giả mạo được) không được
-> xây. Cơ chế THẬT (`memory/viking.py::tools()`) đơn giản hơn và tình cờ đúng "sửa tối
-> thiểu (a)" mà chính S-5 đề xuất: `recall` khai `effect="external"` — nhãn UNTRUSTED áp
-> qua đúng con đường chung mọi tool `external` đi (`emits_of`/`check_flow`), không có
-> ngoại lệ "tin provenance" nào để mà giả mạo.
+### Phát hiện mới, bắt được khi xây M6-M10 (N-series)
 
-> **S-6 ĐÃ KHOÁ.** Đọc lại `_regate()` (bước 1, `lg/runtime.py`) thì công thức hợp thành
-> **đã đúng từ trước** — `if r.verdict is not Verdict.ASK: return r` trả DENY ngay, không
-> bao giờ chạm `lookup()`; một grant cũ không thể thắng một DENY tươi từ taint. Không phải
-> sửa code, chỉ thiếu bằng chứng. `tests/test_attack_s6.py` khoá lại bằng 9 tổ hợp verdict
-> × trạng thái sổ đủ hết cỡ + một luật gộp, cộng mutation test (bỏ short-circuit → 4 test
-> đỏ ngay).
->
-> **S-14 ĐÃ SỬA MỘT PHẦN.** `Ledger._committed()` mới (`budget/ledger.py`) cộng mọi
-> reservation đang mở vào `remaining_usd()` và vào cả hai nhánh kiểm ngân sách của
-> `reserve()` — trước bản vá, `self._open` được ghi và pop nhưng KHÔNG được cộng vào đâu
-> cả, nên hai `reserve()` chồng nhau (một `Retry` plugin tương lai gọi handler nhiều lần
-> trước khi cái đầu `settle()`) sẽ mỗi lần đọc cùng ngân sách còn trống và đều "vừa đủ" độc
-> lập. `tests/test_attack_s14.py` chứng minh bằng cách gọi `reserve()` hai lần liên tiếp
-> chưa `settle()`, cộng mutation test bỏ `_committed()` xác nhận nó load-bearing.
-> **`void()` — ĐÃ KIỂM, KHÔNG THÊM.** Truy hết cả hai backend (`run.py:69→86`,
-> `lg/runtime.py:111`+`138`): không có `try/except` nào giữa `reserve()` và `settle()` mà
-> cho phép CÙNG một `Ledger` sống tiếp để `reserve()` lần nữa sau một lần thất bại —
-> `run.py` chỉ bắt `asyncio.CancelledError` ở tầng ngoài, một lỗi provider khác propagate
-> thẳng ra khỏi `run()` và mang theo cả `Ledger`; backend graph còn triệt để hơn, mỗi node
-> dựng một `Ledger` MỚI từ checkpoint nên `budget_gate`'s reservation không bao giờ tới
-> được `call_model` để mà cần huỷ. `void()` có **0 caller** trong `src/harness/` hôm nay —
-> đúng bằng chứng đã dùng để hoãn S-7..S-10, nên áp cùng luật: không xây trước khi có
-> caller thật. Sẽ cần lại khi `Retry` plugin tồn tại — xem `## 5`.
-
-> **S-15 ĐÃ SỬA — trên backend LangGraph.** `build_agent()` chạy đúng một lần và
-> `PolicyEngine` nó dựng phục vụ mọi thread sau đó, nên một policy có state (đếm,
-> cache) mà người dùng lỡ truyền INSTANCE thay vì factory sẽ bị mọi thread dùng
-> chung — không có ranh giới "hết một run()" sạch để dò như backend cổ điển có
-> (`agent.py:_check_shared_policy_state`, Round 34, vẫn nguyên vẹn và vẫn đúng cho
-> backend đó). Sửa bằng chiến lược khác cho backend này: `build_agent()` giờ **từ
-> chối construction** bất kỳ policy nào không phải factory (`ConfigError`, chỉ đúng
-> cách sửa); `Runtime._engine_for(run_id)` dựng một `PolicyEngine` riêng cho mỗi
-> thread, gọi factory đúng một lần, cache theo `run_id` — cùng thread qua nhiều lượt
-> thấy lại đúng instance của mình (rate-limit trong một cuộc hội thoại vẫn đúng),
-> thread khác không bao giờ thấy được. `tests/test_attack_s15.py`: từ chối instance
-> lúc dựng, cùng thread giữ state qua nhiều lượt, hai thread không dùng chung
-> instance, chạy graph thật hai thread không lây đếm — cộng mutation test (khôi
-> phục một `PolicyEngine` chia sẻ) xác nhận 3 test đỏ ngay.
-
-> **S-15 trên backend cổ điển — ĐÃ KIỂM, KHÔNG THÊM.** Câu hỏi: có nên áp CÙNG luật
-> "từ chối instance, chỉ nhận factory" lên `Agent`/backend cổ điển, để hai backend
-> nhất quán? Không — hai cơ chế khác nhau có chủ ý, không phải một cái đã sửa và một
-> cái quên. `agent.py:_check_shared_policy_state` (Round 34, `tests/test_m4.py::
-> StatefulPolicy`, vẫn nguyên vẹn) đã kiểm và đã có test cho đúng bốn trường hợp: một
-> instance có state đổi trong lúc chạy bị từ chối SAU KHI chạy xong (`ConfigError`,
-> "changed while it ran"), một factory/class được dùng đúng, mỗi lần chạy một instance
-> mới, VÀ — khác biệt chính — **một instance cấu hình thuần (`EgressPolicy(["..."])`,
-> không state đổi theo run) vẫn được dùng chung bình thường, không bị từ chối**.
-> `build_agent()` không làm được việc phân biệt đó: nó từ chối MỌI instance ngay lúc
-> dựng, kể cả instance cấu hình thuần, vì graph phục vụ nhiều thread ĐỒNG THỜI — không
-> có ranh giới "hết một run()" sạch để chờ rồi so sánh trước/sau như backend cổ điển
-> có (mỗi `atry_run()` là một lời gọi async hoàn chỉnh, tuần tự trên CÙNG một `Agent`,
-> nên "trước lúc chạy" và "sau khi chạy xong" là hai mốc rõ ràng để snapshot). Áp luật
-> từ chối construction của backend LangGraph sang backend cổ điển sẽ phá đúng ca dùng
-> hợp lệ mà Round 34 cố tình giữ lại (`test_a_stateless_policy_is_still_shareable`) mà
-> không sửa được lỗ hổng nào thật — cơ chế hiện tại của backend này đã đúng cho đúng
-> mô hình thực thi của nó. Khoảng trống còn lại — hai lời gọi `atry_run()` ĐỒNG THỜI
-> (không tuần tự) cùng dùng một instance có state — là rủi ro mutable-state-dùng-chung
-> chung của Python với BẤT KỲ object nào, không riêng gì cơ chế Policy của harness này,
-> và không có cách sửa tương tự per-thread-cache của S-15 vì backend cổ điển không có
-> khái niệm định danh kiểu `run_id`/`thread_id` để cache theo — chấp nhận, không xây.
-
-> **S-13 ĐÃ SỬA — cả hai backend.** `_run_subagent` chỉ `hold()` trục `usd`;
-> `steps`/`wall_clock_s` của con được kế thừa nguyên vẹn từ `Budget` con tự khai,
-> không liên quan gì tới số còn lại của cha — bốn sub-agent spawn trong một lượt,
-> mỗi đứa tự khai `steps=20`, có thể tiêu 80 step trong khi trần cha chỉ có 20/8.
-> `Ledger.hold_steps()`/`release_steps()` áp đúng lý luận TOCTOU của `hold()`
-> (Round 28) sang trục step; `child_wall_clock()` cắt trần thời gian con xuống
-> đúng số cha còn lại tại thời điểm spawn — không cần hold/release vì wall-clock
-> không phải hồ tài nguyên bị chia (hai con chạy song song không cộng dồn thời
-> gian của nhau). `tests/test_attack_s13.py`: con bị cap đúng xuống step cha còn
-> lại (đo bằng SỐ LẦN TOOL THẬT SỰ CHẠY, không phải số học `Ledger` — lần thử
-> mutation đầu tiên vô tình triệt tiêu vì `release_steps` tính theo hiệu số nên
-> "bỏ hold + bỏ cap" khớp nhau về 0, khiến `remaining_steps()` trông vẫn an toàn
-> dù cha không hề bị trừ), bốn con cộng dồn không vượt trần, step dư được trả
-> lại — mutation khôi phục hành vi cũ xác nhận 2 test đỏ ngay.
-
-> **S-11 SỬA MỘT PHẦN.** `Actor` vẫn là lời tự khai — không có mô hình xác thực người
-> duyệt, và xây một cái (chữ ký kênh, `channel_message_id` — `AuthEvidence` review đề
-> xuất) là việc lớn, cần thiết kế riêng, ghi lại bên dưới. Phần landing được: chữ ký thật
-> của `approve=` (`ApprovalFn = Callable[[ToolCall, RunContext], bool]`) không có kênh
-> nào để callback báo DANH TÍNH — trước bản vá, backend LangGraph (backend DUY NHẤT có
-> `DecisionLog`; backend cổ điển không dùng nó) ghi cứng
-> `Actor.human("approver", via="callback")` cho MỌI lần duyệt, bất kể ai bấm. `Approval(ok,
-> actor=...)` (`policy/decision.py`) là trả về TÙY CHỌN thay cho `bool` trần — callback
-> nào thật sự biết danh tính (phiên Slack đã xác thực, OAuth) giờ báo được, callback trả
-> `bool` không đổi gì. `PolicyEngine.resolve()` trả `(Ruling, Actor | None)` thay vì chỉ
-> `Ruling`. `tests/test_attack_s11.py`: `resolve()` với `bool` trần không báo actor nào;
-> với `Approval(...)` trả đúng actor đó cho cả ALLOW/DENY; chạy graph thật xác nhận
-> `DecisionLog` ghi đúng actor callback báo, và callback `bool` cũ vẫn ra placeholder y hệt
-> trước — mutation khôi phục `resolve()` cũ xác nhận 4 test đỏ ngay. Vẫn không chặn được
-> callback TỰ KHAI GIAN danh tính — đó là phần cần `AuthEvidence` thật.
-
-> **S-12 ĐÃ KIỂM — LỖI THỜI, KHÔNG CẦN SỬA.** Ba chữ ký `answer=`/`ruling=`/`ResumeToken`
-> review mô tả không có cái nào tồn tại trong `src/harness/` — `grep` toàn bộ `src/` và
-> `tests/` không thấy `ResumeToken`, `class Answer`, hay `ruling=` ở đâu cả. Cơ chế resume
-> THẬT hoàn toàn khác và không có lỗ hổng S-12 mô tả: backend cổ điển
-> (`Agent.resume(transcript)`) chạy lại các lời gọi `read`/`external` bị ngắt giữa chừng
-> từ transcript, không đụng gì tới `Decision`/grant. Backend LangGraph dùng
-> `interrupt()`/`Command(resume=<bool>)` gốc của LangGraph — `ok = bool(interrupt(...))`
-> chỉ quyết định ALLOW/DENY; `Scope`/`actor`/`expires_at` của `Decision` ghi ra đều do
-> RUNTIME tự dựng từ `_pending`, người resume không tự đặt được scope rộng hơn hay
-> `expires_at` xa hơn — đúng phần mà bản thiết kế gốc lo bị bỏ qua ("Answer.expires_at đi
-> vào từ bên ngoài") không hề tồn tại trên code hôm nay.
-
-> **S-17 — ĐÃ SỬA, gộp chung với S-7…S-10 khi `harness.mcp` landing (T-9.1) — xem block
-> dưới đây, sau S-7…S-10.** Giữ nguyên tại đây lúc còn hoãn vì khi đó "không tồn tại trong
-> `src/harness/`" là đúng; nay đã có `tools/list` thật.
-
-> **S-18 ĐÃ SỬA — bằng tài liệu, không phải code.** `EgressPolicy` (chỗ thật thay cho
-> `DenyHosts` mà review trích) đã đúng như S-18 mô tả: P-4 (`Policy.check` thuần, không
-> I/O) khiến nó chỉ so khớp CHUỖI hostname, không resolve DNS — một
-> `fetch_page(url="http://look-alike.attacker.example/")` qua được đúng phép kiểm nếu
-> chuỗi host tự nó nằm trong allowlist, DNS rebinding trỏ nó về IP nội bộ chỉ lộ ra lúc
-> THẬT SỰ gọi. Không có cách sửa ở tầng `Policy` thuần cho việc này — cần một tầng mạng
-> thật (egress proxy, network policy container), ngoài phạm vi một policy đồng bộ. Sửa
-> bằng cách nói thẳng: docstring `EgressPolicy` (`policy/builtin.py`) và
-> `docs/06-safety.md` giờ ghi rõ nó chỉ chặn trường hợp RÕ RÀNG, không hơn. Kiểm thêm phát
-> hiện phụ của S-18 (nhầm lẫn URL qua `userinfo@host`) và thấy nó đã LỖI THỜI: `urlparse`
-> của Python và client HTTP chuẩn RFC 3986 đều đồng ý `evil.example` là host thật trong cả
-> hai biến thể review nêu — `tests/test_attack_s18.py` khoá lại bằng test trực tiếp.
-
-> **S-7, S-8, S-9 (một phần), S-10, S-17 — ĐÃ SỬA, landing CÙNG LÚC với `harness.mcp`
-> (T-9.1, ADR-054), đúng như ghi ở đây khi hoãn.** `ToolSpec` giờ có `server`;
-> `harness.mcp.connect()` là lời gọi `tools/list` thật đầu tiên trong `src/harness/`;
-> `classify_mcp_tool()` phân loại `effect` theo đúng M-1..M-3 (`design/03 §5.3`) — server
-> không trusted thì hint không tham gia (S-8's "hint hạ effect" không còn khả thi: hint
-> hoàn toàn bị bỏ qua trừ khi operator tự đặt `trusted=True`), `accepts_tainted` chỉ từ
-> `policy`, chưa bao giờ từ hint (S-10's "proposed_scope" tương đương — operator giữ toàn
-> quyền, tool không tự khai được gì ảnh hưởng taint). S-17 (injection qua `description`)
-> đóng bằng TÀI LIỆU chứ không phải bộ lọc — đúng như S-18 trước đó: không có cách chặn
-> description tới model trước lời gọi tool đầu tiên mà không phá vỡ chính giao thức
-> tool-calling, nên `default_effect=DANGER` cho server chưa duyệt (M-1) là hàng rào thật
-> duy nhất, ghi rõ trong docstring `classify_mcp_tool`. `Scope.server` (trường đã có từ
-> trước, chưa ai gọi) giờ tham gia so khớp `DecisionLog.lookup()` — một grant cấp trên
-> server A không khớp lời gọi tới tool CÙNG TÊN trên server B (M-4). Test:
-> `tests/test_m9_t91_mcp.py`, 32 test, mỗi cơ chế chính có mutation.
->
-> **S-9 phần CÒN LẠI vẫn hoãn, đúng lý do cũ.** `Scope.server` chặn được va chạm giữa
-> HAI NHÃN khác nhau, không chặn được MỘT nhãn bị trỏ lại sang endpoint khác — đó vẫn cần
-> `ServerIdentity`+`fingerprint`, và K-12's lý do hoãn (định dạng `fingerprint` chưa chốt
-> cho MCP stdio) không đổi. Chờ tới khi quan sát được một lần re-pointing thật.
-
-> **S-16, S-19, và S-3 ĐÃ SỬA — trên giấy VÀ trong `src/harness/`.** Bước 0 chốt mô hình
-> (S-16: `accepts_tainted` rời `@tool`, chỉ đến từ operator; S-19: nhãn per-message +
-> L-1/L-2/L-3). Bước sau đó đưa vào code: `policy/label.py` (canonical `Integrity` ×
-> `Confidentiality` × `Label`, `Grants`), `policy/builtin.py` (`check_flow` hai nhánh,
-> `emits_of`), `lg/runtime.py` (`_effective_label` thay `_tainter`, L-2 stamp trong
-> `call_model`, L-1 stamp trong `_run_tools`, `_manage` giữ `additional_kwargs` khi xoá
-> nội dung). Backend cổ điển (`run.py`/`dispatch.py`) nâng `TaintTracker` lên `Label` hai
-> trục nhưng GIỮ sticky-per-run — nó miễn nhiễm với chính kiểu rửa taint mà per-message
-> phải phòng, vì nó không tính lại theo message; đây là khác biệt có chủ ý giữa hai
-> backend, không phải việc chưa xong. 11 test tấn công mới ở `tests/test_attack_s19.py`,
-> mỗi cơ chế chính có một mutation test đi kèm (xoá đúng dòng code thì test phải đỏ) —
-> cùng kỷ luật với bước 1/2.
-
-> **S-3 nguồn thứ nhất (`Secret[T]`) ĐÃ SỬA — cả hai backend.** Bước trên chỉ landing
-> nguồn thứ hai (`Grants.sensitive`, operator đánh dấu tool). Không có cơ chế `deps`
-> riêng ở harness này (K-1/K-2 đã cắt), nên đường thật của `Secret[T]` là: tool tự
-> `.reveal()` một `Secret` (`secrets.py`) rồi giá trị đó xuất hiện nguyên văn trong
-> payload trả về — đúng khoảnh khắc `redact()` đã canh sẵn để chặn trước khi bytes tới
-> model (RT-13, Round 35). `secrets.contains_live_secret()` dùng lại đúng phép so khớp
-> đó để phát hiện (không `.reveal()` khi chỉ dò — không tự đăng ký thêm); `emits_of(spec,
-> grants, payload)` (`policy/builtin.py`) nâng nhãn MESSAGE đó lên `SECRET` khi phát hiện,
-> dù `redact()` đã xoá đúng token khỏi bytes model thấy — phần còn lại của cùng message
-> không bị xoá, nên `check_flow` vẫn cần nhãn SECRET để chặn nó rời qua sink `PUBLIC` ở
-> bước sau, cùng độ chi tiết "theo message" mà `Label` dùng ở khắp nơi khác. Cả hai chỗ
-> gọi (`dispatch.py::_invoke`, `lg/runtime.py::_run_tools`) truyền payload thô (trước
-> `redact()`) vào `emits_of`; tham số mới có mặc định `None` nên không phá chữ ký cũ.
-> `tests/test_attack_s3.py`: `contains_live_secret` đơn vị, `emits_of` đơn vị với/không
-> payload, chạy thật qua cả hai backend (`Agent.try_run` và `build_agent().invoke`) xác
-> nhận secret lộ qua một tool `read` chặn được sink `PUBLIC` kế tiếp — mutation gọi
-> `emits_of` không kèm payload (đúng chữ ký cũ) ở cả hai chỗ xác nhận 2 test đỏ ngay,
-> mỗi backend một cái.
-
-### 1.2 Bảo mật — nên sửa (S-21…S-29)
-
-**Cả chín ĐÃ XONG** (S-21/22/24/25/27/29 sửa code; S-23/26/28 kiểm rồi xác nhận lỗi
-thời/đã đúng, không cần sửa). S-11 (bảng `## 1.1`) cũng sửa được phần landing được — còn
-lại duy nhất là `AuthEvidence` thật, ghi ở `## 5`.
-
-> **S-21 ĐÃ SỬA.** `Ledger.snapshot()` thiếu `blocked` — một ledger `_blocked=True` (spend
-> vượt trần cứng) phục hồi từ checkpoint về `_blocked=False`, tự "quên" nó đã bị chặn.
-> Thêm `blocked` vào cả `snapshot()`/`restore()`. `tests/test_attack_s21_s22.py`.
-
-> **S-22 ĐÃ SỬA.** `size_call()`/`reserve()` chỉ định giá theo `input_per_mtok`, trong khi
-> `settle()` có thể tính theo `cache_write_per_mtok` (`_p()` trong `models/pricing.py`:
-> luôn đắt hơn đúng 25%, cố định — không phải số đo). Mọi cuộc gọi THẬT SỰ ghi cache bị
-> ước lượng thấp hơn thực tế có hệ thống. Định giá lại theo mức TỆ NHẤT
-> (`cache_write_per_mtok`) ở cả `reserve()` lẫn nhánh `hard_max_input`.
-> `tests/test_attack_s21_s22.py`.
-
-> **S-23 ĐÃ KIỂM — LỖI THỜI, KHÔNG CẦN SỬA.** `call_key = blake2b(...)` mà review mô tả
-> thuộc giao thức idempotency ba pha (`03 §4.4`) — `IdempotencyMode`, `in_flight`,
-> `call_with_effect_log` — **không tồn tại** trong `src/harness/` (cùng tình trạng "0
-> caller" như S-7…S-10, K-25). Cơ chế dedup THẬT (T-2.5, `dispatch.py`) dùng
-> `f"{name}:{canonical_json(args)}"` chứ không phải `blake2b` nối chuỗi, và `name` là tên
-> tool do TÁC GIẢ đặt lúc bind (không phải input model/MCP điều khiển được hôm nay) — va
-> chạm domain-separator review lo chỉ thật khi `tool` là chuỗi tự do do bên ngoài đặt, đúng
-> viễn cảnh MCP namespaced mà S-7…S-10 hoãn. Không có gì để sửa cho tới khi MCP thật tồn
-> tại.
-
-> **S-24 ĐÃ SỬA — hoá ra rộng hơn "seq không có nguồn cấp" review mô tả.** Đúng lỗi Round
-> 37 đã sửa cho `Ledger`/`TaintTracker`, và S-15 sửa cho `PolicyEngine`, lần THỨ TƯ:
-> `build_agent()` từng dựng đúng MỘT `EventBus("run", exporters)`, giữ trên `Runtime`, dùng
-> chung cho MỌI thread — `event.run_id` là chuỗi cố định `"run"` cho mọi hội thoại,
-> `event.seq` là một bộ đếm chung xuyên suốt đời compiled graph. Sửa cùng khuôn
-> `_policy_cache`/`_engine_for`: `Runtime._bus_cache` giữ một `EventBus` riêng mỗi thread,
-> dựng lười, đóng dấu đúng `run_id` thật. Tìm thêm trong cùng lượt: cờ `self._started`
-> (instance trên `Runtime`) làm `RUN_STARTED` chỉ phát MỘT LẦN DUY NHẤT cho cả đời compiled
-> graph thay vì mỗi thread — bỏ cờ, chỉ dựa vào `step==0` (đã đủ, vì `step` sống trong
-> state theo từng thread). `tests/test_attack_s24.py`, mutation test xác nhận 4/5 đỏ.
-
-> **S-25 ĐÃ SỬA.** (a) `call.arguments` (thô từ model) vào thẳng `approve(call, ctx)`,
-> không escape/truncate — `secrets.safe_for_display()` mới (xuất ở top-level) escape mọi
-> ký tự không in được thành dạng chữ (`\x1b` không thực thi) và thay giá trị dài hơn 200
-> ký tự bằng độ dài + digest. (b) không có trần số lần `ASK` — `max_asks_per_run` (mặc
-> định 20) trên cả `Agent`/`build_agent`, đếm per-run (classic loop) hoặc trong
-> `AgentState.asks` reset mỗi lượt mới (graph, vì `Runtime` dùng chung giữa các thread).
-> `tests/test_attack_s25.py`, mutation test mỗi backend.
-
-> **S-26 ĐÃ KIỂM — LỖI THỜI, KHÔNG CẦN SỬA.** `Scope.args` review mô tả là
-> `Mapping[str, str]` (ép kiểu về chuỗi, `transfer(amount=10)` khớp nhầm
-> `transfer(amount="10")`) — code hôm nay là `Mapping[str, Any]`, và `Scope.matches()` so
-> `dict(self.args) == dict(args)` trực tiếp, giữ nguyên kiểu Python (`10 == "10"` là
-> `False`). `tests/test_attack_s26.py` khoá lại bằng test trực tiếp.
-
-> **S-27 ĐÃ SỬA — kịch bản gốc không dựng lại được, nhánh confidentiality thì có thật.**
-> Kịch bản gốc (`fetch_url` external + `run_shell` danger cùng lượt) bị `_check_tool_set`
-> (F9.1) chặn NGAY LÚC DỰNG agent trừ khi operator tự khai `accepts_tainted` cho tool
-> danger đó — và một khi đã khai, `check_flow` không còn gì để chặn. Nhánh CÒN SỐNG: nhánh
-> confidentiality (SECRET vào sink PUBLIC) không bị check đó chạm tới — một tool `read`
-> nhạy cảm + một tool `write` cùng lượt tái tạo đúng lỗ hổng. Backend cổ điển
-> (`dispatch.py`): mọi quyết định trong batch tính MỘT LẦN trước khi tool nào chạy; sửa
-> bằng recheck `check_flow` ngay trước mỗi lời gọi serial, dùng nhãn SỐNG. Backend LangGraph
-> (`lg/runtime.py::_regate`): tưởng đã đóng bằng I-1 (S-2) — nhưng `_regate` tính nhãn từ
-> `self._effective_label(state)`, và `state` chưa thấy kết quả của call ĐÃ chạy TRƯỚC
-> trong CÙNG `_run_tools` (chỉ gộp vào state ở cuối hàm); sửa bằng truyền `label` đang cập
-> nhật sống trong vòng lặp vào `_regate` thay vì để nó tính lại từ `state` cũ.
-> `tests/test_attack_s27.py`, mutation test mỗi backend.
-
-> **S-28 ĐÃ KIỂM — ĐÃ ĐÚNG SẴN, CHỈ THIẾU TÀI LIỆU.** Sub-agent cần `ASK` không có đường
-> tới node `approve` của cha nghe như treo — nhưng `PolicyEngine.resolve()`'s luật "không
-> có `approve=`" (đã có sẵn, áp dụng y hệt cho con lẫn cha) đã đóng đúng lỗ này mà review
-> không xét tới: con không có `approve=` riêng thì `danger` tự động DENY, mọi thứ khác tự
-> động ALLOW — không bao giờ dừng chờ. Ghi rõ vào `docs/06-safety.md`.
-> `tests/test_attack_s28.py` khoá hành vi.
-
-> **S-29 ĐÃ SỬA — chỉ tồn tại trên backend LangGraph.** Backend cổ điển không dùng
-> `DecisionLog` (mỗi `atry_run()` gọi `approve()` mới, không có khái niệm grant sống qua
-> nhiều lần thực thi), nên S-29 chỉ áp cho `lg/runtime.py::_regate`. Phạm vi thật hẹp hơn
-> văn bản gốc review mô tả ("TTL 1 giờ phủ N lần chạy khác nhau") — MỌI `Decision` từng
-> dựng (kể cả bản vá này) khoá `scope.call_id` vào đúng MỘT call cụ thể, không có
-> `scope.call_id=None`/TTL dài thật sự tồn tại trong code hôm nay. Cơ chế thật là recheck
-> tại điểm tiêu thụ của I-1 (S-2): cùng một `call_id` được duyệt ở `approval_gate` rồi
-> `_regate` tra lại lúc thực thi — khoảng cách đó có thể là mili-giây (thường) hay hàng
-> giờ (resume). Trước bản vá, lần tra lại đó KHÔNG ghi gì thêm dù tìm thấy grant sống. Sửa:
-> `_regate` ghi một `Decision` thứ hai (id `-reuse`) mỗi lần grant được tái dùng.
-> `tests/test_attack_s29.py`, mutation test xác nhận 2/3 đỏ.
-
-### 1.3 KISS — chưa cắt
-
-`Confidentiality` giờ đã có nguồn (S-3 đã sửa) nên **K-6 không còn hiệu lực**.
-
-`K-7`, `K-9`, `K-10`, `K-23` — bốn mục "nên cắt" ưu tiên nhất đã được kiểm lại trên
-`src/harness/` HÔM NAY, không phải bản nháp `K-7`/`K-23` viện dẫn — hai trong bốn đã lỗi
-thời trước khi tới lượt sửa:
-
-> **K-9 ĐÃ CẮT.** `Result.raise_for_status()` đúng như review nói: `run()` viết lại,
-> không chỗ nào khác đọc. Cắt khỏi `Result` (`result.py`); `run()`/`arun()`
-> (`agent.py`) giờ tự dựng `RunFailed` qua một hàm riêng `_raise_if_failed`, không lộ
-> ra ngoài — giữ nguyên thông điệp lỗi cũ, `try_run()`/`.ok` không đổi.
-> `tests/test_kiss_cuts.py::K9RaiseForStatusCut` khoá bề mặt đã cắt + xác nhận `run()`
-> vẫn raise đúng nội dung qua test `RunFailed` sẵn có (`test_walkthrough.py`).
-
-> **K-7 ĐÃ LỖI THỜI — KHÔNG CẮT.** Lý do review đưa ra ("không mục nào đọc
-> `Reservation.exact`") không còn đúng: code đã tiến hoá thành
-> `Ledger.last_call_was_exactly_bounded` (property, không phải trường trên
-> `Reservation`), và `run.py` ĐỌC nó thật, đưa vào sự kiện `BUDGET_RESERVED` làm
-> attribute `exact=` — một consumer thật (observability), không phải trang trí.
-> `tests/test_kiss_cuts.py::K7ExactVanConDuocDoc` khoá cả hai: `reserve()` đặt cờ đúng
-> lúc hard bound vừa ngân sách, VÀ `run.py` thật sự đưa nó ra ngoài qua exporter.
-
-> **K-23 hầu như đã KHÔNG CÒN ĐÚNG — KHÔNG CẮT.** Bảng chín tunable của review: một
-> (`max_concurrency`) giờ CÓ đường từ `Agent(...)` — `max_parallel_tools`, review viết
-> khi nó chưa có. Sáu cái khác (`RunConfig`, `cancel_grace`, `max_grant_ttl`,
-> `quarantine`, trần `depth`, ngân sách retry) **chưa từng được xây** trong
-> `src/harness/` — không có gì để cắt, cùng tình trạng "0 caller" như S-7..S-10.
-> Hai cái còn lại (`EDIT_AT`/`COMPACT_AT`/`KEEP_RECENT_STEPS`,
-> `INPUT_MARGIN`/`MIN_USEFUL_OUTPUT_TOKENS`) đã ĐÚNG như chính K-23 đề nghị: hằng số
-> module `Final`, không cấu hình được, không phải cấu hình rải ba nơi.
-
-`K-10` (taxonomy OTel 9 span → 4) không có code để cắt — chưa có tích hợp OpenTelemetry
-nào trong `src/harness/` (`observe/events.py`'s `EventBus`/`Exporter` là cơ chế quan sát
-hiện có, độc lập với OTel). Rút gọn thẳng ở kế hoạch: `design/04-runtime-durability.md`
-§8.2 giờ chỉ còn bốn span, năm cái kia gộp attribute vào span còn sống gần nhất — để
-LÚC OTel thật được xây, xây đúng bốn ngay từ đầu.
-
-> **K-11 ĐÃ SỬA.** Mặc định `end_strategy` đã là `"graceful"` từ trước (không cần đổi).
-> Giá trị thứ ba đổi tên từ `"exhaustive"` gốc PydanticAI thành `"complete"` — `"exhaustive"`
-> đã là tên một **parallel mode** khác hẳn của chính pydantic-ai trong `03 §3.2`, dùng lại
-> cho một trục không liên quan là tự tạo va chạm từ vựng trong cùng bản thiết kế. Xoá khỏi
-> ví dụ Mức 3 (`01 §2`) — nó không phải một trong bốn khái niệm còn thiếu của cả ngành mà
-> mục đó minh hoạ.
-
-> **K-12 ĐÃ SỬA.** `03 §5.2` hạ `McpServerPolicy.identity` từ `ServerIdentity{label,
-> fingerprint}` xuống chỉ `ServerLabel` (chuỗi) cho v1 — `fingerprint` chưa chốt được định
-> dạng (không tương đương SPKI cho MCP stdio, đã ghi ở *Chưa đủ evidence*), một trường
-> không chốt được định dạng chưa nên vào kiểu công khai. Cái giá nói thẳng: M-4 (`03 §5.3`)
-> v1 KHÔNG chặn được label bị trỏ lại sang endpoint khác — đúng gap S-7 đã nêu, cùng lý do
-> hoãn (`## 1.1`). Thêm lại `ServerIdentity`/`fingerprint` khi quan sát được một lần
-> re-pointing thật.
-
-> **K-13 ĐÃ SỬA (hai lượt).** Lượt 1: ba va chạm mã phạm vi gọn, chỉ nằm trong đúng hai tệp
-> `design/*.md`, không đụng `src/harness/` hay `docs/*.md` — đổi tên an toàn: `03 §6.3` bốn
-> luật cancel `C-1…4` → `CAN-1…4`; `05 §A.1` bốn bất biến cost `C-1…4` → `COST-1…4`; `05`
-> "Luật đọc" (memory) `R-1…3` → `MEM-R1…3`, giữ nguyên `00-foundation.md §5 R-1…4` (toàn cục,
-> không đổi).
->
-> Lượt 2 (phiên này) dọn nốt phần `P-`/`I-` mà lượt 1 để lại, sau khi xác minh lại qua
-> `docs/*.md` VÀ `src/harness/**/*.py` (không chỉ `design/*.md`) để biết số nào đang SỐNG
-> trong code/docs thật, số nào chỉ là bản nháp — theo đúng kỷ luật "verify trước khi sửa"
-> của toàn phiên:
->
-> - `docs/09-testing.md`'s `P-1…P-10` (property-test-ID) là namespace sống nhất — 7+ tệp
->   `docs/*.md` tham chiếu — **giữ nguyên, không đổi**, làm mốc neo.
-> - `design/00-foundation.md §3.1`'s `P-2` ("thêm policy không bao giờ nới verdict") và
->   `design/02`'s `P-2` cùng mô tả MỘT tính chất (không phải va chạm thật, chỉ là cùng một
->   fact được trích ở hai nơi) — **giữ nguyên `P-2`** ở cả hai, kể cả trong
->   `src/harness/policy/{base,engine}.py`'s docstring/comment.
-> - `design/02`'s `P-1`, `P-3`, `P-4` (ba bất biến còn lại của policy engine) → đổi thành
->   `POL-1`, `POL-3`, `POL-4`. Kéo theo sửa comment trích dẫn trong
->   `src/harness/policy/builtin.py` (hai chỗ, `TaintPolicy`/`EgressPolicy`) và tham chiếu
->   trong `design/06-poka-yoke-matrix.md` hàng #2.
-> - `design/01`'s `P-3` (plugin chỉ làm yếu đi) → `PLUG-1` — va chạm với `design/02`'s `P-3`
->   gốc (nay `POL-3`) VÀ với `docs/09`'s `P-3` riêng (một property test khác hẳn).
-> - `design/03 §4.4`'s `I-1` gốc (idempotency, thứ tự effect-log/checkpoint — miền của
->   T-6.1, chưa xây trong code) → `IDEM-1`. Xác minh qua grep: `dispatch.py`, `lg/runtime.py`
->   trích "I-1" theo nghĩa của `docs/02-architecture.md §2.3` (gate-là-tiền-điều-kiện), NGHĨA
->   ĐÓ mới là bên đang sống trong code — nên `03`'s I-1 là bên phải đổi, không phải ngược lại.
-> - `design/04`'s "bất biến THAY THẾ I-1/I-2" hoá ra KHÔNG va chạm thật: đó chỉ là bản nháp
->   sớm hơn, diễn đạt khác, của cùng bất biến mà `docs/02-architecture.md §2.3` sau này viết
->   gọn lại — không "thay thế" gì cả một khi `03`'s I-1 gốc đã đổi tên đi. Sửa bằng cách bỏ
->   chữ "thay thế", thêm chú thích tham chiếu chéo tới `docs/02 §2.3`, giữ nguyên số `I-1`/
->   `I-2`.
-> - `design/05`'s `I-3` (pairing tool_call/tool_result) — xác nhận không va chạm, không đổi.
->
-> Đã chạy `python -m pytest -q` (502 passed), `ruff check .` (sạch), và toàn bộ
-> `examples/*.py` sau lượt 2 — đây chỉ là đổi văn xuôi/comment, không đổi hành vi, nên xanh
-> là kỳ vọng, không phải bất ngờ, nhưng vẫn xác minh theo đúng kỷ luật của phiên.
->
-> **K-22 ĐÃ SỬA.** `01 §1` tuyên bố "toàn bộ bề mặt là 14 tên, một import" rồi chính ví dụ
-> Mức 3 trong CÙNG tệp `import` 20 tên từ 4 module — tự mâu thuẫn. Sửa bằng cách nói đúng
-> phạm vi: 14 tên là bề mặt TỐI THIỂU (Mức 0–2), không phải toàn bộ; production (Mức 3) cần
-> tới 20 tên qua tối đa 3 submodule. Kiểm thêm hai phát hiện phụ của K-22 trên `design/*.md`
-> hôm nay: `Workspace` (định nghĩa ở `03 §5`) và `Event` (định nghĩa ở `00`) — CẢ HAI đã
-> ĐƯỢC ĐỊNH NGHĨA, khác lúc K-22 viết; phần đó của K-22 đã lỗi thời, không cần sửa thêm.
->
-> **K-28 ĐÃ SỬA.** `01 §1.1` tuyên bố interface mẫu thiếu "năm thứ", liệt kê bốn cái đã có
-> "ở trên" — nhưng không có kiểu `Session` nào trong `01`/`02`/`04`/`05`, chỉ có `run_id`.
-> Sửa câu thành "ba cái đầu ở trên" (streaming, cancellation, approval round-trip) và nói rõ
-> `session` là phạm vi của **tầng service** bọc quanh harness, không phải của chính harness —
-> trung thực thay vì ngầm nhận có cái không có.
-
-### 1.4 Đếm khái niệm — chưa đạt mục tiêu
-
-| phép đo | hiện tại | sau khi áp phần còn lại |
-|---|---:|---:|
-| `class` định nghĩa | ~55 | ~48 |
-| tên để viết agent đầu tiên | **8** ✅ | 8 |
-| tên cộng dồn tới production | ~38 | ~33 |
-
-Mức 0 là 5 dòng và 8 tên — đạt yêu cầu "học sinh 10 tuổi". Đường tới production thì **chưa**
-gọn như tuyên bố.
+| Mã | Tóm tắt | Trạng thái |
+|---|---|---|
+| N-1 | LangGraph không timeout per-tool | **Còn mở** |
+| N-2 | `try_run()` raise thẳng khi `returns=` sai kiểu | **Đã sửa** |
+| N-3 | LangGraph không hỗ trợ `returns=` | **Còn mở** |
+| N-4 | Lỗi provider crash thẳng ra ngoài, cả hai backend | **Đã sửa** |
+| N-5 | Retry cấp provider đã công bố nhưng chưa cài | **Còn mở** |
+| N-6 | `model.response` thiếu `usage`/`latency_ms` | **Còn mở** |
+| N-7 | `Agent.with_()` làm mất bốn trường, mọi lần gọi | **Đã sửa** |
+| N-8 | `execute_once` có caller thật nhưng chưa gắn vào tool dispatch | **Còn mở** (= S-4) |
+| N-9 | `tenant_id` chưa bao giờ tới được `Policy.check()` | **Đã sửa** |
 
 ---
 
-### 1.5 Phát hiện mới, phát sinh khi thực hiện roadmap M6…M10
+## 1. Chi tiết — bảo mật (S-series)
 
-Không thuộc hai vòng review gốc (S-1…S-29/K-1…K-29) — tìm thấy khi làm M6, đánh số riêng
-`N-` để không va chạm với `S-`/`K-` đã có (đúng bài học K-13 đang chờ dọn: một namespace
-mới không nên tự tạo thêm va chạm).
+### Đã sửa bằng code
 
-> **N-1 — LangGraph backend không thực thi timeout per-tool nào.** Phát hiện khi cổng
-> T-6.3 (retry theo effect class) sang `lg/runtime.py::_run_tools`: hàm này gọi
-> `asyncio.run(spec.fn(**args))` trực tiếp, không có `async with asyncio.timeout(...)`
-> nào bọc quanh — khác hẳn `dispatch.py::_invoke` (classic loop), nơi
-> `self._e._l.tool_timeout(spec.timeout_s)` luôn được áp (Round 23). Một tool `read`
-> chạy mãi mãi (vd. một HTTP call treo, không có timeout riêng của thư viện HTTP đó) sẽ
-> treo cả node graph vô thời hạn trên backend LangGraph — chỉ có wall-clock CẤP RUN mới
-> chặn được (`budget_gate`'s `remaining_wall_clock() <= 0`), và cấp đó chỉ kiểm ĐẦU mỗi
-> bước, không kiểm GIỮA một lời gọi tool đang chạy. Chưa sửa — ngoài phạm vi T-6.3 (retry
-> khác timeout), cần một lượt riêng cùng họ với M6 (có thể là T-6.5 nếu roadmap mở rộng,
-> hoặc gộp vào T-6.4's failure-injection harness để có một kịch bản "tool treo" đo được
-> trước khi sửa). `dispatch.py`'s `timeout = self._e._l.tool_timeout(spec.timeout_s)` là
-> khuôn cần chép sang, cùng cách nó clamp theo wall-clock còn lại của cả run.
+**S-3 — `Secret[T]` lộ qua tool result, cả hai nguồn.** `Grants.sensitive` (operator đánh
+dấu tool) đi cùng `policy/label.py`'s `Label` hai trục — landing chung với S-16/S-19 (bên
+dưới). Nguồn thứ nhất, `.reveal()` một `Secret` rồi giá trị xuất hiện nguyên văn trong
+payload trả về: `secrets.contains_live_secret()` dò đúng phép so khớp `redact()` dùng
+(không tự `.reveal()`); `emits_of()` nâng nhãn message đó lên `SECRET` khi phát hiện, dù
+`redact()` đã xoá token khỏi bytes model thấy — phần còn lại của message vẫn cần nhãn để
+chặn nó rời qua sink `PUBLIC`. `tests/test_attack_s3.py`, mutation-tested, cả hai backend.
 
-> **N-2 ĐÃ SỬA — classic loop's `try_run()` từng raise `ToolContractError` KHÔNG BỊ BẮT
-> khi model trả rác khớp sai `returns=`.** Phát hiện khi làm T-6.4 (chaos test "model trả
-> rác"): `_parse_returns()` (`run.py`) được gọi SAU khi `RUN_FINISHED` đã phát với
-> `stop=COMPLETED`, và raise của nó (`ToolContractError`) truyền thẳng ra ngoài
-> `atry_run()`/`try_run()` — vi phạm đúng hợp đồng đã công bố (`docs/03-public-api.md`:
-> "Never raises for run outcomes"; IDL-11: "run() raises, try_run() returns"). Kiểm trực
-> tiếp xác nhận: `Agent(returns=Ans).try_run(...)` với model trả `"not json"` raise thẳng
-> `ToolContractError`, không trả `Result`. Sửa: gọi `_parse_returns` TRƯỚC khi phát
-> `RUN_FINISHED`, bắt `ToolContractError` và hạ xuống `Result(stop_reason=ERROR, ...)`
-> bình thường — model trả rác giờ là một OUTCOME của run, không phải một crash. Khoá
-> bằng `tests/test_m6_t64_chaos.py`.
+**S-13 — sub-agent không bị cap `steps`/`wall_clock_s` của cha.** `Ledger.hold_steps()`/
+`release_steps()` áp đúng lý luận TOCTOU của `hold()` (trục tiền) sang trục step;
+`child_wall_clock()` cắt trần thời gian con xuống đúng số cha còn lại lúc spawn.
+`tests/test_attack_s13.py`.
 
-> **N-3 — LangGraph backend không hỗ trợ `returns=` (không parse, không validate,
-> `Result.value` luôn `None`).** Phát hiện khi cổng bản sửa N-2 sang LangGraph để kiểm
-> parity: `build_agent()` (`lg/__init__.py`) **không có tham số `returns=` nào cả**, và
-> `lg/runtime.py` không có lời gọi `_parse_returns`/tương đương ở đâu —
-> `docs/03-public-api.md` không ghi `returns=` là "classic-loop only" ở đâu cả, nên đây
-> là một khoảng trống parity thật, không phải giới hạn có tài liệu. Chưa sửa — ngoài
-> phạm vi T-6.4 (đó là chaos testing, không phải xây tính năng mới cho backend kia); cần
-> một `finish` node mới đọc `state["messages"][-1]` và validate, cộng quyết định graph
-> shape (một cạnh lỗi riêng, hay gộp vào `FINISH` hiện có). Ghi lại để không mất, không
-> sửa vội.
+**S-14 (một phần) — reservation chồng nhau đọc cùng ngân sách "còn trống".**
+`Ledger._committed()` cộng mọi reservation đang mở vào `remaining_usd()` và cả hai nhánh
+kiểm ngân sách của `reserve()`. `Ledger.void()` — kiểm kỹ, không có `try/except` nào ở cả
+hai backend nằm giữa `reserve()` và `settle()` mà cần huỷ một reservation giữa chừng; 0
+caller hôm nay, để dành cho khi có plugin `Retry` cấp model-call thật.
+`tests/test_attack_s14.py`.
 
-> **N-4 ĐÃ SỬA — lỗi provider (`ProviderTimeout`/`ProviderRateLimited`/bất kỳ raise nào
-> từ `complete()`/`invoke()`) crash thẳng ra ngoài `try_run()`/`graph.invoke()`, CẢ HAI
-> backend.** Phát hiện khi viết kịch bản chaos "provider timeout" cho T-6.4: kiểm trực
-> tiếp, `Agent(provider=<một provider tự raise TimeoutError>).try_run(...)` raise thẳng
-> `TimeoutError` ra ngoài, không trả `Result` nào — vi phạm đúng hợp đồng `try_run()`
-> "never raises for run outcomes" (docs/03), giống hệt lớp lỗi N-2 vừa sửa nhưng ở một
-> chỗ khác. `src/harness/models/anthropic.py` MAP lỗi SDK thật thành
-> `ProviderError`/`ProviderTimeout`/`ProviderRateLimited`/... (`errors.py`) — nhưng
-> **không có `except` nào cho các lớp đó ở bất kỳ đâu trong toàn bộ `src/harness/`**
-> (kiểm bằng grep, xác nhận trước khi sửa). Nghĩa là MỌI lần gọi provider thật gặp rate
-> limit hay timeout tạm thời sẽ crash chương trình gọi nó thay vì trả về một `Result`
-> lỗi — nghiêm trọng hơn N-2 vì đây là đường đi PHỔ BIẾN nhất khi chạy với provider thật
-> (khác `returns=`, một tính năng opt-in). Sửa cả hai backend: `run.py`'s vòng lặp bọc
-> `self._p.complete(...)` trong try/except, hạ xuống `Result(stop_reason=ERROR, ...)`;
-> `lg/runtime.py::call_model` bọc `self._model.invoke(...)` tương tự, trả
-> `{"stop_reason": "error", ...}` cho `_after_model` route sang `FINISH`. `retryable=`
-> trên sự kiện `error.raised` được gắn đúng theo loại lỗi (`ProviderTimeout`/
-> `ProviderRateLimited`/`ProviderUnavailable`/`TimeoutError` → `True`) dù CHƯA có gì tự
-> động retry ở tầng model-call (chỉ ghi lại cho audit — đúng khuôn `EFFECT_PROFILES.
-> retryable` tồn tại từ Round 5 trước khi T-6.3 mới có ai đọc nó). Khoá bằng
-> `tests/test_m6_t64_chaos.py` (cả hai backend, cộng mutation test từng cái).
+**S-15 — policy có state bị mọi thread dùng chung (backend LangGraph).**
+`build_agent()` giờ từ chối construction bất kỳ policy nào không phải factory
+(`ConfigError`); `Runtime._engine_for(run_id)` dựng một `PolicyEngine` riêng mỗi thread.
+Backend cổ điển đã có cơ chế ĐÚNG kiểu khác từ trước (`_check_shared_policy_state`, dò
+sau khi chạy — vì có ranh giới run() rõ, graph thì không) — không áp luật "chỉ nhận
+factory" sang đó, sẽ phá một ca dùng hợp lệ (policy cấu hình thuần, không state).
+`tests/test_attack_s15.py`.
 
-> **N-5 — retry cấp PROVIDER đã có tài liệu công bố nhưng chưa cài đặt.**
-> `docs/10-observability-ops.md §3`'s bảng "Vendor → Harness → Retry" viết rõ:
-> `ProviderRateLimited` retry "Yes, honoring Retry-After", `ProviderUnavailable` retry
-> "Yes, exponential backoff", `ProviderTimeout` retry "Yes, exponential backoff". Phát
-> hiện khi đọc docs/10 §2 để làm T-8.3 (OTel) — bảng này SÁT NGAY BÊN bảng OTel, đọc
-> lướt qua ban đầu. N-4 (đã sửa) chỉ biến provider error thành `Result(ERROR)`, KHÔNG tự
-> động retry gì cả — khác hẳn cam kết "Yes, honoring Retry-After" ở đây. Đây là một lớp
-> retry RIÊNG với T-6.3 (retry cấp TOOL theo effect class, đã xây) — retry cấp MODEL CALL,
-> chưa có gì. Chưa sửa — ngoài phạm vi T-8.3 (exporter, không phải retry policy); cần
-> quyết định thiết kế riêng (đọc header `Retry-After` từ đâu khi `ProviderError` không
-> mang nó hôm nay — `errors.py`'s `ProviderRateLimited` không có trường đó) trước khi cài.
+**S-16/S-19/S-3 nguồn hai — mô hình taint hai trục.** `policy/label.py` (canonical
+`Integrity` × `Confidentiality` × `Label`, `Grants`), `policy/builtin.py` (`check_flow`,
+`emits_of`), nhãn PER-MESSAGE trên backend LangGraph (chống taint bị "rửa" khi compaction
+xoá nội dung nhưng không xoá nhãn). Backend cổ điển giữ sticky-per-run có chủ ý — nó không
+tính lại theo message nên miễn nhiễm với đúng kiểu rửa taint per-message phải phòng.
+`tests/test_attack_s19.py`, 11 test.
 
-> **N-6 — `model.response` event thiếu `usage`/`latency_ms` so với `docs/05` tự hứa.**
-> `docs/05-data-and-state.md §1`'s bảng taxonomy ghi `model.response` mang
-> `stop_reason, usage{in,out,cache_read,cache_write}, cost_usd, latency_ms` — code thật
-> (`run.py`, `lg/runtime.py::call_model`) chỉ emit `stop_reason`/`cost_usd`. Phát hiện khi
-> viết `OtelExporter` (T-8.3): `gen_ai.usage.output_tokens`/`harness.cache_read_tokens`
-> (docs/10 §2's mapping) không bao giờ có dữ liệu để đọc — không phải lỗi của exporter,
-> exporter chỉ đọc đúng những gì event mang. Chưa sửa — cần thêm `usage`/`latency_ms` vào
-> lời gọi `emit(MODEL_RESPONSE, ...)` ở cả hai backend, ngoài phạm vi T-8.3.
+**S-20 — `Budget(usd=None)` bỏ qua cảnh báo đã hứa.** `usd=None` VẪN được phép (escape
+hatch có chủ đích, provider miễn phí) — cái thiếu là phần hai của lời hứa tài liệu:
+`EventKind.BUDGET_UNLIMITED` phát đúng một lần mỗi run/thread ngay sau `RUN_STARTED`.
+Phát hiện "chặn phát hành" duy nhất còn sống trong 58 phát hiện. `tests/test_attack_s20.py`.
 
-> **N-7 ĐÃ SỬA — `Agent.with_()` âm thầm làm mất `transcript`/`exporters`/
-> `accepts_tainted`/`sensitive`, MỌI lần gọi.** Phát hiện khi viết T-8.5
-> (`agent.stream()`, dùng `with_()` để thêm một exporter riêng cho lần gọi đó): test
-> transcript của `stream()` fail vì agent phái sinh có `transcript=None` dù agent gốc có
-> đặt. Kiểm trực tiếp xác nhận: `Agent(transcript=..., accepts_tainted=[...]).with_(name=
-> "X")` trả về agent với `transcript=None` VÀ `accepts_tainted` rỗng — không phải lỗi
-> riêng của `stream()`, `with_()`'s base dict đơn giản là THIẾU bốn trường này từ trước,
-> ảnh hưởng MỌI lời gọi `with_()`, không chỉ khi caller đụng tới một trong bốn trường đó.
-> `accepts_tainted`/`sensitive` thiếu vì một lý do sâu hơn: chúng không hề là attribute
-> đọc lại được (`self.accepts_tainted` không tồn tại) — `__init__` gộp chúng vào
-> `self._grants` (frozenset) rồi không giữ bản gốc, nên `with_()` phải đọc từ
-> `self._grants.accepts_tainted`/`.sensitive`, không phải từ tên trường trùng khớp như
-> chín trường còn lại. Sửa: thêm `transcript`/`exporters` vào base dict, đọc
-> `accepts_tainted`/`sensitive` từ `self._grants`. Khoá bằng
-> `tests/test_n7_with_preserves_fields.py` (7 test, mutation-tested) độc lập với T-8.5 —
-> đây là lỗi bất kỳ ai gọi `with_()` cũng gặp, không phải lỗi riêng của tính năng mới.
+**S-21 — `Ledger.snapshot()` mất cờ `blocked`.** Thêm vào cả `snapshot()`/`restore()`.
 
-> **N-8 — `execute_once` có caller thật (T-9.2) nhưng vẫn CHƯA đóng S-4.** Phát hiện khi
-> soát lại roadmap sau khi landing T-9.2: `design/08`'s văn bản cũ tuyên bố "Landing M6
-> cũng đóng được S-4 và S-23 LUÔN" — sai, và sai từ TRƯỚC cả T-9.2 (M6 CHỦ ĐÍCH không gắn
-> `execute_once` vào `Dispatcher`/`Runtime`, ADR-043). T-9.2's `POST /v1/runs` dùng
-> `execute_once` để dedupe một REQUEST KHỞI ĐỘNG RUN qua header `Idempotency-Key` — đúng
-> "caller thật đầu tiên" mà `idempotency.py`'s docstring tự đặt điều kiện, và chứng minh
-> được cơ chế dùng tốt (`tests/test_m9_t92_service_api.py`'s `IdempotencyKey` — replay
-> không gọi model thêm lần nào). Nhưng đó là idempotency ở MỨC RUN, không phải MỨC TOOL
-> CALL — S-4's kịch bản gốc ("client timeout rồi retry có thể gửi email hai lần") xảy ra
-> BÊN TRONG một run đang chạy (model tự gọi lại một tool, hoặc một lỗi mạng khiến
-> `Dispatcher._invoke` không chắc side effect đã xảy ra chưa), không phải giữa hai HTTP
-> request riêng biệt. `Dispatcher._invoke` (`dispatch.py`) chưa gắn `execute_once` —
-> chưa lên lịch trong roadmap này, ghi lại đây làm việc tiếp theo tự nhiên nhất nếu có
-> nhu cầu thật (một `write`/`danger` tool trên một upstream không tự idempotent).
+**S-22 — định giá thấp hơn thực tế khi ghi cache thật.** `size_call()`/`reserve()` định
+giá lại theo mức TỆ NHẤT (`cache_write_per_mtok`), không phải `input_per_mtok`.
 
-> **N-9 ĐÃ SỬA — `tenant_id` chưa bao giờ tới được `Policy.check()`.** Phát hiện khi chạy
-> lại `tests/test_roadmap.py` (bộ test tự đăng ký "định nghĩa xong" của M6…M10, viết
-> TRƯỚC khi các milestone tồn tại) để chuẩn bị dọn tài liệu — S-03 của nó vẫn ĐỎ dù T-8.1
-> (envelope v1) đã "xong": `Agent.tenant_id`/`Runtime.__init__`'s `tenant_id` chỉ từng
-> chảy tới `EventBus` (dán nhãn TELEMETRY), không bao giờ chảy tới `RunContext`
-> (`dispatch.py`, backend cổ điển) hay `_Ctx` (`lg/runtime.py`, backend LangGraph) — hai
-> kiểu MÀ `Policy.check(call, ctx)` thật sự nhận. Nghĩa là: một vận hành đa-tenant dán
-> nhãn được sự kiện theo tenant, nhưng KHÔNG VIẾT ĐƯỢC một `Policy` quyết định khác nhau
-> theo tenant — lỗ hổng thật, không phải lỗi test.
->
-> Sửa: `RunContext.tenant_id`/`_Ctx.tenant_id` (trường mới, mặc định `None` — mọi lời
-> gọi dựng cũ vẫn chạy được), nối từ `Agent.tenant_id`/`Runtime._tenant_id` tại cả ba
-> điểm dựng `ctx` trong `lg/runtime.py` và điểm duy nhất trong `dispatch.py`. Tách luôn
-> `S-03` (bộ test gốc) thành `S-03a` (tenant — nay xanh) và `S-03b` (`principal`/`scopes`
-> — một mô hình uỷ quyền RỘNG HƠN bất cứ gì T-8.1 từng hứa, cố ý còn đỏ, không phải bỏ
-> quên). `tests/test_n9_tenant_in_context.py` (5 test, cả hai backend, mutation-tested —
-> dựng thẳng một `RunContext` thiếu `tenant_id` và cho thấy hai tenant khác nhau đọc ra
-> CÙNG verdict nếu không có bản vá).
->
-> **Bài học về chính công cụ đang dùng:** `test_roadmap.py` đoán TRƯỚC hình dạng cuối
-> cùng của ba thứ (`ApprovalRecord`, `harness.testing.Trajectory`, `RunContext.principal`)
-> — hai trong ba (`ApprovalRecord` → `Decision`; namespace → `harness.eval`) hoá ra chỉ là
-> tên khác cho đúng thứ đã xây, sửa TEST cho khớp thiết kế cuối cùng; `tenant_id` hoá ra
-> là gap THẬT, sửa CODE. Phân biệt được hai loại "đỏ" đó — sai tên vs. sai chức năng — là
-> đúng lý do file này đáng chạy định kỳ, không chỉ một lần lúc viết.
+**S-24 — `EventBus`/`seq` dùng chung xuyên thread, rộng hơn mô tả gốc.** Lỗi Round 37 đã
+sửa cho `Ledger`/`TaintTracker`, S-15 sửa cho `PolicyEngine`, lần thứ tư: `Runtime._bus_cache`
+giữ một `EventBus` riêng mỗi thread, dựng lười.
+
+**S-25 — argument không escape tới approver + không trần số `ASK`.**
+`secrets.safe_for_display()` escape ký tự không in được + digest giá trị dài; trần
+`max_asks_per_run` (mặc định 20) — approval fatigue là một kênh model điều khiển được.
+
+**S-27 — taint/confidentiality cũ trong cùng batch tool call.** Kịch bản gốc
+(external+danger cùng lượt) đã bị `_check_tool_set` chặn lúc dựng; nhánh CÒN SỐNG là
+confidentiality (SECRET vào sink PUBLIC). Cả hai backend recheck `check_flow` ngay trước
+mỗi lời gọi serial, dùng nhãn SỐNG thay vì nhãn đầu-batch.
+
+**S-29 — tái dùng grant không ghi audit (backend LangGraph).** `_regate` giờ ghi một
+`Decision` thứ hai (`id`-`reuse`) mỗi lần một grant còn sống được tái dùng — chỉ áp cho
+LangGraph, vì backend cổ điển không có `DecisionLog`.
+
+### Sửa được một phần, phần còn lại cần thiết kế riêng
+
+**S-9 — grant MCP rò giữa hai server.** `Scope.server` (T-9.1) chặn được va chạm giữa
+HAI NHÃN khác nhau. Chưa chặn được: một nhãn bị trỏ lại sang endpoint khác trong khi giữ
+nguyên tên — cần `ServerIdentity`+`fingerprint` (K-12's lý do hoãn: định dạng
+`fingerprint` chưa chốt cho MCP stdio), chờ tới khi quan sát được một lần re-pointing thật.
+
+**S-11 — `Actor` là lời tự khai, không có xác thực.** `Approval(ok, actor=...)` mở kênh
+TUỲ CHỌN cho `approve=` báo danh tính thật (phiên Slack đã xác thực, OAuth) thay vì
+placeholder chung — nhưng không chặn được một callback CỐ TÌNH khai gian. Cần
+`AuthEvidence` (chữ ký kênh, `channel_message_id`) — thiết kế riêng, chưa bắt đầu, xem `## 7`.
+
+### Đã sửa bằng tài liệu (không có cách sửa ở tầng code)
+
+**S-18 — `EgressPolicy` không chặn DNS rebinding.** `Policy.check` bắt buộc thuần/đồng bộ
+(POL-4) khiến nó chỉ so khớp CHUỖI hostname, không resolve DNS. Không có cách sửa ở tầng
+`Policy` — cần một tầng mạng thật (egress proxy). Sửa bằng cách nói thẳng giới hạn trong
+docstring + `docs/06-safety.md`.
+
+**S-17 — injection qua `description` tool MCP.** Đóng cùng lúc T-9.1: description tới
+model trước lời gọi tool đầu tiên là bản chất giao thức tool-calling, không chặn được mà
+không phá giao thức — `default_effect=DANGER` cho server chưa duyệt là hàng rào thật.
+
+### Đã kiểm — lỗi thời hoặc đã đúng sẵn, không cần sửa
+
+S-1 (cơ chế nén review mô tả không tồn tại), S-5 (provenance giả mạo — cơ chế thật đơn
+giản hơn, không có lỗ hổng), S-6 (composition đã đúng, chỉ thiếu test), S-12 (ba chữ ký
+resume không tồn tại trong code), S-23 (idempotency `call_key` review mô tả không tồn
+tại), S-26 (`Scope.args` đã là `Any`, không ép kiểu), S-28 (sub-agent ASK đã có đường
+đóng qua luật "không có `approve=`" sẵn có, chỉ thiếu tài liệu). Mỗi mã có test khoá lại
+hành vi thật trong `tests/test_attack_*.py`.
 
 ---
 
-## 2. Ý tưởng có kiến trúc, chờ eval
+## 2. Chi tiết — KISS (K-series)
 
-Cắt khỏi đường đi bắt buộc theo luật §8.4, **không vứt đi**. Nếu có ngày đo được, đây là chỗ
-lấy lại.
+**Đã cắt:** K-9 (`Result.raise_for_status()` — không consumer nào khác `run()`).
 
+**Đã sửa (đổi tên/nói rõ hơn):** K-11 (`end_strategy`'s giá trị thứ ba đổi tên tránh va
+chạm), K-12 (`ServerIdentity` hạ xuống `ServerLabel` cho v1), K-13 (namespace bất biến —
+xem `08-poka-yoke-matrix.md`), K-22 ("14 tên" sửa thành đúng phạm vi Mức 0-2), K-28
+(interface mẫu sửa lại đúng ba thứ, `session` là tầng service).
+
+**Không cắt — lý do đã lỗi thời:** K-7 (`Reservation.exact` CÓ consumer thật —
+`run.py` đọc nó cho sự kiện `BUDGET_RESERVED`); K-23 (bảy trong chín tunable review liệt
+kê hoặc đã lỗi thời hoặc chưa từng được xây — không có gì để cắt).
+
+**Không có code để cắt lúc review viết:** K-10 (taxonomy OTel — chưa có tích hợp OTel nào
+tồn tại khi đó). Rút gọn kế hoạch thẳng trong `design/04-runtime-durability.md §8.2`
+xuống bốn span, để lúc OTel thật được xây (T-8.3), xây đúng bốn ngay từ đầu — và đúng như
+vậy.
+
+---
+
+## 3. Phát hiện mới, bắt được khi xây roadmap M6-M10
+
+Không thuộc hai vòng review gốc — đánh số riêng `N-` để không va chạm với `S-`/`K-` đã có
+(đúng bài học K-13).
+
+**N-1 — LangGraph không timeout per-tool.** `lg/runtime.py::_run_tools` không có `async
+with asyncio.timeout(...)` nào bọc quanh lời gọi tool — khác `dispatch.py::_invoke`
+(Round 23). Một tool `read` treo mãi mãi (HTTP call không timeout riêng) treo cả node
+graph vô thời hạn; chỉ wall-clock CẤP RUN chặn được, và chỉ kiểm đầu mỗi bước. Còn mở.
+
+**N-2 (đã sửa) — `try_run()` raise thẳng khi model trả rác khớp sai `returns=`.**
+`_parse_returns()` giờ chạy TRƯỚC khi `RUN_FINISHED` phát, bắt `ToolContractError` và hạ
+xuống `Result(stop_reason=ERROR)` — model trả rác là một OUTCOME, không phải crash.
+
+**N-3 — LangGraph không hỗ trợ `returns=`.** `build_agent()` không có tham số này;
+`Result.value` luôn `None` trên backend đó. Khoảng trống parity thật, không có tài liệu
+nào ghi nó là "chỉ backend cổ điển". Còn mở.
+
+**N-4 (đã sửa) — lỗi provider crash thẳng ra ngoài, cả hai backend.** MỌI lần gọi
+provider thật gặp rate limit/timeout tạm thời crash chương trình gọi nó — không có
+`except` nào cho `ProviderError`/`ProviderTimeout`/`ProviderRateLimited` ở bất kỳ đâu
+trong `src/harness/` trước bản vá. Nghiêm trọng hơn N-2: đây là đường đi PHỔ BIẾN nhất
+khi chạy với provider thật. Cả hai backend giờ bắt và hạ xuống `Result(ERROR)`.
+
+**N-5 — retry cấp provider đã công bố nhưng chưa cài.** `docs/10-observability-ops.md §3`
+hứa `ProviderRateLimited`/`ProviderUnavailable`/`ProviderTimeout` đều tự động retry — N-4
+chỉ biến lỗi thành `Result(ERROR)`, không tự retry gì. Cần thiết kế riêng (đọc
+`Retry-After` từ đâu — `ProviderRateLimited` chưa mang trường đó). Còn mở.
+
+**N-6 — `model.response` thiếu `usage`/`latency_ms` so với tài liệu tự hứa.**
+`docs/05-data-and-state.md §1` hứa đủ cả, code chỉ emit `stop_reason`/`cost_usd` — khiến
+một phần mapping của `OtelExporter` (T-8.3) không có dữ liệu để đọc. Còn mở.
+
+**N-7 (đã sửa) — `Agent.with_()` làm mất bốn trường, MỌI lần gọi.**
+`transcript`/`exporters`/`accepts_tainted`/`sensitive` biến mất khỏi agent phái sinh —
+không phải lỗi riêng của tính năng nào đang xây, ảnh hưởng mọi caller của `with_()`.
+`tests/test_n7_with_preserves_fields.py`.
+
+**N-8 — `execute_once` có caller thật (T-9.2) nhưng vẫn KHÔNG đóng S-4.** `POST /v1/runs`'s
+`Idempotency-Key` dedupe một REQUEST KHỞI ĐỘNG RUN — đúng "caller thật đầu tiên"
+`idempotency.py` tự đặt điều kiện, chứng minh cơ chế dùng tốt. Nhưng đó là idempotency ở
+MỨC RUN; S-4 cần MỨC TOOL CALL (một `write`/`danger` tool bị model/lỗi mạng gọi lại giữa
+một run đang chạy) — `Dispatcher._invoke` chưa gắn `execute_once`. = S-4, còn mở.
+
+**N-9 (đã sửa) — `tenant_id` chưa bao giờ tới được `Policy.check()`.** `Agent.tenant_id`
+chỉ từng chảy tới `EventBus` (telemetry), không bao giờ tới `RunContext`/`_Ctx` — một
+`Policy` không đọc được nó. Nối `tenant_id` vào cả hai kiểu context, cả hai backend.
+`tests/test_n9_tenant_in_context.py`. Bắt được khi chạy lại `tests/test_roadmap.py`
+(bộ test tự đăng ký "định nghĩa xong" của M6-M10, viết trước khi các milestone tồn tại)
+ngay trước lượt dọn tài liệu này — hai check ĐỎ khác của cùng file hoá ra chỉ đoán sai
+TÊN (`ApprovalRecord`→`Decision`, `harness.testing`→`harness.eval`), sửa test chứ không
+sửa code; `tenant_id` là gap chức năng thật duy nhất trong năm check ban đầu đỏ.
+
+---
+
+## 4. Ý tưởng có kiến trúc, chờ eval
+
+Cắt khỏi đường đi bắt buộc theo luật §8.4, **không vứt đi**. Nếu có ngày đo được, đây là
+chỗ lấy lại.
 
 ### Quarantine model (dual-LLM / CaMeL)
 
-### 5.1 Cái Microsoft làm đúng, và chỗ đặt sai
+**Cái Microsoft làm đúng, và chỗ đặt sai.** `set_quarantine_client` cung cấp một model
+riêng, rẻ hơn, để suy luận trên nội dung không tin cậy — mẫu dual-LLM / CaMeL, thứ
+**không gói nào khác trong 28 gói Python + TypeScript có**
+([§09](../research/09-memory-context-multiagent-hitl.md) §16bis). Ý tưởng đúng; chỗ đặt
+sai: `_quarantine_chat_client` là biến **mức module**, gán qua `global`.
 
-`set_quarantine_client` cung cấp một model riêng, rẻ hơn, để suy luận trên nội dung không
-tin cậy — mẫu dual-LLM / CaMeL. Đây là thứ **không gói nào khác trong 28 gói Python +
-TypeScript có** ([§09](../research/09-memory-context-multiagent-hitl.md) §16bis). Ý tưởng
-đúng; chỗ đặt sai: `_quarantine_chat_client` là biến **mức module**, gán qua
-`global`.
-
-### 5.2 Nó thuộc về đâu trong đời một `Run`
-
-Quarantine không phải cấu hình của tiến trình. Nó là **một seam của `Run`**:
+**Nó thuộc về đâu trong đời một `Run`.** Quarantine không phải cấu hình tiến trình — nó
+là một seam của `Run`:
 
 ```python
 @value
 class RunConfig:
-    ...
-    quarantine: ModelProvider | None = None      # None = fail closed, xem dưới
+    quarantine: ModelProvider | None = None      # None = fail closed
     max_grant_ttl: timedelta = timedelta(hours=1)
-
 
 @value
 class Quarantined[T]:
     """Kết quả rút trích từ nội dung UNTRUSTED. Chỉ dữ liệu có schema, không văn xuôi."""
-    value: T                    # T phải là kiểu đóng: primitive, enum, hoặc @value có schema
+    value: T
     label: Label                # luôn Integrity.UNTRUSTED — không hạ được
     source_call_id: CallId
 ```
 
-Ba luật, mỗi luật sửa một chỗ:
-
-1. **Vòng đời = vòng đời `Run`.** Provider được chốt (resolve) một lần lúc `Run` khởi
-   tạo và nằm trong `RunConfig` bất biến. Không setter, không `global`. Hai tenant chạy
-   song song trong một tiến trình có hai `RunConfig` — sửa khác biệt #3 ở §4.3.
-2. **Chỉ dữ liệu có schema quay lại context chính.** Model quarantine đọc nội dung
-   `UNTRUSTED` và trả về `Quarantined[T]` với `T` là kiểu đóng. Văn xuôi tự do **không**
-   được quay lại — đó chính là tính chất làm nên CaMeL: nội dung không tin cậy được rút
-   thành *giá trị*, không được rút thành *chỉ thị*. Transcript của quarantine không bao
-   giờ merge vào `messages` của run chính.
-3. **`Quarantined.label` không hạ được.** Không có API nào biến `UNTRUSTED` thành
-   `TRUSTED`. Quarantine giảm *bề mặt tấn công* (model rẻ, output có schema), nó **không**
-   tẩy nhãn. Đây là điểm dễ cài sai nhất và là lý do trường `label` nằm ngay trong kiểu.
-4. **Không cấu hình ⇒ `DENY`, không phải bỏ qua.** `quarantine=None` mà gặp tình huống
-   cần nó thì kết quả là `DENY` kèm reason nêu rõ. Đối lập với Microsoft: ở đó module
-   không được wire vào nên tình huống ấy **im lặng đi tiếp**.
-
-Chi phí của model quarantine tính vào **cùng một `Ledger`** của run
-([`05-cost-and-memory.md`](./05-cost-and-memory.md)). Một cơ chế an toàn có ngân sách
+Bốn luật: (1) vòng đời = vòng đời `Run`, chốt lúc khởi tạo, không setter/`global`;
+(2) chỉ dữ liệu có schema quay lại context chính — văn xuôi tự do không bao giờ merge
+vào `messages` của run chính; (3) `Quarantined.label` không có API nào hạ được xuống
+`TRUSTED`; (4) không cấu hình ⇒ `DENY`, không phải im lặng đi tiếp (đối lập Microsoft).
+Chi phí model quarantine tính vào cùng `Ledger` của run — một cơ chế an toàn có ngân sách
 riêng là một cơ chế an toàn không đếm được.
 
-**KISS:** quarantine chỉ được gọi ở đúng một tình huống — context `UNTRUSTED`, tool cần
-gọi là `danger` hoặc `accepts_tainted=False`, và người vận hành đã cấu hình provider. Nếu
-không, đường đi bình thường là `ASK` (có con người) hoặc `DENY`. Không thêm chế độ nào
-khác cho tới khi có số đo cho thấy cần.
+**Vì sao cắt.** Đúng MỘT cài đặt trong toàn nghiên cứu, `@experimental`, không wire vào
+harness của chính nó, không concurrency-safe. Không có eval nào so sánh tỉ lệ
+prompt-injection thành công có/không có nó ([review-kiss.md](review-kiss.md) K-1).
+
+**Điều kiện lấy lại.** Một eval trên tập prompt-injection thật, đo tỉ lệ thành công có và
+không có quarantine, trên cùng bộ tool. Chênh lệch không có ý nghĩa thống kê → giữ cắt.
 
 ---
 
-**Vì sao cắt.** Mẫu này có đúng **một** cài đặt trong toàn nghiên cứu, và cài đặt đó
-`@experimental`, không được wire vào harness của chính nó, và không concurrency-safe. **Không
-có eval nào** so sánh tỉ lệ prompt-injection thành công có và không có nó
-([review-kiss.md](review-kiss.md) K-1).
-
-**Điều kiện lấy lại:** một eval trên tập prompt-injection thật, đo tỉ lệ thành công có và
-không có quarantine, trên cùng bộ tool. Nếu chênh lệch không có ý nghĩa thống kê, giữ nguyên
-trạng thái cắt.
-
----
-
-## 3. Đánh đổi đã chọn, và cái giá của từng cái
+## 5. Đánh đổi đã chọn, và cái giá của từng cái
 
 | chọn | được | mất |
 |---|---|---|
-| Graph thay vì loop | durability, chứng minh được, vẽ được — ba hệ quả của một quyết định | phụ thuộc LangGraph; người dùng phải hiểu khái niệm node |
-| Effect class suy ra 5 hành vi | tác giả tool khai **một** thứ; không có guard viết tay per-tool | 4 lớp là thô — một tool vừa đọc vùng nhạy cảm vừa ghi không xếp gọn |
-| Invariant trên đường bắt buộc, plugin cho policy | "không cài" không còn là mặc định không an toàn | plugin không làm được vài thứ (không chặn được permission check) |
-| `Decision` append-only | audit thật, thu hồi bằng `max()` | sổ chỉ lớn lên; cần chính sách lưu trữ chưa viết |
-| effect log luôn bật cho `write` | khuyết điểm #5 sửa **theo mặc định** | một round-trip DB thêm mỗi `write` call — **chưa benchmark** |
+| Graph thay vì loop | durability, chứng minh được, vẽ được | phụ thuộc LangGraph; người dùng phải hiểu khái niệm node |
+| Effect class suy ra 5 hành vi | tác giả tool khai **một** thứ; không guard viết tay per-tool | 4 lớp là thô — tool vừa đọc nhạy cảm vừa ghi không xếp gọn |
+| Invariant trên đường bắt buộc, plugin cho policy | "không cài" không còn là mặc định không an toàn | plugin không chặn được permission check |
+| `Decision` append-only | audit thật, thu hồi bằng `max()` | sổ chỉ lớn lên; chính sách lưu trữ chưa viết |
+| Effect log luôn bật cho `write` | khuyết điểm #5 (`design/README.md`) sửa theo mặc định | một round-trip DB thêm mỗi `write` call — chưa benchmark |
 | At-most-once thay vì exactly-once | trung thực về cái harness một mình làm được | người dùng muốn exactly-once phải có upstream nhận key |
 
 ---
 
-## 4. Chưa đủ evidence — hợp nhất
-
-Từ sáu tệp thiết kế, không lặp lại lý lẽ:
+## 6. Chưa đủ evidence — hợp nhất
 
 - **Chi phí effect log** trên mỗi `write`. Không đo được từ source người khác.
 - **`fingerprint` cho MCP stdio.** TLS SPKI pin đúng cho HTTP; không có tương đương hiển
   nhiên cho tiến trình con.
-- **Biên checkpoint chính xác của LangGraph** giữa chừng một node — chưa đọc trong source.
-- **Isolation đa tenant ở tầng store.** R-4 là điều kiện cần, không phải đủ.
+- **Biên checkpoint chính xác của LangGraph** giữa chừng một node.
+- **Isolation đa tenant ở tầng store.**
 - **Số bậc của trục confidentiality.** Hai bậc là suy luận, không phải kết quả đo.
-- **TTL mặc định cho grant `danger`.** Không có bằng chứng nào về con số đúng.
-- **Chính sách hết hạn memory.** Một memo `UNTRUSTED` sống mãi là rủi ro thật, nhưng nghiên
-  cứu không có bằng chứng về chính sách nào đúng, nên không phát minh một chính sách.
-- **Learning curve.** [§11](../research/11-workflow-and-dx.md) §45 ghi rõ nó **không được
-  đo** trong nghiên cứu. Mọi tuyên bố DX ở đây dựa trên thứ đếm được (`py.typed`, số tên,
-  số dòng Mức 0), không dựa trên người dùng thật.
+- **TTL mặc định cho grant `danger`.** Không có bằng chứng về con số đúng.
+- **Chính sách hết hạn memory.** Một memo `UNTRUSTED` sống mãi là rủi ro thật, nhưng
+  không có bằng chứng về chính sách đúng.
+- **Learning curve.** Không được đo trong nghiên cứu gốc; mọi tuyên bố DX ở đây dựa trên
+  thứ đếm được, không dựa trên người dùng thật — SC-1b (`HARNESS.md`) vẫn mở vì lý do này.
 
 ---
 
-## 5. Việc tiếp theo, theo thứ tự
+## 7. Còn mở hôm nay — nói thẳng, không giấu
 
-1. **Nhóm 1 (S-11, S-12, S-17, S-18, S-21…S-29) — XONG, cả 13.** Cùng kỷ luật verify-trước
-   với mọi mục trước: sáu sửa code thật (S-21/22/24/25/27/29 — kiểm khi làm S-24/S-27 lộ
-   ra hai lỗi RỘNG hơn văn bản gốc: `EventBus` dùng chung xuyên thread ở S-24, nhánh
-   confidentiality của S-27 sống dù kịch bản gốc đã bị chặn từ chỗ khác); năm kiểm rồi xác
-   nhận lỗi thời/đã đúng, không cần sửa (S-12, S-17 gộp vào hoãn MCP, S-23, S-26, S-28);
-   S-18 sửa bằng tài liệu (không có cách sửa ở tầng `Policy` thuần); S-11 sửa được phần
-   landing được (`Approval` — channel tuỳ chọn cho `approve=` báo actor thật), phần còn lại
-   cần `AuthEvidence` — xem mục 3. Chi tiết từng mã ở `## 1.1`/`## 1.2`.
-2. **S-7, S-8, S-9 (một phần), S-10, S-17 — XONG**, landing cùng lúc với `harness.mcp`
-   (T-9.1, ADR-054) đúng như dự tính khi hoãn. S-9's phần re-pointing-nhãn vẫn hoãn, cùng
-   lý do K-12 (xem `## 1.1`).
-3. **`AuthEvidence` cho S-11** — mô hình xác thực người duyệt thật (chữ ký kênh,
-   `channel_message_id`) để chặn một callback TỰ KHAI GIAN danh tính, không chỉ mở kênh
-   báo tự nguyện như bản vá vừa landing. Cần thiết kế riêng, chưa bắt đầu.
-4. **K-7, K-9, K-10, K-23 — XONG.** Kiểm lại trên code hiện tại trước khi cắt (cùng kỷ
-   luật với các mục security): K-9 cắt thật (`Result.raise_for_status()`); K-7 và K-23
-   hoá ra đã lỗi thời — cắt sẽ phá một consumer thật (K-7) hoặc không có gì để cắt (K-23,
-   phần lớn tunable của nó chưa từng được xây); K-10 không có code, chỉ rút gọn kế hoạch
-   trong design doc. Xem `## 1.3`.
-5. **`Ledger.void()`, S-16/S-19/S-3 trên backend cổ điển, S-15 trên backend cổ điển —
-   ĐÃ KIỂM, KHÔNG THÊM.** Cả ba được xét kỹ; xem `## 1.1` cho từng cái.
-6. **K-11, K-12, K-22, K-28, K-13 — XONG.** Toàn bộ văn xuôi trong `design/*.md`, cộng một
-   lượt riêng (lượt 2, phiên roadmap) dọn nốt va chạm `P-`/`I-` mà lượt 1 để lại — đụng cả
-   `src/harness/policy/builtin.py` (hai comment) lẫn `design/06`'s ma trận tham chiếu. Xem
-   `## 1.3`.
-7. **Tiếp tục viết code.** S-16/S-19/S-3 (cả hai nguồn)/S-6/S-11/S-14/S-15/S-13/S-21/S-22/
-   S-24/S-25/S-27/S-29/S-7…S-10/S-17 đã vào `src/harness/`, K-9 cắt khỏi bề mặt công khai —
-   534 test xanh, mỗi cơ chế chính có mutation test đi kèm. Vẫn còn phát hiện review chưa
-   chạm tới code (S-9's phần re-pointing-nhãn hoãn có chủ ý, `AuthEvidence` của S-11), và
-   nghiên cứu của chính dự án đo được **23 vòng review tìm 20 lỗi và 0
-   lỗi bảo mật; 16 vòng chạy tìm 38+ lỗi và 4 lỗi bảo mật** — bản thiết kế là sản phẩm của
-   review, nó sẽ sai ở những chỗ chỉ có chạy mới tìm ra.
+Sáu mục, không hơn không kém:
+
+1. **`AuthEvidence` cho S-11** — mô hình xác thực người duyệt thật (chữ ký kênh,
+   `channel_message_id`), chặn một callback CỐ TÌNH khai gian danh tính. Thiết kế riêng,
+   chưa bắt đầu. Không bắt buộc cho v1.0 trừ khi deployment cần audit trail chịu được
+   kiểm toán bên ngoài.
+2. **S-4 / N-8 — idempotency ở mức MỘT lời gọi tool.** `execute_once` (T-6.1) đã có caller
+   thật ở mức RUN (T-9.2); gắn nó vào `Dispatcher._invoke` là việc tiếp theo tự nhiên
+   nhất nếu có nhu cầu thật (một `write`/`danger` tool trên upstream không tự idempotent).
+3. **S-9 phần re-pointing-nhãn** — cần `ServerIdentity`+`fingerprint`, hoãn tới khi quan
+   sát được một lần re-pointing MCP thật (cùng lý do K-12).
+4. **N-1 — LangGraph không timeout per-tool.**
+5. **N-3 — LangGraph không hỗ trợ `returns=`.**
+6. **N-5 / N-6 — retry cấp provider chưa cài; `model.response` thiếu `usage`/`latency_ms`.**
+
+Không mục nào ở trên chặn v1.0 (xem `design/08-roadmap-and-release-plan.md §3` cho điều
+kiện release) — mỗi mục đã có lý do hoãn cụ thể, không phải bị bỏ quên.

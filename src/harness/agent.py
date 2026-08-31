@@ -367,7 +367,7 @@ class Agent:
         return await self.atry_run((message or "continue") + note)
 
     def with_(self, **overrides: Any) -> "Agent":
-        # N-7 (design/07-risks-and-open-issues.md §1.5): this base dict silently
+        # N-7 (design/07-risks-and-open-issues.md §3): this base dict silently
         # dropped `transcript`, `exporters`, `accepts_tainted`, and `sensitive` —
         # every `with_()` call, not just a caller that happened to touch one of them.
         # `accepts_tainted`/`sensitive` are not readable as `self.accepts_tainted` —

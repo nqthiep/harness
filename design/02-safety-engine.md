@@ -115,7 +115,7 @@ class PolicyEngine:
 ```
 
 Bốn quyết định, mỗi cái sửa một khuyết điểm đo được. Đánh số lại `POL-1…4` (K-13,
-`07-risks-and-open-issues.md` §1.5) — `P-1`/`P-3`/`P-4` gốc va chạm với `design/01`'s
+`07-risks-and-open-issues.md` §2, K-13) — `P-1`/`P-3`/`P-4` gốc va chạm với `design/01`'s
 plugin invariant (nay `PLUG-1`) và `docs/09-testing.md`'s property-test-ID catalog
 (P-1..P-10, không đổi — namespace đó sống nhất, được 7+ tệp `docs/*.md` tham chiếu).
 `P-2` giữ nguyên tên cũ có chủ đích: nó là bất biến GỐC định nghĩa ở

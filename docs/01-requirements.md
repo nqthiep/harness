@@ -106,16 +106,22 @@ surface of Option A.
 
 Each is stated with the reason, so a future contributor does not re-litigate it by accident.
 
+**Three rows below were revisited by `docs/17-research-alignment.md`'s M6–M10 roadmap
+and got a NARROW version, shipped as an opt-in extra — not a reversal of the reasoning
+next to them, which is still why the FULL version stays out.** Marked ⚠️ below; see
+`docs/17` and `design/08-roadmap-and-release-plan.md` for what actually shipped and why
+it doesn't contradict the row it sits in.
+
 | Non-goal | Why not in v1 |
 |---|---|
-| **Hosted service / control plane** | A different product with a different cost structure. The library must be the thing that works first; a service can wrap it later without changing the core. |
+| **Hosted service / control plane** ⚠️ | A different product with a different cost structure. The library must be the thing that works first; a service can wrap it later without changing the core. **What shipped:** `harness[server]` (T-9.2) — `POST /v1/runs` and friends, exactly the "a service can wrap it later without changing the core" shape this row predicted. No auth, no persistent run registry, no control plane — an operator brings their own ASGI server and their own auth. |
 | **Durable execution engine** (Temporal-style) | Transcript + `resume()` covers the realistic failure (process died) at a fraction of the complexity. Exactly-once side effects need a distributed transaction model that a library cannot provide honestly. |
-| **Plugin sandboxing** | Sandboxing Python meaningfully requires subprocess or WASM isolation and an IPC protocol. Claiming a boundary we do not enforce is worse than documenting that there is none. |
+| **Plugin sandboxing** ⚠️ | Sandboxing Python meaningfully requires subprocess or WASM isolation and an IPC protocol. Claiming a boundary we do not enforce is worse than documenting that there is none. **What shipped:** a `Sandbox` seam (T-7.3, ADR-047) with two implementations (`InProcess`, `Subprocess`) — neither claims namespace/cgroup isolation; `Subprocess`'s own docstring says so. The seam exists so a real container runtime (Docker/Firecracker/gVisor) can plug in; this library still does not ship one. |
 | **LLM-based model routing** | Paying a model call to decide which model to call is usually a net loss, and no routing policy could be named today that the council agreed was correct. `subagent(model=...)` captures most of the savings explicitly. |
 | **Vector store / RAG engine** | RAG is an application concern built *from* tools, not a harness primitive. A `search` tool is one function. Embedding a vector DB would add the heaviest dependency in the stack to serve a subset of users. |
 | **Multi-agent orchestration graphs** | Subagents cover fan-out. Arbitrary agent graphs are a research area, not a v1 requirement. |
 | **Visual builder / no-code UI** | Out of scope for a library. The beginner requirement is met by the code API itself ([§15](15-first-agent.md)), not by avoiding code — the target user already knows basic Python. |
-| **Fine-tuning, evals platform, prompt management** | Adjacent products. |
+| **Fine-tuning, evals platform, prompt management** ⚠️ | Adjacent products. **What shipped:** `harness.eval` (M10) — a trajectory-contract checker and a golden-set runner, both plain functions a test suite calls. No hosted dashboard, no prompt-management UI, no fine-tuning pipeline — the "platform" half of this row is still someone else's product. |
 
 ## 6. Assumptions
 

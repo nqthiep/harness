@@ -1240,7 +1240,7 @@ call — renamed rather than suppressed.
 
 **Deferred, and named honestly rather than silently worked around:** `gen_ai.usage.
 output_tokens`/`harness.cache_read_tokens` populate only when the source event carries
-that data — which, per N-6 (design/07 §1.5), it never does today on either backend
+that data — which, per N-6 (design/07-risks-and-open-issues.md §3), it never does today on either backend
 (docs/05's own table promises `model.response` carries `usage`/`latency_ms`; the actual
 emit sites only pass `stop_reason`/`cost_usd`). Fixing that is a `run.py`/
 `lg/runtime.py` change, out of scope for an exporter that can only read what's emitted.
@@ -1369,7 +1369,7 @@ than making the race merely likely.
 **Context.** `design/03-tools-and-mcp.md §5` specified this in full before any MCP
 integration existed in code — the same "living design, no code yet" situation T-8.3's
 OTel mapping was in. Five review findings sat on hold for exactly this reason
-(`07-risks-and-open-issues.md §1.1`): S-7, S-8, S-9, S-10 (`ServerIdentity`, rug-pull,
+(`07-risks-and-open-issues.md §0`): S-7, S-8, S-9, S-10 (`ServerIdentity`, rug-pull,
 hint-downgrade, `proposed_scope`) and S-17 (description injection). None could be fixed
 before something in `src/harness/` actually called `tools/list` — landing them
 individually earlier would have been patches with no real caller to test against, the
