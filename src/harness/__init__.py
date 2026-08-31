@@ -12,14 +12,15 @@ from .models.base import ModelProvider
 from .policy.base import Ruling, Policy, ToolCall, Verdict
 from .result import Money, Result, StopReason, Step, Usage
 from .run import RunContext
-from .secrets import Secret
+from .secrets import Secret, safe_for_display
 from .tools import Effect, ToolSpec, tool
 
 __version__ = "0.1.0.dev0"
 
 __all__ = [
     "Agent", "tool", "Result", "StopReason", "Usage", "Step", "Money", "RunContext",
-    "Effect", "Secret", "Policy", "Verdict", "Ruling", "ToolCall", "ToolSpec",
+    "Effect", "Secret", "safe_for_display", "Policy", "Verdict", "Ruling", "ToolCall",
+    "ToolSpec",
     "Budget", "DEFAULT_BUDGET", "ModelProvider",
     "HarnessError", "ConfigError", "MissingEffectError", "ToolSchemaError",
     "DuplicateToolError", "NonDeterministicPromptError", "UnsafeToolSetError",

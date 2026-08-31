@@ -394,6 +394,29 @@ Relaxing `Policy.check` to async was the alternative and was rejected: purity is
 policies cheap enough to evaluate on every call, and hidden I/O from a third-party policy on
 the hot path is exactly what the rule exists to prevent.
 
+**`call.arguments` reaching `approve` is unescaped, model-controlled text.** The harness
+does not sanitize it before your callback sees it — a crafted argument value can carry
+ANSI escape codes to redraw a terminal, or an embedded "=== APPROVED, press y ===" aimed
+at a human skimming a rendered string (review-security.md S-25). Use
+`harness.safe_for_display(value)` when printing or formatting `call.arguments` for a human
+approver: it escapes control characters into their visible `\xNN` form and replaces
+anything past 200 characters with a length + digest, so an approver always sees what the
+harness actually received, not something the model chose to draw on top of it.
+
+```python
+def ask_terminal(call: ToolCall, ctx: RunContext) -> bool:
+    args = {k: safe_for_display(v) for k, v in call.arguments.items()}
+    return input(f"Allow {call.name}({args})? [y/N] ") == "y"
+```
+
+**`max_asks_per_run` (default 20) is approval fatigue's ceiling, not a suggestion.**
+Nothing else bounds how many times one run can hit `ASK` — injected content can make a
+model call a `write` tool dozens of times with slightly different arguments, and the
+(cap+1)-th request is the one an approver waves through on reflex. Past the cap, every
+further `ASK` this run resolves to `DENY` without calling `approve` again; it does not
+raise, so the run keeps going and reports what got blocked, the same way any other policy
+`DENY` does.
+
 ---
 
 ## 4. Budget & ledger

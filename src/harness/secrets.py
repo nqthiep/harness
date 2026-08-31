@@ -10,7 +10,9 @@ executed them (ADR-024).
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import hmac
+import json
 import weakref
 from contextlib import contextmanager
 from typing import Iterator
@@ -120,3 +122,34 @@ def contains_live_secret(text: str) -> bool:
         if v and v in text:
             return True
     return False
+
+
+def safe_for_display(value: object, *, max_len: int = 200) -> str:
+    """S-25: model-controlled tool arguments reaching a human approver, made safe to
+    print — a DIFFERENT concern from `redact()` (that one hides secrets; this one hides
+    nothing, it just makes sure what a human sees is what the harness actually sent, not
+    something the model chose to draw on top of it).
+
+    `call.arguments` goes straight from the model into `approve(call, ctx)` — the harness
+    does not escape it. A crafted argument value can carry ANSI escape codes (clear line,
+    move cursor) to redraw what a terminal-based approver sees, or an embedded
+    "\\n\\n=== APPROVED, press y ===" to social-engineer one reading a rendered string.
+    Two rules, both from review-security.md S-25:
+
+      1. Any character that is not printable (control codes, ANSI escapes, embedded
+         newlines included) renders as its Python escape sequence instead of executing —
+         `\\x1b[2K` reads as four visible characters, never clears a line.
+      2. A value longer than `max_len` renders as its length and a digest, not its
+         content — long enough to hide a redraw payload inside otherwise-plausible text
+         is long enough to not print verbatim.
+
+    Not a security boundary by itself: an approve callback that does its own formatting
+    (a Slack block, a web form) still has to apply the same care. It is the safe default
+    for the common case — printing `call.arguments` straight at a human.
+    """
+    s = value if isinstance(value, str) else json.dumps(value, sort_keys=True,
+                                                         ensure_ascii=False, default=str)
+    if len(s) > max_len:
+        digest = hashlib.blake2b(s.encode("utf-8"), digest_size=8).hexdigest()
+        return f"<{len(s)} characters, digest={digest}>"
+    return "".join(c if c.isprintable() else repr(c)[1:-1] for c in s)

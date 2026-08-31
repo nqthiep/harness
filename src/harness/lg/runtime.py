@@ -34,7 +34,7 @@ class Runtime:
     def __init__(self, *, model, toolset, ledger: Ledger, builtins=(), policy_factories=(),
                  price, max_output: int, model_name: str = "claude-opus-5",
                  exporters=(), approve=None, decisions: DecisionLog | None = None,
-                 grants: Grants | None = None) -> None:
+                 grants: Grants | None = None, max_asks_per_run: int = 20) -> None:
         self._model, self._tools = model, toolset
         self._model_name = model_name
         self._budget = ledger.budget          # the spec; the spend lives per turn
@@ -66,6 +66,10 @@ class Runtime:
         # mức deployment, không đổi giữa các run, nên sống trên object này là an toàn
         # (khác `Ledger`/nhãn của một run, phải sống trong state — xem R-4 ở dưới).
         self._grants = grants if grants is not None else Grants()
+        # S-25(b): cấu hình mức deployment, giống `_grants` ngay trên — không đổi giữa các
+        # run nên sống trên object này an toàn. Số ĐẾM (asks) thì KHÔNG — nó phải sống
+        # trong state đã checkpoint (`AgentState.asks`), thread-scoped, theo đúng R-4.
+        self._max_asks_per_run = max_asks_per_run
         # Sổ quyết định. Nó KHÔNG phải trạng thái của một run — nó là audit sink, chung
         # cho graph, và mọi tra cứu đều keyed theo run_id, nên R-4 vẫn giữ.
         self._decisions = decisions if decisions is not None else DecisionLog()
@@ -125,6 +129,13 @@ class Runtime:
     # ── gate 1: nothing reaches the model without a reservation ──────────────
     def budget_gate(self, state) -> dict:
         led = self._ledger(state)
+        # S-25(b): reset here, at the one point in the step where `_is_new_turn` is
+        # actually true — by the time `approval_gate` runs later in this same step,
+        # `call_model` has already appended an AIMessage, so `_is_new_turn(state)` would
+        # read False even on a turn's very first step. Same reasoning as `_ledger`'s
+        # `steps` reset just above: detect newness once, here, and let every later node
+        # in this step read the already-reset value straight from state.
+        asks = 0 if _is_new_turn(state) else state.get("asks", 0)
         if state.get("step", 0) == 0:
             # `step` lives in checkpointed state (thread-scoped), so this fires once per
             # THREAD — not once per compiled graph. A `self._started` instance flag here
@@ -137,10 +148,10 @@ class Runtime:
         self._emit(state, EventKind.STEP_STARTED, step=state.get("step", 0))
         if led.remaining_steps() <= 0:
             return {"stop_reason": "step_limit", "detail": "reached the step limit",
-                    "ledger": led.snapshot()}
+                    "ledger": led.snapshot(), "asks": asks}
         if led.remaining_wall_clock() <= 0:
             return {"stop_reason": "timeout", "detail": "ran out of time",
-                    "ledger": led.snapshot()}
+                    "ledger": led.snapshot(), "asks": asks}
         text = json.dumps([m.content for m in state["messages"]],
                           ensure_ascii=False, default=str)
         input_tokens = max(1, len(text) // 4)
@@ -151,7 +162,7 @@ class Runtime:
         except BudgetExceeded as exc:
             self._emit(state, EventKind.BUDGET_EXHAUSTED, axis="usd", spent=str(led.spent))
             return {"stop_reason": "budget_exhausted", "detail": str(exc),
-                    "ledger": led.snapshot()}
+                    "ledger": led.snapshot(), "asks": asks}
         self._emit(state, EventKind.BUDGET_RESERVED, estimate_usd=str(res.estimate),
                    spent_usd=str(led.spent))
         # `stop_reason` is cleared here, and only here.  It is checkpointed like every
@@ -159,7 +170,7 @@ class Runtime:
         # "completed" — and `_after_budget` routed the next turn straight to `finish`.
         # Multi-turn was silently dead: the model was called once per thread, ever, and
         # the caller got their own message echoed back (Round 37).
-        return {"spent_usd": str(led.spent.decimal), "ledger": led.snapshot(),
+        return {"spent_usd": str(led.spent.decimal), "ledger": led.snapshot(), "asks": asks,
                 "max_tokens": max_tokens, "stop_reason": None, "detail": ""}
 
     def call_model(self, state) -> dict:
@@ -223,13 +234,24 @@ class Runtime:
         process restart.  It is an extra mode, not a different rule.
         """
         out = []
+        # S-25(b): the reset (a new turn is a fresh allowance) happens in `budget_gate`,
+        # earlier in this same step — see its comment for why it can't happen here.
+        asks = state.get("asks", 0)
         for p in state.get("_pending", []):
             if Verdict(p["verdict"]) is not Verdict.ASK:
                 out.append(p); continue
+            asks += 1
             spec = self._tools.get(p["tool"])
             call = ToolCall(p["call"]["id"], p["tool"], p["call"].get("args", {}), spec)
             ctx = _Ctx(label=self._effective_label(state), safety=self._safety(state))
-            if self._approve is INTERRUPT:
+            if asks > self._max_asks_per_run:
+                # Approval fatigue is a channel the model controls — deny once the cap is
+                # crossed rather than let the (asks+1)-th request get approved on reflex.
+                d = Ruling(Verdict.DENY,
+                          f"more than {self._max_asks_per_run} approval requests this "
+                          f"turn — refusing rather than risk reflex-approval fatigue",
+                          "ask-cap")
+            elif self._approve is INTERRUPT:
                 ok = bool(interrupt({"tool": p["tool"],
                                      "arguments": p["call"].get("args", {}),
                                      "reason": p["reason"]}))
@@ -254,7 +276,8 @@ class Runtime:
         denied = [ToolMessage(content=f"declined: {p['call']['name']}",
                               tool_call_id=p["call"]["id"], status="error")
                   for p in out if Verdict(p["verdict"]) is Verdict.DENY]
-        return {"_pending": [p for p in out if Verdict(p["verdict"]) is Verdict.ALLOW],
+        return {"asks": asks,
+                "_pending": [p for p in out if Verdict(p["verdict"]) is Verdict.ALLOW],
                 "messages": denied}
 
     def run_tools(self, state) -> dict:

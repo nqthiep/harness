@@ -26,7 +26,8 @@ def build_agent(*, model, tools: Sequence[Any] = (), budget: Any = None,
                 model_name: str = "claude-opus-5", safety: str = "standard",
                 policies: Sequence[Any] = (), allowed_hosts: Sequence[str] | None = None,
                 accepts_tainted: Sequence[str] = (), sensitive: Sequence[str] = (),
-                approve=None, checkpointer=None, exporters: Sequence[Any] = ()):
+                approve=None, checkpointer=None, exporters: Sequence[Any] = (),
+                max_asks_per_run: int = 20):
     """Compile an agent graph.  Returns (compiled_graph, runtime).
 
     `exporters=` is the spelling `Agent` uses for the same seam (Round 35 parity). It used
@@ -83,7 +84,8 @@ def build_agent(*, model, tools: Sequence[Any] = (), budget: Any = None,
                  policy_factories=tuple(policies),
                  price=pricing.price(model_name),
                  max_output=pricing.MAX_OUTPUT.get(model_name, 8_000), model_name=model_name,
-                 exporters=exporters, approve=approve, grants=grants)
+                 exporters=exporters, approve=approve, grants=grants,
+                 max_asks_per_run=max_asks_per_run)
     compiled = build(rt).compile(checkpointer=checkpointer)
 
     broken = unguarded_paths(compiled)

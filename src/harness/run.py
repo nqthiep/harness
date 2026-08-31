@@ -30,6 +30,10 @@ class RunEngine:
         self._engine, self._taint, self._asm, self._bus = engine, taint, assembler, bus
         self._watch = watcher
         self._sem = asyncio.Semaphore(max(1, getattr(agent, "max_parallel_tools", 8)))
+        # S-25(b): counts every ASK that reaches resolution (approve() called, or the
+        # no-approver fallback), across the whole run — a `RunEngine` is built fresh per
+        # `atry_run()` so this is safely per-run, not shared state (R-4).
+        self._asks = 0
         self._dispatch = Dispatcher(self)
 
     async def run(self, message: str, *, messages: Sequence[Mapping[str, Any]] = (),

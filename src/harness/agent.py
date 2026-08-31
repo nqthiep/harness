@@ -35,8 +35,8 @@ _MISSING: Any = object()
 class Agent:
     __slots__ = ("name", "job", "toolset", "model", "effort", "budget", "safety",
                  "approve", "policies", "allowed_hosts", "provider", "returns",
-                 "max_parallel_tools", "transcript", "exporters", "_asm", "_watch",
-                 "_as_tool_budget", "_grants")
+                 "max_parallel_tools", "max_asks_per_run", "transcript", "exporters",
+                 "_asm", "_watch", "_as_tool_budget", "_grants")
 
     # Declared for the type checker.  The fields are set through `object.__setattr__`
     # (the Agent is frozen), which a checker cannot see — so without these, **a user
@@ -56,6 +56,7 @@ class Agent:
     provider: Any
     returns: type | None
     max_parallel_tools: int
+    max_asks_per_run: int
     transcript: str | None
     exporters: tuple[Any, ...]
     _asm: Any
@@ -85,6 +86,7 @@ class Agent:
         transcript: Any | None = None,
         exporters: Sequence[Any] = (),
         max_parallel_tools: int = 8,
+        max_asks_per_run: int = 20,
     ) -> None:
         if args:
             shown = ", ".join(repr(a) for a in args)
@@ -138,6 +140,7 @@ class Agent:
         object.__setattr__(self, "transcript", transcript)
         object.__setattr__(self, "exporters", tuple(exporters))
         object.__setattr__(self, "max_parallel_tools", max_parallel_tools)
+        object.__setattr__(self, "max_asks_per_run", max_asks_per_run)
 
         output_format = _output_format(returns) if returns is not None else None
         asm = ContextAssembler(model=model, job=job, tools=toolset, effort=effort,
@@ -291,7 +294,8 @@ class Agent:
     def with_(self, **overrides: Any) -> "Agent":
         base = {k: getattr(self, k) for k in
                 ("name", "job", "model", "effort", "returns", "budget", "safety", "approve",
-                 "policies", "allowed_hosts", "provider", "max_parallel_tools")}
+                 "policies", "allowed_hosts", "provider", "max_parallel_tools",
+                 "max_asks_per_run")}
         base["tools"] = list(self.toolset)
         base.update(overrides)
         return Agent(**base)

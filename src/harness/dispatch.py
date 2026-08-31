@@ -71,7 +71,19 @@ class Dispatcher:
                 planned.append((b, None, None)); continue
             call = ToolCall(b["id"], b["name"], b.get("input", {}), spec)
             d = self._e._engine.decide(call, ctx)
-            d = await self._e._engine.resolve(d, call, ctx, self._e._a.approve)
+            if d.verdict is Verdict.ASK:
+                self._e._asks += 1
+            # S-25(b): approval fatigue is a channel the model controls — injected content
+            # can make it call a `write` tool 40 times with slightly different args, 40
+            # ASKs later the 41st gets approved on reflex. A cap that DENIES once crossed,
+            # rather than silently auto-approving, is the fail-closed direction.
+            if d.verdict is Verdict.ASK and self._e._asks > self._e._a.max_asks_per_run:
+                d = Ruling(Verdict.DENY,
+                          f"more than {self._e._a.max_asks_per_run} approval requests in "
+                          f"this run — refusing rather than risk reflex-approval fatigue",
+                          "ask-cap")
+            else:
+                d = await self._e._engine.resolve(d, call, ctx, self._e._a.approve)
             self._e._bus.emit(EventKind.POLICY_DECIDED, step=step, tool=b["name"],
                            call_id=b["id"], verdict=d.verdict.name, reason=d.reason,
                            policy=d.policy)
