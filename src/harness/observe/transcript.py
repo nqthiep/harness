@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from ..secrets import redact
-from .events import Event, EventKind
+from .events import Event, EventKind, to_dict
 
 FSYNC_EVERY = 64
 _ALWAYS_FSYNC = {EventKind.RUN_FINISHED, EventKind.ERROR_RAISED}
@@ -40,14 +40,16 @@ class TranscriptWriter:
     def emit(self, event: Event) -> None:
         if self.disabled or self._fh is None:
             return
-        data = dict(event.data)
+        # T-9.3: `to_dict()` is the canonical base every transport shares — this
+        # transport's own policy (digest tool arguments, round `ts` for a smaller file)
+        # layers on top of it, rather than redefining the shape from scratch.
+        row = to_dict(event)
+        row["ts"] = round(row["ts"], 6)
         if event.kind is EventKind.TOOL_REQUESTED and self._level != "debug":
-            if "arguments" in data:
-                data["arguments_digest"] = digest(data.pop("arguments"))
-        line = json.dumps(
-            {"seq": event.seq, "ts": round(event.ts, 6), "run_id": event.run_id,
-             "kind": event.kind.value, "step": event.step, "data": data},
-            sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+            if "arguments" in row["data"]:
+                row["data"]["arguments_digest"] = digest(row["data"].pop("arguments"))
+        line = json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                          default=str)
         try:
             self._fh.write(redact(line) + "\n")     # redact BEFORE the bytes exist
             self._n += 1

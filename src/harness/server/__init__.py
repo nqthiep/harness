@@ -51,7 +51,7 @@ from ..agent import Agent
 from ..idempotency import execute_once
 from ..memory.base import Store
 from ..memory.inmemory import InMemoryStore
-from ..observe.events import Event
+from ..observe.events import Event, to_dict
 from ..policy.decision import Actor, Approval
 from ..result import Result, StopReason
 from ..secrets import redact
@@ -75,12 +75,10 @@ def _event_json(event: Event) -> str:
     the run's own task — the same place `TranscriptWriter` calls `redact()`, and for the
     same reason (RT-13, Round 25).
     """
-    line = json.dumps(
-        {"seq": event.seq, "ts": round(event.ts, 6), "run_id": event.run_id,
-         "kind": event.kind.value, "step": event.step, "data": dict(event.data),
-         "schema_version": event.schema_version, "trace_id": event.trace_id,
-         "tenant_id": event.tenant_id, "session_id": event.session_id},
-        sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    row = to_dict(event)
+    row["ts"] = round(row["ts"], 6)
+    line = json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                      default=str)
     return redact(line)
 
 

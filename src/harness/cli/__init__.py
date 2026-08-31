@@ -123,10 +123,34 @@ def cmd_chat(path: str, *, inputs=None, out=print) -> int:
             return 0
 
 
-def cmd_run(path: str, message: str, *, out=print) -> int:
-    r = load_agent(path).try_run(message)
-    out(str(r) if r.ok else f"{r.stop_reason.value}: {r.detail}")
-    return 0 if r.ok else 1
+def cmd_run(path: str, message: str, *, out=print, json_events: bool = False) -> int:
+    """`json_events=True` (`harness run <file> <msg> --json`) is the CLI/JSON transport
+    T-9.3 names alongside in-process (`Agent.stream()`) and SSE (`harness.server`) — the
+    same canonical `Event` shape (`observe.events.to_dict`), one line per event, so a
+    shell pipeline gets exactly what `GET /v1/runs/{id}/events` would have sent it.
+    """
+    agent = load_agent(path)
+    if not json_events:
+        r = agent.try_run(message)
+        out(str(r) if r.ok else f"{r.stop_reason.value}: {r.detail}")
+        return 0 if r.ok else 1
+
+    import asyncio
+    import json
+
+    from ..observe.events import to_dict
+    from ..secrets import redact
+
+    async def _stream() -> bool:
+        ok = True
+        async for ev in agent.stream(message):
+            row = to_dict(ev)
+            out(redact(json.dumps(row, sort_keys=True, ensure_ascii=False, default=str)))
+            if ev.kind.value == "run.finished":
+                ok = bool(ev.data.get("stop_reason") == "completed")
+        return ok
+
+    return 0 if asyncio.run(_stream()) else 1
 
 
 def cmd_trace(path: str, *, out=print) -> int:
@@ -196,7 +220,7 @@ def _money(budget) -> str:
 def main(argv: list[str] | None = None) -> int:                 # pragma: no cover
     argv = argv if argv is not None else sys.argv[1:]
     if not argv or argv[0] in ("-h", "--help"):
-        print("harness setup | new <name> | chat <file> | run <file> <message> | "
+        print("harness setup | new <name> | chat <file> | run <file> <message> [--json] | "
               "trace <transcript> | cost <transcript> | doctor")
         return 0
     cmd, *rest = argv
@@ -206,7 +230,11 @@ def main(argv: list[str] | None = None) -> int:                 # pragma: no cov
                 print(f"wrote {p.name}")
             return 0
         if cmd == "chat":   return cmd_chat(rest[0])
-        if cmd == "run":    return cmd_run(rest[0], " ".join(rest[1:]))
+        if cmd == "run":
+            json_events = "--json" in rest
+            if json_events:
+                rest = [a for a in rest if a != "--json"]
+            return cmd_run(rest[0], " ".join(rest[1:]), json_events=json_events)
         if cmd == "trace":  return cmd_trace(rest[0])
         if cmd == "cost":   return cmd_cost(rest[0])
         if cmd == "doctor": return cmd_doctor()

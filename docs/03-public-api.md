@@ -276,7 +276,7 @@ outside the Python API entirely, and three of them are solved here.
 | `harness setup` | Asks for a key, **validates it with one minimal call**, stores it. Prints the provider's spend-limit URL. | G13.1 — the true first wall. A key is a shell concept; this makes it a paste. |
 | `harness new <name>` | Writes a runnable, commented agent file **and** a `.gitignore` containing `.env` | G13.6 + key safety. The scaffold includes a small `budget=` so the concept is shown, not explained later. |
 | `harness chat <file>` | Interactive conversation with an agent defined in a file | The moment someone wants a *second* agent. ~20 lines. |
-| `harness run <file>` | Runs it once, non-interactively | Scripting |
+| `harness run <file> <message>` | Runs it once, non-interactively. `--json` streams one canonical `Event` JSON line per event instead of the final text — the CLI/JSON transport, docs/04 §6.2, ADR-056 | Scripting |
 | `harness trace <transcript>` | Renders a run: every model call, tool call, verdict, cost | [§05.2](05-data-and-state.md#2-transcript-format) |
 | `harness cost <transcript>` | Spend and realized cache hit rate | [§07.2.3](07-cost.md#23-runtime-verification) |
 | `harness doctor` | Version, key presence, pricing-table age, cache determinism, plugin compatibility | The standard bug-report attachment |

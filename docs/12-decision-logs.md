@@ -1498,6 +1498,46 @@ redaction across the SSE boundary — including a mutation that removes `redact(
 
 ---
 
+### ADR-056 — One canonical `Event.to_dict()`; `TranscriptWriter` had drifted from envelope v1
+
+**Status:** Accepted (M9/T-9.3)
+
+**Context.** docs/17 §258: *"a canonical event model, many transports — in-process,
+SSE, CLI/JSON. No transport has its own semantics."* Landing T-9.2 (SSE) surfaced that
+the principle was already being violated by two transports that predate it:
+`observe/transcript.py::TranscriptWriter.emit()` and (as first written) this pass's own
+`harness.server::_event_json()` each built the same conceptual dict independently. Diffing
+them found a real bug, not just duplication: `TranscriptWriter` was written before
+envelope v1 (T-8.1, ADR-048) and was never updated — a persisted transcript and a live
+SSE stream of the SAME run disagreed about whether an `Event` carries
+`schema_version`/`trace_id`/`tenant_id`/`session_id` at all.
+
+**Decision.** `observe/events.py::to_dict(event) -> dict` is now the one function that
+defines the JSON shape — `seq`, `ts`, `run_id`, `kind`, `step`, `data`, and all four
+envelope v1 fields. `TranscriptWriter` and `harness.server`'s `_event_json` both build on
+it; each still layers its own transport-specific policy on top (the transcript digests
+`TOOL_REQUESTED.arguments` for at-rest privacy, `ts` gets rounded for a smaller file — a
+live API response has no reason to digest a caller's own just-sent request back at it).
+That distinction is the actual dividing line the principle draws: a transport's PRIVACY
+policy may legitimately differ; the event MODEL — what fields exist and what they mean —
+may not.
+
+**A third, genuinely new transport: CLI/JSON.** `harness run <file> <message> --json`
+drives `Agent.stream()` and prints one `to_dict()`-shaped, `redact()`-ed JSON line per
+event to stdout — the transport docs/17 names alongside in-process and SSE, previously
+missing entirely. A shell pipeline now gets exactly what `GET /v1/runs/{id}/events`
+would have sent it, for a run driven by the CLI instead of the Service API.
+
+**Tests.** `tests/test_m9_t93_canonical_events.py`: `to_dict()`'s field completeness and
+copy-not-alias behavior on `data`; `TranscriptWriter` now carrying envelope v1 fields
+plus a regression check that argument-digesting still works; the CLI JSON transport's
+line-per-event shape and exit code on a non-`completed` `stop_reason`; two mutations —
+one restoring the pre-ADR-056 transcript dict (missing envelope fields, the exact
+staleness this fixes) and one swapping `json.dumps(to_dict(event))` for `str(event)`
+(the line stops parsing as JSON at all, breaking the CLI/JSON contract outright).
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |

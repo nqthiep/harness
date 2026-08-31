@@ -643,6 +643,26 @@ not the security boundary, same posture `EgressPolicy` takes toward real network
 isolation), a persistent run registry (in-memory, one process), and consequently no
 `resume` route.
 
+### 6.2 One event model, three transports (T-9.3)
+
+```python
+# harness/observe/events.py
+def to_dict(event: Event) -> dict[str, object]: ...   # the canonical JSON shape
+```
+
+`docs/17-research-alignment.md`'s M9: *"a canonical event model, many transports —
+in-process, SSE, CLI/JSON. No transport has its own semantics."* All three build on
+`to_dict()` rather than each defining the shape independently (ADR-056 — this is the
+fix for a real staleness bug `TranscriptWriter` had before it: written before envelope
+v1, it never picked up `schema_version`/`trace_id`/`tenant_id`/`session_id`).
+
+| Transport | How | A transport MAY add on top of `to_dict()` |
+|---|---|---|
+| In-process | `async for ev in agent.stream(msg)` — real `Event` objects (T-8.5) | Nothing; the caller gets the `Event`, not a serialization |
+| SSE | `GET /v1/runs/{id}/events` (`harness[server]`, §6.1) | `redact()`, on the run's own task (RT-13) |
+| CLI/JSON | `harness run <file> <msg> --json` — one JSON line per event on stdout | `redact()`, same as SSE |
+| Transcript (disk) | `Agent(transcript=<path>)` (§05.2) | `redact()`; digests `tool.requested`'s `arguments` for at-rest privacy — the one place a transport's OWN policy legitimately differs, not the event model |
+
 ---
 
 ## 7. Exception hierarchy

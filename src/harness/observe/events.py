@@ -59,6 +59,25 @@ class Event:
     session_id: str | None = None
 
 
+def to_dict(event: Event) -> dict[str, Any]:
+    """T-9.3, docs/17-research-alignment.md M9: "one event model, many transports — no
+    transport has its own semantics." The base every JSON-shaped transport builds on —
+    `observe/transcript.py::TranscriptWriter` (disk) and `harness.server` (SSE) each
+    used to define this dict independently, and the transcript one had silently gone
+    stale: it predates envelope v1 (T-8.1) and never picked up `schema_version`/
+    `trace_id`/`tenant_id`/`session_id`, so a persisted transcript and a live SSE stream
+    of the SAME run disagreed about what an `Event` even contains. One function, one
+    shape — a transport may still layer its own policy on top (the transcript digests
+    `TOOL_REQUESTED.arguments` for at-rest privacy; a live API response to the caller
+    who just made the request does not need to digest its own request back at itself),
+    but the fields and their meaning never differ by transport.
+    """
+    return {"seq": event.seq, "ts": event.ts, "run_id": event.run_id,
+            "kind": event.kind.value, "step": event.step, "data": dict(event.data),
+            "schema_version": event.schema_version, "trace_id": event.trace_id,
+            "tenant_id": event.tenant_id, "session_id": event.session_id}
+
+
 class Exporter(Protocol):
     def emit(self, event: Event) -> None: ...
     def close(self) -> None: ...
