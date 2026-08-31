@@ -228,8 +228,10 @@ NHAT_KY.clear()
 m = FakeModel([FakeModel.tool_call("doc_web", {"url": "http://x"}, call_id="c1"),
                FakeModel.tool_call("xoa_tai_khoan", {"ma": "A"}, call_id="c2"),
                FakeModel.text("xong")])
+# T-7.2: this demonstrates the taint lattice, not egress restriction — explicit
+# allowed_hosts=None so doc_web's http://x isn't denied before taint can happen.
 a2 = Agent(name="X", job="j", model="fake", provider=m, tools=[doc_web],
-           budget="$1", approve=lambda c, x: True)
+           budget="$1", approve=lambda c, x: True, allowed_hosts=None)
 from harness.tools.registry import ToolSet                             # noqa: E402
 object.__setattr__(a2, "toolset", ToolSet([doc_web, xoa_tai_khoan]))   # tool set đổi sau khi dựng
 r2 = a2.try_run("đọc rồi xoá")

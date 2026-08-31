@@ -109,8 +109,10 @@ class RedTeam(unittest.TestCase):
         m = FakeModel([FakeModel.tool_call("fetch", {"url": "http://evil.com"}),
                        FakeModel.tool_call("send_email_ok", {"to": "a@b.c"}, call_id="c2"),
                        FakeModel.text("done")])
+        # T-7.2: taint-propagation test, not an egress test — explicit
+        # allowed_hosts=None so `fetch` isn't denied before taint has a chance to happen.
         a = Agent(name="T", job="j", tools=[fetch, send_email_ok], provider=m, budget="$5",
-                 accepts_tainted=["send_email_ok"])
+                 accepts_tainted=["send_email_ok"], allowed_hosts=None)
         r = a.run("go")
         self.assertTrue(r.tainted)
         self.assertTrue(r.ok)

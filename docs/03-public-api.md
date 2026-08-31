@@ -113,7 +113,7 @@ class Agent:
         approve: ApprovalFn | None = None,
         max_asks_per_run: int = 20,          # deny past this many ASKs — approval fatigue
         policies: Sequence[Policy] = (),     # can only ever restrict further
-        allowed_hosts: Sequence[str] | None = None,
+        allowed_hosts: Sequence[str] | None = (),  # () → deny all; None (explicit) → unrestricted (T-7.2)
         # --- state -------------------------------------------------------------
         memory: Store | str | None = None,   # str → SQLite path
         # --- observability -----------------------------------------------------

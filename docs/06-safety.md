@@ -124,9 +124,13 @@ believes they have bought immunity.
   should be a subagent, which is given content explicitly.
 - **Egress allowlist — advisory, not network enforcement (review-security.md S-18).**
   `Agent(allowed_hosts=[...])` makes `EgressPolicy` deny any `external` tool call whose
-  URL/host argument falls outside the list. Default `None` (inactive) because a default
-  allowlist that blocks the getting-started example would be turned off wholesale — a rule
-  people disable is worse than one they opt into. `Policy.check` is required to be pure
+  URL/host argument falls outside the list. **Default `()` — deny all** (T-7.2,
+  `docs/17-research-alignment.md` M7; a breaking change from the earlier `None`
+  default, which meant unrestricted). `allowed_hosts=None`, passed explicitly, is still
+  available as an unrestricted escape hatch — the same "visible, not silent" shape
+  `Budget(usd=None)` uses (S-20, ADR-041): a getting-started example that needs
+  unrestricted egress says so in the constructor call, rather than getting it by
+  omission. `Policy.check` is required to be pure
   and synchronous (P-4, [§02](02-architecture.md)) — no I/O, no DNS — so `EgressPolicy`
   can only ever compare the **hostname string** the model supplied against the allowlist.
   It does not, and structurally cannot, resolve DNS: `fetch_page(url="http://look-alike.attacker.example/")`

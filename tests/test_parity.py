@@ -82,10 +82,13 @@ def on_old(script, *, tools, budget, approve=None):
             return ModelResponse(({"type": "text", "text": "một nửa"},), s[1],
                                  Usage(100, 20), "fake")
         return FakeModel.text(s[1]) if s[0] == "text" else FakeModel.tool_call(s[1], s[2], call_id=s[3])
+    # T-7.2: this parity suite compares the two backends on OTHER rules (taint, budget,
+    # policy) — explicit allowed_hosts=None so the new deny-by-default egress policy
+    # doesn't silently interfere with a URL-shaped test tool's arguments.
     a = Agent(name="p", job="parity", model=MODEL,
               provider=PricedFake([one(s) for s in script], MODEL),
               tools=[TOOLS[t] for t in tools], budget=budget, approve=approve,
-              accepts_tainted=["refund"], exporters=[COLLECTOR])
+              accepts_tainted=["refund"], exporters=[COLLECTOR], allowed_hosts=None)
     # try_run, not run: the loop raises RunFailed on a non-completed stop while the
     # graph returns state.  That is an API-surface difference, deliberate and documented;
     # the rules below are what must not differ.
@@ -119,7 +122,8 @@ def on_graph(script, *, tools, budget, approve=None):
     chat = StoppingChat(script=[one(s) for s in script], stops=stops)
     g, _ = build_agent(model=chat, model_name=MODEL,
                        tools=[TOOLS[t] for t in tools], budget=budget, approve=approve,
-                       accepts_tainted=["refund"], exporters=[COLLECTOR])
+                       accepts_tainted=["refund"], exporters=[COLLECTOR],
+                       allowed_hosts=None)
     out = g.invoke({"messages": [HumanMessage("go")], "step": 0})
     from langchain_core.messages import ToolMessage
     return {"ran": list(RAN), "stop": out.get("stop_reason") or "completed",

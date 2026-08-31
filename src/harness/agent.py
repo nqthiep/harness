@@ -79,7 +79,13 @@ class Agent:
         safety: Literal["standard", "strict"] = "standard",
         approve: Callable[..., Any] | None = None,
         policies: Sequence[Any] = (),
-        allowed_hosts: Sequence[str] | None = None,
+        # T-7.2, docs/17-research-alignment.md M7 — BREAKING CHANGE from the pre-M7
+        # default: omitting `allowed_hosts=` now means deny ALL external network hosts,
+        # not allow all. `()` (the new default) reads as "the allowlist is empty" —
+        # exactly what an empty allowlist should mean. `None`, passed EXPLICITLY, is
+        # the escape hatch for "no restriction, on purpose" (same shape as S-20's
+        # `Budget(usd=None)`: unrestricted is possible, it is never the silent default).
+        allowed_hosts: Sequence[str] | None = (),
         accepts_tainted: Sequence[str] = (),
         sensitive: Sequence[str] = (),
         provider: Any | None = None,

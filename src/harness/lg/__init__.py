@@ -24,7 +24,9 @@ __all__ = ["build_agent", "unguarded_paths", "GUARDED", "INTERRUPT", "AgentState
 
 def build_agent(*, model, tools: Sequence[Any] = (), budget: Any = None,
                 model_name: str = "claude-opus-5", safety: str = "standard",
-                policies: Sequence[Any] = (), allowed_hosts: Sequence[str] | None = None,
+                # T-7.2 parity with Agent — `()` (deny all) is the default; `None`,
+                # passed explicitly, is the unrestricted escape hatch.
+                policies: Sequence[Any] = (), allowed_hosts: Sequence[str] | None = (),
                 accepts_tainted: Sequence[str] = (), sensitive: Sequence[str] = (),
                 approve=None, checkpointer=None, exporters: Sequence[Any] = (),
                 max_asks_per_run: int = 20):

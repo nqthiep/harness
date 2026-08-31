@@ -1056,6 +1056,45 @@ wrong (a rewrite step is itself surface for a second bug), refusing is not.
 
 ---
 
+### ADR-046 — `allowed_hosts` defaults to deny-all; `None` is the explicit escape hatch
+**Status:** Accepted (M7/T-7.2) · **Breaking change**
+
+**Context.** `EgressPolicy` (S-18) was already correct in its own mechanism —
+`allowed_hosts=None` meant unrestricted, a non-empty list meant "only these," an empty
+list would already have meant deny-all if anyone ever passed one. What was wrong was the
+**default**: omitting `allowed_hosts=` entirely meant `None` — unrestricted — silently.
+Research named this the exact failure mode of "approval mistaken for isolation" (W-03):
+an allowlist nobody has to opt out of is not a control, and the original default was
+chosen (per its own comment) so the getting-started example wouldn't need to think about
+it — exactly backwards for a *default*, versus a *documented escape hatch*.
+
+**Decision.** `Agent`/`build_agent`'s `allowed_hosts` parameter now defaults to `()`
+(empty tuple) instead of `None`. `EgressPolicy`'s internal logic is untouched — `()`
+already meant "no host matches, deny everything" the moment anyone passed it; the only
+change is that this is now what happens when nobody passes anything. `allowed_hosts=None`
+passed EXPLICITLY remains the unrestricted escape hatch — the identical shape to S-20's
+`Budget(usd=None)` (ADR-041): the operator can still get no restriction, but only by
+typing the word that means it, not by omission.
+
+**Breaking change, accepted without a multi-version deprecation cycle.** docs/17's own
+T-7.2 line calls for "một phiên bản deprecation" (a deprecation version). This project has
+not shipped a 1.0 — design/08-roadmap-and-release-plan.md's own release plan places all of
+M6–M10 before v1.0, and a real deprecate-then-break cycle matters most for a stable API
+with external users, which this codebase does not have yet at its current 67.8/100
+self-score. Flipping now, documented plainly here and in docs/03/04/06, is the honest
+version of "get this right before 1.0" rather than performing a deprecation cycle with no
+one on the other end of it.
+
+**Blast radius, checked by running the full suite rather than guessing.** Five existing
+tests (two in `test_lg.py`, one each in `test_parity.py`/`test_redteam.py`, one in
+`examples/proof.py`) relied on the old allow-all default to let an `external` tool with a
+URL-shaped argument through so they could test something else (taint propagation, mostly)
+— each fixed with an explicit `allowed_hosts=None`, since none of them were testing egress
+restriction in the first place. `tests/test_m7_t72_egress_default.py` is the test that
+actually asserts T-7.2's own behavior (both backends), which none of the five above did.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |

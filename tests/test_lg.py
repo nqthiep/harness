@@ -126,9 +126,12 @@ class Enforcement(unittest.TestCase):
         registering a tool.  That is the path staged here — the layer exists precisely
         for the case the construction check cannot see.
         """
+        # T-7.2: this test is about the taint lattice, not egress — explicit
+        # allowed_hosts=None (unrestricted, on purpose) so `fetch` isn't denied by the
+        # new deny-by-default egress policy before taint ever has a chance to happen.
         graph, rt = mk([FakeChat.call("fetch", {"url": "http://evil"}),
                         FakeChat.call("wipe", {"x": 1}, "c2"), FakeChat.text("ok")],
-                       tools=[fetch], approve=lambda c, ctx: True)
+                       tools=[fetch], approve=lambda c, ctx: True, allowed_hosts=None)
         from harness.tools.registry import ToolSet
         rt._tools = ToolSet([fetch, wipe])          # the toolset changes under the run
         out = run(graph)
@@ -280,8 +283,9 @@ class MultiTurn(unittest.TestCase):
         `danger` tools — in exactly the durability case this platform was adopted for."""
         from harness.tools.registry import ToolSet
         saver, cfg = MemorySaver(), {"configurable": {"thread_id": "tt"}}
+        # T-7.2: taint test, not an egress test — explicit allowed_hosts=None.
         g1, _ = mk([FakeChat.call("fetch", {"url": "http://e"}), FakeChat.text("ok")],
-                   tools=[fetch], checkpointer=saver)
+                   tools=[fetch], checkpointer=saver, allowed_hosts=None)
         self.assertTrue(g1.invoke({"messages": [HumanMessage("đọc")]}, cfg)["tainted"])
 
         # a new process: a brand-new Runtime over the same checkpoint
