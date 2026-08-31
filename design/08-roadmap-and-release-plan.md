@@ -272,6 +272,18 @@ cuối cùng cần một pilot 2–4 tuần có cùng model, cùng task set, cù
 security policy."* Không con số tự chấm nào ở trên thay thế được việc đó — M10's golden
 set là công cụ ĐO pilot đó, không phải thứ thay thế nó.
 
+> **Giới hạn phải nói thẳng: một phiên agent (kể cả phiên đã xây K-13/M9/M10 này) KHÔNG
+> THỂ tự chạy pilot này.** 2-4 tuần là thời gian thật, cần triển khai thật, người dùng
+> thật, dữ liệu sử dụng thật trải qua nhiều tuần lịch — không phải việc một phiên làm
+> việc (dù chạy bao lâu) có thể mô phỏng, rút gọn, hay tự báo cáo kết quả thay. M10 (golden
+> set, trajectory contract, benchmark) chỉ chuẩn bị CÔNG CỤ ĐO cho pilot đó — sẵn sàng để
+> chạy, không phải bằng chứng đã chạy. Không có kết quả pilot nào được tạo ra trong tài
+> liệu này; bất kỳ con số "pass rate"/"cost per success" nào xuất hiện trong `tests/
+> test_m10_*.py` là kết quả của test chạy qua `FakeModel`, không phải dữ liệu pilot thật —
+> đọc nhầm hai thứ đó là cùng một loại bằng chứng sẽ vi phạm đúng luật §45 tài liệu này tự
+> đặt ra ("thà nói 'chưa đủ evidence' còn hơn đoán"). Pilot cần một người vận hành thật
+> quyết định triển khai, theo dõi, và báo cáo lại — bước tiếp theo ngoài phạm vi code.
+
 ### v1.x — mở rộng theo nhu cầu đo được, không theo lịch
 
 M10 (evaluation) là ranh giới v1.0; mọi thứ SAU M10 — thêm connector, thêm exporter, thêm
