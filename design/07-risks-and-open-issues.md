@@ -558,14 +558,20 @@ mới không nên tự tạo thêm va chạm).
 > quyết định thiết kế riêng (đọc header `Retry-After` từ đâu khi `ProviderError` không
 > mang nó hôm nay — `errors.py`'s `ProviderRateLimited` không có trường đó) trước khi cài.
 
-> **N-6 — `model.response` event thiếu `usage`/`latency_ms` so với `docs/05` tự hứa.**
-> `docs/05-data-and-state.md §1`'s bảng taxonomy ghi `model.response` mang
+> **N-6 ĐÃ SỬA — `model.response` event thiếu `usage`/`latency_ms` so với `docs/05` tự
+> hứa.** `docs/05-data-and-state.md §1`'s bảng taxonomy ghi `model.response` mang
 > `stop_reason, usage{in,out,cache_read,cache_write}, cost_usd, latency_ms` — code thật
 > (`run.py`, `lg/runtime.py::call_model`) chỉ emit `stop_reason`/`cost_usd`. Phát hiện khi
 > viết `OtelExporter` (T-8.3): `gen_ai.usage.output_tokens`/`harness.cache_read_tokens`
 > (docs/10 §2's mapping) không bao giờ có dữ liệu để đọc — không phải lỗi của exporter,
-> exporter chỉ đọc đúng những gì event mang. Chưa sửa — cần thêm `usage`/`latency_ms` vào
-> lời gọi `emit(MODEL_RESPONSE, ...)` ở cả hai backend, ngoài phạm vi T-8.3.
+> exporter chỉ đọc đúng những gì event mang. **Sửa: `input_tokens`/`output_tokens`/
+> `cache_read_tokens`/`cache_write_tokens`/`latency_ms` (tên PHẲNG, khớp đúng rename table
+> `OtelExporter` đã viết sẵn, không phải `usage{...}` lồng — sửa lại đúng `docs/05`'s
+> bảng theo hình dạng đó thay vì đổi cả exporter) nay gắn vào `emit(MODEL_RESPONSE, ...)`
+> ở cả hai backend** (ADR-067, `docs/12`). `tests/test_n6_model_response_usage.py` khoá
+> cả bốn trục usage + latency trên cả hai backend, và khoá luôn hệ quả: span `gen_ai.chat`
+> nay mang dữ liệu thật, `harness.cache.hit_ratio` nay thật sự ghi được điểm dữ liệu đầu
+> tiên của nó.
 
 > **N-7 ĐÃ SỬA — `Agent.with_()` âm thầm làm mất `transcript`/`exporters`/
 > `accepts_tainted`/`sensitive`, MỌI lần gọi.** Phát hiện khi viết T-8.5

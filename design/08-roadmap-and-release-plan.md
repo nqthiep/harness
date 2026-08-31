@@ -341,7 +341,12 @@ trail cần chịu được kiểm toán bên ngoài.
 | N-1 | Backend LangGraph không có timeout PER-TOOL (chỉ có wall-clock cấp run) | Ngoài phạm vi T-6.3 (retry khác timeout); cần một lượt riêng | Chép khuôn `dispatch.py`'s `asyncio.timeout(self._e._l.tool_timeout(...))` sang `lg/runtime.py::_run_tools` |
 | N-3 | Backend LangGraph không hỗ trợ `returns=` (`Result.value` luôn `None`) | Ngoài phạm vi T-6.4 (chaos testing, không phải tính năng mới) | Một `finish` node đọc `state["messages"][-1]`, gọi `_parse_returns` tương đương, quyết định graph shape cho nhánh lỗi |
 | N-5 | Retry cấp PROVIDER (`Retry-After`, backoff cho rate-limit/timeout) đã công bố ở `docs/10 §3` nhưng chưa cài | Cần quyết định thiết kế riêng: đọc `Retry-After` từ đâu khi `ProviderRateLimited` hôm nay không mang trường đó | Thêm trường vào `ProviderRateLimited`, viết policy retry cấp model-call (khác T-6.3, vốn là retry cấp TOOL) |
-| N-6 | `model.response` event thiếu `usage`/`latency_ms` so với `docs/05` tự hứa | Phát hiện khi viết OTel exporter, chưa quay lại sửa event gốc | Thêm hai trường vào `EventKind.MODEL_RESPONSE`'s `data=` ở cả `run.py` và `lg/runtime.py::call_model` |
+
+**ĐÃ ĐÓNG trong lượt trả lời này:**
+
+| # | Việc | Bản vá |
+|---|---|---|
+| ~~N-6~~ | `model.response` event thiếu `usage`/`latency_ms` so với `docs/05` tự hứa | **ĐÃ SỬA** — ADR-067. Tên trường phẳng (`input_tokens`/`output_tokens`/`cache_read_tokens`/`cache_write_tokens`/`latency_ms`), khớp đúng rename table `OtelExporter` đã viết sẵn, ở cả hai backend. `tests/test_n6_model_response_usage.py`. |
 
 **Tài liệu lệch khỏi code (đã sửa trong lượt trả lời này, không phải nợ mới):** bảng tự
 chấm `docs/17 §1` (dòng Reliability, Observability) vẫn viết S-01 "đỏ" và S-02/S-03/S-14
@@ -375,15 +380,14 @@ dụng thật, không phải một v1.1 định sẵn ngày"). Thứ tự đề 
 [Inference: ưu tiên theo mức rủi ro/công sức tôi tự đánh giá, không phải một quyết định đã
 chốt]:
 
-1. **N-6** (thêm hai trường event) — nhỏ nhất, không rủi ro, mở khoá được OTel attribute
-   đang thiếu dữ liệu.
+1. ~~**N-6**~~ — **ĐÃ SỬA** (`7.1`/`7.2`, ADR-067).
 2. **N-1** (timeout per-tool trên graph) — rủi ro an toàn thật (một tool treo vô thời hạn
    trên backend graph), khuôn sửa đã có sẵn ở backend kia.
 3. **N-3** (`returns=` trên graph) — công sức lớn hơn (một node graph mới), không phải lỗ
    hổng an toàn, chỉ là thiếu tính năng.
 4. **N-5** (retry cấp provider) — cần quyết định thiết kế trước khi cài (đọc `Retry-After`
    từ đâu); không làm vội.
-5. **Pilot 2-4 tuần** — điều kiện DUY NHẤT cho nhãn v1.0, độc lập với thứ tự 1-4 ở trên,
+5. **Pilot 2-4 tuần** — điều kiện DUY NHẤT cho nhãn v1.0, độc lập với thứ tự 2-4 ở trên,
    và là việc của người vận hành, không phải của một phiên code.
 
 ### 7.4 Release plan
@@ -392,7 +396,7 @@ chốt]:
   pilot chưa chạy. An toàn để dùng nội bộ/thử nghiệm; KHÔNG có bằng chứng production ngoài
   test qua `FakeModel`.
 - **v1.0:** gắn nhãn khi VÀ CHỈ KHI pilot 2-4 tuần (`## 5`) hoàn tất và báo cáo lại — không
-  có đường tắt nào khác, kể cả N-1/N-3/N-5/N-6 đóng hết cũng không thay thế điều kiện này.
-- **v1.x:** N-1/N-3/N-5/N-6 (theo thứ tự `## 7.3` hoặc theo nhu cầu pilot lộ ra),
+  có đường tắt nào khác, kể cả N-1/N-3/N-5 đóng hết cũng không thay thế điều kiện này (N-6 đã đóng, không còn tính).
+- **v1.x:** N-1/N-3/N-5 (theo thứ tự `## 7.3` hoặc theo nhu cầu pilot lộ ra),
   `AuthEvidence` nếu deployment cần audit chịu kiểm toán ngoài, và bất kỳ khoảng trống nào
   pilot tự phát hiện — **thêm vào sau khi có bằng chứng, không đoán trước.**

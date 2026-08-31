@@ -226,6 +226,7 @@ class Runtime:
         # T-6.4 (chaos test "provider timeout"), ported here for parity after the same
         # gap was found and fixed in run.py — nothing here ever caught a provider
         # failure either, so it would have propagated straight out of `graph.invoke()`.
+        t0 = time.monotonic()
         try:
             msg = self._model.invoke(state["messages"])
         except Exception as exc:
@@ -233,10 +234,17 @@ class Runtime:
                        type=type(exc).__name__, message=str(exc), retryable=False)
             return {"stop_reason": "error", "detail": f"{type(exc).__name__}: {exc}"}
         _stamp_label(msg, label_at_generation)
-        led.settle(_RESERVED(state.get("max_tokens", 0)), _usage_of(msg), self._price)
+        usage = _usage_of(msg)
+        led.settle(_RESERVED(state.get("max_tokens", 0)), usage, self._price)
         led.count_step()
         raw = _provider_stop(msg)
-        self._emit(state, EventKind.MODEL_RESPONSE, stop_reason=raw, cost_usd=str(led.spent))
+        # N-6 parity with run.py — same flat field names OtelExporter (docs/10 §2)
+        # already renames; see run.py's comment on this event for the full reasoning.
+        self._emit(state, EventKind.MODEL_RESPONSE, stop_reason=raw, cost_usd=str(led.spent),
+                   input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
+                   cache_read_tokens=usage.cache_read_input_tokens,
+                   cache_write_tokens=usage.cache_creation_input_tokens,
+                   latency_ms=(time.monotonic() - t0) * 1000)
         out = {"messages": [msg], "step": state.get("step", 0) + 1,
                "spent_usd": str(led.spent.decimal), "ledger": led.snapshot()}
         out.update(_classify(raw, bool(getattr(msg, "tool_calls", None)),

@@ -2156,6 +2156,51 @@ stop-with-a-sentence path; `_context_chars` counting a tool call's arguments; an
 graph — compaction running, the task preserved, exactly one tombstone, and the run still
 UNTRUSTED afterwards.
 
+### ADR-067 — N-6 closed: `model.response` gets its promised usage/latency fields — flat names, matching the OTel mapping already in code
+
+**Status:** Accepted
+
+**Context.** `docs/05` §1's taxonomy table has promised `model.response` carries
+`stop_reason`, usage across four axes, `cost_usd`, and `latency_ms` since the table was
+written. The real event carried only `stop_reason`/`cost_usd`. Nothing caught it because
+`OtelExporter` (`observe/otel.py`) had *already* been written against the promise —
+`rename={"output_tokens": ..., "cache_read_tokens": ...}` on this exact event — so the gap
+was invisible at the OTel layer too: `ev.data.get("input_tokens")` silently returned
+`None`, the cache-hit-ratio metric silently never recorded, and no test asserted the span
+carried real usage attributes because none of the fixtures happened to check.
+
+**Decision — flat field names, not the table's literal `usage{in,out,cache_read,cache_write}`
+notation.** `docs/10` §2's OTel mapping table, written independently, already commits to
+flat attribute names via `OtelExporter`'s rename dict: `gen_ai.usage.input_tokens`,
+`.output_tokens`, `harness.cache_read_tokens`. A nested `usage` dict would have required
+changing both the schema *and* the exporter that already reads it, for one documentation
+table's notation. `docs/05`'s row is corrected to the flat shape instead — matching the
+consumer that already exists and is tested, rather than the wording that was never
+implemented. `input_tokens`/`output_tokens`/`cache_read_tokens`/`cache_write_tokens`/
+`latency_ms` are now emitted alongside `stop_reason`/`cost_usd`, identically on both
+backends (`run.py` from `resp.usage`; `lg/runtime.py::call_model` from `_usage_of(msg)`,
+already computed there for the ledger and now reused rather than recomputed).
+
+**`latency_ms` needed a clock that did not exist at this call site.** `time.monotonic()`
+wraps the provider call on both backends — monotonic because wall-clock time can jump
+(NTP, DST) and a latency measurement must not go negative.
+
+**A field neither table names still reaches OTel, for free.** `cache_write_tokens` and
+`latency_ms` are not in `docs/10` §2's rename table, but `_attrs()`'s existing fallback
+(`_safe_attrs("harness", data, ...)`) forwards any event-data key the rename dict doesn't
+claim, prefixed `harness.*`. So both show up as `harness.cache_write_tokens` /
+`harness.latency_ms` span attributes without touching `OtelExporter` at all — the
+fallback this exporter already had is what made this a schema fix, not an exporter
+rewrite.
+
+**Test.** `tests/test_n6_model_response_usage.py` — all four usage fields plus
+`latency_ms` present with correct values on both backends (`FakeModel`'s fixed
+`Usage(100, 20)`/`Usage(100, 15)`, `FakeChat`'s configurable `input_tokens`/
+`output_tokens`); the `gen_ai.chat` span carrying real `gen_ai.usage.output_tokens` and
+`harness.cache_read_tokens` instead of nothing; the two fallback-routed fields reaching
+the span under `harness.*`; and `harness.cache.hit_ratio` actually recording a data point
+— the concrete thing that silently never happened before this fix.
+
 ---
 
 ## Implementation Decision Log

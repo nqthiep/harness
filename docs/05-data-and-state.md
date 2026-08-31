@@ -22,7 +22,7 @@ tracer/OTel exporter — T-8.3 — propagates one in), `tenant_id` and `session_
 | `step.started` | Each loop iteration | `step` |
 | `step.finished` | Each loop iteration | `step`, `stop_reason`, `tool_calls` |
 | `model.request` | Before each call | `model`, `input_tokens`, `n_tools`, `n_messages`, `breakpoints`, `estimate_usd` |
-| `model.response` | After each call | `stop_reason`, `usage{in,out,cache_read,cache_write}`, `cost_usd`, `latency_ms` |
+| `model.response` | After each call | `stop_reason`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `cost_usd`, `latency_ms` |
 | `budget.reserved` | Before each call | `estimate_usd`, `spent_usd`, `remaining_usd` |
 | `budget.exhausted` | Ceiling hit | `axis` (`usd`\|`steps`\|`time`\|`tokens`), `spent`, `limit` |
 | `budget.unlimited` | Once, right after `run.started`, only when `budget.usd is None` | `reason` |

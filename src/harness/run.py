@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any, Mapping, Sequence
 
 from .errors import BudgetExceeded, ProviderRateLimited, ProviderTimeout, ProviderUnavailable, ToolContractError
@@ -114,6 +115,7 @@ class RunEngine:
                 # for `returns=`, one call site over. `asyncio.CancelledError` is not an
                 # `Exception` subclass (Python's own hierarchy), so this catch cannot
                 # swallow a cancellation — T-6.2 still holds.
+                t0 = time.monotonic()
                 try:
                     resp = await self._p.complete(req, on_delta=on_delta)
                 except Exception as exc:
@@ -131,8 +133,18 @@ class RunEngine:
                 self._l.settle(reservation, resp.usage, price)
                 self._l.count_step()
                 usage_total = usage_total + resp.usage
+                # N-6 (design/07-risks-and-open-issues.md): docs/05 §1 promises this event
+                # carries usage/latency_ms; it only carried stop_reason/cost_usd. Flat
+                # field names, not a nested `usage{...}` — matching what `OtelExporter`
+                # (docs/10 §2) already renames into `gen_ai.usage.*`/`harness.cache_read_
+                # tokens`, so this also gives that exporter real data for the first time
+                # instead of `None` it silently tolerated.
                 self._bus.emit(EventKind.MODEL_RESPONSE, step=step, stop_reason=resp.stop_reason,
-                               cost_usd=str(self._l.spent))
+                               cost_usd=str(self._l.spent), input_tokens=resp.usage.input_tokens,
+                               output_tokens=resp.usage.output_tokens,
+                               cache_read_tokens=resp.usage.cache_read_input_tokens,
+                               cache_write_tokens=resp.usage.cache_creation_input_tokens,
+                               latency_ms=(time.monotonic() - t0) * 1000)
 
                 text = "".join(b.get("text", "") for b in resp.content if b.get("type") == "text") or text
                 msgs.append({"role": "assistant", "content": list(resp.content)})
