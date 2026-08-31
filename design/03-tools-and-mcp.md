@@ -481,7 +481,7 @@ symlink/junction trước khi mở, chứ không chỉ `resolve()` một lần
    là việc của trục `confidentiality` trong lattice ([00 §3.2](00-foundation.md)), không phải
    của `egress`. Hai cơ chế khác nhau, đừng nhầm cái này bảo vệ cái kia.
 4. **Tool MCP không đi qua `Workspace`** — chúng chạy ở tiến trình/host khác. Biên cho chúng
-   là `ServerIdentity` + policy của operator ở §5.
+   là `ServerLabel` (v1) + policy của operator ở §5.
 
 Nói thẳng bốn điều này quan trọng hơn thêm cơ chế thứ năm: một bảo đảm mà người dùng *tưởng*
 mình có là nguy hiểm hơn một bảo đảm họ biết là không có.
@@ -504,24 +504,23 @@ nghiên cứu là mệnh lệnh cho mục này:
 > to the server's identity, with the MCP hints used at most as a default for servers already
 > trusted, and never as the decision."*
 
-### 5.2 Policy do operator giữ, khoá theo **danh tính** server
+### 5.2 Policy do operator giữ, khoá theo **nhãn** server (v1)
+
+Bản nháp đầu khoá theo một `ServerIdentity{label, fingerprint}` — `fingerprint` để chống
+đúng một kịch bản: label A bị trỏ lại sang endpoint khác, và grant cũ đi theo nhầm endpoint
+mới. Một reviewer chỉ ra định dạng `fingerprint` chưa chốt được (không tương đương SPKI
+hiển nhiên cho MCP stdio — xem "Chưa đủ evidence" cuối tệp) — một trường không chốt được
+định dạng chưa nên vào kiểu công khai ([review-kiss.md](review-kiss.md) K-12). v1 khoá theo
+`ServerLabel` (chuỗi) — đó là phần **có** bằng chứng, và là phòng thủ confused-deputy duy
+nhất tìm được trong nghiên cứu (Microsoft `server_label`). Cái v1 KHÔNG chặn được, nói
+thẳng: label bị trỏ lại sang endpoint khác thì grant cũ vẫn đi theo — xem `07-risks` cho
+điều kiện thêm lại `ServerIdentity`/`fingerprint` (khi quan sát được một lần re-pointing
+thật).
 
 ```python
 @value
-class ServerIdentity:
-    """Danh tính, không phải cái tên.
-
-    Microsoft có `server_label` — phòng thủ confused-deputy duy nhất tìm thấy trong cả
-    nghiên cứu ([§09] §14).  Nhưng label là một chuỗi: trỏ lại cùng một label sang endpoint
-    khác thì mọi grant cũ đi theo.  `fingerprint` khoá điều đó lại.
-    """
-    label: ServerLabel
-    fingerprint: str          # sha256(transport ‖ URL chuẩn hoá) hoặc TLS SPKI pin
-
-
-@value
 class McpServerPolicy:
-    identity: ServerIdentity
+    identity: ServerLabel
     trusted: bool = False                               # hint có được dùng làm mặc định không
     default_effect: Effect = Effect.DANGER              # dùng khi không tin, hoặc không có hint
     effects: Mapping[ToolName, Effect] = MappingProxyType({})     # operator ghi đè từng tool
@@ -582,10 +581,11 @@ cũng chỉ ra vì sao lỗ hổng ấy vô lý: *"It takes no server-trust para
 `_tool_approval.py`"*. Hai thứ đó nằm trong cùng một codebase và không được nối với nhau.
 `classify_mcp_tool` nhận `McpServerPolicy` chính là mối nối đó.
 
-**M-4. Grant khoá theo danh tính server.** `Scope.server` của [00-foundation §4.1] so khớp với
-`ServerIdentity`, không với chuỗi label. Một `Decision` duyệt `search(query="x")` trên server
-A không duyệt tool cùng tên trên server B, và cũng không duyệt nó sau khi label A bị trỏ sang
-endpoint khác.
+**M-4. Grant khoá theo nhãn server (v1).** `Scope.server` của [00-foundation §4.1] so khớp
+với `ServerLabel`. Một `Decision` duyệt `search(query="x")` trên server A không duyệt tool
+cùng tên trên server B. Cái v1 KHÔNG khoá được (K-12, xem §5.2): sau khi label A bị trỏ sang
+endpoint khác, grant cũ vẫn đi theo nhầm endpoint mới — phần đó cần `ServerIdentity` +
+`fingerprint`, hoãn tới khi có bằng chứng re-pointing thật (`07-risks`).
 
 ### 5.4 Rug-pull: phân loại được chốt tại thời điểm bind
 
@@ -659,20 +659,24 @@ autogen làm, ngược với mọi dự án dùng `task.cancel()` ngầm.
 
 ### 6.3 Bốn luật
 
-**C-1. `CancelledError` và `KeyboardInterrupt` không bao giờ trở thành tool result.** Chúng
+Đặt tên `CAN-1…4` (không phải `C-1…4`) có chủ ý: `05 §A.1` có bốn bất biến CHI TIÊU cũng
+đánh số `C-1…4` — hai namespace trùng mã tình cờ, không liên quan tới nhau
+([review-kiss.md](review-kiss.md) K-13).
+
+**CAN-1. `CancelledError` và `KeyboardInterrupt` không bao giờ trở thành tool result.** Chúng
 không đi qua `classify()` (§2) và được ném tiếp nguyên trạng. LangChain làm đúng chỗ này —
 họ bắt `KeyboardInterrupt` rồi re-raise thay vì nuốt, và nghiên cứu ghi nhận *"a bare
 `except Exception` here would have made Ctrl-C unreliable"*
 ([§08](../research/08-tool-mcp-plugin.md) §8.2).
 
-**C-2. Timeout là cancel, không phải cơ chế thứ hai.** `spec.timeout_s` hết hạn → runtime gọi
+**CAN-2. Timeout là cancel, không phải cơ chế thứ hai.** `spec.timeout_s` hết hạn → runtime gọi
 `token.cancel("timeout")`. Một con đường, một chỗ để test.
 
-**C-3. Cancel không rollback.** Một `write` bị huỷ giữa chừng để lại hàng `in_flight` trong
+**CAN-3. Cancel không rollback.** Một `write` bị huỷ giữa chừng để lại hàng `in_flight` trong
 effect log và §4.4 xử lý phần còn lại. Huỷ là *dừng làm thêm*, không phải *hoàn tác*, và giả
 vờ ngược lại là cách sinh ra double effect.
 
-**C-4. Biên segment là điểm huỷ sạch.** Vì `write`/`danger` là barrier (§3), giữa hai segment
+**CAN-4. Biên segment là điểm huỷ sạch.** Vì `write`/`danger` là barrier (§3), giữa hai segment
 không có tool call nào đang bay, nên huỷ ở đó để lại trạng thái không mơ hồ. Barrier trả về
 một tính chất thứ hai ngoài tính đúng đắn của concurrency.
 
@@ -688,7 +692,7 @@ một tính chất thứ hai ngoài tính đúng đắn của concurrency.
 | chính sách lỗi suy ra từ effect | kết luận của chính [§08](../research/08-tool-mcp-plugin.md) §8.2 | LangChain `handle_tool_error=False` — một tool ném exception giết cả run, và opt-in là per-tool |
 | barrier suy ra từ effect | pydantic-ai `'exhaustive'` ([§08](../research/08-tool-mcp-plugin.md) §8.3) | LangChain phải viết guard tay cho riêng `write_todos` |
 | effect log + partial-unique index + đọc lại bên thắng | agno ([§07](../research/07-remaining-python.md) §ĐÍNH CHÍNH) | agno chỉ có ở mức run submission; không ai có ở mức tool call ([§03](../research/03-safety-reliability.md) §15) |
-| policy MCP khoá theo `ServerIdentity` | MS `server_label` ([§09](../research/09-memory-context-multiagent-hitl.md) §14) | label là chuỗi; trỏ lại endpoint thì grant đi theo |
+| policy MCP khoá theo `ServerLabel` (v1) | MS `server_label` ([§09](../research/09-memory-context-multiagent-hitl.md) §14) | không có policy per-server nào cả; gap còn lại của MS (label là chuỗi, trỏ lại endpoint thì grant đi theo) v1 vẫn CHƯA sửa — cần `ServerIdentity`+`fingerprint`, hoãn tới khi có bằng chứng (K-12, `07-risks`) |
 | ánh xạ hint fail-closed, `is True` | MS `_map_mcp_annotations_to_labels` ([§08](../research/08-tool-mcp-plugin.md) §9) | — (chép nguyên, nó đúng) |
 | `accepts_tainted` không bao giờ từ hint | — | MS thận trọng với server im lặng nhưng tin server nói dối, và không nhận tham số tin cậy server |
 | `CancelToken` tường minh trên mọi biên | autogen 26,9/kLOC ([§07](../research/07-remaining-python.md) §Phát hiện mới) | huỷ ngầm không kiểm tra được |
@@ -713,4 +717,7 @@ một tính chất thứ hai ngoài tính đúng đắn của concurrency.
 - **Chi phí ghi effect log trên mỗi `write` call.** Một round-trip DB thêm cho mỗi tool call
   có side effect. Không đo được từ source người khác; cần benchmark của chính repo này.
 - **Định dạng `fingerprint` cho `ServerIdentity`.** TLS SPKI pin đúng cho transport HTTP nhưng
-  không có tương đương hiển nhiên cho MCP stdio (tiến trình con). Chưa đủ evidence để chốt.
+  không có tương đương hiển nhiên cho MCP stdio (tiến trình con). Chưa đủ evidence để chốt —
+  §5.2 giờ khoá v1 theo `ServerLabel` (chuỗi) thay vì đợi `fingerprint`, và không thêm
+  `ServerIdentity`/`fingerprint` lại cho tới khi quan sát được một lần label bị trỏ sang
+  endpoint khác thật (K-12).

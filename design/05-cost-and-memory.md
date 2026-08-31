@@ -110,15 +110,19 @@ ngân sách theo định nghĩa** — không cần tin vào ước lượng đ�
 
 ### Bất biến
 
-- **C-1.** Không đường nào trong graph tới node `model` mà không qua `reserve()`. Chứng
+Đặt tên `COST-1…4` (không phải `C-1…4`) có chủ ý: `03 §6.3` có bốn luật CANCEL cũng đánh số
+`C-1…4` — hai namespace trùng mã tình cờ, không liên quan tới nhau
+([review-kiss.md](review-kiss.md) K-13).
+
+- **COST-1.** Không đường nào trong graph tới node `model` mà không qua `reserve()`. Chứng
   minh bằng `unguarded_paths()`, không bằng review — [`00-foundation.md`](00-foundation.md)
   §5 R-2 (23 vòng review: 0 lỗi bảo mật; 16 vòng *chạy*: 4 lỗi bảo mật).
-- **C-2.** `reserve()` hết ngân sách → `StopReason.BUDGET_EXHAUSTED`, không phải exception
+- **COST-2.** `reserve()` hết ngân sách → `StopReason.BUDGET_EXHAUSTED`, không phải exception
   rò ra ngoài và không phải một lời gọi nhỏ hơn "cho có".
-- **C-3.** `settle()` dùng **bốn** mức giá (input, output, cache read, cache write). Bỏ
+- **COST-3.** `settle()` dùng **bốn** mức giá (input, output, cache read, cache write). Bỏ
   cache read khỏi công thức là báo cáo thấp hơn thực tế đúng vào lúc harness đang tối ưu
   cache.
-- **C-4.** Sau khi `settle()` đẩy `spent` vượt trần, ledger `_blocked` — mọi `size_call`
+- **COST-4.** Sau khi `settle()` đẩy `spent` vượt trần, ledger `_blocked` — mọi `size_call`
   sau đó raise. Trần **authorization** là chính xác; trần **spend** bị vượt tối đa một
   lời gọi, và phần vượt đó đo được qua `Ledger.overshoot`. Nói rõ con số đó thay vì nói
   "ngân sách là tuyệt đối", vì nó không tuyệt đối.
@@ -620,12 +624,17 @@ Poka-Yoke đúng nghĩa theo [`00-foundation.md`](00-foundation.md) §8 luật 3
 
 ### Luật đọc
 
-- **R-1 (recall làm nhãn tăng).** Sau `recall`, `Label` của run = `join` của nhãn hiện tại
+Đặt tên `MEM-R1…3` (không phải `R-1…3`) có chủ ý: `00-foundation.md §5` có bốn quy tắc kiến
+trúc toàn cục cũng đánh số `R-1…4` — hai namespace trùng mã tình cờ, một cục bộ cho mục này,
+một toàn cục cho cả bản thiết kế ([review-kiss.md](review-kiss.md) K-13). Trích dẫn tới quy
+tắc TOÀN CỤC ở nơi khác trong tệp này vẫn viết đủ `00-foundation.md §5 R-X`, không rút gọn.
+
+- **MEM-R1 (recall làm nhãn tăng).** Sau `recall`, `Label` của run = `join` của nhãn hiện tại
   với nhãn **từng memo** được nạp vào. Đơn điệu.
-- **R-2 (không cơ chế mới).** Memo `UNTRUSTED` trong context không lái được tool `danger`
+- **MEM-R2 (không cơ chế mới).** Memo `UNTRUSTED` trong context không lái được tool `danger`
   trừ khi tool khai `accepts_tainted=True` — **đúng luật đã có** cho output tool `external`
   ([`00-foundation.md`](00-foundation.md) §3.2). KISS: memory không được có luật riêng.
-- **R-3 (không rò).** Context chứa memo `SECRET` không gọi được tool có
+- **MEM-R3 (không rò).** Context chứa memo `SECRET` không gọi được tool có
   `max_confidentiality=PUBLIC` (mặc định của `external` và `write`). Đây là thứ chặn kịch
   bản "recall một bí mật rồi POST nó lên webhook".
 
@@ -640,7 +649,7 @@ Cụ thể, vì đây là câu hỏi trung tâm:
 3. Run **vẫn chạy tiếp**. Từ chối đọc memory `UNTRUSTED` thì memory thành vô dụng — hầu như
    mọi long-term memory hữu ích đều dẫn xuất từ nội dung bên ngoài. Cái bị chặn là **hành
    động**, không phải việc đọc.
-4. Nếu model sau đó muốn gọi một tool `danger`, policy `DENY`/`ASK` theo R-2. Con đường duy
+4. Nếu model sau đó muốn gọi một tool `danger`, policy `DENY`/`ASK` theo MEM-R2. Con đường duy
    nhất đi tiếp là một `Decision` của một `Actor` là người
    ([`00-foundation.md`](00-foundation.md) §4.2 — không có biến thể `Model`), và `Scope`
    của `Decision` đó ghi kèm provenance của memo đã gây taint, nên người duyệt thấy **fact

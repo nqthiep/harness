@@ -12,7 +12,12 @@ Phạm vi: **bề mặt công khai** — cái mà 90% người dùng chạm vào
 
 ## 1. API công khai tối thiểu
 
-Toàn bộ bề mặt là **14 tên**. Một `import`.
+Bề mặt **tối thiểu** (đủ cho Mức 0–2, xem §2) là **14 tên**, một `import`. Đây KHÔNG phải
+toàn bộ bề mặt — Mức 3 (§2, production) cần thêm — một bản nháp trước của mục này tuyên bố
+"toàn bộ" rồi chính ví dụ Mức 3 trong CÙNG tệp `import` 20 tên từ 4 module, tự mâu thuẫn
+([review-kiss.md](review-kiss.md) K-22). Con số trung thực hơn: **14 tên tối thiểu + tới
+20 tên khi dùng hết production** (checkpoint, plugin, policy MCP), qua **1 import gốc +
+tối đa 3 submodule** khi thật sự cần chúng.
 
 ```python
 from harness import (
@@ -30,7 +35,7 @@ from typing import Generic, Literal, Sequence, TypeVar
 
 OutT  = TypeVar("OutT")
 
-EndStrategy = Literal["early", "graceful", "exhaustive"]
+EndStrategy = Literal["early", "graceful", "complete"]
 
 class Agent(Generic[OutT]):
     def __init__(
@@ -59,7 +64,7 @@ Mười ba tham số, **và mỗi cái tồn tại vì một phát hiện đo đ
 | `budget` **bắt buộc**, phải có trục tiền | Cả ngành có loop limit mà gần như không có spend ceiling: pydantic-ai 3,6 budget/kLOC là cao nhất, LangGraph 0,0; `max_turns` chặn số vòng, còn một vòng 200k token đắt gấp trăm lần | ([§03](../research/03-safety-reliability.md) §20) |
 | `sandbox` không có mặc định "local" | smolagents đưa `executor_type` vào constructor — thiết kế cách ly tốt nhất trong nghiên cứu — rồi để mặc định `"local"`, làm giảm giá trị của chính cơ chế đó | ([§05](../research/05-ideal-harness.md) §31 bài học 2 và 10) |
 | `output_type` | PydanticAI typed end-to-end là Agent API duy nhất đạt "Type safety cao nhất bảng" | ([§02](../research/02-api-comparison.md) §6) |
-| `end_strategy` | Model trả **vừa** kết quả cuối **vừa** tool call là ngữ nghĩa khó. PydanticAI đặt tên cho nó, cho ba lựa chọn, và đổi mặc định từ `early` sang `graceful` vì mặc định cũ sai | ([§02](../research/02-api-comparison.md) §6) |
+| `end_strategy` | Model trả **vừa** kết quả cuối **vừa** tool call là ngữ nghĩa khó. PydanticAI đặt tên cho nó, cho ba lựa chọn, và đổi mặc định từ `early` sang `graceful` vì mặc định cũ sai. Giá trị thứ ba đổi tên từ `"exhaustive"` gốc của PydanticAI thành `"complete"` — `"exhaustive"` đã là tên một trong ba **parallel mode** khác hẳn của chính pydantic-ai ([03 §3.2](03-tools-and-mcp.md)), và dùng lại nó ở đây cho một trục không liên quan là tự tạo va chạm từ vựng trong cùng một bản thiết kế ([review-kiss.md](review-kiss.md) K-11) | ([§02](../research/02-api-comparison.md) §6) |
 | `approve` nhận `Approver`, trả `Answer` — không bao giờ `bool` | Approval ở đâu cũng là trạng thái quyền chứ không phải sự kiện audit được; Java `ToolConfirmation` đúng một `boolean` | ([§09](../research/09-memory-context-multiagent-hitl.md) §14.1, [§10](../research/10-governance-health-languages.md) §28) |
 | `checkpointer` | Durability là kiến trúc hoặc không tồn tại: LangGraph 51,6 recover/kLOC so với phần còn lại < 2. Và nó chỉ cài được vì có topology | ([§11](../research/11-workflow-and-dx.md) §12) |
 | `plugins` | around-hook — xem §4 | ([§08](../research/08-tool-mcp-plugin.md) §24) |
@@ -91,8 +96,13 @@ cùng một kiểu, nên đổi giữa chúng không phải viết lại code x�
 
 Interface mẫu `interface Agent { AgentResult run(AgentRequest) }` thiếu **năm** thứ mà
 bằng chứng nói là bắt buộc: streaming, cancellation, session, approval round-trip, và
-idempotency ([§05](../research/05-ideal-harness.md) §35–36). Bốn cái đầu ở trên;
-idempotency không nằm trên bề mặt vì gateway **sinh** key chứ không nhận
+idempotency ([§05](../research/05-ideal-harness.md) §35–36). **Ba cái đầu ở trên** —
+streaming, cancellation, approval round-trip. `session` KHÔNG có ở đây: không có kiểu
+`Session` nào trong tệp này hay `02`/`04`/`05`, chỉ có `run_id`; tenant/owner/TTL — ranh
+giới cách ly mà `session` phải cung cấp — nằm ở *Chưa đủ evidence* của ba tệp
+(`02`, `04`, `05`). Trung thực hơn là nói rõ: session là phạm vi của **tầng service** bọc
+quanh harness, không phải của chính harness ([review-kiss.md](review-kiss.md) K-28, xem
+`07-risks`). idempotency không nằm trên bề mặt vì gateway **sinh** key chứ không nhận
 — người dùng không thể quên cái mà họ không được phép cung cấp.
 
 `cancel()` là **tín hiệu**, không phải một stop reason mà model tự chọn — smolagents có
@@ -256,7 +266,10 @@ agent = Agent(
     policies=[DenyHosts("*.internal")],
     plugins=[Backoff(on=("rate_limited", "unavailable"), attempts=3), CostReport()],
     checkpointer=SqliteCheckpointer("./runs.db"),
-    end_strategy="graceful",
+    # `end_strategy` KHÔNG lên ở đây có chủ ý (review-kiss.md K-11): mặc định đã là
+    # "graceful", và nó không phải một trong bốn khái niệm còn thiếu của cả ngành mà
+    # mục này minh hoạ (retry, cost report, durable checkpoint, deny-hosts) — chỉ khai
+    # nó khi thật sự cần đổi khỏi mặc định.
 )
 
 async def main() -> None:

@@ -184,10 +184,52 @@ hiện có, độc lập với OTel). Rút gọn thẳng ở kế hoạch: `desi
 §8.2 giờ chỉ còn bốn span, năm cái kia gộp attribute vào span còn sống gần nhất — để
 LÚC OTel thật được xây, xây đúng bốn ngay từ đầu.
 
-Còn lại, chưa kiểm/chưa cắt: `end_strategy` (K-11) · `ServerIdentity.fingerprint`
-(K-12) · 38 mã bất biến với 3 va chạm namespace (K-13) · tuyên bố "14 tên, một import"
-sai — ví dụ import 20 tên từ 4 module (K-22) · thiếu session/tenant identity mà minimal
-core đòi (K-28).
+> **K-11 ĐÃ SỬA.** Mặc định `end_strategy` đã là `"graceful"` từ trước (không cần đổi).
+> Giá trị thứ ba đổi tên từ `"exhaustive"` gốc PydanticAI thành `"complete"` — `"exhaustive"`
+> đã là tên một **parallel mode** khác hẳn của chính pydantic-ai trong `03 §3.2`, dùng lại
+> cho một trục không liên quan là tự tạo va chạm từ vựng trong cùng bản thiết kế. Xoá khỏi
+> ví dụ Mức 3 (`01 §2`) — nó không phải một trong bốn khái niệm còn thiếu của cả ngành mà
+> mục đó minh hoạ.
+
+> **K-12 ĐÃ SỬA.** `03 §5.2` hạ `McpServerPolicy.identity` từ `ServerIdentity{label,
+> fingerprint}` xuống chỉ `ServerLabel` (chuỗi) cho v1 — `fingerprint` chưa chốt được định
+> dạng (không tương đương SPKI cho MCP stdio, đã ghi ở *Chưa đủ evidence*), một trường
+> không chốt được định dạng chưa nên vào kiểu công khai. Cái giá nói thẳng: M-4 (`03 §5.3`)
+> v1 KHÔNG chặn được label bị trỏ lại sang endpoint khác — đúng gap S-7 đã nêu, cùng lý do
+> hoãn (`## 1.1`). Thêm lại `ServerIdentity`/`fingerprint` khi quan sát được một lần
+> re-pointing thật.
+
+> **K-13 SỬA MỘT PHẦN.** Ba trong bốn va chạm mã có phạm vi gọn, chỉ nằm trong đúng hai
+> tệp `design/*.md`, không đụng `src/harness/` hay `docs/*.md` — đổi tên an toàn: `03 §6.3`
+> bốn luật cancel `C-1…4` → `CAN-1…4`; `05 §A.1` bốn bất biến cost `C-1…4` → `COST-1…4`;
+> `05` "Luật đọc" (memory) `R-1…3` → `MEM-R1…3`, giữ nguyên `00-foundation.md §5 R-1…4` (toàn
+> cục, không đổi). Còn lại KHÔNG sửa, và hoá ra RỘNG hơn K-13 mô tả: va chạm `P-` không chỉ
+> hai namespace (`01` plugin, `02` policy) mà BA — `docs/09-testing.md` có hẳn một series
+> `P-1…P-10` (property test ID) được `docs/00-council.md`, `docs/08-poka-yoke.md`,
+> `docs/09-testing.md`, `docs/11-implementation-plan.md`, `docs/12-decision-logs.md`,
+> `docs/13-risk-register.md`, `docs/14-validation-plan.md` tham chiếu vài chục lần — đó rõ
+> ràng là namespace THẬT, đang sống, không phải bản nháp. Và `02`'s `P-1…4` (policy) được
+> chính `src/harness/policy/{base,engine,builtin}.py` trích trong comment. Đổi bất kỳ series
+> nào trong ba cũng kéo theo sửa code hoặc sửa 7+ tệp `docs/` — vượt xa phạm vi một lần dọn
+> `design/*.md`. Tương tự, va chạm `I-1`/`I-2` (`04`, "gate là tiền điều kiện tại chỗ tiêu
+> thụ" — invariant chính bản thân `04` gọi là "bất biến THAY THẾ I-1", tự thú đang dùng lại
+> số của `03 §4.4`'s I-1 khác hẳn) và `I-3` (`05`, pairing tool_call/tool_result) đều đã là
+> từ vựng sống trong `dispatch.py`, `lg/runtime.py`, `context/window.py`, và nhiều
+> `tests/test_attack_*.py` của CHÍNH bản vá phiên này — đổi sẽ là một PR tách riêng, không
+> phải phần của lượt dọn KISS này. Để nguyên, ghi lại đây cho lần sau.
+>
+> **K-22 ĐÃ SỬA.** `01 §1` tuyên bố "toàn bộ bề mặt là 14 tên, một import" rồi chính ví dụ
+> Mức 3 trong CÙNG tệp `import` 20 tên từ 4 module — tự mâu thuẫn. Sửa bằng cách nói đúng
+> phạm vi: 14 tên là bề mặt TỐI THIỂU (Mức 0–2), không phải toàn bộ; production (Mức 3) cần
+> tới 20 tên qua tối đa 3 submodule. Kiểm thêm hai phát hiện phụ của K-22 trên `design/*.md`
+> hôm nay: `Workspace` (định nghĩa ở `03 §5`) và `Event` (định nghĩa ở `00`) — CẢ HAI đã
+> ĐƯỢC ĐỊNH NGHĨA, khác lúc K-22 viết; phần đó của K-22 đã lỗi thời, không cần sửa thêm.
+>
+> **K-28 ĐÃ SỬA.** `01 §1.1` tuyên bố interface mẫu thiếu "năm thứ", liệt kê bốn cái đã có
+> "ở trên" — nhưng không có kiểu `Session` nào trong `01`/`02`/`04`/`05`, chỉ có `run_id`.
+> Sửa câu thành "ba cái đầu ở trên" (streaming, cancellation, approval round-trip) và nói rõ
+> `session` là phạm vi của **tầng service** bọc quanh harness, không phải của chính harness —
+> trung thực thay vì ngầm nhận có cái không có.
 
 ### 1.4 Đếm khái niệm — chưa đạt mục tiêu
 
@@ -320,9 +362,10 @@ Từ sáu tệp thiết kế, không lặp lại lý lẽ:
    trong design doc. Xem `## 1.3`.
 3. **`Ledger.void()`, S-16/S-19/S-3 trên backend cổ điển, S-15 trên backend cổ điển —
    ĐÃ KIỂM, KHÔNG THÊM.** Cả ba được xét kỹ; xem `## 1.1` cho từng cái.
-4. **Còn lại của KISS, chưa kiểm:** `end_strategy` (K-11), `ServerIdentity.fingerprint`
-   (K-12), 38 mã bất biến va chạm namespace (K-13), tuyên bố "14 tên, một import" sai
-   (K-22), thiếu session/tenant identity (K-28). Xem `## 1.3`.
+4. **K-11, K-12, K-22, K-28 — XONG; K-13 — MỘT PHẦN.** Toàn bộ văn xuôi trong `design/*.md`,
+   không đụng `src/harness/`. K-13 chỉ đổi được ba trong bốn va chạm mã (phạm vi gọn, hai
+   tệp); va chạm `P-`/`I-` để nguyên vì hoá ra RỘNG hơn ước lượng ban đầu — đụng cả code lẫn
+   `docs/*.md` sống, xứng một lượt riêng chứ không phải phụ lục của lượt này. Xem `## 1.3`.
 5. **Tiếp tục viết code.** S-16/S-19/S-3 (cả hai nguồn)/S-6/S-14/S-15/S-13 đã vào
    `src/harness/`, K-9 cắt khỏi bề mặt công khai — 318 test xanh, mỗi cơ chế chính có
    mutation test đi kèm. Vẫn còn nhiều phát hiện review chưa chạm tới code, và nghiên
