@@ -1646,6 +1646,45 @@ genuinely cannot succeed.
 
 ---
 
+### ADR-060 — `tenant_id` threaded into `RunContext`/`_Ctx`, not just `EventBus`
+
+**Status:** Accepted (N-9, found while re-running `tests/test_roadmap.py` ahead of a
+documentation pass)
+
+**Context.** `Agent.tenant_id`/`Runtime.tenant_id` (T-8.1, ADR-048) stamped `Event`s for
+telemetry, but were never threaded into `RunContext` (`dispatch.py`) or `_Ctx`
+(`lg/runtime.py`) — the objects `Policy.check(call, ctx)` actually receives. A
+multi-tenant deployment could label its events by tenant but could not WRITE a policy
+that decided differently per tenant. `tests/test_roadmap.py`'s pre-registered S-03 (a
+"definition of done" written before T-8.1 landed) still failed after T-8.1 shipped —
+running that suite again, rather than trusting the earlier "M8 done" claim, is what
+surfaced it.
+
+**Decision.** `RunContext.tenant_id: str | None = None` (appended field, every existing
+positional construction keeps working) and `_Ctx.tenant_id` (new `__slots__` member),
+both populated from `Agent.tenant_id`/`Runtime._tenant_id` at every `ctx` construction
+site (one in `dispatch.py`, three in `lg/runtime.py`).
+
+**`test_roadmap.py` itself needed two kinds of fix, not one — worth separating.** Of its
+five originally-red checks, two were checking for a NAME the final design didn't use
+(`hasattr(harness, "ApprovalRecord")` — the real class is `Decision`;
+`from harness.testing import Trajectory` — the real module is `harness.eval`, following
+the precedent `cost_per_success` already set there) — those checks were rewritten to
+match the shipped names, no code changed. `tenant_id` was the one genuine functional
+gap — code changed, not the test. `S-03` (the original, conflating `tenant_id` with a
+broader `principal`/`scopes` idea T-8.1 never promised) was split into `S-03a` (tenant —
+now green) and `S-03b` (`principal`/`scopes` — intentionally still red, a materially
+larger authorization model nothing in this codebase has built).
+
+**Tests.** `tests/test_n9_tenant_in_context.py` (5 tests, both backends): a
+`TenantAwarePolicy` that denies unless `ctx.tenant_id == "acme"`, exercised on the
+classic backend (`Agent(tenant_id=...)`) and the LangGraph backend
+(`build_agent(tenant_id=...)`), plus a mutation constructing a `RunContext` without
+`tenant_id` and showing two different tenants read back the identical `None` — the
+leak this fix closes, made concrete rather than asserted.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |

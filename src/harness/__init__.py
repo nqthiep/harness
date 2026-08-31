@@ -14,6 +14,7 @@ from .policy.decision import Actor, Approval
 from .result import Money, Result, StopReason, Step, Usage
 from .run import RunContext
 from .secrets import Secret, safe_for_display
+from .session import Session, SessionExpiredError
 from .tools import Effect, ToolSpec, tool
 
 __version__ = "0.1.0.dev0"
@@ -21,7 +22,7 @@ __version__ = "0.1.0.dev0"
 __all__ = [
     "Agent", "tool", "Result", "StopReason", "Usage", "Step", "Money", "RunContext",
     "Effect", "Secret", "safe_for_display", "Policy", "Verdict", "Ruling", "ToolCall",
-    "ToolSpec", "Actor", "Approval",
+    "ToolSpec", "Actor", "Approval", "Session", "SessionExpiredError",
     "Budget", "DEFAULT_BUDGET", "ModelProvider",
     "HarnessError", "ConfigError", "MissingEffectError", "ToolSchemaError",
     "DuplicateToolError", "NonDeterministicPromptError", "UnsafeToolSetError",

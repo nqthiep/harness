@@ -364,19 +364,23 @@ class ToolCall:
     spec: ToolSpec
 
 @dataclass(frozen=True, slots=True)
-class RunContext:
+class RunContext:                       # dispatch.py — the classic backend's PolicyContext
     run_id: str
     agent_name: str
     step: int
-    tainted: bool
-    spent: Money
-    budget: Budget
+    label: Label                        # two-axis integrity × confidentiality (§06.2)
     safety: Literal["standard", "strict"]
-    memory: Store | None
     deadline: float                     # monotonic clock
-    emit: Callable[[Event], None]
+    tenant_id: str | None = None        # threaded from Agent.tenant_id — a Policy can
+                                        # read this to decide differently per tenant
+    @property
+    def tainted(self) -> bool: ...      # True iff label.integrity is UNTRUSTED — kept
+                                        # for callbacks written against the one-axis model
     # Deliberately absent: the message history. Tools must not read the transcript —
     # it is the largest available exfiltration surface. See §06.4.
+    # The LangGraph backend's equivalent (lg/runtime.py::_Ctx) carries the same three
+    # fields Policy.check actually reads — label, safety, tenant_id — under a lighter
+    # __slots__ type; the two are kept in sync by tests/test_parity.py.
 
 class Policy(Protocol):
     name: str

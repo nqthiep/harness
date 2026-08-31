@@ -552,6 +552,32 @@ mới không nên tự tạo thêm va chạm).
 > chưa lên lịch trong roadmap này, ghi lại đây làm việc tiếp theo tự nhiên nhất nếu có
 > nhu cầu thật (một `write`/`danger` tool trên một upstream không tự idempotent).
 
+> **N-9 ĐÃ SỬA — `tenant_id` chưa bao giờ tới được `Policy.check()`.** Phát hiện khi chạy
+> lại `tests/test_roadmap.py` (bộ test tự đăng ký "định nghĩa xong" của M6…M10, viết
+> TRƯỚC khi các milestone tồn tại) để chuẩn bị dọn tài liệu — S-03 của nó vẫn ĐỎ dù T-8.1
+> (envelope v1) đã "xong": `Agent.tenant_id`/`Runtime.__init__`'s `tenant_id` chỉ từng
+> chảy tới `EventBus` (dán nhãn TELEMETRY), không bao giờ chảy tới `RunContext`
+> (`dispatch.py`, backend cổ điển) hay `_Ctx` (`lg/runtime.py`, backend LangGraph) — hai
+> kiểu MÀ `Policy.check(call, ctx)` thật sự nhận. Nghĩa là: một vận hành đa-tenant dán
+> nhãn được sự kiện theo tenant, nhưng KHÔNG VIẾT ĐƯỢC một `Policy` quyết định khác nhau
+> theo tenant — lỗ hổng thật, không phải lỗi test.
+>
+> Sửa: `RunContext.tenant_id`/`_Ctx.tenant_id` (trường mới, mặc định `None` — mọi lời
+> gọi dựng cũ vẫn chạy được), nối từ `Agent.tenant_id`/`Runtime._tenant_id` tại cả ba
+> điểm dựng `ctx` trong `lg/runtime.py` và điểm duy nhất trong `dispatch.py`. Tách luôn
+> `S-03` (bộ test gốc) thành `S-03a` (tenant — nay xanh) và `S-03b` (`principal`/`scopes`
+> — một mô hình uỷ quyền RỘNG HƠN bất cứ gì T-8.1 từng hứa, cố ý còn đỏ, không phải bỏ
+> quên). `tests/test_n9_tenant_in_context.py` (5 test, cả hai backend, mutation-tested —
+> dựng thẳng một `RunContext` thiếu `tenant_id` và cho thấy hai tenant khác nhau đọc ra
+> CÙNG verdict nếu không có bản vá).
+>
+> **Bài học về chính công cụ đang dùng:** `test_roadmap.py` đoán TRƯỚC hình dạng cuối
+> cùng của ba thứ (`ApprovalRecord`, `harness.testing.Trajectory`, `RunContext.principal`)
+> — hai trong ba (`ApprovalRecord` → `Decision`; namespace → `harness.eval`) hoá ra chỉ là
+> tên khác cho đúng thứ đã xây, sửa TEST cho khớp thiết kế cuối cùng; `tenant_id` hoá ra
+> là gap THẬT, sửa CODE. Phân biệt được hai loại "đỏ" đó — sai tên vs. sai chức năng — là
+> đúng lý do file này đáng chạy định kỳ, không chỉ một lần lúc viết.
+
 ---
 
 ## 2. Ý tưởng có kiến trúc, chờ eval

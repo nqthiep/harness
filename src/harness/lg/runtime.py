@@ -219,7 +219,8 @@ class Runtime:
     # ── gate 2: nothing reaches a tool without a verdict ─────────────────────
     def policy_gate(self, state) -> dict:
         calls = getattr(state["messages"][-1], "tool_calls", []) or []
-        ctx = _Ctx(label=self._effective_label(state), safety=self._safety(state))
+        ctx = _Ctx(label=self._effective_label(state), safety=self._safety(state),
+                  tenant_id=self._tenant_id)
         pending, denied = [], []
         for c in calls:
             self._emit(state, EventKind.TOOL_REQUESTED, tool=c["name"], call_id=c["id"])
@@ -265,7 +266,8 @@ class Runtime:
             asks += 1
             spec = self._tools.get(p["tool"])
             call = ToolCall(p["call"]["id"], p["tool"], p["call"].get("args", {}), spec)
-            ctx = _Ctx(label=self._effective_label(state), safety=self._safety(state))
+            ctx = _Ctx(label=self._effective_label(state), safety=self._safety(state),
+                      tenant_id=self._tenant_id)
             reported_actor: Actor | None = None
             if asks > self._max_asks_per_run:
                 # Approval fatigue is a channel the model controls — deny once the cap is
@@ -355,7 +357,7 @@ class Runtime:
         call = ToolCall(p["call"]["id"], p["tool"], p["call"].get("args", {}), spec)
         if label is None:
             label = self._effective_label(state)
-        ctx = _Ctx(label=label, safety=self._safety(state))
+        ctx = _Ctx(label=label, safety=self._safety(state), tenant_id=self._tenant_id)
         r = self._engine_for(_run_id(state)).decide(call, ctx)
         if r.verdict is not Verdict.ASK:
             return r
@@ -633,9 +635,11 @@ def _run_id(state) -> str:
 
 
 class _Ctx:
-    __slots__ = ("label", "safety")
-    def __init__(self, *, label: Label, safety: str) -> None:
-        self.label, self.safety = label, safety
+    __slots__ = ("label", "safety", "tenant_id")
+    #: Same fix as `dispatch.py::RunContext.tenant_id` — a `Policy.check(call, ctx)` on
+    #: this backend had the identical gap (`tests/test_roadmap.py`'s S-03).
+    def __init__(self, *, label: Label, safety: str, tenant_id: str | None = None) -> None:
+        self.label, self.safety, self.tenant_id = label, safety, tenant_id
 
 
 def _run_subagent(spec, args: dict, led: Ledger) -> str:

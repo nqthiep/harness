@@ -245,24 +245,33 @@ confident empty answer; the harness converts it into an explicit outcome.
 
 ## 6. Complete export list
 
+The real `harness/__init__.py::__all__` — kept in sync by hand; if this ever drifts from
+the source file again, trust the source file. `Chat` (from `agent.chat()`) and `Store`/
+`Exporter` (protocols, imported from their own submodule when implementing one) are
+deliberately NOT here — only types a caller constructs directly, or names needed without
+a submodule import, are top-level.
+
 ```python
 # harness/__init__.py
 __all__ = [
-    # core
-    "Agent", "Chat", "tool", "Result", "StopReason", "Usage", "Money",
-    # safety
-    "Effect", "Secret", "Policy", "Verdict", "Allow", "Ask", "Deny", "RunContext",
-    # cost
-    "Budget", "DEFAULT_BUDGET",
-    # extension points
-    "ModelProvider", "Store", "Exporter", "ToolSpec",
-    # errors
+    "Agent", "tool", "Result", "StopReason", "Usage", "Step", "Money", "RunContext",
+    "Effect", "Secret", "safe_for_display", "Policy", "Verdict", "Ruling", "ToolCall",
+    "ToolSpec", "Actor", "Approval", "Session", "SessionExpiredError",
+    "Budget", "DEFAULT_BUDGET", "ModelProvider",
     "HarnessError", "ConfigError", "MissingEffectError", "ToolSchemaError",
-    "ToolContractError", "NonDeterministicPromptError", "UnsafeToolSetError",
+    "DuplicateToolError", "NonDeterministicPromptError", "UnsafeToolSetError",
+    "InvalidBudgetError", "UnknownModelError", "ToolContractError",
     "SyncInAsyncContextError", "RunFailed", "BudgetExceeded", "PolicyDenied",
     "ProviderError", "__version__",
 ]
 ```
+
+Everything else is reached through its own submodule — `from harness.lg import
+build_agent` (extra: `graph`), `from harness.mcp import connect` (extra: `mcp`), `from
+harness.server import create_app` (extra: `server`), `from harness.eval import
+cost_per_success, Trajectory, run_golden_set, benchmark`, `from harness.observe.otel
+import OtelExporter` (extra: `otel`), `from harness.memory.viking import VikingStore`
+(extra: `viking`), `from harness.testing import FakeModel, no_network, ...` (§09).
 
 Thirty-two symbols. A user reaching Level 0 needs three of them.
 

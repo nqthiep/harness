@@ -91,11 +91,27 @@ class KhoangTrong(unittest.TestCase):
         self.assertIn("idempotency_key", truong,
                       f"ToolCall chỉ có {sorted(truong)}")
 
-    @muc("S-03", "principal / tenant / scopes trong ngữ cảnh (T-8.1)")
+    @muc("S-03a", "tenant trong PolicyContext, cả hai backend (T-8.1)")
+    def test_run_context_carries_a_tenant(self):
+        """Tách khỏi S-03b khi sửa (07-risks N-9): `Agent.tenant_id` đã tồn tại từ
+        T-8.1 nhưng chưa bao giờ được nối xuống `RunContext`/`_Ctx` — một `Policy` không
+        đọc được nó. Giờ đã nối cả hai backend."""
+        import dataclasses
+
+        from harness.dispatch import RunContext
+        from harness.lg.runtime import _Ctx
+        truong_classic = {f.name for f in dataclasses.fields(RunContext)}
+        self.assertIn("tenant_id", truong_classic, f"RunContext có {sorted(truong_classic)}")
+        self.assertIn("tenant_id", _Ctx.__slots__, f"_Ctx có {_Ctx.__slots__}")
+
+    @muc("S-03b", "principal / scopes trong ngữ cảnh — CHƯA xây, rộng hơn tenant")
     def test_run_context_carries_a_principal(self):
+        """`principal`/`scopes` (danh tính CALLER, không chỉ tenant nào) là một mô hình
+        RBAC/uỷ quyền rộng hơn những gì T-8.1 từng hứa (chỉ envelope: schema_version/
+        trace_id/tenant_id/session_id trên Event) — cố ý còn đỏ, không phải bỏ quên."""
         from harness.dispatch import RunContext
         co = {n for n in dir(RunContext) if not n.startswith("_")}
-        self.assertTrue({"principal", "tenant_id"} <= co, f"RunContext có {sorted(co)}")
+        self.assertIn("principal", co, f"RunContext có {sorted(co)}")
 
     @muc("Y-03", "event envelope có schema_version / trace_id / tenant_id (T-8.1)")
     def test_event_envelope_is_versioned_and_traceable(self):
@@ -107,9 +123,18 @@ class KhoangTrong(unittest.TestCase):
 
     @muc("S-02", "approval là bản ghi, không phải boolean (T-8.2)")
     def test_approval_is_an_auditable_record(self):
-        import harness
-        self.assertTrue(hasattr(harness, "ApprovalRecord"),
-                        "approve= vẫn trả về bool; không có decision_id/actor/expiry")
+        """Sửa (07-risks): tên thật là `Decision`/`DecisionLog`
+        (`policy/decision.py`), không phải `ApprovalRecord` — `00-foundation.md §6`
+        đặt tên `Decision` cho bản ghi phê duyệt trước khi code tồn tại; check gốc
+        đoán một tên (`ApprovalRecord`) mà thiết kế cuối cùng không dùng. `Decision`
+        mang mọi trường `ApprovalRecord(decision_id, actor, policy_version, decided_at,
+        expires_at, verdict, reason)` từng đòi (T-8.2, ADR-049)."""
+        import dataclasses
+
+        from harness.policy.decision import Decision
+        truong = {f.name for f in dataclasses.fields(Decision)}
+        self.assertTrue({"actor", "policy_version", "decided_at", "expires_at",
+                         "verdict", "reason"} <= truong, f"Decision có {sorted(truong)}")
 
     @muc("Y-02", "egress mặc định CHẶN, không phải cho tất cả (T-7.2)")
     def test_egress_denies_by_default(self):
@@ -151,10 +176,14 @@ class KhoangTrong(unittest.TestCase):
 
     @muc("S-05", "trajectory contract khai báo được (T-10.1)")
     def test_a_trajectory_contract_can_be_written(self):
+        """Sửa: check gốc đoán namespace `harness.testing` — `cost_per_success`
+        (S-06, T-8.4, landing TRƯỚC T-10.1) đã đặt tiền lệ thật là `harness.eval`, và
+        `Trajectory`/`run_golden_set`/`benchmark` (T-10.1/10.2/10.3) đi theo đúng tiền
+        lệ đó, không phải `harness.testing`."""
         try:
-            from harness.testing import Trajectory  # noqa: F401
+            from harness.eval import Trajectory  # noqa: F401
         except ImportError:
-            self.fail("không có harness.testing.Trajectory")
+            self.fail("không có harness.eval.Trajectory")
 
 
 def main() -> int:

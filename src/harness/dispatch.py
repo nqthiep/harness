@@ -43,6 +43,14 @@ class RunContext:
     deadline: float
     # Deliberately no message history: a tool that could read the transcript could
     # exfiltrate the whole conversation (IDL-15).
+    #: T-8.1 gave `Agent`/`Event`/`EventBus` a `tenant_id` for telemetry, but never
+    #: threaded it down to the object a `Policy.check(call, ctx)` actually receives —
+    #: found while writing `tests/test_roadmap.py`'s own pre-registered "definition of
+    #: done" (S-03): a multi-tenant deployment could STAMP events with a tenant but
+    #: could not WRITE A POLICY that decides differently per tenant. Appended, not
+    #: inserted, so every existing positional `RunContext(run_id, name, step, label,
+    #: safety, deadline)` construction keeps working.
+    tenant_id: str | None = None
 
     @property
     def tainted(self) -> bool:
@@ -70,7 +78,8 @@ class Dispatcher:
     async def _run_tools(self, resp, step: int, run_id: str) -> list[dict[str, Any]]:
         calls = [b for b in resp.content if b.get("type") == "tool_use"]
         ctx = RunContext(run_id, self._e._a.name, step, self._e._taint.label,
-                         self._e._a.safety, self._e._l.remaining_wall_clock())
+                         self._e._a.safety, self._e._l.remaining_wall_clock(),
+                         tenant_id=self._e._a.tenant_id)
         planned: list[tuple[dict, ToolSpec | None, Ruling | None]] = []
 
         for b in calls:
