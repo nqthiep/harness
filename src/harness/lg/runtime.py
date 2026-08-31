@@ -386,8 +386,25 @@ def _now():
 
 
 def _run_id(state) -> str:
-    """Danh tính run. Sống trong state (R-4), không trên Runtime."""
-    return str(state.get("run_id") or "-")
+    """Danh tính run.
+
+    KHÔNG đọc từ `state["run_id"]` — không có khoá đó trong `AgentState`, và LangGraph âm
+    thầm bỏ mọi khoá không khai báo trong schema (docs/state.py, IDL-41). Bản đầu của hàm
+    này đọc `state.get("run_id")` và LUÔN trả về "-": test đơn vị tự tạo state dict thì
+    không lộ ra (chính người viết state dict điền đúng khoá "run_id"), nhưng một
+    `graph.invoke()` thật thì lộ ngay — mọi run bị gộp vào một sổ chung
+    (design/review-security.md S-2 loại phụ, tìm thấy ở bước 2 chứ không phải bước 1).
+
+    `thread_id` từ config là danh tính đúng: nó ổn định suốt vòng đời một cuộc hội thoại,
+    kể cả qua resume, và đó chính xác là phạm vi mà một `Decision` phải được cô lập theo
+    (một khách hàng không được dùng grant của khách hàng khác).
+    """
+    from langgraph.config import get_config
+    try:
+        cfg = get_config()
+    except RuntimeError:                  # gọi ngoài một node đang chạy (test đơn vị)
+        return str(state.get("run_id") or "-")
+    return str(cfg.get("configurable", {}).get("thread_id") or "-")
 
 
 class _Ctx:
