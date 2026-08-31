@@ -292,6 +292,21 @@ class Runtime:
                                    run_id=_run_id(state), now=_now(),
                                    call_id=p["call"]["id"])
         if v is Verdict.ALLOW:
+            # S-29: một `Decision` (TTL 1 giờ chẳng hạn) có thể phủ N lần thực thi khác
+            # nhau — trước bản vá, tái dùng một grant sống không ghi gì thêm vào sổ, nên
+            # câu "ai cho phép" trả lời được nhưng "chuyện gì đã xảy ra dưới quyền đó" thì
+            # không: N lần thực thi thật chỉ để lại đúng MỘT bản ghi audit. Ghi một
+            # `Decision` riêng cho LẦN NÀY, khoá theo đúng `call_id` này (không phải
+            # `ForeverAllow` — `Decision.__post_init__` đòi `scope.call_id` khi không có
+            # `expires_at`) — sổ giờ có một hàng cho mỗi lần thực thi, không chỉ một hàng
+            # cho lần cấp gốc.
+            self._decisions.record(Decision(
+                id=f"dec-{p['call']['id']}-reuse", verdict=Verdict.ALLOW,
+                scope=Scope(tool=p["tool"], args=dict(p["call"].get("args", {})),
+                            call_id=p["call"]["id"]),
+                actor=Actor.policy("decision-log-reuse"), decided_at=_now(),
+                expires_at=None, run_id=_run_id(state),
+                reason="grant còn sống trong sổ, tái dùng cho lời gọi này"))
             return Ruling(Verdict.ALLOW, "grant còn sống trong sổ", "decision-log")
         return Ruling(Verdict.DENY,
                       "không có grant còn hiệu lực cho lời gọi này "
