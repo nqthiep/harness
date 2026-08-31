@@ -14,6 +14,7 @@ import re
 
 from ..errors import MissingEffectError, ToolSchemaError
 from ..policy.base import Verdict
+from ..policy.label import Confidentiality, Integrity, Label
 from . import schema as _schema
 
 _NAME_RE = r"^[a-z][a-z0-9_]{0,63}$"
@@ -57,7 +58,15 @@ class Effect(str, Enum):
 class EffectProfile:
     parallel_safe: bool
     retryable: bool
-    taints_output: bool
+    #: Nhãn mà kết quả của một tool thuộc effect này mang — L-1, design/00-foundation §3.2.
+    #: `external` là nguồn UNTRUSTED duy nhất; các effect còn lại không tự làm nhiễm.
+    emits: Label
+    #: Nhãn confidentiality tối đa được phép CHẢY VÀO tool này. `write`/`external` là
+    #: sink PUBLIC (dữ liệu SECRET không được reach chúng, trừ khi operator không đặt gì
+    #: khác — không có cờ nới ở đây, chỉ có thể thắt); `read`/`danger` không hạn chế vì
+    #: chúng không phải kênh xuất — "safe to call even when the context is tainted, it
+    #: cannot exfiltrate" (Microsoft, chép lại có ghi công, research/09 §16bis).
+    max_confidentiality: Confidentiality
     decision_standard: Verdict
     decision_strict: Verdict
     audit_level: str
@@ -66,10 +75,14 @@ class EffectProfile:
 #: Single source of truth for tool handling.  A module constant, not configuration:
 #: a user who could edit it could disable the taint rule (IDL-14).
 EFFECT_PROFILES: Final[Mapping[Effect, EffectProfile]] = {
-    Effect.READ:     EffectProfile(True,  True,  False, Verdict.ALLOW, Verdict.ALLOW, "debug"),
-    Effect.WRITE:    EffectProfile(False, False, False, Verdict.ALLOW, Verdict.ASK,   "info"),
-    Effect.EXTERNAL: EffectProfile(True,  True,  True,  Verdict.ALLOW, Verdict.ASK,   "info"),
-    Effect.DANGER:   EffectProfile(False, False, False, Verdict.ASK,   Verdict.ASK,   "warning"),
+    Effect.READ:     EffectProfile(True,  True,  Label(), Confidentiality.SECRET,
+                                   Verdict.ALLOW, Verdict.ALLOW, "debug"),
+    Effect.WRITE:    EffectProfile(False, False, Label(), Confidentiality.PUBLIC,
+                                   Verdict.ALLOW, Verdict.ASK,   "info"),
+    Effect.EXTERNAL: EffectProfile(True,  True,  Label(Integrity.UNTRUSTED), Confidentiality.PUBLIC,
+                                   Verdict.ALLOW, Verdict.ASK,   "info"),
+    Effect.DANGER:   EffectProfile(False, False, Label(), Confidentiality.SECRET,
+                                   Verdict.ASK,   Verdict.ASK,   "warning"),
 }
 
 #: The exact text §15 shows a child.  The parentheticals this used to carry — "parallel,
@@ -105,7 +118,6 @@ class ToolSpec:
     input_schema: Mapping[str, Any]
     effect: Effect
     fn: Callable[..., Any]              # always awaitable
-    accepts_tainted: bool = False
     timeout_s: float = 30.0
     max_result_tokens: int = 4_000
     source: str = ""
@@ -122,11 +134,18 @@ def tool(
     effect: "Effect | str | None" = None,
     subagent: Any = None,
     name: str | None = None,
-    accepts_tainted: bool = False,
     timeout_s: float = 30.0,
     max_result_tokens: int = 4_000,
 ) -> Callable[[Callable[..., Any]], ToolSpec]:
-    """Turn a function into a tool.  `effect` is required — docs/06-safety.md#effects."""
+    """Turn a function into a tool.  `effect` is required — docs/06-safety.md#effects.
+
+    KHÔNG có `accepts_tainted=` ở đây. Nó khác chỗ trong bản nháp đầu, và một reviewer
+    chỉ ra vì sao: một đối số decorator có mặc định là đúng hình dạng công tắc an toàn mà
+    thiết kế này phê phán ở Microsoft (design/03-tools-and-mcp.md §1.1bis,
+    design/review-security.md S-16). `accepts_tainted` chỉ đến từ
+    `Agent(accepts_tainted={...})` / `build_agent(accepts_tainted={...})`, do OPERATOR
+    đặt lúc bind, không do tác giả tool đặt lúc định nghĩa.
+    """
 
     def decorate(fn: Callable[..., Any]) -> ToolSpec:
         fname = name or fn.__name__
@@ -173,6 +192,6 @@ def tool(
             src = "<unknown>"
 
         return ToolSpec(fname, description, input_schema, eff, afn,
-                        accepts_tainted, timeout_s, max_result_tokens, src, subagent)
+                        timeout_s, max_result_tokens, src, subagent)
 
     return decorate

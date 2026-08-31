@@ -29,11 +29,19 @@ khi nó thành thật.
 | S-17 | `description` của tool MCP vào prompt khi nhãn còn `TRUSTED` | injection qua metadata; cần gắn nhãn cho description |
 | S-18 | P-4 (`Policy.check` thuần) làm `DenyHosts` chỉ còn advisory ⇒ SSRF đi qua | cần tách policy thuần khỏi enforcement I/O |
 
-> **S-16 và S-19 ĐÃ SỬA** (bước 0, trước khi viết code — cả hai là quyết định mức mô hình mà
-> code sẽ đóng băng). S-16: `accepts_tainted` và trần confidentiality rời khỏi `@tool`, chỉ
-> đến từ cấu hình operator keyed theo tên tool, dùng lại đúng cơ chế đã có cho tool MCP.
-> S-19: chốt nhãn **per-message** cộng ba luật L-1/L-2/L-3 ở [00 §3.2](00-foundation.md), và
-> `ClearToolResults` phải giữ nhãn khi xoá nội dung.
+> **S-16, S-19, và S-3 ĐÃ SỬA — trên giấy VÀ trong `src/harness/`.** Bước 0 chốt mô hình
+> (S-16: `accepts_tainted` rời `@tool`, chỉ đến từ operator; S-19: nhãn per-message +
+> L-1/L-2/L-3). Bước sau đó đưa vào code: `policy/label.py` (canonical `Integrity` ×
+> `Confidentiality` × `Label`, `Grants`), `policy/builtin.py` (`check_flow` hai nhánh,
+> `emits_of`), `lg/runtime.py` (`_effective_label` thay `_tainter`, L-2 stamp trong
+> `call_model`, L-1 stamp trong `_run_tools`, `_manage` giữ `additional_kwargs` khi xoá
+> nội dung). Backend cổ điển (`run.py`/`dispatch.py`) nâng `TaintTracker` lên `Label` hai
+> trục nhưng GIỮ sticky-per-run — nó miễn nhiễm với chính kiểu rửa taint mà per-message
+> phải phòng, vì nó không tính lại theo message; đây là khác biệt có chủ ý giữa hai
+> backend, không phải việc chưa xong. `Secret[T]` (nguồn nâng confidentiality thứ nhất,
+> S-3) **chưa cài** — chỉ có nguồn thứ hai (`Grants.sensitive`, operator đánh dấu tool).
+> 11 test tấn công mới ở `tests/test_attack_s19.py`, mỗi cơ chế chính có một mutation test
+> đi kèm (xoá đúng dòng code thì test phải đỏ) — cùng kỷ luật với bước 1/2.
 
 ### 1.2 Bảo mật — nên sửa (S-21…S-29)
 
@@ -174,13 +182,14 @@ Từ sáu tệp thiết kế, không lặp lại lý lẽ:
 
 ## 5. Việc tiếp theo, theo thứ tự
 
-1. **S-19 và S-16** — hai cái nghiêm trọng nhất còn mở; S-19 là đường rửa taint, S-16 mâu
-   thuẫn trực tiếp với R-3.
-2. **S-14 vòng đời `Reservation`** — trần chi tiêu là bất biến #4, mà ngữ nghĩa huỷ chưa có.
-3. **S-6, S-7, S-10** — ba lỗ trong so khớp `Scope`, tức trong chính cơ chế được coi là điểm
+1. **S-14 vòng đời `Reservation`** — trần chi tiêu là bất biến #4, mà ngữ nghĩa huỷ chưa có.
+2. **S-6, S-7, S-10** — ba lỗ trong so khớp `Scope`, tức trong chính cơ chế được coi là điểm
    mạnh nhất học từ Microsoft.
+3. **`Secret[T]`** — nguồn nâng confidentiality thứ nhất (S-3), chưa cài; chỉ có
+   `Grants.sensitive` (nguồn thứ hai).
 4. **Cắt K-7, K-9, K-10, K-23** — giảm đường tới production từ ~38 xuống ~33 tên.
-5. **Viết code.** Đây là điều quan trọng nhất và tệp này không thay thế được nó: nghiên cứu
-   của chính dự án đo được **23 vòng review tìm 20 lỗi và 0 lỗi bảo mật; 16 vòng chạy tìm
-   38+ lỗi và 4 lỗi bảo mật**. Bản thiết kế này là sản phẩm của review. Nó sẽ sai ở những chỗ
-   chỉ có chạy mới tìm ra.
+5. **Tiếp tục viết code.** S-16/S-19/S-3 đã vào `src/harness/` — 273 test xanh, mỗi cơ
+   chế chính có mutation test đi kèm. Vẫn còn 33 phát hiện review chưa chạm tới code, và
+   nghiên cứu của chính dự án đo được **23 vòng review tìm 20 lỗi và 0 lỗi bảo mật; 16
+   vòng chạy tìm 38+ lỗi và 4 lỗi bảo mật** — bản thiết kế là sản phẩm của review, nó sẽ
+   sai ở những chỗ chỉ có chạy mới tìm ra.

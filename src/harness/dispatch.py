@@ -17,6 +17,8 @@ from .context.assembler import canonical as _canonical
 from .errors import ToolContractError
 from .observe.events import EventKind
 from .policy.base import Ruling, ToolCall, Verdict
+from .policy.builtin import emits_of
+from .policy.label import Integrity, Label
 from .secrets import redact
 from .tools import EFFECT_PROFILES, ToolSpec
 
@@ -26,11 +28,18 @@ class RunContext:
     run_id: str
     agent_name: str
     step: int
-    tainted: bool
+    label: Label
     safety: str
     deadline: float
     # Deliberately no message history: a tool that could read the transcript could
     # exfiltrate the whole conversation (IDL-15).
+
+    @property
+    def tainted(self) -> bool:
+        """Tương thích ngược: `True` khi trục integrity đã UNTRUSTED. Chỉ `label` là
+        nguồn sự thật; giữ `.tainted` vì đây là type công khai và một `approve=`
+        callback có thể đã đọc nó (S-19 chuyển sang `Label` hai trục)."""
+        return self.label.integrity is Integrity.UNTRUSTED
 
 
 def truncate(text: str, max_tokens: int) -> tuple[str, bool]:
@@ -50,7 +59,7 @@ class Dispatcher:
 
     async def _run_tools(self, resp, step: int, run_id: str) -> list[dict[str, Any]]:
         calls = [b for b in resp.content if b.get("type") == "tool_use"]
-        ctx = RunContext(run_id, self._e._a.name, step, self._e._taint.tainted,
+        ctx = RunContext(run_id, self._e._a.name, step, self._e._taint.label,
                          self._e._a.safety, self._e._l.remaining_wall_clock())
         planned: list[tuple[dict, ToolSpec | None, Ruling | None]] = []
 
@@ -132,7 +141,7 @@ class Dispatcher:
                     f"tool {spec.name!r} returned something that cannot be sent to a model: {exc}"
                 ) from None
             payload, truncated = truncate(payload, spec.max_result_tokens)
-            if EFFECT_PROFILES[spec.effect].taints_output and self._e._taint.raise_taint(spec.name):
+            if self._e._taint.raise_from(emits_of(spec, self._e._a._grants), spec.name):
                 self._e._bus.emit(EventKind.TAINT_RAISED, step=step, source_tool=spec.name)
             self._e._bus.emit(EventKind.TOOL_FINISHED, step=step, tool=spec.name, call_id=b["id"],
                            duration_ms=(time.monotonic() - t0) * 1000, is_error=False,

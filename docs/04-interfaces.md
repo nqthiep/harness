@@ -168,7 +168,6 @@ class ToolSpec:
                                        # `required`, and emitted with strict:true (ADR-022)
     effect: Effect
     fn: Callable[..., Awaitable[object]]  # always async; sync fns are wrapped at decoration
-    accepts_tainted: bool = False      # only meaningful for DANGER
     timeout_s: float = 30.0
     max_result_tokens: int = 4_000
     source: str = ""                   # "module.py:41" — used in every error message
@@ -178,7 +177,6 @@ def tool(
     effect: Effect | Literal["read", "write", "external", "danger"],
     name: str | None = None,
     description: str | None = None,
-    accepts_tainted: bool = False,
     timeout_s: float = 30.0,
     max_result_tokens: int = 4_000,
 ) -> Callable[[Callable[..., object]], ToolSpec]: ...
@@ -365,7 +363,7 @@ final = max(p.check(call, ctx) for p in policies)   # by Verdict value
 | Policy | Rule |
 |---|---|
 | `EffectPolicy` | Verdict from `EFFECT_PROFILES[spec.effect]` and `ctx.safety`. |
-| `TaintPolicy` | `ctx.tainted and spec.effect is DANGER and not spec.accepts_tainted` → **DENY**. |
+| `TaintPolicy` | `check_flow(ctx.label, spec, grants)` — two branches, one per `Label` axis. `label.integrity is UNTRUSTED and effect is DANGER and name not in grants.accepts_tainted` → **DENY**; `label.confidentiality is SECRET and max_confidentiality is PUBLIC` → **DENY**. `accepts_tainted` is never a tool-decorator field — only `Agent(accepts_tainted=[...])` / `build_agent(accepts_tainted=[...])` set it (S-16). |
 | `EgressPolicy` | `effect is EXTERNAL` and a host argument is outside `allowed_hosts` → **DENY**. Inactive when `allowed_hosts is None`. |
 *(There is no `ApprovalPolicy`. See below — approval is not a policy.)*
 

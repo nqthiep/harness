@@ -67,17 +67,18 @@ class Walkthrough(unittest.TestCase):
             Agent(name="T", job="research and email", tools=[search, send_email])
         self.assertIn("search", str(cm.exception))
         self.assertIn("send_email", str(cm.exception))
-        self.assertIn("accepts_tainted=True", str(cm.exception))
+        self.assertIn("accepts_tainted", str(cm.exception))
 
     def test_08b_taint_blocks_danger_at_runtime_when_opted_in(self):
-        @tool(effect="danger", accepts_tainted=True)
+        @tool(effect="danger")
         def send_it(to: str) -> str:
             """Send."""
             return "sent"
         m = FakeModel([FakeModel.tool_call("search", {"query": "x"}),
                        FakeModel.tool_call("send_it", {"to": "a@b.c"}, call_id="c2"),
                        FakeModel.text("done")])
-        a = Agent(name="T", job="j", tools=[search, send_it], provider=m, budget="$5")
+        a = Agent(name="T", job="j", tools=[search, send_it], provider=m, budget="$5",
+                 accepts_tainted=["send_it"])
         r = a.run("go")
         self.assertTrue(r.tainted)                          # opted in, so it proceeds
 

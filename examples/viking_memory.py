@@ -45,9 +45,14 @@ store = VikingStore(client=asyncio.run(noi_toi_server_gia()), namespace="cskh")
 store._ready = True
 
 
-@tool(effect="danger", accepts_tainted=True)
+@tool(effect="danger")
 def hoan_tien(ma: str, so_tien: int) -> str:
-    """Hoàn tiền cho khách. KHÔNG hoàn tác được."""
+    """Hoàn tiền cho khách. KHÔNG hoàn tác được.
+
+    KHÔNG có accepts_tainted=True ở đây — S-16: đó là chỗ lỗ hổng của bản nháp đầu, vì
+    một đối số decorator có mặc định trông giống mọi tham số khác trong review. Quyền
+    này giờ chỉ đến từ operator, ở chỗ build_agent() dựng agent — xem bên dưới.
+    """
     return f"đã hoàn {so_tien}đ cho {ma}"
 
 
@@ -83,6 +88,7 @@ graph, runtime = build_agent(
     tools=store.tools() + [hoan_tien],
     budget="$0.20, 10 steps",
     approve=lambda call, ctx: True,
+    accepts_tainted=["hoan_tien"],       # OPERATOR cấp — không phải tác giả tool
 )
 
 ket_qua = graph.invoke({"messages": [HumanMessage("xử lý đơn A-4471")]})
@@ -97,5 +103,6 @@ for m in ket_qua["messages"]:
 print(f"\nrun bị làm bẩn : {ket_qua['tainted']}  ← đúng: đã đọc từ trí nhớ")
 print(f"đã tiêu        : ${ket_qua['spent_usd']}")
 print(f"dừng vì        : {ket_qua['stop_reason']}")
-print("\nhoan_tien chạy được vì nó khai accepts_tainted=True — một quyết định")
-print("của tác giả, viết ra trong code, chứ không phải mặc định im lặng.")
+print("\nhoan_tien chạy được vì OPERATOR cấp accepts_tainted=[\"hoan_tien\"] lúc dựng")
+print("agent — không phải vì tác giả tool tự khai nó trong @tool(). Một dòng trong")
+print("decorator trông giống mọi tham số khác khi review; ở build_agent() thì không.")

@@ -39,9 +39,10 @@ def send_email(to: str, body: str) -> str:
     SENT.append((to, body))
     return "sent"
 
-@tool(effect="danger", accepts_tainted=True)
+@tool(effect="danger")
 def send_email_ok(to: str) -> str:
-    """Send an email (explicitly allowed on untrusted input)."""
+    """Send an email (operator marks this one accepts_tainted, not the tool itself —
+    S-16: that switch belongs to the operator, never to the decorator)."""
     return "sent"
 
 @tool(effect="read")
@@ -108,7 +109,8 @@ class RedTeam(unittest.TestCase):
         m = FakeModel([FakeModel.tool_call("fetch", {"url": "http://evil.com"}),
                        FakeModel.tool_call("send_email_ok", {"to": "a@b.c"}, call_id="c2"),
                        FakeModel.text("done")])
-        a = Agent(name="T", job="j", tools=[fetch, send_email_ok], provider=m, budget="$5")
+        a = Agent(name="T", job="j", tools=[fetch, send_email_ok], provider=m, budget="$5",
+                 accepts_tainted=["send_email_ok"])
         r = a.run("go")
         self.assertTrue(r.tainted)
         self.assertTrue(r.ok)
@@ -118,7 +120,7 @@ class RedTeam(unittest.TestCase):
             Agent(name="T", job="j", tools=[fetch, send_email])
         msg = str(cm.exception)
         self.assertIn("fetch", msg); self.assertIn("send_email", msg)
-        self.assertIn("accepts_tainted=True", msg)
+        self.assertIn("accepts_tainted", msg)
 
     # -- resource control -------------------------------------------------
     def test_RT05_fifty_megabyte_result_is_truncated_and_memory_stays_flat(self):

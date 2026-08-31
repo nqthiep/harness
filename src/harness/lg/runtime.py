@@ -17,8 +17,9 @@ from ..budget.ledger import Ledger
 from ..errors import BudgetExceeded
 from ..observe.events import EventKind
 from ..policy.base import Ruling, ToolCall, Verdict
+from ..policy.builtin import emits_of
 from ..policy.decision import Actor, Decision, DecisionLog, Scope
-from ..policy.taint import TaintTracker
+from ..policy.label import Grants, Integrity, Label
 from ..result import Money, StopReason, Usage
 from ..run import CONTINUE, _MAP
 from ..secrets import redact, redaction_scope
@@ -29,15 +30,20 @@ from .graph import INTERRUPT, MAX_PAUSES
 
 
 class Runtime:
-    def __init__(self, *, model, toolset, ledger: Ledger, engine, taint, price,
+    def __init__(self, *, model, toolset, ledger: Ledger, engine, price,
                  max_output: int, model_name: str = "claude-opus-5",
-                 bus=None, approve=None, decisions: DecisionLog | None = None) -> None:
+                 bus=None, approve=None, decisions: DecisionLog | None = None,
+                 grants: Grants | None = None) -> None:
         self._model, self._tools = model, toolset
         self._model_name, self._started = model_name, False
         self._budget = ledger.budget          # the spec; the spend lives per turn
         self._engine = engine
         self._price, self._max_output = price, max_output
         self._bus, self._approve = bus, approve
+        # Đọc bởi `_run_tools` khi gắn nhãn L-1 lên kết quả tool — S-16/S-3. Cấu hình
+        # mức deployment, không đổi giữa các run, nên sống trên object này là an toàn
+        # (khác `Ledger`/nhãn của một run, phải sống trong state — xem R-4 ở dưới).
+        self._grants = grants if grants is not None else Grants()
         # Sổ quyết định. Nó KHÔNG phải trạng thái của một run — nó là audit sink, chung
         # cho graph, và mọi tra cứu đều keyed theo run_id, nên R-4 vẫn giữ.
         self._decisions = decisions if decisions is not None else DecisionLog()
@@ -65,11 +71,22 @@ class Runtime:
             snap["steps"] = 0
         return Ledger(self._budget).restore(snap)
 
-    def _tainter(self, state) -> TaintTracker:
-        t = TaintTracker()
-        if state.get("tainted"):
-            t.raise_taint("restored from checkpoint")
-        return t
+    def _effective_label(self, state) -> Label:
+        """L-3, design/00-foundation.md §3.2 — nhãn hiệu dụng là `join` của MỌI message
+        còn trong context, TÍNH LẠI mỗi lần gọi, không phải một biến tích luỹ.
+
+        Thay `_tainter(state)` cũ (một `TaintTracker` sticky dựng lại từ một bool duy
+        nhất `state["tainted"]`). Bool đó MIỄN NHIỄM với rửa taint qua compaction, nhưng
+        chỉ vì nó không bao giờ giảm — cái giá là một run bị coi UNTRUSTED vĩnh viễn sau
+        đúng một `web_fetch`, điều 00-foundation gọi là "biến harness thành vô dụng". Mô
+        hình per-message này đổi lấy khả năng nhãn giảm hợp lệ (khi message UNTRUSTED
+        cuối cùng rời context) bằng việc phải tự phòng rửa taint — xem L-2 ở `call_model`
+        và cách `_manage` giữ nhãn khi xoá nội dung.
+        """
+        eff = Label()
+        for m in state.get("messages") or []:
+            eff = eff.join(_msg_label(m))
+        return eff
 
     # ── gate 1: nothing reaches the model without a reservation ──────────────
     def budget_gate(self, state) -> dict:
@@ -109,8 +126,15 @@ class Runtime:
 
     def call_model(self, state) -> dict:
         led = self._ledger(state)
+        # L-2, design/00-foundation.md §3.2 — nhãn của message model TRƯỚC KHI nó tồn
+        # tại, tính trên context NÓ THẤY. Đây là luật "không được quên": câu trả lời tự
+        # nhiên "model của ta sinh ra nên TRUSTED" biến ClearToolResults thành đường rửa
+        # taint hoàn hảo — xem giải thích đầy đủ ở 00-foundation §3.2 và test
+        # `test_e2e_five_invariants.py`/`test_label_l2_l3.py`.
+        label_at_generation = self._effective_label(state)
         self._emit(EventKind.MODEL_REQUEST, max_tokens=state.get("max_tokens", 0))
         msg = self._model.invoke(state["messages"])
+        _stamp_label(msg, label_at_generation)
         led.settle(_RESERVED(state.get("max_tokens", 0)), _usage_of(msg), self._price)
         led.count_step()
         raw = _provider_stop(msg)
@@ -124,7 +148,7 @@ class Runtime:
     # ── gate 2: nothing reaches a tool without a verdict ─────────────────────
     def policy_gate(self, state) -> dict:
         calls = getattr(state["messages"][-1], "tool_calls", []) or []
-        ctx = _Ctx(tainted=self._tainter(state).tainted, safety=self._safety(state))
+        ctx = _Ctx(label=self._effective_label(state), safety=self._safety(state))
         pending, denied = [], []
         for c in calls:
             self._emit(EventKind.TOOL_REQUESTED, tool=c["name"], call_id=c["id"])
@@ -165,7 +189,7 @@ class Runtime:
                 out.append(p); continue
             spec = self._tools.get(p["tool"])
             call = ToolCall(p["call"]["id"], p["tool"], p["call"].get("args", {}), spec)
-            ctx = _Ctx(tainted=self._tainter(state).tainted, safety=self._safety(state))
+            ctx = _Ctx(label=self._effective_label(state), safety=self._safety(state))
             if self._approve is INTERRUPT:
                 ok = bool(interrupt({"tool": p["tool"],
                                      "arguments": p["call"].get("args", {}),
@@ -221,7 +245,7 @@ class Runtime:
         """
         spec = self._tools.get(p["tool"])
         call = ToolCall(p["call"]["id"], p["tool"], p["call"].get("args", {}), spec)
-        ctx = _Ctx(tainted=self._tainter(state).tainted, safety=self._safety(state))
+        ctx = _Ctx(label=self._effective_label(state), safety=self._safety(state))
         r = self._engine.decide(call, ctx)
         if r.verdict is not Verdict.ASK:
             return r
@@ -235,9 +259,12 @@ class Runtime:
                       "(hết hạn, bị thu hồi, hoặc chưa từng được cấp)", "decision-log")
 
     def _run_tools(self, state) -> dict:
-        tainter = self._tainter(state)
         led = self._ledger(state)
-        msgs, tainted = [], False
+        # L-3 trước vòng lặp — dùng để biết TAINT_RAISED có phải lần đầu không, và để
+        # "tainted" ở cuối hàm là quan sát thuần tuý: không node nào ĐỌC LẠI nó để quyết
+        # định (00-foundation §3.2 — nhãn hiệu dụng luôn tính lại, không tích luỹ).
+        label = self._effective_label(state)
+        msgs: list = []
         for p in state.get("_pending", []):
             gate = self._regate(p, state)
             if gate.verdict is not Verdict.ALLOW:
@@ -266,10 +293,18 @@ class Runtime:
                 limit = spec.max_result_tokens * 4
                 if len(payload) > limit:
                     payload = payload[:limit] + "\n[truncated]"
-                if EFFECT_PROFILES[spec.effect].taints_output and tainter.raise_taint(spec.name):
-                    tainted = True
+                # L-1, design/00-foundation.md §3.2 — nhãn mà KẾT QUẢ tool này mang, sau
+                # override `sensitive` của operator nếu có (S-3). `emits_of` hợp nhất ba
+                # ý tưởng nghiên cứu tìm được rời rạc: ToolKind của pydantic-ai, tách
+                # read/write approval của Microsoft, readOnlyHint/destructiveHint của MCP.
+                emitted = emits_of(spec, self._grants)
+                before = label
+                label = label.join(emitted)
+                if label != before:
                     self._emit(EventKind.TAINT_RAISED, source_tool=spec.name)
-                msgs.append(ToolMessage(content=redact(payload), tool_call_id=call["id"]))
+                result_msg = ToolMessage(content=redact(payload), tool_call_id=call["id"])
+                _stamp_label(result_msg, emitted)
+                msgs.append(result_msg)
                 self._emit(EventKind.TOOL_FINISHED, tool=spec.name, call_id=call["id"],
                            is_error=False)
             except Exception as exc:
@@ -280,7 +315,7 @@ class Runtime:
         self._emit(EventKind.STEP_FINISHED, step=state.get("step", 0),
                    stop_reason="tool_use", tool_calls=[p["tool"] for p in state.get("_pending", [])])
         return {"messages": msgs + self._manage(state["messages"] + msgs, state),
-                "_pending": [], "tainted": state.get("tainted", False) or tainted,
+                "_pending": [], "tainted": label.integrity is Integrity.UNTRUSTED,
                 # A subagent settles into THIS ledger, so its spend has to reach state or
                 # the parent's ceiling leaks exactly as it did in Round 28.
                 "spent_usd": str(led.spent.decimal), "ledger": led.snapshot()}
@@ -292,8 +327,13 @@ class Runtime:
         self._emit(EventKind.STEP_FINISHED, step=state.get("step", 0),
                    stop_reason=stop, tool_calls=[])
         led = self._ledger(state)
+        # Tính lại từ message, không đọc `state["tainted"]" — L-3. Cái key đó chỉ còn là
+        # quan sát cho người gọi ngoài (parity, event), không node nào trong graph đọc nó
+        # để ra quyết định nữa.
+        label = self._effective_label(state)
         self._emit(EventKind.RUN_FINISHED, stop_reason=stop, steps=state.get("step", 0),
-                   cost_usd=str(led.spent), tainted=bool(state.get("tainted")))
+                   cost_usd=str(led.spent), tainted=label.integrity is Integrity.UNTRUSTED,
+                   confidentiality=label.confidentiality.name)
         return {"stop_reason": stop, "spent_usd": str(led.spent.decimal)}
 
     def _manage(self, messages, state) -> list:
@@ -311,7 +351,14 @@ class Runtime:
             return []
         results = [m for m in messages if isinstance(m, ToolMessage)]
         stale = results[:-KEEP_RECENT_STEPS] if len(results) > KEEP_RECENT_STEPS else []
-        edited = [ToolMessage(content=CLEARED, tool_call_id=m.tool_call_id, id=m.id)
+        # `additional_kwargs=dict(m.additional_kwargs)` giữ nguyên nhãn L-1 của message
+        # gốc. Bản trước KHÔNG làm điều này — dựng một ToolMessage mới chỉ với content/
+        # tool_call_id/id đã âm thầm làm rớt additional_kwargs, tức xoá nhãn UNTRUSTED
+        # cùng lúc với xoá nội dung. Một reviewer chỉ ra đó là đường rửa taint hoàn hảo
+        # bằng đúng thao tác mà tài liệu này gọi là an toàn (design/review-security.md
+        # S-19): message rỗng vẫn phải mang nhãn cũ để còn tham gia `join` ở L-3.
+        edited = [ToolMessage(content=CLEARED, tool_call_id=m.tool_call_id, id=m.id,
+                              additional_kwargs=dict(m.additional_kwargs))
                   for m in stale if m.content != CLEARED and m.id]
         if not edited:
             return []
@@ -385,6 +432,29 @@ def _now():
     return datetime.now(timezone.utc)
 
 
+def _msg_label(msg) -> Label:
+    """L-1/L-2 — đọc nhãn đã gắn trên một message. Không có gì gắn ⇒ mặc định
+    TRUSTED/PUBLIC: `HumanMessage`/`SystemMessage` không bao giờ được stamp và đó chính
+    là gốc tin cậy — người vận hành gõ nó, không phải một tool.
+    """
+    kw = getattr(msg, "additional_kwargs", None) or {}
+    i = kw.get("label_integrity")
+    c = kw.get("label_confidentiality")
+    from ..policy.label import Confidentiality
+    return Label(Integrity[i] if i else Integrity.TRUSTED,
+                Confidentiality[c] if c else Confidentiality.PUBLIC)
+
+
+def _stamp_label(msg, label: Label) -> None:
+    """Gắn nhãn LÊN CHÍNH message (mutate `additional_kwargs`, không tạo bản sao) —
+    message vừa dựng, chưa vào `state["messages"]`, nên đây là nơi rẻ nhất để gắn.
+    Lưu bằng TÊN enum (`"UNTRUSTED"` chứ không phải `1`) để checkpoint đọc được bằng mắt,
+    cùng quy ước với `spent_usd` là `str(Decimal)` chứ không phải một float.
+    """
+    msg.additional_kwargs["label_integrity"] = label.integrity.name
+    msg.additional_kwargs["label_confidentiality"] = label.confidentiality.name
+
+
 def _run_id(state) -> str:
     """Danh tính run.
 
@@ -408,9 +478,9 @@ def _run_id(state) -> str:
 
 
 class _Ctx:
-    __slots__ = ("tainted", "safety")
-    def __init__(self, *, tainted: bool, safety: str) -> None:
-        self.tainted, self.safety = tainted, safety
+    __slots__ = ("label", "safety")
+    def __init__(self, *, label: Label, safety: str) -> None:
+        self.label, self.safety = label, safety
 
 
 def _run_subagent(spec, args: dict, led: Ledger) -> str:

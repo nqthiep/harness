@@ -72,7 +72,7 @@ class LatDocNamBatBien(unittest.TestCase):
         from harness.errors import UnsafeToolSetError
         with self.assertRaises(UnsafeToolSetError) as cm:
             build_agent(model=FakeChat(script=[]), tools=[fetch, refund], budget="$5")
-        self.assertIn("accepts_tainted=True", str(cm.exception), "lỗi phải nói cách sửa")
+        self.assertIn("accepts_tainted", str(cm.exception), "lỗi phải nói cách sửa")
 
     def test_taint_chan_danger_o_tang_runtime_du_construction_bi_qua(self):
         """III, mức DETECT: phòng thủ theo chiều sâu. Construction chặn được tổ hợp tĩnh,
@@ -84,14 +84,19 @@ class LatDocNamBatBien(unittest.TestCase):
         # plugin hay một backend khác có thể làm; runtime phải tự đứng được, không dựa
         # vào construction đã chặn giúp.
         from harness.tools.registry import ToolSet
+        from langchain_core.messages import ToolMessage
         graph, rt = build_agent(model=FakeChat(script=[]), tools=[fetch],
                                 budget="$5", checkpointer=MemorySaver())
         object.__setattr__(rt, "_tools", ToolSet([fetch, refund]))
-        state = {"messages": [HumanMessage("go")], "step": 1, "run_id": "t-taint",
+        # Nhiễm context bằng cách đặt sẵn một ToolMessage đã mang nhãn UNTRUSTED — đây
+        # chính xác là những gì `_run_tools` của một `fetch` thật sẽ để lại (L-1).
+        fetch_result = ToolMessage(content="đã đọc trang", tool_call_id="c0",
+                                   additional_kwargs={"label_integrity": "UNTRUSTED"})
+        state = {"messages": [HumanMessage("go"), fetch_result], "step": 1,
+                 "run_id": "t-taint",
                  "_pending": [{"tool": "refund",
                               "call": {"id": "c1", "name": "refund", "args": {"ma": "DH-1"}},
                               "verdict": 0, "reason": "(giả lập bị qua mặt)"}]}
-        rt._tainter(state).raise_taint("fetch")
         rt.run_tools(state)
         self.assertNotIn(("refund", "DH-1"), RAN,
                          "danger chạy dù context đã nhiễm — taint không tự đứng được ở "

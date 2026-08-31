@@ -327,9 +327,8 @@ This helper can read things from the internet AND do something it can't undo.
 
   Pick one:
     1. Take one of them out, or make two separate helpers.  ← easiest
-    2. If send_email really is safe, say so on the tool:
-         @tool(effect="danger", accepts_tainted=True)
-         def send_email(...):
+    2. If send_email really is safe, an OPERATOR says so — not the tool's own code:
+         Agent(..., accepts_tainted=["send_email"])
 ```
 
 This one stops **before** your helper does anything, so nothing bad can happen. It is not

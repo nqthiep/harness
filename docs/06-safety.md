@@ -59,7 +59,7 @@ that the problem is handled. Shipping one would make users *less* careful.
 1.  Output of any effect="external" tool is TAINTED.
 2.  Once tainted content enters the transcript, the run is in TAINTED MODE (sticky).
 3.  In tainted mode, effect="danger" tools are DENIED — not asked, denied.
-4.  The only exception is a tool that declares @tool(effect="danger", accepts_tainted=True).
+4.  The only exception is a tool the OPERATOR names: `Agent(accepts_tainted=["send_email"])`.
 ```
 
 **Why DENY and not ASK.** An approval prompt asks a human to audit a wall of fetched text
@@ -67,10 +67,16 @@ for a hidden instruction. Humans cannot do this reliably, and after the twentiet
 they stop trying. Approval fatigue turns ASK into ALLOW with extra steps. A hard block is
 the only verdict that actually holds.
 
-**Why the escape hatch is per-tool and in code.** A global
-`Agent(allow_tainted_danger=True)` would be copy-pasted from the first search result by
-everyone who hit the error. Putting the opt-in on the tool definition means it appears in
-a diff, next to the function it endangers, where a reviewer will see it.
+**Correction.** This section originally put the escape hatch on the tool decorator itself
+— `@tool(effect="danger", accepts_tainted=True)` — arguing that a diff next to the
+function it endangers is one a reviewer will see. An adversarial design review found the
+argument backwards: that decorator keyword has exactly the shape of every other safety
+switch this document warns against, and a reviewer scanning a tool file sees one keyword
+among several, not a security decision (design/review-security.md S-16). The fix moved
+`accepts_tainted` off `@tool()` entirely — it is not a field on `ToolSpec` at all — and
+made it operator-only, set at `Agent(...)`/`build_agent(...)` construction, keyed by tool
+name (`Grants.accepts_tainted`, `harness.policy.label`). A tool author can no longer grant
+this to their own tool; only whoever assembles the agent can.
 
 ### Caught at construction, not at run time
 
@@ -90,9 +96,8 @@ UnsafeToolSetError: this agent can read untrusted content AND take an action it 
 
   Pick one:
     1. Remove one of them, or split into two agents (recommended).
-    2. If send_email is genuinely safe to run on untrusted input, say so at the tool:
-         @tool(effect="danger", accepts_tainted=True)
-         def send_email(...):
+    2. If send_email is genuinely safe to run on untrusted input, an OPERATOR says so:
+         Agent(..., accepts_tainted=["send_email"])
 
   → docs/06-safety.md#3-the-taint-lattice
 ```

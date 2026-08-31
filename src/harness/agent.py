@@ -18,6 +18,7 @@ from .observe.console import ConsoleExporter
 from .observe.events import EventBus
 from .observe.transcript import TranscriptWriter, read as read_transcript
 from .policy.builtin import EffectPolicy, EgressPolicy, TaintPolicy
+from .policy.label import Grants
 from .policy.engine import PolicyEngine
 from .policy.taint import TaintTracker
 from .result import Money, Result, StopReason, Usage
@@ -35,7 +36,7 @@ class Agent:
     __slots__ = ("name", "job", "toolset", "model", "effort", "budget", "safety",
                  "approve", "policies", "allowed_hosts", "provider", "returns",
                  "max_parallel_tools", "transcript", "exporters", "_asm", "_watch",
-                 "_as_tool_budget")
+                 "_as_tool_budget", "_grants")
 
     # Declared for the type checker.  The fields are set through `object.__setattr__`
     # (the Agent is frozen), which a checker cannot see — so without these, **a user
@@ -58,6 +59,7 @@ class Agent:
     transcript: str | None
     exporters: tuple[Any, ...]
     _asm: Any
+    _grants: Grants
     _watch: Any
     _as_tool_budget: Any
 
@@ -77,6 +79,8 @@ class Agent:
         approve: Callable[..., Any] | None = None,
         policies: Sequence[Any] = (),
         allowed_hosts: Sequence[str] | None = None,
+        accepts_tainted: Sequence[str] = (),
+        sensitive: Sequence[str] = (),
         provider: Any | None = None,
         transcript: Any | None = None,
         exporters: Sequence[Any] = (),
@@ -104,12 +108,15 @@ class Agent:
             )
 
         toolset = ToolSet(tools)
-        _check_tool_set(toolset)                      # T-1.4, before anything is spent
+        grants = Grants(accepts_tainted=frozenset(accepts_tainted),
+                        sensitive=frozenset(sensitive))
+        _check_tool_set(toolset, grants)               # T-1.4, before anything is spent
         _check_subagent_safety(toolset, safety)       # §06.4, before anything is spent
 
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "job", job)
         object.__setattr__(self, "toolset", toolset)
+        object.__setattr__(self, "_grants", grants)
         object.__setattr__(self, "model", model)
         object.__setattr__(self, "effort", effort)
         if returns is not None and not isinstance(returns, type):
@@ -180,7 +187,8 @@ class Agent:
         user_policies = tuple(p() if _is_factory(p) else p for p in self.policies)
         before = _policy_state(user_policies)
         engine = PolicyEngine(
-            (EffectPolicy(), TaintPolicy(), EgressPolicy(self.allowed_hosts)), user_policies)
+            (EffectPolicy(), TaintPolicy(self._grants), EgressPolicy(self.allowed_hosts)),
+            user_policies)
         # Open for exactly the window in which a revealed secret can still be written
         # out — wide enough to redact, narrow enough not to retain (Round 25, RT-13).
         try:
@@ -440,10 +448,15 @@ def _check_subagent_safety(toolset: ToolSet, parent_safety: str) -> None:
             )
 
 
-def _check_tool_set(toolset: ToolSet) -> None:
-    """The external+danger combination, caught at construction rather than mid-run (F9.1)."""
+def _check_tool_set(toolset: ToolSet, grants: Grants) -> None:
+    """The external+danger combination, caught at construction rather than mid-run (F9.1).
+
+    Kiểm theo TÊN qua `grants`, không theo một trường trên `ToolSpec` — `accepts_tainted`
+    không còn là thứ tác giả tool khai được (design/03-tools-and-mcp.md §1.1bis, S-16).
+    """
     external = [t for t in toolset if t.effect is Effect.EXTERNAL]
-    danger = [t for t in toolset if t.effect is Effect.DANGER and not t.accepts_tainted]
+    danger = [t for t in toolset if t.effect is Effect.DANGER
+             and t.name not in grants.accepts_tainted]
     if not (external and danger):
         return
     e, d = external[0].name, danger[0].name
@@ -454,8 +467,7 @@ def _check_tool_set(toolset: ToolSet) -> None:
         f"  A website could trick your helper into using {d} on your stuff.\n\n"
         "  Pick one:\n"
         "    1. Take one of them out, or make two separate helpers.  ← easiest\n"
-        f"    2. If {d} really is safe, say so on the tool:\n"
-        '         @tool(effect="danger", accepts_tainted=True)\n'
-        f"         def {d}(...):\n\n"
+        f"    2. If {d} really is safe, an OPERATOR says so — not the tool's own code:\n"
+        f'         Agent(..., accepts_tainted=["{d}"])\n\n'
         "  -> docs/15-first-agent.md"
     )
