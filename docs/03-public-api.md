@@ -218,7 +218,6 @@ class Result:
     run_id: str
     tainted: bool
     value: object | None      # the `returns=` type, validated. None when returns= unset.
-    def raise_for_status(self) -> None: ...
     def __str__(self) -> str: return self.text     # print(result) prints the answer
 ```
 

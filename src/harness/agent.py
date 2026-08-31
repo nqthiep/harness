@@ -204,7 +204,7 @@ class Agent:
 
     async def arun(self, message: str, *, on_delta=None) -> Result:
         r = await self.atry_run(message, on_delta=on_delta)
-        r.raise_for_status()
+        _raise_if_failed(r)
         return r
 
     def try_run(self, message: str, *, on_delta=None, _history=()) -> Result:
@@ -213,7 +213,7 @@ class Agent:
 
     def run(self, message: str, *, on_delta=None) -> Result:
         r = self.try_run(message, on_delta=on_delta)
-        r.raise_for_status()
+        _raise_if_failed(r)
         return r
 
     def chat(self, *, budget: Any | None = None) -> "Chat":
@@ -377,6 +377,17 @@ def _guard_sync() -> None:
         "    result = await agent.arun(...)     ← use this instead\n\n"
         "  -> docs/15-first-agent.md"
     )
+
+
+def _raise_if_failed(r: Result) -> None:
+    """`run()`/`arun()` — the raising half of the pair. review-kiss.md K-9: this used to
+    be `Result.raise_for_status()`, a public method that was `run()` rewritten and read
+    nowhere else (`try_run()` never calls it — its whole contract is that it never
+    raises). Moved off the public surface, kept as the one place the message is built,
+    so `run()` and `arun()` can't drift apart on wording."""
+    if not r.ok:
+        from .errors import RunFailed
+        raise RunFailed(r.detail or f"run stopped: {r.stop_reason.value}", r)
 
 
 def _is_factory(p) -> bool:

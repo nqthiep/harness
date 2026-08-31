@@ -113,8 +113,3 @@ class Result:
 
     def __str__(self) -> str:               # ADR-014 — print(agent.run(...)) works
         return self.text
-
-    def raise_for_status(self) -> None:
-        if not self.ok:
-            from .errors import RunFailed
-            raise RunFailed(self.detail or f"run stopped: {self.stop_reason.value}", self)

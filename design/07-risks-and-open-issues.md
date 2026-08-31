@@ -148,13 +148,46 @@ separator · `seq` không có nguồn cấp · UI injection và approval fatigue
 
 ### 1.3 KISS — chưa cắt
 
-`Confidentiality` giờ đã có nguồn (S-3 đã sửa) nên **K-6 không còn hiệu lực**. Còn lại:
-`Reservation.exact` (K-7) · `run`/`try_run`/`raise_for_status`/`.ok` bốn cách nói một điều
-(K-9) · taxonomy OTel 9 span nên rút còn 4 (K-10) · `end_strategy` (K-11) ·
-`ServerIdentity.fingerprint` (K-12) · 38 mã bất biến với 3 va chạm namespace (K-13) ·
-tuyên bố "14 tên, một import" sai — ví dụ import 20 tên từ 4 module (K-22) · 9 tunable
-không có đường từ API công khai (K-23) · thiếu session/tenant identity mà minimal core đòi
-(K-28).
+`Confidentiality` giờ đã có nguồn (S-3 đã sửa) nên **K-6 không còn hiệu lực**.
+
+`K-7`, `K-9`, `K-10`, `K-23` — bốn mục "nên cắt" ưu tiên nhất đã được kiểm lại trên
+`src/harness/` HÔM NAY, không phải bản nháp `K-7`/`K-23` viện dẫn — hai trong bốn đã lỗi
+thời trước khi tới lượt sửa:
+
+> **K-9 ĐÃ CẮT.** `Result.raise_for_status()` đúng như review nói: `run()` viết lại,
+> không chỗ nào khác đọc. Cắt khỏi `Result` (`result.py`); `run()`/`arun()`
+> (`agent.py`) giờ tự dựng `RunFailed` qua một hàm riêng `_raise_if_failed`, không lộ
+> ra ngoài — giữ nguyên thông điệp lỗi cũ, `try_run()`/`.ok` không đổi.
+> `tests/test_kiss_cuts.py::K9RaiseForStatusCut` khoá bề mặt đã cắt + xác nhận `run()`
+> vẫn raise đúng nội dung qua test `RunFailed` sẵn có (`test_walkthrough.py`).
+
+> **K-7 ĐÃ LỖI THỜI — KHÔNG CẮT.** Lý do review đưa ra ("không mục nào đọc
+> `Reservation.exact`") không còn đúng: code đã tiến hoá thành
+> `Ledger.last_call_was_exactly_bounded` (property, không phải trường trên
+> `Reservation`), và `run.py` ĐỌC nó thật, đưa vào sự kiện `BUDGET_RESERVED` làm
+> attribute `exact=` — một consumer thật (observability), không phải trang trí.
+> `tests/test_kiss_cuts.py::K7ExactVanConDuocDoc` khoá cả hai: `reserve()` đặt cờ đúng
+> lúc hard bound vừa ngân sách, VÀ `run.py` thật sự đưa nó ra ngoài qua exporter.
+
+> **K-23 hầu như đã KHÔNG CÒN ĐÚNG — KHÔNG CẮT.** Bảng chín tunable của review: một
+> (`max_concurrency`) giờ CÓ đường từ `Agent(...)` — `max_parallel_tools`, review viết
+> khi nó chưa có. Sáu cái khác (`RunConfig`, `cancel_grace`, `max_grant_ttl`,
+> `quarantine`, trần `depth`, ngân sách retry) **chưa từng được xây** trong
+> `src/harness/` — không có gì để cắt, cùng tình trạng "0 caller" như S-7..S-10.
+> Hai cái còn lại (`EDIT_AT`/`COMPACT_AT`/`KEEP_RECENT_STEPS`,
+> `INPUT_MARGIN`/`MIN_USEFUL_OUTPUT_TOKENS`) đã ĐÚNG như chính K-23 đề nghị: hằng số
+> module `Final`, không cấu hình được, không phải cấu hình rải ba nơi.
+
+`K-10` (taxonomy OTel 9 span → 4) không có code để cắt — chưa có tích hợp OpenTelemetry
+nào trong `src/harness/` (`observe/events.py`'s `EventBus`/`Exporter` là cơ chế quan sát
+hiện có, độc lập với OTel). Rút gọn thẳng ở kế hoạch: `design/04-runtime-durability.md`
+§8.2 giờ chỉ còn bốn span, năm cái kia gộp attribute vào span còn sống gần nhất — để
+LÚC OTel thật được xây, xây đúng bốn ngay từ đầu.
+
+Còn lại, chưa kiểm/chưa cắt: `end_strategy` (K-11) · `ServerIdentity.fingerprint`
+(K-12) · 38 mã bất biến với 3 va chạm namespace (K-13) · tuyên bố "14 tên, một import"
+sai — ví dụ import 20 tên từ 4 module (K-22) · thiếu session/tenant identity mà minimal
+core đòi (K-28).
 
 ### 1.4 Đếm khái niệm — chưa đạt mục tiêu
 
@@ -280,12 +313,19 @@ Từ sáu tệp thiết kế, không lặp lại lý lẽ:
 
 1. **S-7, S-8, S-9, S-10** — landing cùng lúc với khi tích hợp MCP thật được xây, không
    trước (xem `## 1.1`).
-2. **Cắt K-7, K-9, K-10, K-23** — giảm đường tới production từ ~38 xuống ~33 tên.
+2. **K-7, K-9, K-10, K-23 — XONG.** Kiểm lại trên code hiện tại trước khi cắt (cùng kỷ
+   luật với các mục security): K-9 cắt thật (`Result.raise_for_status()`); K-7 và K-23
+   hoá ra đã lỗi thời — cắt sẽ phá một consumer thật (K-7) hoặc không có gì để cắt (K-23,
+   phần lớn tunable của nó chưa từng được xây); K-10 không có code, chỉ rút gọn kế hoạch
+   trong design doc. Xem `## 1.3`.
 3. **`Ledger.void()`, S-16/S-19/S-3 trên backend cổ điển, S-15 trên backend cổ điển —
    ĐÃ KIỂM, KHÔNG THÊM.** Cả ba được xét kỹ; xem `## 1.1` cho từng cái.
-4. **Tiếp tục viết code.** S-16/S-19/S-3 (cả hai nguồn)/S-6/S-14/S-15/S-13 đã vào
-   `src/harness/` — 312 test xanh, mỗi cơ chế chính có mutation test đi kèm. Vẫn còn
-   nhiều phát hiện review chưa chạm tới code, và nghiên cứu của chính dự án đo được
-   **23 vòng review tìm 20 lỗi và 0
+4. **Còn lại của KISS, chưa kiểm:** `end_strategy` (K-11), `ServerIdentity.fingerprint`
+   (K-12), 38 mã bất biến va chạm namespace (K-13), tuyên bố "14 tên, một import" sai
+   (K-22), thiếu session/tenant identity (K-28). Xem `## 1.3`.
+5. **Tiếp tục viết code.** S-16/S-19/S-3 (cả hai nguồn)/S-6/S-14/S-15/S-13 đã vào
+   `src/harness/`, K-9 cắt khỏi bề mặt công khai — 318 test xanh, mỗi cơ chế chính có
+   mutation test đi kèm. Vẫn còn nhiều phát hiện review chưa chạm tới code, và nghiên
+   cứu của chính dự án đo được **23 vòng review tìm 20 lỗi và 0
    lỗi bảo mật; 16 vòng chạy tìm 38+ lỗi và 4 lỗi bảo mật** — bản thiết kế là sản phẩm của
    review, nó sẽ sai ở những chỗ chỉ có chạy mới tìm ra.

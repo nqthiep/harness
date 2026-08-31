@@ -746,21 +746,36 @@ Và [§11](../research/11-workflow-and-dx.md) §22 chốt: observability *"genui
 google-adk … and thin elsewhere"* là một trong năm thứ một deployment production cần mà
 framework không cho.
 
-### 8.2 Span: một node, một span
+### 8.2 Span: bốn span, không chín (review-kiss.md K-10)
+
+Bản nháp đầu liệt kê chín loại span × ~50 attribute, viện dẫn mật độ OTel của
+google-adk-java (11,4 hit/kLOC) làm bằng chứng. Một reviewer chỉ ra mật độ mã của người
+khác không phải khuyết điểm đo được của CHÍNH harness này — khuyết điểm đo được là
+*"observability genuine only in google-adk … and thin elsewhere"*
+([§10](../research/10-governance-health-languages.md) §28), và câu đó đòi **có**
+observability, không đòi **chín loại span**. Tệp này (`04`) tự khai nghiên cứu *"không đo
+overhead runtime của mật độ đó"* ([review-kiss.md](review-kiss.md) K-10). `harness.step`
+chỉ mang đúng một attribute (`step`) — một span cho một số nguyên; `harness.budget` và
+`harness.finish` mang thông tin đã có (hoặc gộp được) trên span khác.
+
+v1 giữ **bốn span**; năm cái còn lại KHÔNG bị bỏ, attribute của chúng gộp vào span còn
+sống gần nhất theo đúng lúc chúng xảy ra trong vòng lặp (`reserve()` rồi mới gọi model;
+approve là một bước trong resolve của policy; subagent chạy qua đúng cỗ máy tool call):
 
 | span | attribute |
 |---|---|
-| `harness.run` (root) | `run_id`, `thread_id`, `graph_version`, `model`, `depth`, `stop_reason`, `steps`, `cost_usd`, `integrity`, `confidentiality`, `unresolved_count` |
-| `harness.step` | `step` |
-| `harness.budget` | `reserved_usd`, `remaining_usd`, `remaining_steps`, `remaining_wall_clock_s`, `max_tokens` |
-| `harness.model` | `model`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `provider_stop_reason`, `cost_usd` |
-| `harness.policy` | `tool`, `call_id`, `effect`, `verdict`, `policy`, `decision_id` |
-| `harness.approve` | `call_id`, `pause_id`, `waited_ms`, `decision_id`, `actor_kind`, `resumed_from_checkpoint` |
-| `harness.tool` | `tool`, `call_id`, `effect`, `server`, `is_error`, `error_type`, `retryable`, `taints_output`, `args_sha256` |
-| `harness.subagent` | `child_run_id`, `child_thread_id`, `held_usd`, `actual_usd`, `depth` |
-| `harness.finish` | `stop_reason`, `unresolved_count` |
+| `harness.run` (root) | `run_id`, `thread_id`, `graph_version`, `model`, `depth`, `stop_reason`, `steps`, `cost_usd`, `integrity`, `confidentiality`, `unresolved_count` (gộp từ `finish` cũ) |
+| `harness.model` | `step` (gộp từ `step` cũ), `reserved_usd`, `remaining_usd`, `remaining_steps`, `remaining_wall_clock_s`, `max_tokens` (gộp từ `budget` cũ), `model`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `provider_stop_reason`, `cost_usd` |
+| `harness.policy` | `tool`, `call_id`, `effect`, `verdict`, `policy`, `decision_id`, `pause_id`, `waited_ms`, `actor_kind`, `resumed_from_checkpoint` (gộp từ `approve` cũ) |
+| `harness.tool` | `tool`, `call_id`, `effect`, `server`, `is_error`, `error_type`, `retryable`, `taints_output`, `args_sha256`, `child_run_id`, `child_thread_id`, `held_usd`, `actual_usd`, `depth` (gộp từ `subagent` cũ, chỉ có mặt khi `spec.subagent is not None`) |
 
-Bốn quy tắc, mỗi cái sửa một khuyết điểm đo được:
+Chưa có implementation nào của bảng này trong `src/harness/` hôm nay (không `opentelemetry`
+import, không `tracer`) — `EventBus`/`Exporter` (`observe/events.py`) là cơ chế observability
+hiện có, độc lập với OTel. Bảng này là kế hoạch cho LÚC OTel thật được xây, không phải mô tả
+code đang chạy; ghi lại đã-rút-gọn ở đây để khi xây, xây đúng bốn span ngay từ đầu thay vì
+xây chín rồi cắt sau.
+
+Bốn quy tắc nội dung, mỗi cái sửa một khuyết điểm đo được, GIỮ NGUYÊN không đổi:
 
 1. **`effect` có mặt trên mọi span liên quan tới tool.** Đó là trục phân loại duy nhất
    ([`00`](00-foundation.md) §2); nếu nó không lên trace thì không ai trả lời được "run
