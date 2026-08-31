@@ -56,7 +56,9 @@
 > ```
 
 **Harness** is a Python library for building AI agents that are *cheap to run, hard to
-misuse, and easy to start with*.
+misuse, and easy to start with*. **New here? Start with [`QUICKSTART.md`](QUICKSTART.md)**
+— runnable examples, most needing no API key, each one tied to what makes this different
+from the frameworks it was benchmarked against.
 
 ```
 pip install harness
