@@ -144,7 +144,7 @@ không cần code hay test mới — cả ba đã "đóng" theo đúng nghĩa "�
 | **S-17** | Injection qua `description` tool MCP trước lời gọi đầu | Cùng lý do trên | M9 (T-9.1) |
 | **S-23** | `call_key` domain separator cho idempotency | Cơ chế chưa tồn tại (giống S-4) | M6 (T-6.1) |
 | **S-11 (phần còn lại)** | `AuthEvidence` — xác thực người duyệt thật, không chỉ tự khai | Cần mô hình xác thực riêng, chưa thiết kế | Độc lập, ưu tiên theo nhu cầu deployment thật |
-| **K-13 (phần còn lại)** | Va chạm namespace `P-`/`I-` giữa `01`/`02`/`docs/09` và `04`/`05` | Rộng hơn ước lượng ban đầu — đụng cả `src/harness/policy/*.py` (comment trích `P-2`/`P-4`) lẫn 7+ tệp `docs/*.md` sống (`docs/09-testing.md`'s property-test-ID series) | Không phụ thuộc gì, nhưng cần một lượt riêng, cẩn thận |
+| ~~**K-13 (phần còn lại)**~~ | ~~Va chạm namespace `P-`/`I-`~~ | **ĐÃ SỬA** — xem `design/07-risks-and-open-issues.md` §1.3. `02`'s `P-1/P-3/P-4` → `POL-1/POL-3/POL-4`; `01`'s `P-3` → `PLG-1`; `03 §4.4`'s idempotency `I-1` → `IDEM-1`. `docs/09`'s `P-1…P-10` và `02-architecture.md`'s `I-1…I-3` (namespace THẬT, sống trong code) không đổi — chỉ hai bản sao trùng số khác nghĩa bị đổi tên. | — |
 
 ### 3.2 Tính năng/trưởng thành còn thiếu (từ `docs/17-research-alignment.md`, M6…M10)
 

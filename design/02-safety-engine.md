@@ -75,7 +75,7 @@ class Policy(Protocol):
     name: str
 
     def check(self, call: ToolCall, ctx: PolicyContext) -> Ruling:
-        """Thuần, đồng bộ, không I/O. Xem P-4."""
+        """Thuần, đồng bộ, không I/O. Xem POL-4."""
 ```
 
 `PolicyContext` là **view chỉ đọc** trên state đã checkpoint của run: `label`, `ledger`
@@ -116,7 +116,7 @@ class PolicyEngine:
 
 Bốn quyết định, mỗi cái sửa một khuyết điểm đo được:
 
-**P-1 — sàn theo `Effect`, không phải `ALLOW`.** Engine khởi tạo từ `EFFECT_FLOOR`, nên
+**POL-1 — sàn theo `Effect`, không phải `ALLOW`.** Engine khởi tạo từ `EFFECT_FLOOR`, nên
 một run **không có policy nào** vẫn hỏi trước khi `write`/`danger`.
 *Sửa khuyết điểm:* ở Microsoft, gate là per-tool và phải suy lại đúng cho từng tool —
 `_file_access.py` làm đúng, `mode_set` làm sai trong **cùng một module**
@@ -125,11 +125,11 @@ suy ra gate thì không thể có mâu thuẫn đó.
 
 **P-2 — hợp thành bằng `max()`, thêm policy không bao giờ nới.** §1.3 chứng minh.
 
-**P-3 — fail closed khi policy ném lỗi.** Đối lập với `threading.local()` của Microsoft:
+**POL-3 — fail closed khi policy ném lỗi.** Đối lập với `threading.local()` của Microsoft:
 lỗi ở đó **fail open và im lặng** ([§09](../research/09-memory-context-multiagent-hitl.md)
 §16bis). Một policy hỏng ở đây thành `DENY` kèm tên policy trong `reason`.
 
-**P-4 — `Policy.check` là hàm thuần, đồng bộ.** Không `async`, không I/O, không gọi
+**POL-4 — `Policy.check` là hàm thuần, đồng bộ.** Không `async`, không I/O, không gọi
 model. Lý do có thể đo: (a) một hàm thuần enumerate được nên P-2 chứng minh được bằng
 test tính chất chứ không bằng review — và nghiên cứu đã cho thấy 23 vòng *đọc* tìm ra
 **0 lỗi bảo mật** còn 16 vòng *chạy* tìm ra **4** (foundation §5, R-2); (b) một policy

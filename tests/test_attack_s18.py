@@ -1,4 +1,4 @@
-"""S-18: `EgressPolicy` chỉ so khớp CHUỖI hostname — P-4 (`Policy.check` thuần, không I/O)
+"""S-18: `EgressPolicy` chỉ so khớp CHUỖI hostname — POL-4 (`Policy.check` thuần, không I/O)
 cấm nó resolve DNS. Kiểm hai điều: (1) claim gốc của review về nhầm lẫn URL do
 `userinfo@host` KHÔNG còn đúng trên `urlparse` của Python (đã lỗi thời, `EgressPolicy` an
 toàn trước biến thể đó); (2) DNS rebinding vẫn là lỗ thật — không kiểm được bằng test đơn
@@ -43,7 +43,7 @@ class UserinfoKhongLuaDuoc(unittest.TestCase):
 
 
 class KhongResolveDNS(unittest.TestCase):
-    """`EgressPolicy.check` không được đọc gì ngoài chuỗi trong `call.arguments` — P-4
+    """`EgressPolicy.check` không được đọc gì ngoài chuỗi trong `call.arguments` — POL-4
     (thuần, không I/O). Đây là lý do DNS rebinding không chặn được, kiểm bằng cách xác
     nhận `check()` không đụng mạng: cùng một chuỗi host luôn cho cùng một verdict, không
     phụ thuộc gì khác ngoài chính chuỗi đó (nếu nó có I/O — vd. resolve DNS thật — verdict

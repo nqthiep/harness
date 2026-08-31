@@ -131,7 +131,7 @@ believes they have bought immunity.
   `Budget(usd=None)` uses (S-20, ADR-041): a getting-started example that needs
   unrestricted egress says so in the constructor call, rather than getting it by
   omission. `Policy.check` is required to be pure
-  and synchronous (P-4, [§02](02-architecture.md)) — no I/O, no DNS — so `EgressPolicy`
+  and synchronous (POL-4, `design/02-safety-engine.md`) — no I/O, no DNS — so `EgressPolicy`
   can only ever compare the **hostname string** the model supplied against the allowlist.
   It does not, and structurally cannot, resolve DNS: `fetch_page(url="http://look-alike.attacker.example/")`
   passes the same check `fetch_page(url="http://docs.python.org/")` does if the hostname

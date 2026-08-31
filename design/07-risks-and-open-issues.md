@@ -361,24 +361,46 @@ LÚC OTel thật được xây, xây đúng bốn ngay từ đầu.
 > hoãn (`## 1.1`). Thêm lại `ServerIdentity`/`fingerprint` khi quan sát được một lần
 > re-pointing thật.
 
-> **K-13 SỬA MỘT PHẦN.** Ba trong bốn va chạm mã có phạm vi gọn, chỉ nằm trong đúng hai
-> tệp `design/*.md`, không đụng `src/harness/` hay `docs/*.md` — đổi tên an toàn: `03 §6.3`
-> bốn luật cancel `C-1…4` → `CAN-1…4`; `05 §A.1` bốn bất biến cost `C-1…4` → `COST-1…4`;
-> `05` "Luật đọc" (memory) `R-1…3` → `MEM-R1…3`, giữ nguyên `00-foundation.md §5 R-1…4` (toàn
-> cục, không đổi). Còn lại KHÔNG sửa, và hoá ra RỘNG hơn K-13 mô tả: va chạm `P-` không chỉ
-> hai namespace (`01` plugin, `02` policy) mà BA — `docs/09-testing.md` có hẳn một series
-> `P-1…P-10` (property test ID) được `docs/00-council.md`, `docs/08-poka-yoke.md`,
-> `docs/09-testing.md`, `docs/11-implementation-plan.md`, `docs/12-decision-logs.md`,
-> `docs/13-risk-register.md`, `docs/14-validation-plan.md` tham chiếu vài chục lần — đó rõ
-> ràng là namespace THẬT, đang sống, không phải bản nháp. Và `02`'s `P-1…4` (policy) được
-> chính `src/harness/policy/{base,engine,builtin}.py` trích trong comment. Đổi bất kỳ series
-> nào trong ba cũng kéo theo sửa code hoặc sửa 7+ tệp `docs/` — vượt xa phạm vi một lần dọn
-> `design/*.md`. Tương tự, va chạm `I-1`/`I-2` (`04`, "gate là tiền điều kiện tại chỗ tiêu
-> thụ" — invariant chính bản thân `04` gọi là "bất biến THAY THẾ I-1", tự thú đang dùng lại
-> số của `03 §4.4`'s I-1 khác hẳn) và `I-3` (`05`, pairing tool_call/tool_result) đều đã là
-> từ vựng sống trong `dispatch.py`, `lg/runtime.py`, `context/window.py`, và nhiều
-> `tests/test_attack_*.py` của CHÍNH bản vá phiên này — đổi sẽ là một PR tách riêng, không
-> phải phần của lượt dọn KISS này. Để nguyên, ghi lại đây cho lần sau.
+> **K-13 ĐÃ SỬA — cả phần P- lẫn phần I-.** Bước trước (đợt trước bản vá này) đổi an toàn
+> bốn luật cancel `03 §6.3` `C-1…4` → `CAN-1…4`, bốn bất biến cost `05 §A.1` `C-1…4` →
+> `COST-1…4`, "Luật đọc" memory `05` `R-1…3` → `MEM-R1…3` (giữ nguyên `00-foundation.md §5
+> R-1…4`, toàn cục, không đổi) — không đụng code. Phần còn lại (`P-`/`I-`), hoá ra rộng hơn
+> ước lượng ban đầu, nay đã dọn:
+>
+> **`P-`.** Đối chiếu lại toàn bộ trước khi đổi: `docs/09-testing.md`'s `P-1…P-10`
+> (property test ID, tham chiếu vài chục lần từ `docs/00`, `docs/08`, `docs/11`, `docs/12`,
+> `docs/13`, `docs/14`) là namespace THẬT, đang sống — **không đổi**. `00-foundation.md
+> §3.1`'s `P-2` ("thêm policy không bao giờ nới lỏng") mang ĐÚNG nghĩa với `docs/09`'s
+> `P-2` và được `01`/`02` dùng lại nhất quán — **không đổi**. Va chạm THẬT nằm ở bốn chỗ có
+> nghĩa KHÁC nhau trùng số: `02 §1.2`'s `P-1`/`P-3`/`P-4` (policy engine: sàn theo
+> `Effect`, fail-closed, `Policy.check` thuần) đổi thành **`POL-1`/`POL-3`/`POL-4`**; `01
+> §2`'s `P-3` (plugin chỉ làm yếu đi tập tác dụng phụ — nghĩa khác hẳn `02`'s `P-3`/fail-
+> closed) đổi thành **`PLG-1`**, kéo theo `06-poka-yoke-matrix.md` dòng 27 (cùng tham
+> chiếu). `02`'s `P-4` (Policy.check thuần) đã lọt ra ngoài `design/*.md` từ trước — trích
+> trong comment `src/harness/policy/builtin.py` (`TaintPolicy`, `EgressPolicy`) VÀ trong
+> `docs/06-safety.md` (link nhầm sang `docs/02-architecture.md`, tệp không có `P-` nào) VÀ
+> trong module docstring của `tests/test_attack_s18.py` — nghĩa là bản test THẬT đang chạy
+> mang một ID collide với chính `docs/09`'s `P-4` (schema validation, nghĩa hoàn toàn khác).
+> Cả bốn chỗ đã đổi sang `POL-4`; hành vi/test không đổi, chỉ đổi tên trong docstring và
+> comment.
+>
+> **`I-`.** `02-architecture.md §3`'s `I-1`/`I-2`/`I-3` (reservation trước model call, gate
+> trước tool exec, pairing `tool_use`/`tool_result`) là namespace THẬT, sống trong
+> `dispatch.py`, `lg/runtime.py`, `context/window.py`, `run.py` — **không đổi**. `04`'s "bất
+> biến THAY THẾ I-1"/"I-2" chỉ diễn giải lại đúng hai bất biến đó cho backend graph, **không
+> đổi nghĩa nên không cần đổi tên** — nhận định trước đây rằng đây là một va chạm cần sửa là
+> SAI, đã kiểm lại. `05 §B.1`'s `I-3` cũng đúng nghĩa với `02`'s `I-3` — không đổi. Va chạm
+> THẬT DUY NHẤT: `03 §4.4`'s "bất biến I-1 (thứ tự)" — effect log ghi trước khi tool chạy,
+> checkpoint ghi sau — là một bất biến IDEMPOTENCY, khác hẳn `02`'s `I-1` (budget
+> reservation), trùng số. Không có caller nào trong `src/harness/idempotency.py` trích số
+> này (kiểm bằng grep trước khi đổi) nên đổi an toàn, không đụng code: **`IDEM-1`**.
+>
+> Bốn tệp `design/*.md` (`01`, `02`, `03`, `06`), một tệp `docs/*.md` (`06-safety.md`), một
+> tệp code (`src/harness/policy/builtin.py`, hai docstring) và một tệp test
+> (`tests/test_attack_s18.py`, hai docstring) đổi tên — không tệp nào đổi HÀNH VI, chỉ đổi
+> nhãn. `pytest` (khi có `pytest` để chạy) không cần chạy lại vì không assertion nào so
+> khớp chuỗi `"P-4"`/`"I-1"` trong code — kiểm bằng `grep -rn "P-4\|I-1"
+> src/harness/tests` sau khi đổi xác nhận không còn chuỗi cũ nào sót.
 >
 > **K-22 ĐÃ SỬA.** `01 §1` tuyên bố "toàn bộ bề mặt là 14 tên, một import" rồi chính ví dụ
 > Mức 3 trong CÙNG tệp `import` 20 tên từ 4 module — tự mâu thuẫn. Sửa bằng cách nói đúng
