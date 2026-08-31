@@ -129,10 +129,29 @@ class Ledger:
     @property
     def steps_taken(self) -> int: return self._steps
 
+    def _committed(self) -> Money:
+        """Chi tiêu THẬT cộng mọi reservation đang mở, chưa `settle()`.
+
+        Trước bản vá này, `self._open` được ghi vào (`reserve()`) và đọc ra để pop
+        (`settle()`), nhưng KHÔNG bao giờ được CỘNG vào đâu cả — `remaining_usd()` chỉ
+        trừ `self._spent`. Vô hại hôm nay vì không chỗ nào trong repo gọi `reserve()`
+        hai lần trước khi cái đầu `settle()`. Nhưng đó là an toàn NHỜ HÀNH VI GỌI, không
+        nhờ bất biến cấu trúc — đúng thứ R-2 đòi phải khác:
+        "worst case của một reservation không bao giờ vượt ngân sách" (05 A.1) chỉ đúng
+        cho MỘT reservation nếu không cái này. Một `Retry` plugin gọi handler ba lần
+        trước một `settle()` nào — chưa tồn tại trong code, nhưng thiết kế có nhắc tới
+        (design/review-security.md S-14) — sẽ để ba reservation cùng đọc một
+        `remaining_usd()` và cả ba đều "vừa ngân sách" độc lập, nếu hàm này không sửa.
+        """
+        if not self._open:
+            return self._spent
+        outstanding = sum((r.estimate.decimal for r in self._open.values()), Decimal(0))
+        return self._spent + Money(outstanding)
+
     def remaining_usd(self) -> Money | None:
         if self._b.usd is None:
             return None
-        return Money(self._b.usd) - self._spent
+        return Money(self._b.usd) - self._committed()
 
     def remaining_steps(self) -> int: return self._b.steps - self._steps
     def remaining_wall_clock(self) -> float:
@@ -196,7 +215,7 @@ class Ledger:
             hard = Money(
                 Decimal(hard_max_input) / 1_000_000 * price.input_per_mtok
                 + Decimal(max_tokens) / 1_000_000 * price.output_per_mtok)
-            if self._b.usd is None or (self._spent + hard).decimal <= self._b.usd:
+            if self._b.usd is None or (self._committed() + hard).decimal <= self._b.usd:
                 estimated_in = Decimal(hard_max_input)   # the bound fits: use it, be exact
                 exact = True
         est = Money(
@@ -204,7 +223,7 @@ class Ledger:
             + Decimal(max_tokens) / 1_000_000 * price.output_per_mtok
         )
         self._last_exact = exact
-        if self._b.usd is not None and (self._spent + est).decimal > self._b.usd:
+        if self._b.usd is not None and (self._committed() + est).decimal > self._b.usd:
             raise BudgetExceeded(
                 f"this call could cost {est}, and only {self.remaining_usd()} is left"
             )

@@ -12,22 +12,44 @@ Hai vòng review đối kháng cho **58 phát hiện**. Đã sửa: 5 lỗi ch�
 quán. **Còn lại dưới đây chưa sửa** — liệt kê đầy đủ, vì một danh sách rủi ro chỉ có giá trị
 khi nó thành thật.
 
-### 1.1 Bảo mật — nghiêm trọng, chưa sửa
+### 1.1 Bảo mật — nghiêm trọng
+
+> **S-6 ĐÃ KHOÁ.** Đọc lại `_regate()` (bước 1, `lg/runtime.py`) thì công thức hợp thành
+> **đã đúng từ trước** — `if r.verdict is not Verdict.ASK: return r` trả DENY ngay, không
+> bao giờ chạm `lookup()`; một grant cũ không thể thắng một DENY tươi từ taint. Không phải
+> sửa code, chỉ thiếu bằng chứng. `tests/test_attack_s6.py` khoá lại bằng 9 tổ hợp verdict
+> × trạng thái sổ đủ hết cỡ + một luật gộp, cộng mutation test (bỏ short-circuit → 4 test
+> đỏ ngay).
+>
+> **S-14 ĐÃ SỬA MỘT PHẦN.** `Ledger._committed()` mới (`budget/ledger.py`) cộng mọi
+> reservation đang mở vào `remaining_usd()` và vào cả hai nhánh kiểm ngân sách của
+> `reserve()` — trước bản vá, `self._open` được ghi và pop nhưng KHÔNG được cộng vào đâu
+> cả, nên hai `reserve()` chồng nhau (một `Retry` plugin tương lai gọi handler nhiều lần
+> trước khi cái đầu `settle()`) sẽ mỗi lần đọc cùng ngân sách còn trống và đều "vừa đủ" độc
+> lập. `tests/test_attack_s14.py` chứng minh bằng cách gọi `reserve()` hai lần liên tiếp
+> chưa `settle()`, cộng mutation test bỏ `_committed()` xác nhận nó load-bearing.
+> **Chưa sửa:** không có `void()`/`cancel()` — một reservation bị bỏ dở (lời gọi thất bại
+> giữa `reserve()` và `settle()`) vẫn nằm trong `_open` tới hết đời `Ledger`. Vô hại hôm
+> nay (không có gì `reserve()` tiếp sau một lần thất bại trong cùng `Ledger`), nhưng sẽ cần
+> khi `Retry` plugin được xây — xem `## 5` bên dưới.
 
 | mã | vấn đề | vì sao chưa sửa |
 |---|---|---|
-| S-6 | quan hệ giữa `lookup()` và `Ruling`/`check_flow` không định nghĩa | cần chốt thứ tự hợp thành; ảnh hưởng cả 02 và 04 |
-| S-7 | `Scope.server=None` là wildcard; `ServerIdentity.fingerprint` không tới được chỗ so khớp | sửa đúng cần đổi `Scope`, chạm 3 tệp |
-| S-8 | lập luận chống rug-pull ở `03 §5.4` không đứng vững — args không đổi thì scope cũ vẫn khớp | cần cơ chế mới, không chỉ sửa văn |
-| S-9 | server `trusted` **hạ** được effect qua re-list | cần luật đơn điệu cho re-classification |
-| S-10 | `proposed_scope` mặc định không quy định ⇒ grant có thể thành verb-level | cần chốt mặc định an toàn |
 | S-11 | `Actor` là lời tự khai, không có evidence | cần mô hình xác thực người duyệt |
 | S-12 | ba kênh resume (`answer=`, `ResumeToken`) vẫn chưa thống nhất giữa 01 và 04 | đã sửa một nửa (`ruling=` → `answer=`) |
 | S-13 | `slice_for_child` nhân bội `steps`/`wall_clock`, mâu thuẫn `04 §7.2` | cần chốt ngữ nghĩa sub-agent budget |
-| S-14 | `reserve()` không có ngữ nghĩa với `spent`, không có đường huỷ reservation | cần đặc tả vòng đời `Reservation` |
 | S-15 | `Policy` dùng chung mọi run; không luật nào cấm state trong `self` ⇒ R-4 có lỗ | sửa được bằng một câu luật + test |
 | S-17 | `description` của tool MCP vào prompt khi nhãn còn `TRUSTED` | injection qua metadata; cần gắn nhãn cho description |
 | S-18 | P-4 (`Policy.check` thuần) làm `DenyHosts` chỉ còn advisory ⇒ SSRF đi qua | cần tách policy thuần khỏi enforcement I/O |
+
+> **S-7, S-8, S-9, S-10 — HOÃN CÓ CHỦ Ý, không phải bỏ quên.** Cả bốn xoay quanh
+> `ServerIdentity`/`fingerprint`/rug-pull qua re-list của tool MCP. Kiểm tra `src/harness/`:
+> **không có tích hợp MCP nào tồn tại** — `ToolSpec` không có trường `server`, không có
+> `ServerIdentity`. Xây cơ chế so khớp server ngay bây giờ là hạ tầng không ai gọi, đúng
+> loại lỗi mà chính vòng KISS đã cắt (`Quarantine`, `deps_type`, `Snapshottable` — xem
+> `review-kiss.md` K-1/K-2/K-5). Bốn phát hiện này phải được đưa vào code **cùng lúc** với
+> khi MCP thật được xây, không phải trước — landing chúng trước sẽ tạo ra đúng kiểu trừu
+> tượng "0 implementer khớp" mà K-5 đã cảnh báo.
 
 > **S-16, S-19, và S-3 ĐÃ SỬA — trên giấy VÀ trong `src/harness/`.** Bước 0 chốt mô hình
 > (S-16: `accepts_tainted` rời `@tool`, chỉ đến từ operator; S-19: nhãn per-message +
@@ -182,14 +204,17 @@ Từ sáu tệp thiết kế, không lặp lại lý lẽ:
 
 ## 5. Việc tiếp theo, theo thứ tự
 
-1. **S-14 vòng đời `Reservation`** — trần chi tiêu là bất biến #4, mà ngữ nghĩa huỷ chưa có.
-2. **S-6, S-7, S-10** — ba lỗ trong so khớp `Scope`, tức trong chính cơ chế được coi là điểm
-   mạnh nhất học từ Microsoft.
-3. **`Secret[T]`** — nguồn nâng confidentiality thứ nhất (S-3), chưa cài; chỉ có
+1. **`Ledger.void()`** — hoàn phần còn thiếu của S-14: giải phóng một reservation bị bỏ
+   dở (lời gọi thất bại giữa `reserve()` và `settle()`) trước khi `Retry` plugin cần đến nó.
+2. **S-15** — chốt một câu luật cấm `Policy` giữ state trong `self`, cộng test.
+3. **S-13** — ngữ nghĩa `slice_for_child` cho ngân sách sub-agent, đang mâu thuẫn `04 §7.2`.
+4. **`Secret[T]`** — nguồn nâng confidentiality thứ nhất (S-3), chưa cài; chỉ có
    `Grants.sensitive` (nguồn thứ hai).
-4. **Cắt K-7, K-9, K-10, K-23** — giảm đường tới production từ ~38 xuống ~33 tên.
-5. **Tiếp tục viết code.** S-16/S-19/S-3 đã vào `src/harness/` — 273 test xanh, mỗi cơ
-   chế chính có mutation test đi kèm. Vẫn còn 33 phát hiện review chưa chạm tới code, và
-   nghiên cứu của chính dự án đo được **23 vòng review tìm 20 lỗi và 0 lỗi bảo mật; 16
-   vòng chạy tìm 38+ lỗi và 4 lỗi bảo mật** — bản thiết kế là sản phẩm của review, nó sẽ
-   sai ở những chỗ chỉ có chạy mới tìm ra.
+5. **S-7, S-8, S-9, S-10** — landing cùng lúc với khi tích hợp MCP thật được xây, không
+   trước (xem `## 1.1`).
+6. **Cắt K-7, K-9, K-10, K-23** — giảm đường tới production từ ~38 xuống ~33 tên.
+7. **Tiếp tục viết code.** S-16/S-19/S-3/S-6/S-14 đã vào `src/harness/` — 288 test xanh,
+   mỗi cơ chế chính có mutation test đi kèm. Vẫn còn nhiều phát hiện review chưa chạm tới
+   code, và nghiên cứu của chính dự án đo được **23 vòng review tìm 20 lỗi và 0 lỗi bảo
+   mật; 16 vòng chạy tìm 38+ lỗi và 4 lỗi bảo mật** — bản thiết kế là sản phẩm của review,
+   nó sẽ sai ở những chỗ chỉ có chạy mới tìm ra.
