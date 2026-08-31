@@ -1021,6 +1021,41 @@ observability only in this pass.
 
 ---
 
+### ADR-045 — Workspace confinement rejects, it never escapes
+**Status:** Accepted (M7/T-7.1)
+
+**Context.** No workspace concept existed anywhere in `src/harness/` before this — a
+file-touching tool had no declared boundary at all. T-7.1 (`docs/17-research-alignment.md`)
+asks for exactly IDL-44's already-proven shape (`memory/viking.py::check_key`, keys
+becoming a `viking://` path): reject anything that would escape, never try to sanitize
+or escape it into safety.
+
+**Decision.** `workspace.py::confine(root, path) -> Path` resolves `path` against
+`root` and raises `WorkspaceEscapeError` — not `ConfigError` (AC-06 forbids raising one
+from inside `RunEngine`, and this fires on a tool-call-time, often model-supplied
+argument) — for anything that lands outside `root` after resolution. Four checks run
+before the join, not after: absolute paths (POSIX and Windows-shaped, since
+`os.path.isabs` only recognizes the platform it runs on), a null byte, and any
+percent-encoded sequence (rejected outright, never decoded-then-checked). The
+containment check itself (`Path.relative_to`) runs on the fully resolved path, so an
+existing symlink inside the workspace that points outside is caught — resolution
+follows it before the check runs.
+
+**A real bug this caught in its own first draft.** `Path(root) / path` silently
+discards `root` when `path` is itself absolute (`Path("/root") / "/etc/passwd" ==
+Path("/etc/passwd")` — pathlib's own documented `/` behavior). The containment check at
+the end would still have caught this specific case, but relying on it alone means the
+FIRST line of defense for "absolute path" is an accident of what happens to survive
+resolution, not a checked precondition — the explicit `isabs` rejection exists so that
+guarantee doesn't depend on getting the join-then-resolve step exactly right. Found by
+the function's own test suite before this shipped, not in production.
+
+**Rejected alternative.** Strip/rewrite `..` segments and re-validate. Rejected for the
+same reason IDL-44 rejected it for store keys: escaping is a thing you can get subtly
+wrong (a rewrite step is itself surface for a second bug), refusing is not.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
