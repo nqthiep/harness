@@ -251,3 +251,4 @@ the more common thing to ship; this one lists them instead
 | Run an HTTP service in front of an agent (`harness[server]`) | [`src/harness/server.py`](src/harness/server.py) |
 | Connect an MCP server as a tool source | [`src/harness/mcp.py`](src/harness/mcp.py) |
 | See every claim in this file traced to a test | [`docs/14-validation-plan.md`](docs/14-validation-plan.md) |
+| Build a long-running coding agent on top of this | [`CODING_AGENT_BLUEPRINT.md`](CODING_AGENT_BLUEPRINT.md) |
