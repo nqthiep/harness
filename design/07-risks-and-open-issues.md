@@ -8,11 +8,46 @@ trong sáu tệp kia dưới dạng câu văn tự tin.
 
 ## 1. Phát hiện review CHƯA được sửa
 
-Hai vòng review đối kháng cho **58 phát hiện**. Đã sửa: 5 lỗi chặn phát hành và 16 lỗi nhất
-quán. **Còn lại dưới đây chưa sửa** — liệt kê đầy đủ, vì một danh sách rủi ro chỉ có giá trị
-khi nó thành thật.
+Hai vòng review đối kháng cho **58 phát hiện**. Đã sửa trước khi tệp này bắt đầu theo dõi:
+5 lỗi chặn phát hành và 16 lỗi nhất quán. **Một lỗi chặn phát hành thứ sáu (S-20) đã lọt
+qua đợt đó** — kiểm lại toàn bộ S-1…S-29 với code hôm nay (không phải chỉ nhóm đang được
+sửa từng đợt) tìm thấy nó vẫn sống, xem `## 1.1` và `design/08-roadmap-and-release-plan.md`.
+**Còn lại dưới đây chưa sửa** — liệt kê đầy đủ, vì một danh sách rủi ro chỉ có giá trị khi
+nó thành thật.
 
 ### 1.1 Bảo mật — nghiêm trọng
+
+> **S-20 CÒN SỐNG — CHƯA SỬA.** `Budget.usd: Decimal | None` (`budget/ledger.py`) vẫn
+> cho `None`. Việc bắt buộc "phải có trục tiền" chỉ nằm trong `Budget.parse()` — con
+> đường qua CHUỖI (`budget="$0.05"`). Dựng `Budget(usd=None, steps=100, wall_clock_s=3600)`
+> trực tiếp rồi `Agent(budget=...)` không bị chặn ở đâu cả — kiểm trực tiếp: không
+> `ConfigError`, không cảnh báo. `Ledger.size_call()`/`reserve()` cả hai đều có nhánh
+> `if self._b.usd is None: ...` bỏ qua trần hoàn toàn. Với một provider THẬT (không phải
+> `FakeModel`, thứ `usd=None` được thiết kế RIÊNG cho — xem comment Round 24 trong code),
+> đây là "loop limit không kèm spend ceiling" đạt được bằng một keyword argument, đúng
+> mô tả gốc của review. Đây là phát hiện "chặn phát hành" DUY NHẤT trong toàn bộ 58 phát
+> hiện còn sống chưa sửa — xem `design/08-roadmap-and-release-plan.md §1` cho bản sửa đề
+> xuất và vì sao nó đứng đầu danh sách việc cần làm.
+
+> **S-1 ĐÃ KIỂM — LỖI THỜI, KHÔNG CẦN SỬA.** Cả hai nhánh của kịch bản gốc dựa vào cơ chế
+> không tồn tại: (a) `Quarantine` — K-1 đã cắt, `0 caller`; (b) chiến lược nén
+> `SummarizeOldPrefix` (gọi model để tóm tắt, ngoài node `model` nên thiếu `reserve()`) —
+> chiến lược nén THẬT SỰ được xây là `ClearToolResults` (`context/window.py`, hằng số
+> `CLEARED`), chỉ xoá nội dung, không gọi model nào. Không có lời gọi model nào ngoài
+> node `model` để mà thiếu reservation.
+
+> **S-4 — CHƯA LỖI THỜI, nhưng chưa áp dụng được vì cơ chế nó bàn chưa tồn tại.** Giao
+> thức idempotency ba pha (`IdempotencyMode`, `in_flight`, `call_with_effect_log`) không
+> có trong `src/harness/` — đúng khoảng trống `docs/17-research-alignment.md` M6/T-6.1 đã
+> ghi nhận và xếp lịch xây. Không đóng bây giờ: cần RE-VERIFY khi M6 build idempotency,
+> xem `design/08-roadmap-and-release-plan.md §2`.
+
+> **S-5 ĐÃ KIỂM — LỖI THỜI, và may mắn theo hướng an toàn.** Cơ chế `Provenance`/nhãn-theo-
+> bản-ghi mà S-5 phê phán (dữ liệu trong store tự khai `label`, giả mạo được) không được
+> xây. Cơ chế THẬT (`memory/viking.py::tools()`) đơn giản hơn và tình cờ đúng "sửa tối
+> thiểu (a)" mà chính S-5 đề xuất: `recall` khai `effect="external"` — nhãn UNTRUSTED áp
+> qua đúng con đường chung mọi tool `external` đi (`emits_of`/`check_flow`), không có
+> ngoại lệ "tin provenance" nào để mà giả mạo.
 
 > **S-6 ĐÃ KHOÁ.** Đọc lại `_regate()` (bước 1, `lg/runtime.py`) thì công thức hợp thành
 > **đã đúng từ trước** — `if r.verdict is not Verdict.ASK: return r` trả DENY ngay, không
