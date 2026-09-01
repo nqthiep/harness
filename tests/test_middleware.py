@@ -10,9 +10,11 @@ import unittest
 
 sys.path.insert(0, "src")
 
-from harness import (Agent, Middleware, ModelCall, ShortCircuit, ToolInvocation, tool,
-                     with_middleware)
+from harness import (Agent, Middleware, ModelCall, RunIdentity, ShortCircuit,
+                     ToolInvocation, tool, with_middleware)
+from harness.models.base import ModelResponse
 from harness.models.fake import FakeModel
+from harness.result import Usage
 
 
 @tool(effect="read")
@@ -106,6 +108,109 @@ class ContextObjectShape(unittest.TestCase):
         inv = ToolInvocation(name="x", kwargs={})
         with self.assertRaises(AttributeError):
             inv.result = "y"                        # type: ignore[misc]
+
+    def test_identity_is_empty_outside_a_real_run(self):
+        """Constructing either type by hand (a test, or code outside `with_middleware()`
+        entirely) gets an all-`None` `RunIdentity` — never a guessed or placeholder
+        value."""
+        call = ModelCall(request=None)              # type: ignore[arg-type]
+        self.assertEqual(call.identity, RunIdentity())
+        inv = ToolInvocation(name="x", kwargs={})
+        self.assertEqual(inv.identity, RunIdentity())
+
+
+class IdentityThreading(unittest.TestCase):
+    """`.identity` on `ModelCall`/`ToolInvocation` — the thing that needed core files
+    touched (`run.py`/`dispatch.py`/`lg/runtime.py`) to do correctly, verified against
+    the real `langgraph` dependency rather than assumed: LangGraph's own executor
+    (`pregel/_executor.py`) copies the `contextvars.Context` before dispatching a sync
+    node, and `asyncio.to_thread` (`tools/__init__.py`'s sync-tool wrapper) does the
+    same — a value set once per run survives all the way to a tool's own function body,
+    on both engines.
+    """
+
+    def test_classic_backend_carries_run_id_session_id_tenant_id(self):
+        seen = []
+
+        class Peek(Middleware):
+            def before_model(self, call):
+                seen.append(call.identity)
+                return call.request
+
+        script = [FakeModel.text("hi")]
+        a = Agent(name="p", job="x", provider=FakeModel(script), tenant_id="acme",
+                 session_id="sess-A")
+        r = with_middleware(a, Peek()).try_run("hello")
+        self.assertEqual(seen[0].session_id, "sess-A")
+        self.assertEqual(seen[0].tenant_id, "acme")
+        self.assertEqual(seen[0].run_id, r.run_id)     # same id Result reports
+
+    def test_durable_backend_carries_the_same_fields(self):
+        import tempfile
+        seen = []
+
+        class Peek(Middleware):
+            def before_model(self, call):
+                seen.append(call.identity)
+                return call.request
+
+        db = tempfile.mktemp(suffix=".sqlite3")
+        a = Agent(name="p", job="x", provider=FakeModel([FakeModel.text("hi")]),
+                 durable=True, checkpoint=db, allowed_hosts=None, tenant_id="acme",
+                 session_id="sess-B")
+        r = with_middleware(a, Peek()).try_run("hello")
+        self.assertEqual(seen[0].session_id, "sess-B")
+        self.assertEqual(seen[0].tenant_id, "acme")
+        self.assertEqual(seen[0].run_id, "sess-B")      # thread_id IS the run_id here
+        self.assertEqual(seen[0].run_id, r.run_id)
+
+    def test_tool_calls_carry_their_own_call_id_and_step(self):
+        seen = []
+
+        class Peek(Middleware):
+            def before_tool(self, call):
+                seen.append((call.identity.call_id, call.identity.step))
+                return call.kwargs
+
+        script = [FakeModel.tool_call("look_up", {"order": "A1"}), FakeModel.text("ok")]
+        a = Agent(name="p", job="x", provider=FakeModel(script), tools=[look_up],
+                 allowed_hosts=None)
+        with_middleware(a, Peek()).try_run("check A1")
+        self.assertEqual(seen, [("c1", 0)])
+
+    def test_model_calls_have_no_call_id(self):
+        seen = []
+
+        class Peek(Middleware):
+            def before_model(self, call):
+                seen.append(call.identity.call_id)
+                return call.request
+
+        a = Agent(name="p", job="x", provider=FakeModel([FakeModel.text("hi")]))
+        with_middleware(a, Peek()).try_run("hello")
+        self.assertEqual(seen, [None])
+
+    def test_concurrent_tool_calls_do_not_cross_talk(self):
+        """Three `read` tools in one assistant turn run in PARALLEL
+        (`dispatch.py::_bounded`, `asyncio.gather`) — each concurrent `asyncio.Task`
+        gets its own copy of the `contextvars.Context`, so one call's `call_id` must
+        never leak into a sibling's."""
+        seen = {}
+
+        class Peek(Middleware):
+            def before_tool(self, call):
+                seen[call.identity.call_id] = dict(call.kwargs)
+                return call.kwargs
+
+        resp = ModelResponse(
+            tuple({"type": "tool_use", "id": f"c{i}", "name": "look_up",
+                  "input": {"order": f"A{i}"}} for i in (1, 2, 3)),
+            "tool_use", Usage(100, 15), "fake")
+        a = Agent(name="p", job="x", provider=FakeModel([resp, FakeModel.text("done")]),
+                 tools=[look_up], allowed_hosts=None)
+        with_middleware(a, Peek()).try_run("go")
+        self.assertEqual(seen, {"c1": {"order": "A1"}, "c2": {"order": "A2"},
+                               "c3": {"order": "A3"}})
 
 
 class MiddlewareBasics(unittest.TestCase):

@@ -14,6 +14,7 @@ from .budget.ledger import Budget, Ledger
 from .context.assembler import ContextAssembler
 from .context.linter import PrefixWatcher, check_determinism
 from .errors import ConfigError, SyncInAsyncContextError, UnsafeToolSetError
+from .middleware import _run_scope
 from .observe.console import ConsoleExporter
 from .observe.events import EventBus
 from .observe.transcript import TranscriptWriter, read as read_transcript
@@ -249,7 +250,8 @@ class Agent:
         # Open for exactly the window in which a revealed secret can still be written
         # out — wide enough to redact, narrow enough not to retain (Round 25, RT-13).
         try:
-            with redaction_scope():
+            with redaction_scope(), _run_scope(run_id=run_id, session_id=self.session_id,
+                                              tenant_id=self.tenant_id):
                 result = await RunEngine(self, provider, ledger, engine, taint, self._asm,
                                          bus, self._watch).run(message, messages=_history,
                                                                on_delta=on_delta)
@@ -284,8 +286,10 @@ class Agent:
             config = {"configurable": {"thread_id": thread_id}}
             prior = await graph.aget_state(config)
             before = len(prior.values.get("messages") or []) if prior and prior.values else 0
-            out = await graph.ainvoke({"messages": [HumanMessage(message)], "step": 0},
-                                      config=config)
+            with _run_scope(run_id=thread_id, session_id=self.session_id,
+                            tenant_id=self.tenant_id):
+                out = await graph.ainvoke({"messages": [HumanMessage(message)], "step": 0},
+                                          config=config)
             return _state_to_result(out, before, thread_id)
         finally:
             await close()

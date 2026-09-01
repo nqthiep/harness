@@ -273,22 +273,39 @@ instances, not one mutated in place. `ToolInvocation` is a different type from
 `Policy` to rule ALLOW/ASK/DENY *before* dispatch; this one carries the real keyword
 arguments and result for a `Middleware` to observe *after* that ruling already happened.
 
-**What is deliberately not in either context object: identity** — no `run_id`,
-`session_id`, `tenant_id`, `step`, or a tool call's own `call_id`. Not an oversight:
-threading that down correctly would mean changing the call sites in `run.py`/
-`dispatch.py`/`lg/runtime.py` themselves, which is exactly what this module promises not
-to do. It was tried the cheap way first and rejected on evidence, not guessed: a
-`contextvars.ContextVar` set before a run starts does not survive the durable engine's
-own tool/model execution path, because `lg/runtime.py` runs its sync nodes through
-`loop.run_in_executor()`, which starts a fresh context in the worker thread rather than
-copying the caller's. Shipping identity that works on one engine and silently doesn't on
-the other would be worse than not having it — this is the honest state until someone
-decides the deeper (core) change is worth making.
+**`.identity: RunIdentity`, on both.** WHICH run and WHICH call a hook is seeing:
+
+| Field | Set for | Meaning |
+|---|---|---|
+| `run_id` | every hook | the run's id — `Result.run_id` for the classic engine, `session_id`/thread for `durable=True` |
+| `session_id` / `tenant_id` | every hook | this `Agent`'s own fields, unchanged for the whole run |
+| `step` | every hook | the turn number this call happened on |
+| `call_id` | `before_tool`/`after_tool` only | the specific `tool_use` id — `None` for a model call |
+
+A `ModelCall`/`ToolInvocation` built outside a real run (by hand, in a test) gets an
+all-`None` `RunIdentity()` — never a guessed value. Correlating `before_tool` and
+`after_tool` for the SAME call under concurrent tool execution (`read`/`external` tools
+run in parallel, `dispatch.py::_bounded`) is exactly what `call_id` is for: each
+concurrent call is its own `asyncio.Task`, and a `contextvars.Context` is copied per
+`Task` at creation — one call's identity cannot leak into a sibling's, verified in
+`tests/test_middleware.py::IdentityThreading::test_concurrent_tool_calls_do_not_cross_talk`.
+
+Getting this right needed three small, additive changes to `run.py`/`dispatch.py`/
+`lg/runtime.py` — each one a `with` block around a call site that already knew a
+`call_id` or a `step` and had nowhere to put it, using a `contextvars.ContextVar` set
+once per run (`Agent`) and layered once per call. Verified against the real dependency
+rather than assumed: `langgraph`'s own executor (`pregel/_executor.py`) copies the
+calling `contextvars.Context` before dispatching a sync node to a worker thread, and
+`asyncio.to_thread` (`tools/__init__.py`'s sync-tool wrapper) does the same — the value
+set once by `Agent` survives all the way into a tool's own function body, on both
+engines, with no cross-talk between concurrent calls.
 
 **This is sugar, not a seventh seam.** `with_middleware()` is built entirely from three
 seams already documented above — it wraps `provider=`, wraps each tool's plain callable,
-and adds one `Exporter` — the loop itself (`run.py`/`lg/runtime.py`) has no knowledge
-`Middleware` exists, so it cannot weaken anything the six seams already decided:
+and adds one `Exporter`. The three core files above set a `ContextVar` nothing reads
+back into any decision — they never call a `Middleware` hook, never read
+`Agent.exporters`/`.provider` to change what they do, and cannot weaken anything the six
+seams already decided:
 
 * `before_tool`/`after_tool` run **after** `Policy` has already ruled ALLOW — a call
   `Policy` denies is never handed to a `Middleware` at all. Returning `kwargs` unmodified

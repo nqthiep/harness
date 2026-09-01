@@ -17,6 +17,7 @@ from langgraph.types import interrupt
 from ..budget.ledger import Ledger
 from ..dispatch import MAX_ATTEMPTS, RETRY_BACKOFF_MAX_S, RETRY_BACKOFF_S
 from ..errors import BudgetExceeded
+from ..middleware import _call_scope
 from ..observe.events import EventBus, EventKind
 from ..policy.base import Ruling, ToolCall, Verdict
 from ..policy.builtin import emits_of
@@ -205,7 +206,8 @@ class Runtime:
             # its own request to it, instead of a fixed construction-time default.
             # `**kw`-shaped models (every fixture in this tree, `FakeChat` included)
             # accept and ignore an unused kwarg; this is additive, not a new contract.
-            msg = self._model.invoke(state["messages"], max_tokens=state.get("max_tokens"))
+            with _call_scope(step=state.get("step", 0)):
+                msg = self._model.invoke(state["messages"], max_tokens=state.get("max_tokens"))
         except Exception as exc:
             self._emit(state, EventKind.ERROR_RAISED, where="provider",
                        type=type(exc).__name__, message=str(exc), retryable=False)
@@ -431,7 +433,8 @@ class Runtime:
                     if spec.subagent is not None:
                         value = _run_subagent(spec, args, led)
                     else:
-                        value = asyncio.run(spec.fn(**args))
+                        with _call_scope(step=state.get("step", 0), call_id=call["id"]):
+                            value = asyncio.run(spec.fn(**args))
                     payload = value if isinstance(value, str) else json.dumps(
                         value, sort_keys=True, ensure_ascii=False, default=str)
                     ok = True

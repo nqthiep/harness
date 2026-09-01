@@ -15,6 +15,7 @@ from typing import Any, Mapping
 
 from .context.assembler import canonical as _canonical
 from .errors import ToolContractError
+from .middleware import _call_scope
 from .observe.events import EventKind
 from .policy.base import Ruling, ToolCall, Verdict
 from .policy.builtin import check_flow, emits_of
@@ -197,7 +198,8 @@ class Dispatcher:
                     if spec.subagent is not None:
                         value = await self._run_subagent(spec, kwargs)
                     else:
-                        value = await spec.fn(**kwargs)
+                        with _call_scope(step=step, call_id=b["id"]):
+                            value = await spec.fn(**kwargs)
                 try:
                     payload = value if isinstance(value, str) else json.dumps(value, sort_keys=True, ensure_ascii=False)
                 except (TypeError, ValueError) as exc:

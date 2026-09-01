@@ -14,6 +14,7 @@ from .errors import BudgetExceeded, ProviderRateLimited, ProviderTimeout, Provid
 from .context.assembler import canonical as _canonical
 from .context.linter import PrefixWatcher
 from .context.window import manage as manage_context
+from .middleware import _call_scope
 from .models.pricing import MAX_CONTEXT
 from .observe.events import EventBus, EventKind
 #: `RunContext` is re-exported here on purpose — `harness/__init__.py` imports it
@@ -103,7 +104,8 @@ class RunEngine:
                 # `Exception` subclass (Python's own hierarchy), so this catch cannot
                 # swallow a cancellation — T-6.2 still holds.
                 try:
-                    resp = await self._p.complete(req, on_delta=on_delta)
+                    with _call_scope(step=step):
+                        resp = await self._p.complete(req, on_delta=on_delta)
                 except Exception as exc:
                     # Transient-by-nature provider failures are flagged retryable=True
                     # for the audit trail even though nothing acts on it automatically
