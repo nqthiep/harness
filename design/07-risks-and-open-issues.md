@@ -73,7 +73,7 @@ khó dùng") sau đó.** Còn mở thật sự, hôm nay: **6 mục** — xem `#
 | N-3 | LangGraph không hỗ trợ `returns=` | **Còn mở** |
 | N-4 | Lỗi provider crash thẳng ra ngoài, cả hai backend | **Đã sửa** |
 | N-5 | Retry cấp provider đã công bố nhưng chưa cài | **Còn mở** |
-| N-6 | `model.response` VÀ `run.finished` thiếu trường tài liệu đã hứa | **Còn mở** |
+| N-6 | `model.response` VÀ `run.finished` thiếu trường tài liệu đã hứa | **Còn mở** — phần `step=` graph-backend đã sửa, `usage`/`latency_ms` vẫn mở |
 | N-7 | `Agent.with_()` làm mất bốn trường, mọi lần gọi | **Đã sửa** |
 | N-8 | `execute_once` có caller thật nhưng chưa gắn vào tool dispatch | **Còn mở** (= S-4) |
 | N-9 | `tenant_id` chưa bao giờ tới được `Policy.check()` | **Đã sửa** |
@@ -242,14 +242,22 @@ mapping của `OtelExporter` (T-8.3) không có dữ liệu để đọc. Phát 
 liệu lượt này (không phải lúc T-8.3 viết): `run.finished` có cùng khoảng lệch —
 `docs/05` hứa `usage`/`duration_s`, code (`run.py`, `lg/runtime.py`) chỉ emit
 `stop_reason`/`steps`/`cost_usd`/`tainted`. Cùng một lớp gap (usage/timing chưa wire vào
-event emission), hai điểm emit. Phát hiện thêm lúc review `middleware.py` (N-10): trên
-backend `durable`/graph, `MODEL_REQUEST`/`MODEL_RESPONSE`/`TOOL_REQUESTED`/`TOOL_STARTED`
-(`lg/runtime.py`) không truyền `step=` cho `_emit`/`self._bus.emit` — `Event.step` của
-chúng luôn là `None`, trong khi backend cổ điển (`run.py`/`dispatch.py`) LUÔN truyền
-`step=`. Vô hại (`ModelCall.identity.step`/`ToolInvocation.identity.step` — cơ chế mới
-của `middleware.py` — vẫn đúng trên cả hai backend, đọc từ `state`/biến `step` cục bộ,
-không đọc từ `Event`) nhưng là một điểm bất đối xứng backend thật, đáng để đóng cùng lúc
-với phần còn lại của N-6 vì cùng nguyên nhân gốc. Còn mở.
+event emission), hai điểm emit. Còn mở.
+
+**Phần `step=` — đã sửa.** Phát hiện lúc review `middleware.py` (N-10): trên backend
+`durable`/graph, MỌI lời gọi `_emit` mang ý nghĩa "xảy ra ở bước nào" (`MODEL_REQUEST`/
+`MODEL_RESPONSE`/`TOOL_REQUESTED`/`POLICY_DECIDED`/`TOOL_STARTED`/`TOOL_FINISHED`/
+`TAINT_RAISED`/`ERROR_RAISED`/`BUDGET_RESERVED`/`BUDGET_EXHAUSTED` — 11 điểm emit,
+`lg/runtime.py`) thiếu `step=`, nên `Event.step` của chúng luôn `None`, trong khi backend
+cổ điển (`run.py`/`dispatch.py`) LUÔN truyền `step=` cho đúng các kind đó. Vô hại lúc phát
+hiện — `ModelCall.identity.step`/`ToolInvocation.identity.step` (`middleware.py`) vẫn
+đúng trên cả hai backend vì đọc từ `state`/biến cục bộ, không đọc từ `Event` — nhưng là
+một bất đối xứng backend thật, và bất kỳ `Exporter`/OTel span nào đọc `event.step` trực
+tiếp (không qua `middleware.py`) trên backend `durable` đã luôn thấy `None`. Đã thêm
+`step=state.get("step", 0)` vào cả 11 điểm emit, khớp đúng backend cổ điển; verify bằng
+in trực tiếp `event.step` qua một run `durable=True` thật — không còn `None` nào ngoài
+`run.started`/`run.finished` (đúng như backend cổ điển, hai kind đó không mang step).
+`usage`/`latency_ms`/`duration_s` (khoảng lệch GỐC của N-6) vẫn còn mở, chưa đụng tới.
 
 **N-7 (đã sửa) — `Agent.with_()` làm mất bốn trường, MỌI lần gọi.**
 `transcript`/`exporters`/`accepts_tainted`/`sensitive` biến mất khỏi agent phái sinh —

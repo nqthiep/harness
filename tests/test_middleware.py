@@ -231,6 +231,34 @@ class IdentityThreading(unittest.TestCase):
         self.assertTrue(r.ok)                    # the run itself never crashes
         self.assertEqual(seen, ["c1", "c1", "c1"])
 
+    def test_durable_backends_own_events_carry_step_too(self):
+        """Found while reviewing this module, not caused by it: `lg/runtime.py`'s own
+        `_emit` calls (read directly through `on_event`/an `Exporter`, no `middleware.py`
+        involved) used to leave `Event.step` at its default `None` for most kinds on the
+        durable engine, while the classic engine always set it. Fixed at the 11 emit
+        call sites in `lg/runtime.py`; this pins `Event.step` down directly (not through
+        `.identity`, which was already correct before the fix) so a regression there
+        shows up here too.
+        """
+        import tempfile
+
+        seen = []
+
+        class Peek(Middleware):
+            def on_event(self, event):
+                seen.append((event.kind.value, event.step))
+
+        db = tempfile.mktemp(suffix=".sqlite3")
+        script = [FakeModel.tool_call("look_up", {"order": "A1"}), FakeModel.text("ok")]
+        a = Agent(name="p", job="x", provider=FakeModel(script), tools=[look_up],
+                 allowed_hosts=None, durable=True, checkpoint=db)
+        with_middleware(a, Peek()).try_run("check A1")
+        no_step_expected = {"run.started", "run.finished"}
+        for kind, step in seen:
+            if kind in no_step_expected:
+                continue
+            self.assertIsNotNone(step, f"{kind} event has no step")
+
 
 class MiddlewareBasics(unittest.TestCase):
     def test_default_hooks_are_pass_through(self):
