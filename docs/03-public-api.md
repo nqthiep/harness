@@ -112,6 +112,7 @@ class Agent:
         safety: Literal["standard", "strict"] = "standard",
         approve: ApprovalFn | None = None,
         max_asks_per_run: int = 20,          # deny past this many ASKs — approval fatigue
+        require_approval_evidence: bool = False,  # DENY a human actor with no AuthEvidence (S-11)
         policies: Sequence[Policy] = (),     # can only ever restrict further
         allowed_hosts: Sequence[str] | None = (),  # () → deny all; None (explicit) → unrestricted (T-7.2)
         # --- state -------------------------------------------------------------

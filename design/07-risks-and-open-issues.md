@@ -16,7 +16,8 @@ tệp này chỉ giữ đủ để hiểu quyết định, không lặp lại to
 
 **Tất cả 58 phát hiện gốc đã được xét. 10 phát hiện mới (N-1…N-10): N-1…N-9 tự bắt được
 trong lúc xây M6-M10, N-10 đóng phản hồi trực tiếp của người dùng ("2 API interfaces gây
-khó dùng") sau đó.** Còn mở thật sự, hôm nay: **2 mục** — xem `## 7`.
+khó dùng") sau đó.** Còn mở thật sự, hôm nay: **1 mục** (hoãn có chủ ý, không phải thiếu
+thời gian) — xem `## 7`.
 
 ### Bảo mật (S-1…S-29)
 
@@ -29,7 +30,7 @@ khó dùng") sau đó.** Còn mở thật sự, hôm nay: **2 mục** — xem `#
 | S-6 | Grant cũ thắng một DENY taint mới | Đã đúng sẵn, chỉ thiếu test khoá lại |
 | S-7, S-8, S-10 | `ServerIdentity`/hint hạ effect/`proposed_scope` cho MCP | **Đã sửa** — `harness.mcp` (T-9.1) |
 | S-9 | Grant MCP rò giữa hai server | **Đã sửa một phần** — khác nhãn thì chặn được; MỘT nhãn bị trỏ lại endpoint khác thì chưa |
-| S-11 | `Actor` là lời tự khai, không xác thực | **Sửa một phần** — kênh báo danh tính có rồi; xác thực thật (`AuthEvidence`) chưa |
+| S-11 | `Actor` là lời tự khai, không xác thực | **Đã sửa** — `AuthEvidence` + `Agent(require_approval_evidence=True)` DENY một actor `human` không kèm bằng chứng |
 | S-12 | Ba chữ ký resume mâu thuẫn | Lỗi thời — không tồn tại trong code |
 | S-13 | Sub-agent không bị cap step/wall-clock cha | **Đã sửa** |
 | S-14 | Reservation chồng nhau không bị chặn | **Đã sửa một phần** — race đã chặn; `Ledger.void()` chưa cần (0 caller) |
@@ -93,6 +94,47 @@ payload trả về: `secrets.contains_live_secret()` dò đúng phép so khớp 
 `redact()` đã xoá token khỏi bytes model thấy — phần còn lại của message vẫn cần nhãn để
 chặn nó rời qua sink `PUBLIC`. `tests/test_attack_s3.py`, mutation-tested, cả hai backend.
 
+**S-11 (đã sửa) — `Actor` là lời tự khai, không có xác thực.** Đóng theo hai bước, hai
+lượt cách nhau: `Approval(ok, actor=...)` (lượt trước) mở kênh TUỲ CHỌN cho `approve=`
+báo danh tính thật thay vì placeholder chung, nhưng không chặn được một callback CỐ TÌNH
+khai gian — `Decision.actor` ghi lại nguyên văn bất cứ gì callback nói. `AuthEvidence`
+(lượt này) đóng nốt: `policy/decision.py::AuthEvidence` (bắt buộc `channel`,
+`channel_message_id`, `principal` — đúng sàn review-security.md's "sửa tối thiểu" tự đặt
+ra: bằng chứng do CHÍNH KÊNH trả về, không phải callback tự gõ tay), `Approval`/`Decision`
+mang thêm `evidence=`, và `Agent(require_approval_evidence=True)` /
+`build_agent(require_approval_evidence=True)` là nơi một deployment BẬT bắt buộc —
+`PolicyEngine.resolve(..., require_evidence=True)` DENY một actor `human` không kèm
+`evidence`, fail-closed, thay vì âm thầm tin. Mặc định TẮT, không đổi hành vi của bất kỳ
+`approve=` nào chưa từng biết tới `evidence=`.
+
+Ranh giới nói thẳng, không giấu: harness không xác thực CHỮ KÝ nào — verify một chữ ký
+kênh cụ thể (Slack khác Twilio khác một OAuth session) là việc của CHÍNH `approve=`
+callback, bên duy nhất giữ secret của kênh đó, cùng triết lý provider-seam `Policy`/
+`approve=` chính nó đã theo xuyên suốt. `AuthEvidence` đóng được đúng phần: một callback
+KHÔNG THỂ báo `human` bằng một chuỗi trần trụi nữa khi `require_approval_evidence=True`
+— nó phải chủ động dựng một bản ghi bằng chứng đầy đủ. Một callback tự BỊA cả bản ghi
+`AuthEvidence` vẫn là một threat không mục này tuyên bố đóng.
+
+Khe hở phụ tìm thấy khi sửa: backend cổ điển từng BỎ HẲN actor mà `resolve()` trả về
+(`dispatch.py`'s comment cũ: "the classic loop has no DecisionLog to record into") —
+`policy.decided` không hề mang actor/evidence dù backend LangGraph đã ghi vào
+`DecisionLog` từ trước. Sửa cùng lượt: `policy.decided` giờ mang `actor`/`evidence` trên
+CẢ HAI backend (classic qua chính event, vì backend đó không có `DecisionLog` để ghi
+persistent — transcript LÀ sổ audit ở đó).
+
+Service API (T-9.2, `harness[server]`) là caller thật thứ hai của `AuthEvidence`:
+`POST .../approvals/{call_id}` nhận thêm `evidence=` tuỳ chọn trong body, cho một
+operator đặt một tầng channel thật (Slack signature đã verify, OAuth session, ...) trước
+endpoint này viết bằng chứng vào — chính module này KHÔNG xác thực gì (docstring của nó
+đã nói thẳng "No authentication" từ trước, không đổi).
+
+`tests/test_attack_s11.py` (24 test, mở rộng từ 4 test lượt trước): `resolve()` mang
+evidence đi cùng actor; `require_evidence=True` DENY human không evidence, ALLOW khi có,
+không ảnh hưởng `bool` trần/actor không phải human; chạy thật qua `Agent` VÀ
+`build_agent()` (`policy.decided`/`Decision.evidence` đúng cả hai backend);
+`_evidence_from_body` (Service API) parse đúng/từ chối đúng; một mutation test khoá lại
+enforcement thật sự load-bearing.
+
 **S-13 — sub-agent không bị cap `steps`/`wall_clock_s` của cha.** `Ledger.hold_steps()`/
 `release_steps()` áp đúng lý luận TOCTOU của `hold()` (trục tiền) sang trục step;
 `child_wall_clock()` cắt trần thời gian con xuống đúng số cha còn lại lúc spawn.
@@ -153,11 +195,6 @@ LangGraph, vì backend cổ điển không có `DecisionLog`.
 HAI NHÃN khác nhau. Chưa chặn được: một nhãn bị trỏ lại sang endpoint khác trong khi giữ
 nguyên tên — cần `ServerIdentity`+`fingerprint` (K-12's lý do hoãn: định dạng
 `fingerprint` chưa chốt cho MCP stdio), chờ tới khi quan sát được một lần re-pointing thật.
-
-**S-11 — `Actor` là lời tự khai, không có xác thực.** `Approval(ok, actor=...)` mở kênh
-TUỲ CHỌN cho `approve=` báo danh tính thật (phiên Slack đã xác thực, OAuth) thay vì
-placeholder chung — nhưng không chặn được một callback CỐ TÌNH khai gian. Cần
-`AuthEvidence` (chữ ký kênh, `channel_message_id`) — thiết kế riêng, chưa bắt đầu, xem `## 7`.
 
 ### Đã sửa bằng tài liệu (không có cách sửa ở tầng code)
 
@@ -477,14 +514,13 @@ không có quarantine, trên cùng bộ tool. Chênh lệch không có ý nghĩa
 
 ## 7. Còn mở hôm nay — nói thẳng, không giấu
 
-Hai mục, không hơn không kém (N-1/N-3/N-5/N-6/N-8 vừa đóng — xem `## 3`):
+Một mục, không hơn không kém (N-1/N-3/N-5/N-6/N-8/S-11 vừa đóng — xem `## 1`, `## 3`):
 
-1. **`AuthEvidence` cho S-11** — mô hình xác thực người duyệt thật (chữ ký kênh,
-   `channel_message_id`), chặn một callback CỐ TÌNH khai gian danh tính. Thiết kế riêng,
-   chưa bắt đầu. Không bắt buộc cho v1.0 trừ khi deployment cần audit trail chịu được
-   kiểm toán bên ngoài.
-2. **S-9 phần re-pointing-nhãn** — cần `ServerIdentity`+`fingerprint`, hoãn tới khi quan
-   sát được một lần re-pointing MCP thật (cùng lý do K-12).
+1. **S-9 phần re-pointing-nhãn** — cần `ServerIdentity`+`fingerprint`, hoãn CÓ CHỦ Ý tới
+   khi quan sát được một lần re-pointing MCP thật (cùng lý do K-12) — không phải việc còn
+   thiếu thời gian để làm, mà là kỷ luật §45 "thà nói chưa đủ evidence còn hơn đoán": xây
+   một mô hình fingerprinting cho một threat chưa từng quan sát được nghĩa là tự bịa ra
+   threat model đó, đúng thứ luật này cấm.
 
 **S-4 không còn nằm trong danh sách này** — không vì đóng hoàn toàn, mà vì phần còn lại
 của nó không phải một việc CÒN PHẢI LÀM: N-8 (xem `## 3`) đóng đúng nửa engineering thật

@@ -27,7 +27,7 @@ tracer/OTel exporter — T-8.3 — propagates one in), `tenant_id` and `session_
 | `budget.exhausted` | Ceiling hit | `axis` (`usd`\|`steps`\|`time`\|`tokens`), `spent`, `limit` |
 | `budget.unlimited` | Once, right after `run.started`, only when `budget.usd is None` | `reason` |
 | `tool.requested` | Model asked | `tool`, `call_id`, `arguments_digest` (sha256, not the arguments) |
-| `policy.decided` | Per call, always | `tool`, `call_id`, `verdict`, `reason`, `policy` |
+| `policy.decided` | Per call, always | `tool`, `call_id`, `verdict`, `reason`, `policy`, `actor`/`evidence` (S-11, closed — only when the call went through `PolicyEngine.resolve()`; `null` otherwise, and `evidence` never carries a raw `signature`, only `has_signature`) |
 | `tool.started` | Only if ALLOW; once per attempt (T-6.3 retry) | `tool`, `call_id`, `parallel`, `attempt` |
 | `tool.finished` | Per executed call | `tool`, `call_id`, `duration_ms`, `is_error`, `result_tokens`, `truncated`, `replayed` (S-4/N-8, closed — `True` when `execute_once` returned a cached result instead of calling the tool again for this call_id) |
 | `taint.raised` | First tainted content | `source_tool`, `call_id` |
