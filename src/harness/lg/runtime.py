@@ -470,6 +470,14 @@ class Runtime:
             for attempt in range(attempts):
                 self._emit(state, EventKind.TOOL_STARTED, step=state.get("step", 0),
                            tool=spec.name, call_id=call["id"], attempt=attempt)
+                # N-1, parity with dispatch.py::_invoke (T-6.3): a `read` tool with no
+                # timeout of its own (an HTTP call that never times out) used to hang
+                # this node — and everything behind it — forever; only the run's own
+                # wall-clock was ever checked, and only once per STEP, not per call.
+                # `Ledger.tool_timeout()` is the same clamp-to-wall-clock helper the
+                # classic backend already uses, so a tool near the end of its budget
+                # can't overshoot by its own `timeout_s`.
+                timeout = led.tool_timeout(spec.timeout_s)
                 try:
                     args = {k: v for k, v in call.get("args", {}).items()
                             if not k.startswith("_")}
@@ -477,11 +485,23 @@ class Runtime:
                         value = _run_subagent(spec, args, led)
                     else:
                         with _call_scope(step=state.get("step", 0), call_id=call["id"]):
-                            value = asyncio.run(spec.fn(**args))
+                            value = asyncio.run(_with_timeout(spec.fn(**args), timeout))
                     payload = value if isinstance(value, str) else json.dumps(
                         value, sort_keys=True, ensure_ascii=False, default=str)
                     ok = True
                     break
+                except asyncio.CancelledError:
+                    raise                                            # never a tool error
+                except TimeoutError:
+                    reason = ("timed out: run wall-clock budget reached"
+                             if timeout < spec.timeout_s else f"timed out after {spec.timeout_s}s")
+                    more_left = attempt + 1 < attempts
+                    time_left = led.remaining_wall_clock() > 0
+                    if more_left and time_left:
+                        self._emit(state, EventKind.ERROR_RAISED, step=state.get("step", 0),
+                                   where="tool", type="retrying", message=reason,
+                                   retryable=True, attempt=attempt)
+                        time.sleep(min(RETRY_BACKOFF_S * (2 ** attempt), RETRY_BACKOFF_MAX_S))
                 except Exception as exc:
                     reason = f"{type(exc).__name__}: {exc}"
                     more_left = attempt + 1 < attempts
@@ -699,6 +719,14 @@ class _Ctx:
     #: this backend had the identical gap (`tests/test_roadmap.py`'s S-03).
     def __init__(self, *, label: Label, safety: str, tenant_id: str | None = None) -> None:
         self.label, self.safety, self.tenant_id = label, safety, tenant_id
+
+
+async def _with_timeout(coro, timeout: float):
+    """N-1 — a bare `asyncio.run(coro)` has no timeout of its own; `asyncio.timeout()`
+    needs an `async with` around the `await`, which means wrapping the call in one more
+    coroutine rather than passing `coro` to `asyncio.run()` directly."""
+    async with asyncio.timeout(timeout):
+        return await coro
 
 
 def _run_subagent(spec, args: dict, led: Ledger) -> str:

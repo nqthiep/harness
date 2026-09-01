@@ -68,7 +68,7 @@ khó dùng") sau đó.** Còn mở thật sự, hôm nay: **4 mục** — xem `#
 
 | Mã | Tóm tắt | Trạng thái |
 |---|---|---|
-| N-1 | LangGraph không timeout per-tool | **Còn mở** |
+| N-1 | LangGraph không timeout per-tool | **Đã sửa** — `Ledger.tool_timeout()` + `_with_timeout()`, cùng logic hai thông điệp với `dispatch.py` |
 | N-2 | `try_run()` raise thẳng khi `returns=` sai kiểu | **Đã sửa** |
 | N-3 | LangGraph không hỗ trợ `returns=` | **Còn mở** |
 | N-4 | Lỗi provider crash thẳng ra ngoài, cả hai backend | **Đã sửa** |
@@ -206,12 +206,32 @@ vậy.
 Không thuộc hai vòng review gốc — đánh số riêng `N-` để không va chạm với `S-`/`K-` đã có
 (đúng bài học K-13).
 
-**N-1 — LangGraph không timeout per-tool.** `lg/runtime.py::_run_tools` không có `async
-with asyncio.timeout(...)` nào bọc quanh lời gọi tool — khác `dispatch.py::_invoke`
+**N-1 (đã sửa) — LangGraph không timeout per-tool.** `lg/runtime.py::_run_tools` không có
+`async with asyncio.timeout(...)` nào bọc quanh lời gọi tool — khác `dispatch.py::_invoke`
 (Round 23). Một tool `read` treo mãi mãi (HTTP call không timeout riêng) treo cả node
 graph vô thời hạn; chỉ wall-clock CẤP RUN chặn được, và chỉ kiểm đầu mỗi bước. **Từ N-10
-(`Agent(durable=True)`): gap này giờ tới được từ mặt API chính, không chỉ từ
-`build_agent()` — cùng một `Runtime`, không phải hai bản.** Còn mở.
+(`Agent(durable=True)`): gap này tới được từ mặt API chính, không chỉ từ `build_agent()`
+— cùng một `Runtime`, không phải hai bản** — nên bản vá này đóng gap trên cả hai đường
+vào cùng lúc.
+
+Sửa: `Ledger.tool_timeout(spec.timeout_s)` — helper clamp-về-wall-clock-còn-lại,
+`dispatch.py::_invoke` đã dùng sẵn cho backend cổ điển — tính LẠI mỗi lần thử (mỗi
+`attempt`, không phải một lần đầu batch), rồi bọc lời gọi tool bằng nó. Vướng một chỗ:
+`_run_tools` gọi tool qua `asyncio.run(spec.fn(**args))` trần — `asyncio.timeout()` cần
+`async with` bên trong một coroutine, không có chỗ nào để đưa nó vào một lệnh gọi
+`asyncio.run()` trực tiếp. Giải: một coroutine wrapper nhỏ,
+`_with_timeout(coro, timeout)`, làm đúng một việc — `async with asyncio.timeout(timeout):
+return await coro` — rồi `asyncio.run(_with_timeout(spec.fn(**args), timeout))` thay
+chỗ gọi trần. `except TimeoutError:` tách khỏi `except Exception as exc:` chung, với
+đúng logic hai thông điệp `dispatch.py` đã có: `"timed out: run wall-clock budget
+reached"` khi timeout bị clamp bởi ngân sách CẤP RUN (`timeout < spec.timeout_s`), hay
+`f"timed out after {spec.timeout_s}s"` khi chính trần của tool là cái chạm trước —
+retry (`read`/`external`) vẫn áp dụng như một lỗi tool bình thường. `asyncio.CancelledError`
+vẫn `raise` thẳng, không bao giờ thành lỗi tool — không đổi so với trước bản vá.
+`tests/test_n1_graph_tool_timeout.py`: một tool treo 5s với `timeout_s=0.05` bị cắt
+trong dưới 2s (không phải 5s) và run vẫn kết thúc `ok=True`; một tool khác, `timeout_s`
+riêng rộng (30s) nhưng ngân sách CẤP RUN hẹp hơn (`wall_clock_s=0.05`), tạo đúng thông
+điệp thứ hai — xác nhận nhánh clamp-bởi-run, không chỉ nhánh clamp-bởi-tool.
 
 **N-2 (đã sửa) — `try_run()` raise thẳng khi model trả rác khớp sai `returns=`.**
 `_parse_returns()` giờ chạy TRƯỚC khi `RUN_FINISHED` phát, bắt `ToolContractError` và hạ
@@ -413,7 +433,7 @@ không có quarantine, trên cùng bộ tool. Chênh lệch không có ý nghĩa
 
 ## 7. Còn mở hôm nay — nói thẳng, không giấu
 
-Bốn mục, không hơn không kém (N-5/N-6 vừa đóng — xem `## 3`):
+Bốn mục, không hơn không kém (N-1/N-5/N-6 vừa đóng — xem `## 3`):
 
 1. **`AuthEvidence` cho S-11** — mô hình xác thực người duyệt thật (chữ ký kênh,
    `channel_message_id`), chặn một callback CỐ TÌNH khai gian danh tính. Thiết kế riêng,
@@ -424,9 +444,7 @@ Bốn mục, không hơn không kém (N-5/N-6 vừa đóng — xem `## 3`):
    nhất nếu có nhu cầu thật (một `write`/`danger` tool trên upstream không tự idempotent).
 3. **S-9 phần re-pointing-nhãn** — cần `ServerIdentity`+`fingerprint`, hoãn tới khi quan
    sát được một lần re-pointing MCP thật (cùng lý do K-12).
-4. **N-1 — LangGraph không timeout per-tool.** Từ N-10, tới được từ `Agent(durable=True)`
-   nữa, không chỉ từ `build_agent()` thô.
-5. **N-3 — LangGraph không hỗ trợ `returns=`.** Từ N-10, `Agent(durable=True, returns=...)`
+4. **N-3 — LangGraph không hỗ trợ `returns=`.** Từ N-10, `Agent(durable=True, returns=...)`
    raise `ConfigError` ngay lúc dựng thay vì âm thầm để `Result.value` luôn `None` — bản
    thân khoảng trống (chưa parse) vẫn còn mở, chỉ không còn im lặng.
 
