@@ -54,3 +54,16 @@ class AgentState(TypedDict, total=False):
     #: `finish`), unlike `RUN_STARTED` (once per thread, ever) — the two were already
     #: asymmetric before this field existed; `duration_s` matches the one that repeats.
     turn_started_at: float
+    #: N-3 (design/07-risks-and-open-issues.md) — the parsed `build_agent(returns=...)`
+    #: answer, set once by `finish()`. Bug found on review: `finish()` already called
+    #: `parse_returns()` to VALIDATE the final answer, but threw the parsed result away
+    #: — `returns=` worked as a rejection filter and nothing else on the raw
+    #: `build_agent()` escape hatch (no way to retrieve the value it just validated).
+    #: `Agent(durable=True, returns=...)` was unaffected (`agent.py::_state_to_result`
+    #: re-parses the text a second time, entirely outside checkpointed state), which is
+    #: exactly how this stayed uncaught. A JSON-safe `dict`/scalar/list, never the
+    #: dataclass INSTANCE `run.py`'s `Result.value` holds: state is checkpointed, and a
+    #: class instance is not something a checkpointer can promise to round-trip (IDL-42's
+    #: same reasoning, one level up — a `Decimal` crosses as a string for the identical
+    #: reason).
+    value: Any

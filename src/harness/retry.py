@@ -19,16 +19,25 @@ import contextvars
 import random
 from typing import Awaitable, Callable, Iterator, TypeVar
 
-from .errors import ProviderError, ProviderRateLimited, ProviderTimeout, ProviderUnavailable
+from .errors import ProviderRateLimited, ProviderTimeout, ProviderUnavailable
 
 T = TypeVar("T")
 
-#: The three vendor-side, by-nature-transient errors docs/10 §3 names. Never
-#: `ProviderAuthError`/`ProviderBadRequest` — retrying a malformed or unauthorized
-#: request wastes money and time on a failure that will not change (docs/02 §7's own
-#: failure-philosophy table already drew this line; retry.py just enforces it).
-RETRYABLE: tuple[type[ProviderError], ...] = (
-    ProviderRateLimited, ProviderTimeout, ProviderUnavailable)
+#: The three vendor-side, by-nature-transient errors docs/10 §3 names, plus a bare
+#: `TimeoutError` (== `asyncio.TimeoutError` since Python 3.11): `models/anthropic.py`
+#: always maps a real timeout to `ProviderTimeout` before it reaches here, but a
+#: caller-supplied `ModelProvider` (the escape hatch this module's own docstring
+#: describes — "one implementation, both backends") is not required to route through
+#: that mapping, and this module's own chaos-test double,
+#: `harness.testing.chaos.TimeoutProvider`, raises `TimeoutError` directly to simulate
+#: exactly that case. Without it here, a transient failure that would have succeeded on
+#: retry instead ends the run outright on the first attempt — reproduced directly:
+#: `TimeoutProvider(fail_calls=(0,))` failed the whole run with zero retries before this
+#: line existed. Never `ProviderAuthError`/`ProviderBadRequest` — retrying a malformed or
+#: unauthorized request wastes money and time on a failure that will not change (docs/02
+#: §7's own failure-philosophy table already drew this line; retry.py just enforces it).
+RETRYABLE: tuple[type[Exception], ...] = (
+    ProviderRateLimited, ProviderTimeout, ProviderUnavailable, TimeoutError)
 
 #: Bounded by attempts too, not ONLY by wall-clock — a deadline that resets every retry
 #: (it doesn't; `deadline_s` is consumed, never replenished) still wants an attempt

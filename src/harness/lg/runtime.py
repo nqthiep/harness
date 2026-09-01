@@ -8,9 +8,11 @@ is replaced.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import dataclasses
 import json
 import time
+from typing import Any
 
 from langchain_core.messages import ToolMessage
 from langgraph.types import interrupt
@@ -515,24 +517,35 @@ class Runtime:
                             if not k.startswith("_")}
                     if spec.subagent is not None:
                         # `_run_subagent` calls `asyncio.run()` internally (it drives
-                        # the child's own `atry_run()`); nesting it inside the
-                        # `asyncio.run()` below (for `execute_once`/`_with_timeout`)
-                        # would raise "asyncio.run() cannot be called from a running
-                        # event loop". So this branch stays synchronous, exactly as
-                        # before N-1/N-8 — the child's own budget cap
-                        # (`child_wall_clock`) is what bounds it, same as always — and
-                        # dedup is done by hand around the plain sync call instead of
-                        # through `execute_once`.
-                        cached = asyncio.run(idem.get(key))
-                        if cached is not None:
-                            payload, replayed = json.loads(cached), True
-                        else:
-                            value = _run_subagent(spec, args, led)
-                            payload = value if isinstance(value, str) else json.dumps(
+                        # the child's own `atry_run()`), so it cannot run directly on
+                        # THIS coroutine's event loop — nesting a second `asyncio.run()`
+                        # inside it raises "cannot be called from a running event loop".
+                        # `run_in_executor(_SUBAGENT_EXECUTOR, ...)` hops it onto a real
+                        # OS thread that has no running loop of its own, which is what
+                        # lets `asyncio.timeout` below actually bound it — deliberately
+                        # NOT `asyncio.to_thread` (see `_SUBAGENT_EXECUTOR`'s own
+                        # comment for why that seemingly-equivalent call does not
+                        # actually cut a retry off promptly). Before this fix the whole
+                        # branch ran fully synchronously with NO timeout at all: only
+                        # the child's own `child_wall_clock` bounded it, so a tool
+                        # author who set `timeout_s=` on a subagent-backed tool got no
+                        # enforcement of that number whatsoever. Dedup stays hand-rolled
+                        # (`idem.get`/`.put`), same as before — only the missing timeout
+                        # is new.
+                        async def _call_subagent() -> tuple[str, bool]:
+                            cached = await idem.get(key)
+                            if cached is not None:
+                                return json.loads(cached), True
+                            value = await asyncio.get_running_loop().run_in_executor(
+                                _SUBAGENT_EXECUTOR, _run_subagent, spec, args, led)
+                            encoded = value if isinstance(value, str) else json.dumps(
                                 value, sort_keys=True, ensure_ascii=False, default=str)
-                            asyncio.run(idem.put(key, json.dumps(
-                                payload, sort_keys=True, ensure_ascii=False)))
-                            replayed = False
+                            await idem.put(key, json.dumps(
+                                encoded, sort_keys=True, ensure_ascii=False))
+                            return encoded, False
+
+                        payload, replayed = asyncio.run(
+                            _with_timeout(_call_subagent(), timeout))
                     else:
                         async def _call() -> str:
                             with _call_scope(step=state.get("step", 0), call_id=call["id"]):
@@ -612,13 +625,11 @@ class Runtime:
         # the classic backend). `STEP_FINISHED` just above is deliberately NOT
         # corrected — same asymmetry `run.py` already has (only the final, run-level
         # outcome gets the corrected value).
+        value = None
         if stop == "completed" and self._returns is not None:
-            text = ""
-            msgs = state.get("messages") or []
-            if msgs and isinstance(getattr(msgs[-1], "content", None), str):
-                text = msgs[-1].content
+            text = _final_text(state.get("messages") or [])
             try:
-                parse_returns(self._returns, text)
+                value = _returns_as_state(parse_returns(self._returns, text))
             except ToolContractError as exc:
                 stop, detail = "error", str(exc)
                 self._emit(state, EventKind.ERROR_RAISED, step=state.get("step", 0),
@@ -638,7 +649,8 @@ class Runtime:
                    input_tokens=u.input_tokens, output_tokens=u.output_tokens,
                    cache_read_tokens=u.cache_read_input_tokens,
                    cache_creation_tokens=u.cache_creation_input_tokens)
-        return {"stop_reason": stop, "detail": detail, "spent_usd": str(led.spent.decimal)}
+        return {"stop_reason": stop, "detail": detail,
+               "spent_usd": str(led.spent.decimal), "value": value}
 
     def _manage(self, messages, state) -> list:
         """Context growth, ported from T-2.6 (docs/07-cost.md §3).
@@ -806,6 +818,48 @@ async def _with_timeout(coro, timeout: float):
     coroutine rather than passing `coro` to `asyncio.run()` directly."""
     async with asyncio.timeout(timeout):
         return await coro
+
+
+#: A subagent tool call's real work runs here (`run_in_executor`), never via
+#: `asyncio.to_thread` — module-level so it survives across the many `asyncio.run()`
+#: calls `_run_tools` makes (one per retry attempt). `asyncio.to_thread` always targets
+#: the CURRENT loop's own *default* executor, and `asyncio.run()`'s own cleanup calls
+#: `loop.shutdown_default_executor()`, which BLOCKS until every thread ever submitted to
+#: that executor finishes — including one a cancelled `asyncio.timeout` gave up on but
+#: could not actually stop (a running OS thread cannot be interrupted from outside it).
+#: Verified directly: a `to_thread`-based version timed out its `await` at 0.05s exactly
+#: as expected, then `asyncio.run()` itself did not RETURN for the full 5s the orphaned
+#: thread kept running — the timeout appeared to work locally and silently ate the whole
+#: point of having one. A separately owned executor is untouched by that shutdown call,
+#: so a cancelled attempt's orphaned thread runs out its course in the background without
+#: blocking the NEXT retry attempt's own `asyncio.run()` from returning promptly.
+_SUBAGENT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    thread_name_prefix="harness-subagent")
+
+
+def _final_text(messages) -> str:
+    """The model's final answer as plain text — N-3. `AIMessage.content` is a `str` for
+    most chat models but a list of content blocks for some (Anthropic's own SDK shape),
+    same ambiguity `run.py` already resolves for `resp.content`; handled the identical
+    way here so a malformed `returns=` answer is diagnosed off the same text on both
+    backends, instead of silently reading `""` whenever content isn't a bare string."""
+    content = messages[-1].content if messages else ""
+    if isinstance(content, str):
+        return content
+    return "".join(b.get("text", "") for b in content
+                   if isinstance(b, dict) and b.get("type") == "text")
+
+
+def _returns_as_state(value: Any) -> Any:
+    """`parse_returns` may hand back a dataclass INSTANCE (the classic loop's
+    `Result.value` holds exactly that) — state is checkpointed, and a class instance is
+    not guaranteed to round-trip through a checkpointer the way a `dict` is (IDL-42's
+    same reasoning, one level up). Convert only when needed; the parsed JSON for a
+    non-dataclass `returns=` is already a plain `dict`/`list`/scalar and passes through
+    unchanged."""
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.asdict(value)
+    return value
 
 
 def _run_subagent(spec, args: dict, led: Ledger) -> str:

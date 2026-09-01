@@ -90,5 +90,45 @@ class EscapeHatchAlsoParses(unittest.TestCase):
         self.assertEqual(out.get("stop_reason"), "completed")
 
 
+class ParsedValueReachesTheState(unittest.TestCase):
+    """Bug thật, tìm thấy khi tự review lượt vá này: `finish()` đã GỌI `parse_returns`
+    để validate, nhưng vứt luôn kết quả — `Agent(durable=True, returns=...)` không sao
+    (`agent.py::_state_to_result` tự parse lại một lần nữa, ngoài checkpointed state),
+    nhưng escape hatch `build_agent()` dùng trực tiếp thì mất hẳn khả năng lấy giá trị
+    đã validate: `state.get("value")` luôn `None`, dù `AgentState` từng không hề khai
+    field này."""
+
+    def test_build_agent_escape_hatch_returns_the_parsed_value(self):
+        from fake_chat import FakeChat
+        from langchain_core.messages import HumanMessage
+
+        from harness.lg import build_agent
+
+        graph, _runtime = build_agent(
+            model=FakeChat(script=[FakeChat.text('{"id": "o1", "eta_days": 3}')]),
+            budget="$5", returns=Order)
+        out = graph.invoke({"messages": [HumanMessage("status?")], "step": 0},
+                           config={"configurable": {"thread_id": "t2"}})
+        self.assertEqual(out.get("stop_reason"), "completed")
+        self.assertEqual(out.get("value"), {"id": "o1", "eta_days": 3},
+                         "parse_returns() đã validate xong nhưng finish() không ghi "
+                         "lại vào state — escape hatch build_agent() không có cách "
+                         "nào lấy được giá trị đã parse")
+
+    def test_a_bad_answer_never_writes_a_stale_value(self):
+        from fake_chat import FakeChat
+        from langchain_core.messages import HumanMessage
+
+        from harness.lg import build_agent
+
+        graph, _runtime = build_agent(
+            model=FakeChat(script=[FakeChat.text("not json")]),
+            budget="$5", returns=Order)
+        out = graph.invoke({"messages": [HumanMessage("status?")], "step": 0},
+                           config={"configurable": {"thread_id": "t3"}})
+        self.assertEqual(out.get("stop_reason"), "error")
+        self.assertIsNone(out.get("value"))
+
+
 if __name__ == "__main__":
     unittest.main()

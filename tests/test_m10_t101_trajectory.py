@@ -25,7 +25,14 @@ def wipe(x: int) -> str:
     return "gone"
 
 
-async def _run(script, tools=(look, wipe), **kw):
+@tool(effect="write")
+def push(x: int) -> str:
+    """Ghi — không cần duyệt như `wipe`, nên chạy được hai lần trong cùng một test mà
+    không cần `approve=`."""
+    return "pushed"
+
+
+async def _run(script, tools=(look, wipe, push), **kw):
     events = []
 
     class _Collect:
@@ -127,29 +134,56 @@ class OutputSchema(unittest.TestCase):
         self.assertIn("output_schema", tr.violations[0])
 
 
+EFFECT_OF = {"look": "read", "wipe": "danger", "push": "write"}
+
+
 class NoDuplicateSideEffects(unittest.TestCase):
     def test_pass_mot_lan_goi(self):
-        r, ev = _run_sync([FakeModel.tool_call("look", {"x": 1}), FakeModel.text("d")])
-        self.assertTrue(check_trajectory(Trajectory(no_duplicate_side_effects=True), r, ev).ok)
+        r, ev = _run_sync([FakeModel.tool_call("push", {"x": 1}), FakeModel.text("d")])
+        self.assertTrue(check_trajectory(Trajectory(no_duplicate_side_effects=True), r, ev,
+                                         effect_of=EFFECT_OF).ok)
 
     def test_fail_khi_chay_hai_lan_cung_arg_khac_step(self):
+        r, ev = _run_sync([
+            FakeModel.tool_call("push", {"x": 1}, call_id="c1"),
+            FakeModel.tool_call("push", {"x": 1}, call_id="c2"),
+            FakeModel.text("d"),
+        ])
+        tr = check_trajectory(Trajectory(no_duplicate_side_effects=True), r, ev,
+                              effect_of=EFFECT_OF)
+        self.assertFalse(tr.ok)
+        self.assertIn("no_duplicate_side_effects", tr.violations[0])
+
+    def test_bug_that_doc_bi_goi_trung_khong_bi_gan_co_vi_pham(self):
+        """Bug thật, tìm thấy khi tự review lượt vá này: `check_trajectory` từng gắn cờ
+        vi phạm cho BẤT KỲ tool nào gọi trùng tham số — kể cả `read`, vốn không có side
+        effect nào để "chạy trùng" cả. `look` là `effect="read"`; gọi hai lần cùng
+        tham số ở đây phải hợp lệ, đúng cái tên "no_duplicate_SIDE_EFFECTS" hứa."""
         r, ev = _run_sync([
             FakeModel.tool_call("look", {"x": 1}, call_id="c1"),
             FakeModel.tool_call("look", {"x": 1}, call_id="c2"),
             FakeModel.text("d"),
         ])
-        tr = check_trajectory(Trajectory(no_duplicate_side_effects=True), r, ev)
-        self.assertFalse(tr.ok)
-        self.assertIn("no_duplicate_side_effects", tr.violations[0])
+        tr = check_trajectory(Trajectory(no_duplicate_side_effects=True), r, ev,
+                              effect_of=EFFECT_OF)
+        self.assertTrue(tr.ok, tr.violations)
+
+    def test_thieu_effect_of_thi_bao_loi_ro_rang_khong_doan_dai(self):
+        r, ev = _run_sync([FakeModel.tool_call("wipe", {"x": 1}), FakeModel.text("d")])
+        with self.assertRaises(ValueError):
+            check_trajectory(Trajectory(no_duplicate_side_effects=True), r, ev)
 
     def test_mutation_khong_noi_call_id_ve_arguments_bo_lo_trung_lap(self):
         """Mutation: dùng `arguments` thẳng từ `tool.started` (event đó KHÔNG mang
         field này — chỉ `tool.requested` mang) thay vì nối qua `call_id` — mọi lời gọi
         đều đọc `{}`  làm args, nên hai lời gọi CÙNG tool nhưng KHÁC args thật cũng bị
-        gộp nhầm thành trùng lặp."""
+        gộp nhầm thành trùng lặp. Dùng `push` (write), không phải `look` (read) — sau
+        bản vá effect_of, một tool `read` bị lọc ra TRƯỚC khi chạm logic mutation này,
+        nên test sẽ pass giả tạo bất kể mutation có mặt hay không nếu dùng `look`.
+        """
         r, ev = asyncio.run(_run([
-            FakeModel.tool_call("look", {"x": 1}, call_id="c1"),
-            FakeModel.tool_call("look", {"x": 2}, call_id="c2"),
+            FakeModel.tool_call("push", {"x": 1}, call_id="c1"),
+            FakeModel.tool_call("push", {"x": 2}, call_id="c2"),
             FakeModel.text("d"),
         ]))
         started = [e for e in ev if e.kind.value == "tool.started"]
@@ -159,7 +193,8 @@ class NoDuplicateSideEffects(unittest.TestCase):
                         "{} — nếu nó khác, test này không còn phân biệt được bản đúng "
                         "và bản có lỗi")
         # Bản đúng (check_trajectory) phân biệt được hai args khác nhau -> KHÔNG coi là trùng.
-        tr = check_trajectory(Trajectory(no_duplicate_side_effects=True), r, ev)
+        tr = check_trajectory(Trajectory(no_duplicate_side_effects=True), r, ev,
+                              effect_of=EFFECT_OF)
         self.assertTrue(tr.ok, tr.violations)
 
 
