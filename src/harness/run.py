@@ -53,6 +53,7 @@ class RunEngine:
     async def run(self, message: str, *, messages: Sequence[Mapping[str, Any]] = (),
                   on_delta=None) -> Result:
         run_id = self._bus._run_id
+        run_t0 = time.monotonic()
         msgs: list[Mapping[str, Any]] = list(messages) + [{"role": "user", "content": message}]
         usage_total = Usage()
         text = ""
@@ -195,7 +196,12 @@ class RunEngine:
             # cancellation happen). Clean up — same as every other stop reason, an
             # observability record — but re-raise instead of returning.
             self._bus.emit(EventKind.RUN_FINISHED, stop_reason=StopReason.CANCELLED.value,
-                           steps=step, cost_usd=str(self._l.spent), tainted=self._taint.tainted)
+                           steps=step, cost_usd=str(self._l.spent), tainted=self._taint.tainted,
+                           duration_s=time.monotonic() - run_t0,
+                           input_tokens=usage_total.input_tokens,
+                           output_tokens=usage_total.output_tokens,
+                           cache_read_tokens=usage_total.cache_read_input_tokens,
+                           cache_write_tokens=usage_total.cache_creation_input_tokens)
             raise
 
         # T-6.4 (chaos test "model trả rác" found this): `_parse_returns` used to be
@@ -217,7 +223,12 @@ class RunEngine:
                 self._bus.emit(EventKind.ERROR_RAISED, step=step, where="returns",
                                type="ToolContractError", message=detail, retryable=False)
         self._bus.emit(EventKind.RUN_FINISHED, stop_reason=stop.value, steps=step,
-                       cost_usd=str(self._l.spent), tainted=self._taint.tainted)
+                       cost_usd=str(self._l.spent), tainted=self._taint.tainted,
+                       duration_s=time.monotonic() - run_t0,
+                       input_tokens=usage_total.input_tokens,
+                       output_tokens=usage_total.output_tokens,
+                       cache_read_tokens=usage_total.cache_read_input_tokens,
+                       cache_write_tokens=usage_total.cache_creation_input_tokens)
         return Result(text, stop, step, self._l.spent, usage_total, run_id,
                       self._taint.tainted, tuple(msgs), value, detail,
                       tuple(self._dispatch.ran))

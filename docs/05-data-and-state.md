@@ -18,7 +18,7 @@ tracer/OTel exporter — T-8.3 — propagates one in), `tenant_id` and `session_
 | Kind | When | `data` payload |
 |---|---|---|
 | `run.started` | Once, first | `agent`, `model`, `budget`, `tool_names[]`, `safety`, `harness_version` |
-| `run.finished` | Once, last | `stop_reason`, `steps`, `cost_usd`, `usage`, `tainted`, `duration_s` |
+| `run.finished` | Once, last | `stop_reason`, `steps`, `cost_usd`, `tainted`, `duration_s`, `input_tokens`/`output_tokens`/`cache_read_tokens`/`cache_write_tokens` (bug fix, review pass on this branch — the docs already promised these; `run.py` never actually emitted them, dropped since before this event existed) |
 | `step.started` | Each loop iteration | `step` |
 | `step.finished` | Each loop iteration | `step`, `stop_reason`, `tool_calls` |
 | `model.request` | Before each call | `model`, `input_tokens`, `n_tools`, `n_messages`, `breakpoints`, `estimate_usd` |

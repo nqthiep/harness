@@ -209,7 +209,8 @@ class Runtime:
         # before `_after_budget` ever reads it. Sitting beside the step and wall-clock
         # ceilings is also where it belongs — it is a ceiling, on a different axis.
         if stalled_steps >= STALL_AFTER:
-            self._emit(state, EventKind.PROGRESS_STALLED, stalled_steps=stalled_steps)
+            self._emit(state, EventKind.PROGRESS_STALLED, step=state.get("step", 0),
+                       stalled_steps=stalled_steps)
             return {"stop_reason": StopReason.STALLED.value,
                     "detail": stall_reason(stalled_steps),
                     "ledger": led.snapshot(), "asks": asks,
@@ -222,12 +223,13 @@ class Runtime:
             res = led.reserve(input_tokens, max_tokens, self._price,
                               hard_max_input=len(text))
         except BudgetExceeded as exc:
-            self._emit(state, EventKind.BUDGET_EXHAUSTED, axis="usd", spent=str(led.spent))
+            self._emit(state, EventKind.BUDGET_EXHAUSTED, step=state.get("step", 0),
+                       axis="usd", spent=str(led.spent))
             return {"stop_reason": "budget_exhausted", "detail": str(exc),
                     "ledger": led.snapshot(), "asks": asks,
                     "stalled_steps": stalled_steps, "seen_calls": seen_calls}
-        self._emit(state, EventKind.BUDGET_RESERVED, estimate_usd=str(res.estimate),
-                   spent_usd=str(led.spent))
+        self._emit(state, EventKind.BUDGET_RESERVED, step=state.get("step", 0),
+                   estimate_usd=str(res.estimate), spent_usd=str(led.spent))
         # `stop_reason` is cleared here, and only here.  It is checkpointed like every
         # other state key, so a thread that finished a turn came back carrying
         # "completed" — and `_after_budget` routed the next turn straight to `finish`.
@@ -245,7 +247,8 @@ class Runtime:
         # taint hoàn hảo — xem giải thích đầy đủ ở 00-foundation §3.2 và test
         # `test_e2e_five_invariants.py`/`test_label_l2_l3.py`.
         label_at_generation = self._effective_label(state)
-        self._emit(state, EventKind.MODEL_REQUEST, max_tokens=state.get("max_tokens", 0))
+        self._emit(state, EventKind.MODEL_REQUEST, step=state.get("step", 0),
+                   max_tokens=state.get("max_tokens", 0))
         # T-6.4 (chaos test "provider timeout"), ported here for parity after the same
         # gap was found and fixed in run.py — nothing here ever caught a provider
         # failure either, so it would have propagated straight out of `graph.invoke()`.
@@ -253,8 +256,9 @@ class Runtime:
         try:
             msg = self._model.invoke(state["messages"])
         except Exception as exc:
-            self._emit(state, EventKind.ERROR_RAISED, where="provider",
-                       type=type(exc).__name__, message=str(exc), retryable=False)
+            self._emit(state, EventKind.ERROR_RAISED, step=state.get("step", 0),
+                       where="provider", type=type(exc).__name__, message=str(exc),
+                       retryable=False)
             return {"stop_reason": "error", "detail": f"{type(exc).__name__}: {exc}"}
         _stamp_label(msg, label_at_generation)
         usage = _usage_of(msg)
@@ -263,7 +267,8 @@ class Runtime:
         raw = _provider_stop(msg)
         # N-6 parity with run.py — same flat field names OtelExporter (docs/10 §2)
         # already renames; see run.py's comment on this event for the full reasoning.
-        self._emit(state, EventKind.MODEL_RESPONSE, stop_reason=raw, cost_usd=str(led.spent),
+        self._emit(state, EventKind.MODEL_RESPONSE, step=state.get("step", 0),
+                   stop_reason=raw, cost_usd=str(led.spent),
                    input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
                    cache_read_tokens=usage.cache_read_input_tokens,
                    cache_write_tokens=usage.cache_creation_input_tokens,
@@ -280,7 +285,8 @@ class Runtime:
         ctx = _Ctx(label=self._effective_label(state), safety=self._safety(state))
         pending, denied = [], []
         for c in calls:
-            self._emit(state, EventKind.TOOL_REQUESTED, tool=c["name"], call_id=c["id"])
+            self._emit(state, EventKind.TOOL_REQUESTED, step=state.get("step", 0),
+                       tool=c["name"], call_id=c["id"])
             spec = self._tools.get(c["name"])
             if spec is None:
                 denied.append(ToolMessage(
@@ -290,7 +296,8 @@ class Runtime:
             d = self._engine_for(_run_id(state)).decide(
                 ToolCall(c["id"], c["name"], c.get("args", {}), spec,
                         idempotency_key(_run_id(state), c["id"])), ctx)
-            self._emit(state, EventKind.POLICY_DECIDED, tool=c["name"], call_id=c["id"],
+            self._emit(state, EventKind.POLICY_DECIDED, step=state.get("step", 0),
+                       tool=c["name"], call_id=c["id"],
                        verdict=d.verdict.name, reason=d.reason, policy=d.policy)
             if d.verdict is Verdict.DENY:
                 denied.append(ToolMessage(content=f"denied by policy: {d.reason}",
@@ -348,7 +355,8 @@ class Runtime:
             else:
                 d, reported_actor = asyncio.run(self._engine_for(_run_id(state)).resolve(
                     Ruling(Verdict.ASK, p["reason"], "policy"), call, ctx, self._approve))
-            self._emit(state, EventKind.POLICY_DECIDED, tool=p["tool"], call_id=p["call"]["id"],
+            self._emit(state, EventKind.POLICY_DECIDED, step=state.get("step", 0),
+                       tool=p["tool"], call_id=p["call"]["id"],
                        verdict=d.verdict.name, reason=d.reason, policy=d.policy)
             # Phê duyệt là một SỰ KIỆN, không phải một cờ. Ghi nó ra sổ, scoped tới đúng
             # lời gọi này: `call_id` khác None nên grant không sống quá lượt — "duyệt vĩnh
@@ -457,9 +465,10 @@ class Runtime:
         for p in state.get("_pending", []):
             gate = self._regate(p, state, label)
             if gate.verdict is not Verdict.ALLOW:
-                self._emit(state, EventKind.POLICY_DECIDED, tool=p["tool"],
-                           call_id=p["call"]["id"], verdict=gate.verdict.name,
-                           reason=gate.reason, policy=gate.policy)
+                self._emit(state, EventKind.POLICY_DECIDED, step=state.get("step", 0),
+                           tool=p["tool"], call_id=p["call"]["id"],
+                           verdict=gate.verdict.name, reason=gate.reason,
+                           policy=gate.policy)
                 msgs.append(ToolMessage(content=f"declined: {gate.reason}",
                                         tool_call_id=p["call"]["id"], status="error"))
                 continue
@@ -477,8 +486,8 @@ class Runtime:
             attempts = MAX_ATTEMPTS if retryable else 1
             ok, reason, payload = False, "", ""
             for attempt in range(attempts):
-                self._emit(state, EventKind.TOOL_STARTED, tool=spec.name, call_id=call["id"],
-                           attempt=attempt)
+                self._emit(state, EventKind.TOOL_STARTED, step=state.get("step", 0),
+                           tool=spec.name, call_id=call["id"], attempt=attempt)
                 # N-1 (design/07-risks-and-open-issues.md): before this, nothing here
                 # bounded a single call — only the run's wall-clock, checked once at the
                 # START of a step, never WHILE a call is in flight. A `read` tool with no
@@ -504,7 +513,19 @@ class Runtime:
                         async with asyncio.timeout(timeout):
                             return await once_if_unsafe(
                                 self._idempotency_store,
-                                idempotency_key(_run_id(state), call["id"]),
+                                # `step` folded into the run-id half of the key, not
+                                # `call_id` — matching the classic backend's own
+                                # `dispatch.py::_invoke` key. A real provider's
+                                # `tool_use` id is unique per call, but
+                                # `FakeModel.tool_call()`'s convenience default
+                                # (`call_id="c1"`) is not, and dozens of existing tests
+                                # rely on that being inert across separate steps. Bug
+                                # found on review: without `step` here, two DIFFERENT
+                                # steps of the same thread issuing the same `call_id`
+                                # collide on this persistent-store key, and the second
+                                # call is wrongly treated as a replay of the first.
+                                idempotency_key(f"{_run_id(state)}:"
+                                                f"{state.get('step', 0)}", call["id"]),
                                 _call, retryable=retryable)
                     value, replayed = asyncio.run(_guarded())
                     payload = value if isinstance(value, str) else json.dumps(
@@ -519,13 +540,14 @@ class Runtime:
                 more_left = attempt + 1 < attempts
                 time_left = led.remaining_wall_clock() > 0
                 if more_left and time_left:
-                    self._emit(state, EventKind.ERROR_RAISED, where="tool",
-                               type="retrying", message=reason, retryable=True,
-                               attempt=attempt)
+                    self._emit(state, EventKind.ERROR_RAISED, step=state.get("step", 0),
+                               where="tool", type="retrying", message=reason,
+                               retryable=True, attempt=attempt)
                     time.sleep(min(RETRY_BACKOFF_S * (2 ** attempt), RETRY_BACKOFF_MAX_S))
             if not ok:
-                self._emit(state, EventKind.ERROR_RAISED, where="tool", type=spec.name,
-                           message=reason, retryable=retryable)
+                self._emit(state, EventKind.ERROR_RAISED, step=state.get("step", 0),
+                           where="tool", type=spec.name, message=reason,
+                           retryable=retryable)
                 msgs.append(ToolMessage(content=redact(reason),
                                         tool_call_id=call["id"], status="error"))
                 continue
@@ -540,11 +562,13 @@ class Runtime:
             before = label
             label = label.join(emitted)
             if label != before:
-                self._emit(state, EventKind.TAINT_RAISED, source_tool=spec.name)
+                self._emit(state, EventKind.TAINT_RAISED, step=state.get("step", 0),
+                           source_tool=spec.name)
             result_msg = ToolMessage(content=redact(payload), tool_call_id=call["id"])
             _stamp_label(result_msg, emitted)
             msgs.append(result_msg)
-            self._emit(state, EventKind.TOOL_FINISHED, tool=spec.name, call_id=call["id"],
+            self._emit(state, EventKind.TOOL_FINISHED, step=state.get("step", 0),
+                       tool=spec.name, call_id=call["id"],
                        is_error=False, replayed=replayed)
         self._emit(state, EventKind.STEP_FINISHED, step=state.get("step", 0),
                    stop_reason="tool_use", tool_calls=[p["tool"] for p in state.get("_pending", [])])
@@ -577,8 +601,9 @@ class Runtime:
                                                         self._returns))
             except ToolContractError as exc:
                 stop, detail = "error", str(exc)
-                self._emit(state, EventKind.ERROR_RAISED, where="returns",
-                           type="ToolContractError", message=detail, retryable=False)
+                self._emit(state, EventKind.ERROR_RAISED, step=state.get("step", 0),
+                           where="returns", type="ToolContractError", message=detail,
+                           retryable=False)
         self._emit(state, EventKind.STEP_FINISHED, step=state.get("step", 0),
                    stop_reason=stop, tool_calls=[])
         led = self._ledger(state)

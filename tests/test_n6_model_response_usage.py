@@ -83,6 +83,39 @@ class BackendGraph(unittest.TestCase):
         self.assertGreaterEqual(row["latency_ms"], 0.0)
 
 
+class _CollectRunFinished:
+    def __init__(self):
+        self.rows = []
+
+    def emit(self, e):
+        if e.kind is EventKind.RUN_FINISHED:
+            self.rows.append(dict(e.data))
+
+    def close(self):
+        pass
+
+
+class RunFinishedCungPhaiMangDuLieuThat(unittest.TestCase):
+    """Bug thật, tìm thấy khi tự review lượt vá này: `docs/05 §1` đã hứa `run.finished`
+    mang `duration_s`/usage — hứa từ TRƯỚC KHI backend graph tồn tại, có sẵn ở
+    merge-base — nhưng `run.py` (vòng lặp classic) chưa từng emit các trường đó, y
+    hệt bug `model.response` đã có ở trên, chỉ là chưa ai vá event NÀY."""
+
+    def test_run_finished_mang_duration_s_va_usage(self):
+        col = _CollectRunFinished()
+        Agent(name="A", job="j", provider=FakeModel([FakeModel.text("hi")]), budget="$5",
+              exporters=[col]).try_run("thử")
+        self.assertEqual(len(col.rows), 1)
+        row = col.rows[0]
+        self.assertIn("duration_s", row)
+        self.assertIsInstance(row["duration_s"], float)
+        self.assertGreaterEqual(row["duration_s"], 0.0)
+        self.assertEqual(row["input_tokens"], 100)
+        self.assertEqual(row["output_tokens"], 20)
+        self.assertEqual(row["cache_read_tokens"], 0)
+        self.assertEqual(row["cache_write_tokens"], 0)
+
+
 class OtelDocDuocDuLieuThat(unittest.TestCase):
     """Trước bản vá, `OtelExporter` đã sẵn sàng đổi tên các trường này — chỉ là payload
     chưa từng mang chúng. Test này khoá đúng lời hứa `docs/10 §2`."""

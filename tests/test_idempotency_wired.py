@@ -111,6 +111,23 @@ class ChayLaiSauSuCoKhongGayHaiDoiTacDung(unittest.TestCase):
                FakeChat.text("ok")], store=store)[0], "t")
         self.assertEqual(len(PUSHED), 2)
 
+    def test_cung_call_id_o_hai_step_khac_nhau_khong_bi_coi_la_phat_lai(self):
+        """Bug thật, tìm thấy khi tự review: khoá dùng để chống double-effect từng là
+        `f"{run_id}:{call_id}"` — KHÔNG gộp `step`. `call_id` do model/`FakeModel` tự
+        đặt, không đảm bảo duy nhất suốt cả thread (đúng cái `FakeModel.tool_call()`'s
+        default `call_id="c1"` làm ở khắp nơi trong test suite) — nên một `call_id`
+        LẶP LẠI ở step SAU, dù mang tham số hoàn toàn khác (một lời gọi THẬT SỰ mới),
+        vẫn bị đọc nhầm thành "phát lại lần gọi ở step trước" và KHÔNG chạy. Script dưới
+        đây gọi `git_push` hai lần, cùng `call_id="c1"`, khác `branch` — nếu bug còn đó,
+        `PUSHED` chỉ có `["main"]`."""
+        store = InMemoryStore()
+        script = [FakeChat.call("git_push", {"branch": "main"}, "c1"),
+                 FakeChat.call("git_push", {"branch": "other"}, "c1"),
+                 FakeChat.text("ok")]
+        go(mk(script, store=store)[0], "task-99")
+        self.assertEqual(PUSHED, ["main", "other"],
+                         "call_id trùng ở step khác bị coi nhầm là phát lại")
+
     def test_thread_khac_thi_khong_dung_chung_ban_ghi(self):
         store = InMemoryStore()
         script = [FakeChat.call("git_push", {"branch": "main"}, "c1"), FakeChat.text("ok")]
