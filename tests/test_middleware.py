@@ -212,6 +212,25 @@ class IdentityThreading(unittest.TestCase):
         self.assertEqual(seen, {"c1": {"order": "A1"}, "c2": {"order": "A2"},
                                "c3": {"order": "A3"}})
 
+    def test_a_retried_call_keeps_the_same_call_id_across_attempts(self):
+        """`before_tool` fires once per RETRY ATTEMPT, not once per logical call — a
+        `read` tool gets up to MAX_ATTEMPTS(3) tries. Documented in `before_tool`'s own
+        docstring; this pins the number down so a change to the retry policy shows up
+        here."""
+        seen = []
+
+        class AlwaysFails(Middleware):
+            def before_tool(self, call):
+                seen.append(call.identity.call_id)
+                raise KeyError("boom")
+
+        script = [FakeModel.tool_call("look_up", {"order": "A1"}), FakeModel.text("ok")]
+        a = Agent(name="p", job="x", provider=FakeModel(script), tools=[look_up],
+                 allowed_hosts=None)
+        r = with_middleware(a, AlwaysFails()).try_run("check A1")
+        self.assertTrue(r.ok)                    # the run itself never crashes
+        self.assertEqual(seen, ["c1", "c1", "c1"])
+
 
 class MiddlewareBasics(unittest.TestCase):
     def test_default_hooks_are_pass_through(self):
@@ -372,6 +391,24 @@ class ComposesWithAgent(unittest.TestCase):
         r = with_middleware(a, rec).try_run("hello")
         self.assertTrue(r.ok)
         self.assertTrue(any(c[0] == "before_model" for c in rec.calls))
+
+    def test_a_subagent_tool_never_fires_before_after_tool(self):
+        """Documented in `with_middleware()`'s own docstring: a subagent call is
+        dispatched by calling the child Agent's `atry_run()` directly
+        (`_run_subagent`/`dispatch.py`), never through `ToolSpec.fn` — so wrapping the
+        PARENT cannot see inside the delegation. Wrapping the CHILD does."""
+        child = Agent(name="Helper", job="help", provider=FakeModel([FakeModel.text("42")]))
+        helper_tool = child.as_tool(name="ask_helper")
+        rec = Recorder()
+        script = [FakeModel.tool_call("ask_helper", {"task": "compute"}),
+                  FakeModel.text("the answer is 42")]
+        parent = Agent(name="p", job="x", provider=FakeModel(script),
+                       tools=[helper_tool], allowed_hosts=None)
+        r = with_middleware(parent, rec).try_run("ask the helper")
+        self.assertTrue(r.ok)
+        self.assertEqual(r.tools_run, ("ask_helper",))
+        self.assertFalse(any(c[0] in ("before_tool", "after_tool") for c in rec.calls),
+                         "before_tool/after_tool fired for a subagent delegation")
 
 
 if __name__ == "__main__":

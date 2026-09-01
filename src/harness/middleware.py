@@ -189,12 +189,28 @@ class Middleware:
         """After `Policy` has already ruled ALLOW on this call — never for one it
         denied. Return `call.kwargs` (unchanged or modified), or raise
         `ShortCircuit(result)` to skip the tool's own function and use `result`
-        instead."""
+        instead.
+
+        Fires once per RETRY attempt, not once per logical call: a `read`/`external`
+        tool gets up to `MAX_ATTEMPTS` tries on failure (`dispatch.py`/`lg/runtime.py`,
+        T-6.3), and every attempt re-enters this hook with the SAME `call.identity.
+        call_id` — verified: a `before_tool` that keeps raising is retried exactly as
+        many times as the tool's own effect class allows. Side effects here (a counter,
+        a quota decrement) should key off `call_id` if they need to fire once per
+        logical call rather than once per attempt.
+
+        Never called at all for a subagent tool (`agent.as_tool()`) — a subagent call is
+        dispatched through `_run_subagent`, which never touches `ToolSpec.fn`, so there
+        is nothing here to wrap.
+        """
         return call.kwargs
 
     def after_tool(self, call: ToolInvocation) -> Any:
         """After the tool's function returned (or after `before_tool` short-circuited
-        it) — `call.result` holds it. Return it unchanged, or a replacement."""
+        it) — `call.result` holds it. Return it unchanged, or a replacement.
+
+        Same retry and subagent notes as `before_tool` apply here.
+        """
         return call.result
 
     def on_event(self, event: "Event") -> None:
@@ -209,6 +225,12 @@ def with_middleware(agent: "Agent", *middlewares: Middleware) -> "Agent":
     """A new `Agent` (frozen — ADR-004) with every one of `middlewares` wired onto
     `provider=`/`tools=`/`exporters=`. Hooks run in the order given, on both the classic
     and `durable=True` engines alike (both call the same `provider=`).
+
+    A tool built from another `Agent` (`agent.as_tool()`) is wrapped too, but its
+    `before_tool`/`after_tool` never actually fire: dispatching a subagent call goes
+    through `_run_subagent`/`_run_tools`'s subagent branch, which calls the CHILD
+    Agent's own `atry_run()` directly and never touches `ToolSpec.fn` — wrap the CHILD
+    Agent with its own `with_middleware()` to see inside its calls.
     """
     if not middlewares:
         return agent

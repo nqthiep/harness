@@ -242,7 +242,14 @@ mapping của `OtelExporter` (T-8.3) không có dữ liệu để đọc. Phát 
 liệu lượt này (không phải lúc T-8.3 viết): `run.finished` có cùng khoảng lệch —
 `docs/05` hứa `usage`/`duration_s`, code (`run.py`, `lg/runtime.py`) chỉ emit
 `stop_reason`/`steps`/`cost_usd`/`tainted`. Cùng một lớp gap (usage/timing chưa wire vào
-event emission), hai điểm emit. Còn mở.
+event emission), hai điểm emit. Phát hiện thêm lúc review `middleware.py` (N-10): trên
+backend `durable`/graph, `MODEL_REQUEST`/`MODEL_RESPONSE`/`TOOL_REQUESTED`/`TOOL_STARTED`
+(`lg/runtime.py`) không truyền `step=` cho `_emit`/`self._bus.emit` — `Event.step` của
+chúng luôn là `None`, trong khi backend cổ điển (`run.py`/`dispatch.py`) LUÔN truyền
+`step=`. Vô hại (`ModelCall.identity.step`/`ToolInvocation.identity.step` — cơ chế mới
+của `middleware.py` — vẫn đúng trên cả hai backend, đọc từ `state`/biến `step` cục bộ,
+không đọc từ `Event`) nhưng là một điểm bất đối xứng backend thật, đáng để đóng cùng lúc
+với phần còn lại của N-6 vì cùng nguyên nhân gốc. Còn mở.
 
 **N-7 (đã sửa) — `Agent.with_()` làm mất bốn trường, MỌI lần gọi.**
 `transcript`/`exporters`/`accepts_tainted`/`sensitive` biến mất khỏi agent phái sinh —
