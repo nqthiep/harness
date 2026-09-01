@@ -2,10 +2,11 @@
 
 ## 1. The event taxonomy (closed)
 
-Sixteen kinds. Closed on purpose: an open taxonomy becomes a log-message dump within a
+Seventeen kinds. Closed on purpose: an open taxonomy becomes a log-message dump within a
 year, and nothing downstream can rely on it. New kinds require a minor version and a
-decision-log entry — `budget.unlimited` is the one addition since the original fifteen,
-and ADR-041 ([§12](12-decision-logs.md)) is its entry.
+decision-log entry — `budget.unlimited` was the one addition since the original fifteen
+(ADR-041, [§12](12-decision-logs.md)); `progress.stalled` (the mechanical stall detector,
+`progress.py`) is the next.
 
 **Envelope v1** (T-8.1, ADR-048): every `Event` also carries `schema_version` (bumped
 only on a breaking shape change — an additive field with a default does not need one),
@@ -31,8 +32,9 @@ tracer/OTel exporter — T-8.3 — propagates one in), `tenant_id` and `session_
 | `tool.started` | Only if ALLOW; once per attempt (T-6.3 retry) | `tool`, `call_id`, `parallel`, `attempt` |
 | `tool.finished` | Per executed call | `tool`, `call_id`, `duration_ms`, `is_error`, `result_tokens`, `truncated`, `replayed` (S-4/N-8, closed — `True` when `execute_once` returned a cached result instead of calling the tool again for this call_id) |
 | `taint.raised` | First tainted content | `source_tool`, `call_id` |
-| `context.managed` | Editing or compaction ran | `strategy` (`edited` \| `compact_needed`), `tokens_before`, `messages`, `messages_dropped` |
+| `context.managed` | Editing or compaction ran | `strategy` (`edited` \| `compacted` \| `compact_needed`), `tokens_before`, `messages`, `messages_dropped` |
 | `error.raised` | Any handled error | `where`, `type`, `message`, `retryable`, `attempt`. `wait_s` too for a provider retry (N-5) — one event per retry attempt, never for the final, re-raised failure |
+| `progress.stalled` | Tool calls kept happening but nothing NEW did, for `STALL_AFTER` (6) steps in a row | `stalled_steps` — the run stops with `StopReason.STALLED`, classic backend only for now (see `progress.py`) |
 
 **Design rules for payloads**
 

@@ -86,6 +86,11 @@ class StopReason(str, Enum):
     DENIED_BY_POLICY = "denied_by_policy"
     MODEL_REFUSAL    = "model_refusal"
     CANCELLED        = "cancelled"
+    #: The run kept calling tools but stopped producing anything NEW — see
+    #: `progress.py`. Its own value rather than `ERROR`: an agent going in
+    #: circles is a distinct outcome from a crash, and the two want different
+    #: responses (rewrite the job/tools, versus fix the failure).
+    STALLED          = "stalled"
     ERROR            = "error"
 
 

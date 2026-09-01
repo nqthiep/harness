@@ -35,6 +35,14 @@ class ToolCall:
     name: str
     arguments: Mapping[str, Any]
     spec: "ToolSpec"
+    #: S-01 re-check (design/07-risks-and-open-issues.md) — `f"{run_id}:{id}"`
+    #: (`idempotency.py::idempotency_key`), stamped by the caller (`dispatch.py`) that
+    #: already has both. `None` only in tests that build a `ToolCall` directly without a
+    #: run — never in a real dispatch path. A stable per-call key a `Policy`/tool author
+    #: can read, distinct from `dispatch.py::_invoke`'s own INTERNAL retry-dedup key
+    #: (folds `step` in too, for a reason this field deliberately does not need — see
+    #: that call site).
+    idempotency_key: str | None = None
     __hash__ = None                     # holds a Mapping — docs/04 §0 Hashability
 
 

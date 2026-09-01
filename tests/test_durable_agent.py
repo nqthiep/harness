@@ -184,6 +184,21 @@ class DurableGuards(unittest.TestCase):
         with self.assertRaises(ConfigError):
             a.try_run("hi", on_delta=lambda _s: None)
 
+    def test_principal_is_refused_at_construction(self):
+        """`principal=` (S-03) only threads through `RunContext` on the classic
+        backend today — `build_agent()` has no parameter to hand it to. Silently
+        accepting it under `durable=True` would let a caller believe a policy reading
+        `ctx.principal` sees this value when it never would."""
+        with self.assertRaises(ConfigError):
+            Agent(name="d", job="x", provider=FakeModel([]), durable=True,
+                 principal="user-42", allowed_hosts=None)
+
+    def test_decisions_is_refused_at_construction(self):
+        from harness.policy.decision import DecisionLog
+        with self.assertRaises(ConfigError):
+            Agent(name="d", job="x", provider=FakeModel([]), durable=True,
+                 decisions=DecisionLog(), allowed_hosts=None)
+
     def test_with__preserves_durable_and_checkpoint(self):
         a = Agent(name="d", job="x", provider=FakeModel([]), durable=True,
                  checkpoint=":memory:")

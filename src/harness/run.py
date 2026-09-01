@@ -18,6 +18,8 @@ from .context.window import manage as manage_context
 from .middleware import _call_scope
 from .models.pricing import MAX_CONTEXT
 from .observe.events import EventBus, EventKind
+from .policy.decision import DecisionLog
+from .progress import ProgressLedger
 from .retry import with_provider_retry
 #: `RunContext` is re-exported here on purpose — `harness/__init__.py` imports it
 #: from this module, so it is not dead however it looks to a linter (Round 39).
@@ -37,6 +39,15 @@ class RunEngine:
         # no-approver fallback), across the whole run — a `RunEngine` is built fresh per
         # `atry_run()` so this is safely per-run, not shared state (R-4).
         self._asks = 0
+        # Mechanical stall detection (`progress.py`) — costs no tokens, built fresh per
+        # run like `_asks` above.
+        self._progress = ProgressLedger()
+        # The approval audit book. Default: fresh per run — an `Agent` is a frozen
+        # template shared by concurrent runs, so a log living on it would accumulate
+        # every run's rows for the life of the process. An operator who wants the record
+        # to outlive the run passes their own (`Agent(decisions=DecisionLog(journal=...))`)
+        # and owns its lifetime.
+        self._decisions = agent.decisions if agent.decisions is not None else DecisionLog()
         self._dispatch = Dispatcher(self)
 
     async def run(self, message: str, *, messages: Sequence[Mapping[str, Any]] = (),
@@ -177,10 +188,19 @@ class RunEngine:
                             "window, and there is nothing left to clear or drop — give "
                             "the agent a smaller job, or a model with a bigger window")
                         break
+                    calls = [b for b in resp.content if b.get("type") == "tool_use"]
                     self._bus.emit(EventKind.STEP_FINISHED, step=step,
                                    stop_reason=resp.stop_reason,
-                                   tool_calls=[b["name"] for b in resp.content
-                                               if b.get("type") == "tool_use"])
+                                   tool_calls=[b["name"] for b in calls])
+                    # Observed AFTER dispatch, never before: stopping between a
+                    # `tool_use` and its `tool_result` would leave the stored
+                    # conversation in violation of invariant I-3.
+                    stalled = self._progress.observe(calls)
+                    if stalled:
+                        self._bus.emit(EventKind.PROGRESS_STALLED, step=step,
+                                       stalled_steps=self._progress.stalled_steps)
+                        stop, detail = StopReason.STALLED, stalled
+                        break
                     step += 1
                     continue
                 self._bus.emit(EventKind.STEP_FINISHED, step=step,

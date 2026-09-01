@@ -176,14 +176,130 @@ class Decision:
         return self.expires_at is None or now < self.expires_at
 
 
-class DecisionLog:
-    """Sổ chỉ ghi thêm. `lookup` fail-closed: không grant sống ⇒ ASK, không phải ALLOW."""
+#: Một hàng sổ, dạng JSON. Bump khi hình dạng hàng đổi kiểu phá vỡ — cùng vai trò
+#: `EVENT_SCHEMA_VERSION` với `Event`, và cùng lý do: một file audit đọc được năm sau
+#: mới là file audit.
+DECISION_SCHEMA_VERSION = "1"
 
-    def __init__(self) -> None:
+
+def to_json(d: Decision) -> dict[str, Any]:
+    """`Decision` → dict JSON hoá được. `datetime` đi ra dạng ISO-8601, `Verdict` đi ra
+    dạng TÊN chứ không phải số: `Verdict` là `IntEnum`, và một file audit ghi `2` sẽ vô
+    nghĩa nếu thứ tự lattice đổi, còn `"DENY"` thì không.
+
+    `evidence.signature` đi ra NGUYÊN VẸN (hex), khác `evidence_json()` (payload
+    `POLICY_DECIDED`, chỉ báo `has_signature`) — đây chính là nơi `evidence_json()`'s
+    docstring nói bằng chứng ĐẦY ĐỦ thuộc về, không phải một bản audit thứ hai giấu bớt."""
+    return {
+        "v": DECISION_SCHEMA_VERSION,
+        "id": d.id, "verdict": d.verdict.name,
+        "scope": {"tool": d.scope.tool,
+                  "args": None if d.scope.args is None else dict(d.scope.args),
+                  "server": d.scope.server, "call_id": d.scope.call_id},
+        "actor": {"kind": d.actor.kind, "id": d.actor.id, "via": d.actor.via},
+        "evidence": None if d.evidence is None else {
+            "channel": d.evidence.channel,
+            "channel_message_id": d.evidence.channel_message_id,
+            "principal": d.evidence.principal,
+            "signature": None if d.evidence.signature is None else d.evidence.signature.hex(),
+            "verified_at": (None if d.evidence.verified_at is None
+                            else d.evidence.verified_at.isoformat()),
+        },
+        "decided_at": d.decided_at.isoformat(),
+        "expires_at": None if d.expires_at is None else d.expires_at.isoformat(),
+        "run_id": d.run_id, "reason": d.reason, "policy_version": d.policy_version,
+    }
+
+
+def from_json(row: Mapping[str, Any]) -> Decision:
+    got = str(row.get("v", ""))
+    if got != DECISION_SCHEMA_VERSION:
+        # IDL-30, fail visible: đoán bừa hình dạng của một hàng audit lạ còn tệ hơn từ
+        # chối đọc nó, vì hậu quả là một grant được dựng lại SAI mà không ai biết.
+        raise ValueError(
+            f"hàng decision ghi theo schema {got!r}, mã này đọc "
+            f"{DECISION_SCHEMA_VERSION!r} — không tự suy diễn hình dạng cũ")
+    sc, ac, ev = row["scope"], row["actor"], row.get("evidence")
+    evidence = None
+    if ev is not None:
+        evidence = AuthEvidence(
+            channel=str(ev["channel"]), channel_message_id=str(ev["channel_message_id"]),
+            principal=str(ev["principal"]),
+            signature=None if ev.get("signature") is None else bytes.fromhex(ev["signature"]),
+            verified_at=(None if ev.get("verified_at") is None
+                        else datetime.fromisoformat(str(ev["verified_at"]))))
+    return Decision(
+        id=str(row["id"]), verdict=Verdict[str(row["verdict"])],
+        scope=Scope(str(sc["tool"]), sc.get("args"), sc.get("server"), sc.get("call_id")),
+        actor=Actor(str(ac["kind"]), str(ac["id"]), ac.get("via")),
+        decided_at=datetime.fromisoformat(str(row["decided_at"])),
+        expires_at=(None if row.get("expires_at") is None
+                    else datetime.fromisoformat(str(row["expires_at"]))),
+        run_id=str(row["run_id"]), reason=row.get("reason"),
+        policy_version=row.get("policy_version"), evidence=evidence)
+
+
+class DecisionLog:
+    """Sổ chỉ ghi thêm. `lookup` fail-closed: không grant sống ⇒ ASK, không phải ALLOW.
+
+    **`journal=` — vì sao là JSONL nối thêm, không phải một `Store`.** Sổ này là audit,
+    và D-2 nói nó chỉ ghi thêm. Một `Store` key-value buộc phải đọc-sửa-ghi lại CẢ danh
+    sách cho mỗi hàng mới: một lần ghi hỏng giữa chừng là mất toàn bộ lịch sử phê duyệt,
+    đúng thứ D-2 tồn tại để chặn. File nối thêm thì một hàng hỏng chỉ hỏng hàng đó. Đây
+    cũng đúng khuôn `observe/transcript.py` đã chọn cho transcript, với cùng lập luận
+    ("An audit log you can edit is not an audit log", docs/05 §2).
+
+    **Vì sao đồng bộ, không async.** `record`/`lookup` được gọi từ đường dispatch ĐỒNG
+    BỘ của vòng lặp classic (`dispatch.py`, chạy trong `asyncio.run()` của caller) — một
+    API async ở đây không mua thêm gì, chỉ thêm một lớp `await` không cần thiết. Ghi bằng
+    I/O file đồng bộ: một dòng, `flush`, `os.fsync`.
+    """
+
+    def __init__(self, *, journal: str | None = None) -> None:
         self._rows: list[Decision] = []
+        self._journal = journal
+        if journal is not None:
+            self._load()
+
+    def _load(self) -> None:
+        """Nạp lại sổ đã ghi. Một hàng hỏng KHÔNG bị bỏ qua im lặng — xem `from_json`."""
+        import json
+        import os
+        if self._journal is None or not os.path.exists(self._journal):
+            return
+        with open(self._journal, encoding="utf-8") as fh:
+            for n, line in enumerate(fh, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    self._rows.append(from_json(json.loads(line)))
+                except (ValueError, KeyError) as exc:
+                    raise ValueError(
+                        f"{self._journal}:{n} không đọc được như một Decision ({exc}) — "
+                        f"dừng thay vì chạy tiếp với một sổ phê duyệt thiếu hàng"
+                    ) from None
 
     def record(self, d: Decision) -> Decision:
         self._rows.append(d)              # D-2: chỉ ghi thêm
+        if self._journal is not None:
+            import json
+            import os
+            # 0600 khi tạo mới: `scope.args` ở đây là GIÁ TRỊ THẬT của tham số, không
+            # phải digest như `tool.requested` trong transcript (docs/05 §1) — bắt buộc
+            # phải vậy, vì `Scope.matches` khoá grant theo đúng giá trị đó. Đổi lại, file
+            # này chứa dữ liệu nhạy cảm hơn transcript (kể cả `evidence.signature`), nên
+            # nó không được sinh ra với quyền đọc cho cả máy. Nói ra ở đây vì đây là
+            # đánh đổi, không phải sơ suất.
+            fd = os.open(self._journal, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(to_json(d), ensure_ascii=False, sort_keys=True) + "\n")
+                fh.flush()
+                # Mỗi hàng một `fsync`: sổ này ghi vài hàng mỗi run (chỉ khi có ASK được
+                # giải quyết), không phải mỗi sự kiện như transcript — nên đánh đổi
+                # "64 sự kiện một lần" của transcript không áp dụng ở đây, và mất một
+                # grant vừa được cấp là mất đúng thứ khiến sổ này tồn tại.
+                os.fsync(fh.fileno())
         return d
 
     def all(self) -> Sequence[Decision]:

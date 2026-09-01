@@ -207,7 +207,12 @@ class M3(unittest.TestCase):
         a.try_run("go")
         managed = [e for e in read(self.path) if e["kind"] == "context.managed"]
         self.assertTrue(managed, "context management never ran even at raised limits")
-        self.assertEqual(managed[0]["data"]["strategy"], "edited")
+        # ADR-066: real compaction now runs alongside editing (context/window.py), and
+        # this fixture's 40k-token results are large enough that the ratio crosses
+        # COMPACT_AT (0.80) in the same step it first crosses EDIT_AT (0.60) — so the
+        # very first context.managed event here is legitimately "compacted", not
+        # "edited". "not none" is the actual claim this test makes.
+        self.assertIn(managed[0]["data"]["strategy"], ("edited", "compacted"))
 
     def test_compact_needed_dung_run_thay_vi_lap_lai_lang_le(self):
         """Bug thật: `manage_context()` đã hứa trả `"compact_needed"` khi hết chỗ dọn

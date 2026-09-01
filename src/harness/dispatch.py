@@ -11,6 +11,7 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from .context.assembler import canonical as _canonical
@@ -21,7 +22,8 @@ from .middleware import _call_scope
 from .observe.events import EventKind
 from .policy.base import Ruling, ToolCall, Verdict
 from .policy.builtin import check_flow, emits_of
-from .policy.decision import actor_json, evidence_json
+from .policy.decision import (POLICY_ENGINE_VERSION, Actor, Decision, Scope,
+                              actor_json, evidence_json)
 from .policy.label import Integrity, Label
 from .secrets import redact
 from .tools import EFFECT_PROFILES, ToolSpec
@@ -55,6 +57,11 @@ class RunContext:
     #: inserted, so every existing positional `RunContext(run_id, name, step, label,
     #: safety, deadline)` construction keeps working.
     tenant_id: str | None = None
+    #: S-03 re-check (design/07-risks-and-open-issues.md, `tests/test_roadmap.py`) —
+    #: who this run acts on behalf of, distinct from `tenant_id`. `None` unless the
+    #: caller supplies `Agent(principal=...)` — a tool/policy reads `ctx.principal`,
+    #: never the model.
+    principal: str | None = None
 
     @property
     def tainted(self) -> bool:
@@ -89,7 +96,7 @@ class Dispatcher:
         calls = [b for b in resp.content if b.get("type") == "tool_use"]
         ctx = RunContext(run_id, self._e._a.name, step, self._e._taint.label,
                          self._e._a.safety, self._e._l.remaining_wall_clock(),
-                         tenant_id=self._e._a.tenant_id)
+                         tenant_id=self._e._a.tenant_id, principal=self._e._a.principal)
         planned: list[tuple[dict, ToolSpec | None, Ruling | None]] = []
 
         for b in calls:
@@ -98,30 +105,64 @@ class Dispatcher:
                            call_id=b["id"], arguments=b.get("input", {}))
             if spec is None:
                 planned.append((b, None, None)); continue
-            call = ToolCall(b["id"], b["name"], b.get("input", {}), spec)
+            call = ToolCall(b["id"], b["name"], b.get("input", {}), spec,
+                           idempotency_key(run_id, b["id"]))
             d = self._e._engine.decide(call, ctx)
             if d.verdict is Verdict.ASK:
                 self._e._asks += 1
-            # S-25(b): approval fatigue is a channel the model controls — injected content
-            # can make it call a `write` tool 40 times with slightly different args, 40
-            # ASKs later the 41st gets approved on reflex. A cap that DENIES once crossed,
-            # rather than silently auto-approving, is the fail-closed direction.
             actor = evidence = None
-            if d.verdict is Verdict.ASK and self._e._asks > self._e._a.max_asks_per_run:
-                d = Ruling(Verdict.DENY,
-                          f"more than {self._e._a.max_asks_per_run} approval requests in "
-                          f"this run — refusing rather than risk reflex-approval fatigue",
-                          "ask-cap")
-            else:
-                # S-11, đã sửa — the classic loop has no `DecisionLog` to record a
-                # `Decision` into (agent.py builds/tears down state per `atry_run()`,
-                # nothing persists a grant across calls the way the LangGraph backend's
-                # checkpointed `DecisionLog` does), but `POLICY_DECIDED` is this
-                # backend's own audit trail (the transcript IS the record here) — actor/
-                # evidence now ride along in it instead of being discarded.
-                d, actor, evidence = await self._e._engine.resolve(
-                    d, call, ctx, self._e._a.approve,
-                    require_evidence=self._e._a.require_approval_evidence)
+            if d.verdict is Verdict.ASK:
+                # S-25(b): approval fatigue is a channel the model controls — injected
+                # content can make it call a `write` tool 40 times with slightly
+                # different args, 40 ASKs later the 41st gets approved on reflex. A cap
+                # that DENIES once crossed, rather than silently auto-approving, is the
+                # fail-closed direction.
+                if self._e._asks > self._e._a.max_asks_per_run:
+                    d = Ruling(Verdict.DENY,
+                              f"more than {self._e._a.max_asks_per_run} approval requests "
+                              f"in this run — refusing rather than risk reflex-approval "
+                              f"fatigue", "ask-cap")
+                    # The callback is never called on this branch — the cap denies
+                    # before `resolve()` runs. Leaving `actor` as `None` would fall
+                    # through to `Actor.human("approver", via="callback")` below
+                    # whenever an `approve=` callback happens to be configured, which
+                    # records a human as having denied a call nobody ever asked —
+                    # exactly the self-declared-identity problem D-1/S-11 exist to
+                    # prevent, on a call this harness's own policy made unilaterally
+                    # (self-review finding, verified as a real regression by reverting).
+                    actor = Actor.policy("ask-cap")
+                else:
+                    # A grant already recorded for THIS run answers without asking a
+                    # person the same question twice, and a DENY recorded later revokes
+                    # it — `lookup` composes with max(), so revocation needs no second
+                    # rule. Fail-closed: no matching live row means ASK, which falls
+                    # through to the callback exactly as before.
+                    prior = self._e._decisions.lookup(
+                        b["name"], b.get("input", {}), run_id=run_id, now=_utcnow(),
+                        call_id=b["id"], server=spec.server)
+                    if prior is Verdict.ASK:
+                        d, actor, evidence = await self._e._engine.resolve(
+                            d, call, ctx, self._e._a.approve,
+                            require_evidence=self._e._a.require_approval_evidence)
+                    else:
+                        d = Ruling(prior, "a live row in the decision log answers this",
+                                  "decision-log")
+                        actor = Actor.policy("decision-log-reuse")
+                # Every resolved ASK becomes a row — including the ask-cap denial. An
+                # audit log that records only what was permitted cannot answer "what did
+                # we refuse, and why" (docs/05 §1, the same rule `policy.decided` follows
+                # by being emitted for ALLOW as well as DENY). Scoped to THIS call_id, so
+                # a grant here never silently covers the next call: `Decision` refuses to
+                # be constructed any other way without an `expires_at` (ForeverAllow).
+                self._e._decisions.record(Decision(
+                    id=f"dec-{b['id']}", verdict=d.verdict,
+                    scope=Scope(tool=b["name"], args=dict(b.get("input", {})),
+                                server=spec.server, call_id=b["id"]),
+                    actor=(actor if actor is not None else
+                           (Actor.human("approver", via="callback")
+                            if self._e._a.approve is not None else Actor.policy(d.policy))),
+                    decided_at=_utcnow(), expires_at=None, run_id=run_id, reason=d.reason,
+                    policy_version=POLICY_ENGINE_VERSION, evidence=evidence))
             self._e._bus.emit(EventKind.POLICY_DECIDED, step=step, tool=b["name"],
                            call_id=b["id"], verdict=d.verdict.name, reason=d.reason,
                            policy=d.policy,
@@ -310,6 +351,10 @@ class Dispatcher:
         self._e._bus.emit(EventKind.TOOL_FINISHED, step=step, tool=spec.name, call_id=b["id"],
                        duration_ms=(time.monotonic() - t0) * 1000, is_error=True, truncated=False)
         return err(b["id"], msg)
+
+
+def _utcnow():
+    return datetime.now(timezone.utc)
 
 
 def canonical_len(req) -> str:
