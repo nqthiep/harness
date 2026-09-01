@@ -5,19 +5,26 @@ implementations at `memory/inmemory.py`, `memory/sqlite.py`) is reused as the ba
 store. `execute_once` is the whole contract this module exists to hold — check the key,
 replay on a hit, run-and-record on a miss.
 
-**Not wired into `Agent`/`Dispatcher`/`Runtime` yet, on purpose.** The scenario T-6.1's
-own "Why" names — "client timeout rồi retry có thể gửi email hai lần" — is a caller
-(an HTTP client hitting a Service API) retrying a request the harness has no way to
-recognize as a retry, because `run_id` is generated fresh every `atry_run()` call
-(`agent.py`): `idempotency_key = f"{run_id}:{call_id}"` only protects against replay
-within work that shares a `run_id`, and nothing shares one across two separate calls
-today. That external key has to come from somewhere — M9's Service API is the first
-real source of one. Wiring `execute_once` into the dispatch path with no caller that can
-ever supply a meaningful key would be dead code no test exercises for real, the exact
-"speculative generality" ADR-002's rejected alternative warns against. This module is
-the tested, documented primitive M9 wires in when it lands (docs/17 §5: M6 is listed
-before M9 for exactly this reason — idempotency is the prerequisite, not the
-integration).
+**Two callers, two different key shapes, S-4/N-8 (docs/07-risks-and-open-issues.md).**
+
+M9's Service API (`server/__init__.py::_Registry.start()`) was the first real caller: an
+HTTP client's own `Idempotency-Key` header, deduping a whole RUN across two separate
+`POST /v1/runs` calls that share nothing else — `run_id` is generated fresh every
+`atry_run()`, so nothing else could recognize that retry as a retry.
+
+`Dispatcher._invoke` (classic backend) / `lg/runtime.py::_run_tools` (durable backend)
+are the second caller, wired in later: `idempotency_key(run_id, call_id)` — folded with
+`step` too, so two different calls sharing `FakeModel.tool_call()`'s convenience default
+id never collide in a test — dedupes a single TOOL call retried mid-run. Scoped
+in-memory (`Dispatcher.__init__`'s fresh `InMemoryStore`; `Runtime._idem_for()`'s
+per-thread cache, same shape as `_bus_cache`/`_policy_cache`) — it closes the retry
+window WITHIN one live run/thread (a call whose fn() succeeded but whose
+encode/truncate/taint-check step right after it then raised would otherwise silently
+call fn() again), not across a process crash. That wider half of S-4 stays exactly
+where it already was: `docs/05-data-and-state.md §3`'s resume rule (`write`/`danger`
+tool results are never re-executed on resume) is the answer there, and remains one —
+this module's own honest boundary, restated: exactly-once across a crash needs a
+durable execution engine, a stated non-goal.
 """
 from __future__ import annotations
 

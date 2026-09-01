@@ -15,6 +15,8 @@ from typing import Any, Mapping
 
 from .context.assembler import canonical as _canonical
 from .errors import ToolContractError
+from .idempotency import execute_once, idempotency_key
+from .memory.inmemory import InMemoryStore
 from .middleware import _call_scope
 from .observe.events import EventKind
 from .policy.base import Ruling, ToolCall, Verdict
@@ -75,6 +77,12 @@ class Dispatcher:
     def __init__(self, engine) -> None:
         self._e = engine            # the RunEngine, for bus/ledger/policy/taint/agent
         self.ran: list[str] = []
+        # S-4/N-8: a fresh, in-memory store per `Dispatcher` — and a `Dispatcher` is
+        # built fresh per `RunEngine` per `atry_run()` (this file's own module docstring
+        # + `run.py`'s `self._dispatch = Dispatcher(self)`), so this never leaks across
+        # runs and needs no persistence. It closes the narrower half of S-4 execute_once
+        # (T-6.1) was always meant for — see `_invoke`'s comment at the call site.
+        self._idem = InMemoryStore()
 
     async def _run_tools(self, resp, step: int, run_id: str) -> list[dict[str, Any]]:
         calls = [b for b in resp.content if b.get("type") == "tool_use"]
@@ -179,11 +187,44 @@ class Dispatcher:
     async def _invoke(self, b: Mapping[str, Any], spec: ToolSpec, step: int) -> dict[str, Any]:
         # T-6.3: attempts is 1 for write/danger — always exactly one try, ever. Retrying
         # a call whose outcome is unknown (did the write land before it raised?) is
-        # exactly the double-effect class S-4/idempotency exists to guard against; without
-        # a real idempotency key (T-6.1, not yet built) a silent auto-retry of write/danger
-        # would be worse than the failure it's trying to paper over.
+        # exactly the double-effect class S-4/idempotency exists to guard against.
         retryable = EFFECT_PROFILES[spec.effect].retryable
         attempts = MAX_ATTEMPTS if retryable else 1
+        # S-4/N-8: `execute_once` (T-6.1) wraps the call itself, keyed on THIS call_id —
+        # stable across every attempt below. Without it, a `read`/`external` tool whose
+        # fn() call actually SUCCEEDED but whose json.dumps/truncate/taint-check step
+        # AFTER it then raised (a non-serializable return, an unrelated local bug) would
+        # retry the WHOLE attempt, silently re-running fn() a second time — the exact
+        # "single tool call retried mid-run" gap N-8 named. The closure below encodes
+        # `value` to its final `payload` string BEFORE handing it to `execute_once`, so
+        # what gets cached (and JSON-round-tripped by `execute_once` itself) is always a
+        # plain str — never the raw tool return, which may not be JSON-serializable at
+        # all (`ToolContractError` below still fires exactly once, from inside the real
+        # call, never from a replay). On a retry this is a cache hit: fn() does not run
+        # again. Scoped in-process/in-memory on purpose (`Dispatcher.__init__`) — it
+        # dedupes retries WITHIN this run, not across a process crash; that half of S-4
+        # stays exactly where it already was, closed by `docs/05 §3`'s resume rule
+        # (write/danger tool results are never re-executed on resume, only replayed
+        # this same way when a checkpoint already recorded one).
+        # `step` folded into the run-id half of the key, not the call_id half — a real
+        # provider's tool_use `id` is unique per call, but `FakeModel.tool_call()`'s
+        # convenience default (`call_id="c1"`) is not, and dozens of existing tests rely
+        # on that being inert across separate steps. Same key shape, one more separator.
+        key = idempotency_key(f"{self._e._bus._run_id}:{step}", b["id"])
+
+        async def _call() -> str:
+            if spec.subagent is not None:
+                value = await self._run_subagent(spec, kwargs)
+            else:
+                with _call_scope(step=step, call_id=b["id"]):
+                    value = await spec.fn(**kwargs)
+            try:
+                return value if isinstance(value, str) else json.dumps(value, sort_keys=True, ensure_ascii=False)
+            except (TypeError, ValueError) as exc:
+                raise ToolContractError(
+                    f"tool {spec.name!r} returned something that cannot be sent to a model: {exc}"
+                ) from None
+
         reason, t0 = "", time.monotonic()
         for attempt in range(attempts):
             self._e._bus.emit(EventKind.TOOL_STARTED, step=step, tool=spec.name,
@@ -195,23 +236,13 @@ class Dispatcher:
                 # excludes "_"-prefixed parameters, and strict:true rejects anything extra.
                 kwargs = {k: v for k, v in b.get("input", {}).items() if not k.startswith("_")}
                 async with asyncio.timeout(timeout):
-                    if spec.subagent is not None:
-                        value = await self._run_subagent(spec, kwargs)
-                    else:
-                        with _call_scope(step=step, call_id=b["id"]):
-                            value = await spec.fn(**kwargs)
-                try:
-                    payload = value if isinstance(value, str) else json.dumps(value, sort_keys=True, ensure_ascii=False)
-                except (TypeError, ValueError) as exc:
-                    raise ToolContractError(
-                        f"tool {spec.name!r} returned something that cannot be sent to a model: {exc}"
-                    ) from None
+                    payload, replayed = await execute_once(self._idem, key, _call)
                 payload, truncated = truncate(payload, spec.max_result_tokens)
                 if self._e._taint.raise_from(emits_of(spec, self._e._a._grants, payload), spec.name):
                     self._e._bus.emit(EventKind.TAINT_RAISED, step=step, source_tool=spec.name)
                 self._e._bus.emit(EventKind.TOOL_FINISHED, step=step, tool=spec.name, call_id=b["id"],
                                duration_ms=(time.monotonic() - t0) * 1000, is_error=False,
-                               truncated=truncated)
+                               truncated=truncated, replayed=replayed)
                 return {"type": "tool_result", "tool_use_id": b["id"], "content": redact(payload)}
             except asyncio.CancelledError:
                 raise                                            # never a tool error

@@ -29,7 +29,7 @@ tracer/OTel exporter — T-8.3 — propagates one in), `tenant_id` and `session_
 | `tool.requested` | Model asked | `tool`, `call_id`, `arguments_digest` (sha256, not the arguments) |
 | `policy.decided` | Per call, always | `tool`, `call_id`, `verdict`, `reason`, `policy` |
 | `tool.started` | Only if ALLOW; once per attempt (T-6.3 retry) | `tool`, `call_id`, `parallel`, `attempt` |
-| `tool.finished` | Per executed call | `tool`, `call_id`, `duration_ms`, `is_error`, `result_tokens`, `truncated` |
+| `tool.finished` | Per executed call | `tool`, `call_id`, `duration_ms`, `is_error`, `result_tokens`, `truncated`, `replayed` (S-4/N-8, closed — `True` when `execute_once` returned a cached result instead of calling the tool again for this call_id) |
 | `taint.raised` | First tainted content | `source_tool`, `call_id` |
 | `context.managed` | Editing or compaction ran | `strategy`, `tokens_before`, `tokens_after` |
 | `error.raised` | Any handled error | `where`, `type`, `message`, `retryable`, `attempt`. `wait_s` too for a provider retry (N-5) — one event per retry attempt, never for the final, re-raised failure |

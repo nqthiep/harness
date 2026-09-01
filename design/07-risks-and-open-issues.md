@@ -16,7 +16,7 @@ tệp này chỉ giữ đủ để hiểu quyết định, không lặp lại to
 
 **Tất cả 58 phát hiện gốc đã được xét. 10 phát hiện mới (N-1…N-10): N-1…N-9 tự bắt được
 trong lúc xây M6-M10, N-10 đóng phản hồi trực tiếp của người dùng ("2 API interfaces gây
-khó dùng") sau đó.** Còn mở thật sự, hôm nay: **4 mục** — xem `## 7`.
+khó dùng") sau đó.** Còn mở thật sự, hôm nay: **3 mục** — xem `## 7`.
 
 ### Bảo mật (S-1…S-29)
 
@@ -24,7 +24,7 @@ khó dùng") sau đó.** Còn mở thật sự, hôm nay: **4 mục** — xem `#
 |---|---|---|
 | S-1 | Nén ngữ cảnh gọi model thiếu `reserve()` | Lỗi thời — cơ chế review mô tả không tồn tại |
 | S-3 | `Secret[T]` lộ qua tool result | **Đã sửa**, cả hai nguồn (`Grants.sensitive` + `.reveal()`) |
-| S-4 | Idempotency ở mức MỘT lời gọi tool | **Còn mở** — cơ chế (`execute_once`) đã xây nhưng chưa gắn vào `Dispatcher` (N-8) |
+| S-4 | Idempotency ở mức MỘT lời gọi tool | **Một phần đã sửa** (N-8) — retry-mid-run cùng một call đã dedupe cả hai backend; crash-across-process vẫn là ranh giới đã biết (`docs/05 §3`'s luật resume), không tuyên bố đóng |
 | S-5 | Memory provenance giả mạo được | Lỗi thời — cơ chế thật đơn giản hơn, không có lỗ hổng đó |
 | S-6 | Grant cũ thắng một DENY taint mới | Đã đúng sẵn, chỉ thiếu test khoá lại |
 | S-7, S-8, S-10 | `ServerIdentity`/hint hạ effect/`proposed_scope` cho MCP | **Đã sửa** — `harness.mcp` (T-9.1) |
@@ -75,7 +75,7 @@ khó dùng") sau đó.** Còn mở thật sự, hôm nay: **4 mục** — xem `#
 | N-5 | Retry cấp provider đã công bố nhưng chưa cài | **Đã sửa** — `retry.py::with_provider_retry()`, một implementation cho cả hai backend |
 | N-6 | `model.response` VÀ `run.finished` thiếu trường tài liệu đã hứa | **Đã sửa** — `usage`/`latency_ms`/`duration_s` giờ emit đầy đủ trên cả hai backend |
 | N-7 | `Agent.with_()` làm mất bốn trường, mọi lần gọi | **Đã sửa** |
-| N-8 | `execute_once` có caller thật nhưng chưa gắn vào tool dispatch | **Còn mở** (= S-4) |
+| N-8 | `execute_once` có caller thật nhưng chưa gắn vào tool dispatch | **Đã sửa** — gắn vào `Dispatcher._invoke`/`_run_tools`, cả hai backend; đóng đúng nửa "retry mid-run" của S-4, không phải toàn bộ |
 | N-9 | `tenant_id` chưa bao giờ tới được `Policy.check()` | **Đã sửa** |
 | N-10 | "2 API interfaces" (backend cổ điển vs LangGraph) | **Đã sửa** — `Agent(durable=True)` |
 
@@ -304,11 +304,35 @@ turn chứ không cộng dồn qua các lượt `try_run()` khác nhau trên cù
 không phải lỗi riêng của tính năng nào đang xây, ảnh hưởng mọi caller của `with_()`.
 `tests/test_n7_with_preserves_fields.py`.
 
-**N-8 — `execute_once` có caller thật (T-9.2) nhưng vẫn KHÔNG đóng S-4.** `POST /v1/runs`'s
-`Idempotency-Key` dedupe một REQUEST KHỞI ĐỘNG RUN — đúng "caller thật đầu tiên"
-`idempotency.py` tự đặt điều kiện, chứng minh cơ chế dùng tốt. Nhưng đó là idempotency ở
-MỨC RUN; S-4 cần MỨC TOOL CALL (một `write`/`danger` tool bị model/lỗi mạng gọi lại giữa
-một run đang chạy) — `Dispatcher._invoke` chưa gắn `execute_once`. = S-4, còn mở.
+**N-8 (đã sửa, một phần rõ ràng) — `execute_once` giờ có caller ở CẢ hai mức.** `POST
+/v1/runs`'s `Idempotency-Key` (T-9.2) dedupe một REQUEST KHỞI ĐỘNG RUN — "caller thật đầu
+tiên" `idempotency.py` tự đặt điều kiện. `Dispatcher._invoke` (backend cổ điển) và
+`lg/runtime.py::_run_tools` (backend durable) giờ là caller thứ hai, ở MỨC TOOL CALL:
+`execute_once` bọc quanh chính lời gọi `spec.fn()`, khoá bằng
+`idempotency_key(f"{run_id}:{step}", call_id)` — gộp thêm `step` vào nửa run_id của khoá
+(không đổi chữ ký hàm `idempotency_key` chính nó, `tests/test_m6_t61_idempotency.py` khoá
+sẵn hình dạng `f"{run_id}:{call_id}"`) vì `FakeModel.tool_call()`'s mặc định tiện dụng
+(`call_id="c1"`) không duy nhất qua các bước, và hàng chục test có sẵn dựa vào việc đó vô
+hại.
+
+Đóng đúng nửa nào: một call `retryable=True` mà `spec.fn()` THÀNH CÔNG nhưng bước
+NGAY SAU nó (json.dumps/`truncate`/kiểm taint) mới raise — trước bản vá, dispatch loop
+coi cả lượt thử là lỗi và gọi lại TOÀN BỘ, kể cả `spec.fn()` đã chạy xong — giờ lượt thử
+thứ hai là cache hit, `spec.fn()` không chạy lại; `tool.finished`'s `replayed=True` xác
+nhận. `tests/test_n8_idempotent_tool_calls.py`: backend cổ điển ép lỗi thật (monkeypatch
+`truncate` raise ở lần đầu) rồi kiểm side-effect chỉ ghi nhận đúng một lần; backend
+durable là test white-box — gọi thẳng `Runtime._run_tools(state)` hai lần với CÙNG
+`run_id`/`step`/`call_id` (hình dạng một node bị gọi lại đúng ở checkpoint TRƯỚC nó,
+với `_pending` đã checkpoint không đổi) và kiểm side-effect cũng chỉ một lần.
+
+Nửa KHÔNG đóng, và không tuyên bố đóng: một crash NGANG QUÁ TRÌNH (upstream đã nhận
+side-effect, tiến trình chết trước khi `execute_once`'s `store.put()` kịp ghi) — cả hai
+store đều in-memory (`Dispatcher.__init__`'s `InMemoryStore` mới mỗi run;
+`Runtime._idem_for()`'s cache theo `run_id`, cùng dạng `_bus_cache`/`_policy_cache`,
+R-4-an toàn vì không phải nguồn sự thật) nên chết cùng tiến trình. Nửa đó vẫn đứng nguyên
+chỗ nó đã đứng: `docs/05-data-and-state.md §3`'s luật resume (`write`/`danger` không bao
+giờ chạy lại khi resume) — S-4's mô tả gốc chính xác là kịch bản crash-across-process
+này, và nó KHÔNG đóng bằng bản vá này, cũng không được tuyên bố đóng.
 
 **N-9 (đã sửa) — `tenant_id` chưa bao giờ tới được `Policy.check()`.** `Agent.tenant_id`
 chỉ từng chảy tới `EventBus` (telemetry), không bao giờ tới `RunContext`/`_Ctx` — một
@@ -433,20 +457,25 @@ không có quarantine, trên cùng bộ tool. Chênh lệch không có ý nghĩa
 
 ## 7. Còn mở hôm nay — nói thẳng, không giấu
 
-Bốn mục, không hơn không kém (N-1/N-5/N-6 vừa đóng — xem `## 3`):
+Ba mục, không hơn không kém (N-1/N-5/N-6/N-8 vừa đóng — xem `## 3`):
 
 1. **`AuthEvidence` cho S-11** — mô hình xác thực người duyệt thật (chữ ký kênh,
    `channel_message_id`), chặn một callback CỐ TÌNH khai gian danh tính. Thiết kế riêng,
    chưa bắt đầu. Không bắt buộc cho v1.0 trừ khi deployment cần audit trail chịu được
    kiểm toán bên ngoài.
-2. **S-4 / N-8 — idempotency ở mức MỘT lời gọi tool.** `execute_once` (T-6.1) đã có caller
-   thật ở mức RUN (T-9.2); gắn nó vào `Dispatcher._invoke` là việc tiếp theo tự nhiên
-   nhất nếu có nhu cầu thật (một `write`/`danger` tool trên upstream không tự idempotent).
-3. **S-9 phần re-pointing-nhãn** — cần `ServerIdentity`+`fingerprint`, hoãn tới khi quan
+2. **S-9 phần re-pointing-nhãn** — cần `ServerIdentity`+`fingerprint`, hoãn tới khi quan
    sát được một lần re-pointing MCP thật (cùng lý do K-12).
-4. **N-3 — LangGraph không hỗ trợ `returns=`.** Từ N-10, `Agent(durable=True, returns=...)`
+3. **N-3 — LangGraph không hỗ trợ `returns=`.** Từ N-10, `Agent(durable=True, returns=...)`
    raise `ConfigError` ngay lúc dựng thay vì âm thầm để `Result.value` luôn `None` — bản
    thân khoảng trống (chưa parse) vẫn còn mở, chỉ không còn im lặng.
+
+**S-4 không còn nằm trong danh sách này** — không vì đóng hoàn toàn, mà vì phần còn lại
+của nó không phải một việc CÒN PHẢI LÀM: N-8 (xem `## 3`) đóng đúng nửa engineering thật
+sự mở (một call retry giữa lúc run đang chạy); nửa còn lại (crash NGANG QUÁ TRÌNH, giữa
+lúc upstream nhận side-effect và checkpoint kịp ghi) là ranh giới đã CHẤP NHẬN, đã tài
+liệu hoá từ trước (`docs/05-data-and-state.md §3`'s luật resume, chính là "ranh giới
+trung thực của một giải pháp cấp thư viện" — exactly-once qua một lần crash cần một
+durable execution engine, một stated non-goal), không phải một gap đang chờ code.
 
 Không mục nào ở trên chặn v1.0 (xem `design/08-roadmap-and-release-plan.md §3` cho điều
 kiện release) — mỗi mục đã có lý do hoãn cụ thể, không phải bị bỏ quên.

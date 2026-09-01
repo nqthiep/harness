@@ -18,6 +18,8 @@ from langgraph.types import interrupt
 from ..budget.ledger import Ledger
 from ..dispatch import MAX_ATTEMPTS, RETRY_BACKOFF_MAX_S, RETRY_BACKOFF_S
 from ..errors import BudgetExceeded
+from ..idempotency import execute_once, idempotency_key
+from ..memory.inmemory import InMemoryStore
 from ..middleware import _call_scope
 from ..observe.events import EventBus, EventKind
 from ..policy.base import Ruling, ToolCall, Verdict
@@ -73,6 +75,12 @@ class Runtime:
         # the real `run_id`, built lazily on first use.
         self._exporters = tuple(exporters)
         self._bus_cache: dict[str, EventBus] = {}
+        # S-4/N-8, same shape as `_bus_cache`/`_policy_cache` just above and the same
+        # R-4 justification: not the source of truth, so losing it on restart only
+        # means a call that could have been deduped within THIS run isn't anymore —
+        # `_run_tools` still falls back to its existing behavior either way. See
+        # `_run_tools`'s own comment at the call site for what this actually closes.
+        self._idem_cache: dict[str, InMemoryStore] = {}
         self._approve = approve
         # Đọc bởi `_run_tools` khi gắn nhãn L-1 lên kết quả tool — S-16/S-3. Cấu hình
         # mức deployment, không đổi giữa các run, nên sống trên object này là an toàn
@@ -466,7 +474,18 @@ class Runtime:
             # class S-4/idempotency exists to guard against — see ADR-042).
             retryable = EFFECT_PROFILES[spec.effect].retryable
             attempts = MAX_ATTEMPTS if retryable else 1
-            ok, reason, payload = False, "", ""
+            ok, reason, payload, replayed = False, "", "", False
+            # S-4/N-8, parity with dispatch.py::_invoke: `execute_once` keyed on THIS
+            # call_id, stable across every attempt below. Without it, a call whose fn()
+            # SUCCEEDED but whose json.dumps step right after it raised (or an earlier
+            # serial call in this SAME batch raised, forcing a retry of one already-done
+            # call) would silently re-run fn() a second time. `_idem_for()` is cached
+            # per thread the same way `_bus_for()`/`_engine_for()` are (R-4-safe, not the
+            # source of truth) — this dedupes retries WITHIN one live invocation of this
+            # node, not across a process crash; that half of S-4 is unaffected, still
+            # `chưa đủ evidence` for this backend's own node-level checkpoint boundary
+            # (`design/04-runtime-durability.md`'s "Chưa đủ evidence" list).
+            idem = self._idem_for(_run_id(state))
             for attempt in range(attempts):
                 self._emit(state, EventKind.TOOL_STARTED, step=state.get("step", 0),
                            tool=spec.name, call_id=call["id"], attempt=attempt)
@@ -478,16 +497,43 @@ class Runtime:
                 # classic backend already uses, so a tool near the end of its budget
                 # can't overshoot by its own `timeout_s`.
                 timeout = led.tool_timeout(spec.timeout_s)
+                # Same domain-separator reasoning as dispatch.py::_invoke: `step` folds
+                # into the key so `FakeModel.tool_call()`'s convenience default
+                # (`call_id="c1"`, reused across dozens of tests) can never collide
+                # across two different steps of the same run.
+                key = idempotency_key(f"{_run_id(state)}:{state.get('step', 0)}", call["id"])
                 try:
                     args = {k: v for k, v in call.get("args", {}).items()
                             if not k.startswith("_")}
                     if spec.subagent is not None:
-                        value = _run_subagent(spec, args, led)
+                        # `_run_subagent` calls `asyncio.run()` internally (it drives
+                        # the child's own `atry_run()`); nesting it inside the
+                        # `asyncio.run()` below (for `execute_once`/`_with_timeout`)
+                        # would raise "asyncio.run() cannot be called from a running
+                        # event loop". So this branch stays synchronous, exactly as
+                        # before N-1/N-8 — the child's own budget cap
+                        # (`child_wall_clock`) is what bounds it, same as always — and
+                        # dedup is done by hand around the plain sync call instead of
+                        # through `execute_once`.
+                        cached = asyncio.run(idem.get(key))
+                        if cached is not None:
+                            payload, replayed = json.loads(cached), True
+                        else:
+                            value = _run_subagent(spec, args, led)
+                            payload = value if isinstance(value, str) else json.dumps(
+                                value, sort_keys=True, ensure_ascii=False, default=str)
+                            asyncio.run(idem.put(key, json.dumps(
+                                payload, sort_keys=True, ensure_ascii=False)))
+                            replayed = False
                     else:
-                        with _call_scope(step=state.get("step", 0), call_id=call["id"]):
-                            value = asyncio.run(_with_timeout(spec.fn(**args), timeout))
-                    payload = value if isinstance(value, str) else json.dumps(
-                        value, sort_keys=True, ensure_ascii=False, default=str)
+                        async def _call() -> str:
+                            with _call_scope(step=state.get("step", 0), call_id=call["id"]):
+                                value = await spec.fn(**args)
+                            return value if isinstance(value, str) else json.dumps(
+                                value, sort_keys=True, ensure_ascii=False, default=str)
+
+                        payload, replayed = asyncio.run(
+                            _with_timeout(execute_once(idem, key, _call), timeout))
                     ok = True
                     break
                 except asyncio.CancelledError:
@@ -535,7 +581,7 @@ class Runtime:
             _stamp_label(result_msg, emitted)
             msgs.append(result_msg)
             self._emit(state, EventKind.TOOL_FINISHED, step=state.get("step", 0),
-                       tool=spec.name, call_id=call["id"], is_error=False)
+                       tool=spec.name, call_id=call["id"], is_error=False, replayed=replayed)
         self._emit(state, EventKind.STEP_FINISHED, step=state.get("step", 0),
                    stop_reason="tool_use", tool_calls=[p["tool"] for p in state.get("_pending", [])])
         return {"messages": msgs + self._manage(state["messages"] + msgs, state),
@@ -606,6 +652,11 @@ class Runtime:
                                                tenant_id=self._tenant_id,
                                                session_id=run_id)
         return self._bus_cache[run_id]
+
+    def _idem_for(self, run_id: str) -> InMemoryStore:
+        if run_id not in self._idem_cache:
+            self._idem_cache[run_id] = InMemoryStore()
+        return self._idem_cache[run_id]
 
     def _emit(self, state, kind, **data) -> None:
         self._bus_for(_run_id(state)).emit(kind, **data)
