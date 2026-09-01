@@ -37,8 +37,20 @@ class AgentState(TypedDict, total=False):
     #: silently discards an undeclared key (IDL-41), and an undiscarded counter is what
     #: keeps a paused model from becoming an unbounded loop.
     paused: int
+    #: N-6 — running `Usage` total for THIS TURN (reset alongside `asks`/
+    #: `turn_started_at` in `budget_gate`, accumulated by `call_model`), serialized as
+    #: `dataclasses.asdict(Usage(...))` — JSON-checkpointable, same convention as
+    #: `ledger`. `run.finished`'s `input_tokens`/`output_tokens`/... fields read it back.
+    turn_usage: dict[str, int]
     #: Approval requests resolved so far THIS TURN — S-25(b). Reset like the ledger's
     #: `steps` (`Runtime._ledger`, `_is_new_turn`): a model repeatedly forcing ASKs is a
     #: per-turn attack (approval fatigue), not something a long-lived conversation should
     #: accumulate towards forever.
     asks: int
+    #: N-6 — `time.time()` when THIS TURN started (`budget_gate`, same "reset on a new
+    #: turn" instant as `asks`/the ledger's `steps`). `run.finished`'s `duration_s` reads
+    #: it back in `finish()`. Per-turn, not per-thread, because `RUN_FINISHED` itself
+    #: already fires once per turn on this backend (every `graph.ainvoke()` reaches
+    #: `finish`), unlike `RUN_STARTED` (once per thread, ever) — the two were already
+    #: asymmetric before this field existed; `duration_s` matches the one that repeats.
+    turn_started_at: float

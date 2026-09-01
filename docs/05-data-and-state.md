@@ -18,11 +18,11 @@ tracer/OTel exporter — T-8.3 — propagates one in), `tenant_id` and `session_
 | Kind | When | `data` payload |
 |---|---|---|
 | `run.started` | Once, first | `agent`, `model`, `budget`, `tool_names[]`, `safety`, `harness_version` |
-| `run.finished` | Once, last | `stop_reason`, `steps`, `cost_usd`, `tainted`. `usage`/`duration_s` documented here but not yet emitted — same gap class as `model.response` below (N-6, `design/07-risks-and-open-issues.md §3`) |
+| `run.finished` | Once, last | `stop_reason`, `steps`, `cost_usd`, `tainted`, `duration_s`, `input_tokens`/`output_tokens`/`cache_read_tokens`/`cache_creation_tokens` (N-6, closed — the durable engine's `duration_s`/usage are per-TURN: it emits `run.finished` once per `graph.ainvoke()`, unlike `run.started`, once per thread ever) |
 | `step.started` | Each loop iteration | `step` |
 | `step.finished` | Each loop iteration | `step`, `stop_reason`, `tool_calls` |
 | `model.request` | Before each call | `model`, `input_tokens`, `n_tools`, `n_messages`, `breakpoints`, `estimate_usd` |
-| `model.response` | After each call | `stop_reason`, `cost_usd`. `usage{in,out,cache_read,cache_write}`/`latency_ms` documented here but not yet emitted (N-6, `design/07-risks-and-open-issues.md §3`) — `OtelExporter`'s `gen_ai.usage.*` attributes have no data to read until this lands |
+| `model.response` | After each call | `stop_reason`, `cost_usd`, `latency_ms`, `input_tokens`/`output_tokens`/`cache_read_tokens`/`cache_creation_tokens` (N-6, closed — `OtelExporter`'s `gen_ai.usage.*` attributes now have real data) |
 | `budget.reserved` | Before each call | `estimate_usd`, `spent_usd`, `remaining_usd` |
 | `budget.exhausted` | Ceiling hit | `axis` (`usd`\|`steps`\|`time`\|`tokens`), `spent`, `limit` |
 | `budget.unlimited` | Once, right after `run.started`, only when `budget.usd is None` | `reason` |
@@ -32,7 +32,7 @@ tracer/OTel exporter — T-8.3 — propagates one in), `tenant_id` and `session_
 | `tool.finished` | Per executed call | `tool`, `call_id`, `duration_ms`, `is_error`, `result_tokens`, `truncated` |
 | `taint.raised` | First tainted content | `source_tool`, `call_id` |
 | `context.managed` | Editing or compaction ran | `strategy`, `tokens_before`, `tokens_after` |
-| `error.raised` | Any handled error | `where`, `type`, `message`, `retryable`, `attempt` |
+| `error.raised` | Any handled error | `where`, `type`, `message`, `retryable`, `attempt`. `wait_s` too for a provider retry (N-5) — one event per retry attempt, never for the final, re-raised failure |
 
 **Design rules for payloads**
 

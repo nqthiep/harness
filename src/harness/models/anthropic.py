@@ -123,11 +123,30 @@ class AnthropicProvider:
         """Vendor exception -> harness hierarchy.  A refusal is NOT an error: it arrives
         as HTTP 200 with stop_reason='refusal' and is handled by the loop (ADR-019)."""
         status = getattr(exc, "status_code", None)
+        retry_after = _retry_after(exc)
         if status in _STATUS:
-            return _STATUS[status](str(exc))
+            return _STATUS[status](str(exc), retry_after_s=retry_after)
         if isinstance(status, int) and status >= 500:
-            return ProviderUnavailable(str(exc))
+            return ProviderUnavailable(str(exc), retry_after_s=retry_after)
         name = type(exc).__name__
         if "Timeout" in name or "Connection" in name:
-            return ProviderTimeout(str(exc))
-        return ProviderError(f"{name}: {exc}")
+            return ProviderTimeout(str(exc), retry_after_s=retry_after)
+        return ProviderError(f"{name}: {exc}", retry_after_s=retry_after)
+
+
+def _retry_after(exc: Exception) -> float | None:
+    """N-5 — a real `Retry-After` header, when the vendor sent one. `APIStatusError`
+    (every mapped exception above) carries the raw `httpx.Response`; anything else (a
+    connection error with no response at all) has none, and that's `None`, not a guess.
+    """
+    response = getattr(exc, "response", None)
+    value = getattr(response, "headers", {}).get("retry-after") if response else None
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None                # a non-numeric Retry-After (an HTTP-date) — rare
+                                    # enough, and safe enough to fall back to our own
+                                    # backoff, that parsing it isn't worth the risk of
+                                    # getting a date-math bug wrong under retry.py itself

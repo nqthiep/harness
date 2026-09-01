@@ -8,6 +8,7 @@ is replaced.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import time
 
@@ -25,6 +26,7 @@ from ..policy.decision import POLICY_ENGINE_VERSION, Actor, Decision, DecisionLo
 from ..policy.engine import PolicyEngine
 from ..policy.label import Grants, Integrity, Label
 from ..result import Money, StopReason, Usage
+from ..retry import retry_scope
 from ..run import CONTINUE, _MAP
 from ..secrets import redact, redaction_scope
 from ..context.window import CLEARED, EDIT_AT, KEEP_RECENT_STEPS
@@ -146,6 +148,12 @@ class Runtime:
         # `steps` reset just above: detect newness once, here, and let every later node
         # in this step read the already-reset value straight from state.
         asks = 0 if _is_new_turn(state) else state.get("asks", 0)
+        # N-6: same "detect newness once, here" reasoning as `asks` just above —
+        # `turn_started_at` is `finish()`'s clock for `run.finished`'s `duration_s`;
+        # `turn_usage` is the running total `call_model` accumulates into, for
+        # `run.finished`'s `input_tokens`/`output_tokens`/...
+        turn_started_at = time.time() if _is_new_turn(state) else state.get("turn_started_at", 0.0)
+        turn_usage = {} if _is_new_turn(state) else (state.get("turn_usage") or {})
         if state.get("step", 0) == 0:
             # `step` lives in checkpointed state (thread-scoped), so this fires once per
             # THREAD — not once per compiled graph. A `self._started` instance flag here
@@ -163,10 +171,12 @@ class Runtime:
         self._emit(state, EventKind.STEP_STARTED, step=state.get("step", 0))
         if led.remaining_steps() <= 0:
             return {"stop_reason": "step_limit", "detail": "reached the step limit",
-                    "ledger": led.snapshot(), "asks": asks}
+                    "ledger": led.snapshot(), "asks": asks,
+                    "turn_started_at": turn_started_at, "turn_usage": turn_usage}
         if led.remaining_wall_clock() <= 0:
             return {"stop_reason": "timeout", "detail": "ran out of time",
-                    "ledger": led.snapshot(), "asks": asks}
+                    "ledger": led.snapshot(), "asks": asks,
+                    "turn_started_at": turn_started_at, "turn_usage": turn_usage}
         text = json.dumps([m.content for m in state["messages"]],
                           ensure_ascii=False, default=str)
         input_tokens = max(1, len(text) // 4)
@@ -178,7 +188,8 @@ class Runtime:
             self._emit(state, EventKind.BUDGET_EXHAUSTED, step=state.get("step", 0),
                        axis="usd", spent=str(led.spent))
             return {"stop_reason": "budget_exhausted", "detail": str(exc),
-                    "ledger": led.snapshot(), "asks": asks}
+                    "ledger": led.snapshot(), "asks": asks,
+                    "turn_started_at": turn_started_at, "turn_usage": turn_usage}
         self._emit(state, EventKind.BUDGET_RESERVED, step=state.get("step", 0),
                    estimate_usd=str(res.estimate), spent_usd=str(led.spent))
         # `stop_reason` is cleared here, and only here.  It is checkpointed like every
@@ -187,7 +198,8 @@ class Runtime:
         # Multi-turn was silently dead: the model was called once per thread, ever, and
         # the caller got their own message echoed back (Round 37).
         return {"spent_usd": str(led.spent.decimal), "ledger": led.snapshot(), "asks": asks,
-                "max_tokens": max_tokens, "stop_reason": None, "detail": ""}
+                "max_tokens": max_tokens, "stop_reason": None, "detail": "",
+                "turn_started_at": turn_started_at, "turn_usage": turn_usage}
 
     def call_model(self, state) -> dict:
         led = self._ledger(state)
@@ -202,13 +214,28 @@ class Runtime:
         # T-6.4 (chaos test "provider timeout"), ported here for parity after the same
         # gap was found and fixed in run.py — nothing here ever caught a provider
         # failure either, so it would have propagated straight out of `graph.invoke()`.
+        # N-5: retries happen INSIDE `_generate()` (`lg/adapter.py::ProviderChatModel`) —
+        # `deadline_s`/`on_retry` reach it through `retry.retry_scope()`, a
+        # `contextvars.ContextVar`, NOT through `.invoke()`'s `**kwargs` the way
+        # `max_tokens` does: a real `BaseChatModel` (`ChatAnthropic`) forwards every
+        # kwarg it doesn't recognize straight into the vendor HTTP payload, and
+        # `deadline_s`/`on_retry` are not Anthropic fields (`retry.py`'s own docstring
+        # has the verification). `_on_retry` closes over `state` the same way `run.py`'s
+        # does over its own loop locals — one `ERROR_RAISED(retryable=True)` per retry
+        # attempt, never for the final, re-raised failure (that one's the `except` below).
+        def _on_retry(exc, attempt, wait_s):
+            self._emit(state, EventKind.ERROR_RAISED, step=state.get("step", 0),
+                       where="provider", type=type(exc).__name__, message=str(exc),
+                       retryable=True, attempt=attempt, wait_s=wait_s)
         try:
             # The ledger already sized this turn's ceiling (`budget_gate`, just before
             # this node runs) — forwarding it is what lets a real `BaseChatModel` size
             # its own request to it, instead of a fixed construction-time default.
             # `**kw`-shaped models (every fixture in this tree, `FakeChat` included)
-            # accept and ignore an unused kwarg; this is additive, not a new contract.
-            with _call_scope(step=state.get("step", 0)):
+            # accept and ignore an unused kwarg; `max_tokens` really is an Anthropic
+            # field, unlike `deadline_s`/`on_retry` above — this one is safe as a kwarg.
+            with _call_scope(step=state.get("step", 0)), retry_scope(
+                    deadline_s=led.remaining_wall_clock(), on_retry=_on_retry):
                 msg = self._model.invoke(state["messages"], max_tokens=state.get("max_tokens"))
         except Exception as exc:
             self._emit(state, EventKind.ERROR_RAISED, step=state.get("step", 0),
@@ -216,13 +243,21 @@ class Runtime:
                        retryable=False)
             return {"stop_reason": "error", "detail": f"{type(exc).__name__}: {exc}"}
         _stamp_label(msg, label_at_generation)
-        led.settle(_RESERVED(state.get("max_tokens", 0)), _usage_of(msg), self._price)
+        u = _usage_of(msg)
+        led.settle(_RESERVED(state.get("max_tokens", 0)), u, self._price)
         led.count_step()
         raw = _provider_stop(msg)
+        prior_usage = state.get("turn_usage") or {}
+        total_usage = Usage(**prior_usage) + u if prior_usage else u
+        latency_ms = (getattr(msg, "response_metadata", None) or {}).get("latency_ms")
         self._emit(state, EventKind.MODEL_RESPONSE, step=state.get("step", 0),
-                   stop_reason=raw, cost_usd=str(led.spent))
+                   stop_reason=raw, cost_usd=str(led.spent), latency_ms=latency_ms,
+                   input_tokens=u.input_tokens, output_tokens=u.output_tokens,
+                   cache_read_tokens=u.cache_read_input_tokens,
+                   cache_creation_tokens=u.cache_creation_input_tokens)
         out = {"messages": [msg], "step": state.get("step", 0) + 1,
-               "spent_usd": str(led.spent.decimal), "ledger": led.snapshot()}
+               "spent_usd": str(led.spent.decimal), "ledger": led.snapshot(),
+               "turn_usage": dataclasses.asdict(total_usage)}
         out.update(_classify(raw, bool(getattr(msg, "tool_calls", None)),
                              state.get("paused", 0)))
         return out
@@ -500,9 +535,15 @@ class Runtime:
         # quan sát cho người gọi ngoài (parity, event), không node nào trong graph đọc nó
         # để ra quyết định nữa.
         label = self._effective_label(state)
+        u = Usage(**(state.get("turn_usage") or {}))
+        started = state.get("turn_started_at") or 0.0
         self._emit(state, EventKind.RUN_FINISHED, stop_reason=stop, steps=state.get("step", 0),
                    cost_usd=str(led.spent), tainted=label.integrity is Integrity.UNTRUSTED,
-                   confidentiality=label.confidentiality.name)
+                   confidentiality=label.confidentiality.name,
+                   duration_s=(time.time() - started) if started else None,
+                   input_tokens=u.input_tokens, output_tokens=u.output_tokens,
+                   cache_read_tokens=u.cache_read_input_tokens,
+                   cache_creation_tokens=u.cache_creation_input_tokens)
         return {"stop_reason": stop, "spent_usd": str(led.spent.decimal)}
 
     def _manage(self, messages, state) -> list:

@@ -17,13 +17,13 @@ Metrics: `harness.run.cost` (histogram, USD), `harness.run.steps` (histogram),
 `harness.tool.duration` (histogram, ms), `harness.cache.hit_ratio` (histogram),
 `harness.policy.denials` (counter, by `tool`/`reason`).
 
-**A gap this module's own attribute mapping surfaced, not fixed here:** docs/05's own
-event table promises `model.response` carries `usage{in,out,cache_read,cache_write}` and
-`latency_ms` — the actual event (`run.py`, `lg/runtime.py::call_model`) only ever emits
-`stop_reason`/`cost_usd`. `gen_ai.usage.output_tokens`/`harness.cache_read_tokens` below
-are populated only when that data is present — which today it never is, on either
-backend. Recorded as N-6 (`design/07-risks-and-open-issues.md` §3); fixing the event
-emission site is a `run.py`/`lg/runtime.py` change, out of scope for an exporter.
+**N-6, closed:** this module's own attribute mapping (`gen_ai.usage.output_tokens`,
+`harness.cache_read_tokens` below) is what surfaced the gap in the first place —
+`model.response`/`run.finished` used to emit only `stop_reason`/`cost_usd`/`steps`/
+`tainted`, never the `usage`/`latency_ms`/`duration_s` docs/05's own event table always
+promised. `run.py` and `lg/runtime.py::call_model`/`finish` now emit them on both
+backends (`design/07-risks-and-open-issues.md` N-6) — this exporter needed no change at
+all, since its mapping was already written against the promised shape, waiting for data.
 
 **`include_content=False` (default)** strips any data key this module recognizes as
 carrying raw prompt/completion/tool-argument text before it reaches a span attribute —

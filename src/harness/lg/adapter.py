@@ -16,6 +16,7 @@ ever gave the graph backend a system prompt at all).
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -23,6 +24,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from ..models.base import ModelResponse
+from ..retry import current_deadline_s, current_on_retry, with_provider_retry
 
 
 class ProviderChatModel(BaseChatModel):
@@ -51,8 +53,24 @@ class ProviderChatModel(BaseChatModel):
         native = _lc_to_native(messages)
         max_tokens = kw.get("max_tokens") or self.max_output
         req = self.asm.build(native, max_tokens=max_tokens, stream=False)
-        resp = asyncio.run(self.provider.complete(req))
-        return ChatResult(generations=[ChatGeneration(message=_to_aimessage(resp))])
+        # N-5: same retry policy as the classic backend (`retry.py`, one implementation
+        # for both — R-17). `deadline_s`/`on_retry` come from `retry.retry_scope()`
+        # (`lg/runtime.py::call_model` enters it around the `.invoke()` call this
+        # `_generate()` is inside — same call stack, no thread hop), never from `**kw`:
+        # a real `BaseChatModel` (`ChatAnthropic`, checked directly) forwards every
+        # unrecognized kwarg straight into the vendor HTTP payload, so anything that
+        # isn't a real Anthropic field cannot travel that way without breaking the
+        # escape hatch's real-model path. A caller that never entered `retry_scope`
+        # (every test fixture in this tree, and the raw `build_agent()` escape hatch)
+        # gets `deadline_s=0.0` — no retry budget, `with_provider_retry` raises on the
+        # first `RETRYABLE` error, exactly today's pre-N-5 behavior — the fail-safe
+        # direction for an unset deadline, not an unbounded one.
+        t0 = time.monotonic()
+        resp = asyncio.run(with_provider_retry(
+            lambda: self.provider.complete(req), deadline_s=current_deadline_s(),
+            on_retry=current_on_retry()))
+        latency_ms = (time.monotonic() - t0) * 1000
+        return ChatResult(generations=[ChatGeneration(message=_to_aimessage(resp, latency_ms))])
 
 
 def _lc_to_native(messages: Any) -> list[dict]:
@@ -99,14 +117,20 @@ def _lc_to_native(messages: Any) -> list[dict]:
     return out
 
 
-def _to_aimessage(resp: ModelResponse) -> AIMessage:
+def _to_aimessage(resp: ModelResponse, latency_ms: float | None = None) -> AIMessage:
     text = "".join(b.get("text", "") for b in resp.content if b.get("type") == "text")
     tool_calls = [{"name": b["name"], "args": b.get("input") or {}, "id": b.get("id", "")}
                  for b in resp.content if b.get("type") == "tool_use"]
     u = resp.usage
     return AIMessage(
         content=text, tool_calls=tool_calls,
-        response_metadata={"stop_reason": resp.stop_reason},
+        # N-6: `latency_ms` rides along in `response_metadata` — `call_model` reads it
+        # back out for `model.response`'s own `latency_ms` field. Measured HERE (total
+        # wall-clock of `with_provider_retry`, retries included) rather than in
+        # `call_model`, which only sees the finished `.invoke()` call — a request that
+        # needed two retries should report the time it actually took, not the time of
+        # just its last attempt.
+        response_metadata={"stop_reason": resp.stop_reason, "latency_ms": latency_ms},
         usage_metadata={"input_tokens": u.input_tokens, "output_tokens": u.output_tokens,
                         "total_tokens": u.input_tokens + u.output_tokens,
                         "input_token_details": {"cache_read": u.cache_read_input_tokens,

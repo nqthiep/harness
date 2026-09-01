@@ -16,7 +16,7 @@ tệp này chỉ giữ đủ để hiểu quyết định, không lặp lại to
 
 **Tất cả 58 phát hiện gốc đã được xét. 10 phát hiện mới (N-1…N-10): N-1…N-9 tự bắt được
 trong lúc xây M6-M10, N-10 đóng phản hồi trực tiếp của người dùng ("2 API interfaces gây
-khó dùng") sau đó.** Còn mở thật sự, hôm nay: **6 mục** — xem `## 7`.
+khó dùng") sau đó.** Còn mở thật sự, hôm nay: **4 mục** — xem `## 7`.
 
 ### Bảo mật (S-1…S-29)
 
@@ -72,8 +72,8 @@ khó dùng") sau đó.** Còn mở thật sự, hôm nay: **6 mục** — xem `#
 | N-2 | `try_run()` raise thẳng khi `returns=` sai kiểu | **Đã sửa** |
 | N-3 | LangGraph không hỗ trợ `returns=` | **Còn mở** |
 | N-4 | Lỗi provider crash thẳng ra ngoài, cả hai backend | **Đã sửa** |
-| N-5 | Retry cấp provider đã công bố nhưng chưa cài | **Còn mở** |
-| N-6 | `model.response` VÀ `run.finished` thiếu trường tài liệu đã hứa | **Còn mở** — phần `step=` graph-backend đã sửa, `usage`/`latency_ms` vẫn mở |
+| N-5 | Retry cấp provider đã công bố nhưng chưa cài | **Đã sửa** — `retry.py::with_provider_retry()`, một implementation cho cả hai backend |
+| N-6 | `model.response` VÀ `run.finished` thiếu trường tài liệu đã hứa | **Đã sửa** — `usage`/`latency_ms`/`duration_s` giờ emit đầy đủ trên cả hai backend |
 | N-7 | `Agent.with_()` làm mất bốn trường, mọi lần gọi | **Đã sửa** |
 | N-8 | `execute_once` có caller thật nhưng chưa gắn vào tool dispatch | **Còn mở** (= S-4) |
 | N-9 | `tenant_id` chưa bao giờ tới được `Policy.check()` | **Đã sửa** |
@@ -230,34 +230,54 @@ provider thật gặp rate limit/timeout tạm thời crash chương trình gọ
 trong `src/harness/` trước bản vá. Nghiêm trọng hơn N-2: đây là đường đi PHỔ BIẾN nhất
 khi chạy với provider thật. Cả hai backend giờ bắt và hạ xuống `Result(ERROR)`.
 
-**N-5 — retry cấp provider đã công bố nhưng chưa cài.** `docs/10-observability-ops.md §3`
-hứa `ProviderRateLimited`/`ProviderUnavailable`/`ProviderTimeout` đều tự động retry — N-4
-chỉ biến lỗi thành `Result(ERROR)`, không tự retry gì. Cần thiết kế riêng (đọc
-`Retry-After` từ đâu — `ProviderRateLimited` chưa mang trường đó). Còn mở.
+**N-5 (đã sửa) — retry cấp provider đã công bố nhưng chưa cài.**
+`docs/10-observability-ops.md §3` hứa `ProviderRateLimited`/`ProviderUnavailable`/
+`ProviderTimeout` đều tự động retry — N-4 chỉ biến lỗi thành `Result(ERROR)`, không tự
+retry gì. `src/harness/retry.py::with_provider_retry()` — MỘT implementation cho cả hai
+backend (`run.py`'s `self._p.complete(...)`, `lg/adapter.py::ProviderChatModel.
+_generate()`'s `self.provider.complete(...)`), y hệt lý do `dispatch.py` là nơi DUY NHẤT
+tool retry (T-6.3) sống, không phải hai bản tay viết có thể lệch (R-17).
+`ProviderError` giờ mang `retry_after_s` (`errors.py`); `models/anthropic.py::_map()`
+đọc header `Retry-After` thật từ `httpx.Response` khi vendor gửi (`_retry_after()`).
+Backoff mũ + jitter khi vendor không gửi header. Bị chặn bởi `deadline_s` — ngân sách
+wall-clock CÒN LẠI của run (`Ledger.remaining_wall_clock()`) — không phải chỉ đếm số
+lần thử: retry không bao giờ sống lâu hơn ngân sách, đúng lời hứa của docs/10 §3.
 
-**N-6 — `model.response` VÀ `run.finished` thiếu trường tài liệu đã hứa.**
+Một cạm bẫy suýt gây lỗi thật: bản đầu định truyền `deadline_s`/`on_retry` qua
+`.invoke()`'s `**kwargs` — giống hệt cách `max_tokens` đã truyền an toàn. Kiểm trực tiếp
+`langchain_anthropic.ChatAnthropic._get_request_payload` (đã cài trong sandbox) mới lộ
+ra: nó merge MỌI kwarg không nhận diện được thẳng vào payload gửi API
+(`{**self.model_kwargs, **kwargs}`) — `max_tokens` là trường Anthropic thật nên an toàn,
+`deadline_s`/`on_retry` thì không, sẽ làm API 400 ngay khi ai dùng escape hatch với model
+thật. Sửa bằng `retry.retry_scope()` — một `contextvars.ContextVar` riêng, `call_model`
+đặt quanh đúng lời gọi `.invoke()`, `_generate()` đọc lại trong CÙNG call stack (không
+qua thread nào, nên không cần cơ chế copy-context của `middleware.py`) — không kwarg lạ
+nào chạm tới `.invoke()` nữa ngoài `max_tokens`.
+
+**N-6 (đã sửa) — `model.response` VÀ `run.finished` thiếu trường tài liệu đã hứa.**
 `docs/05-data-and-state.md §1` hứa `model.response` mang `usage{in,out,cache_read,
-cache_write}`/`latency_ms` — code chỉ emit `stop_reason`/`cost_usd`, khiến một phần
-mapping của `OtelExporter` (T-8.3) không có dữ liệu để đọc. Phát hiện thêm khi soát tài
-liệu lượt này (không phải lúc T-8.3 viết): `run.finished` có cùng khoảng lệch —
-`docs/05` hứa `usage`/`duration_s`, code (`run.py`, `lg/runtime.py`) chỉ emit
-`stop_reason`/`steps`/`cost_usd`/`tainted`. Cùng một lớp gap (usage/timing chưa wire vào
-event emission), hai điểm emit. Còn mở.
+cache_write}`/`latency_ms`, `run.finished` mang `usage`/`duration_s` — cả hai backend chỉ
+emit `stop_reason`/`cost_usd`/`steps`/`tainted`. Đã emit đủ trên cả hai: `run.py` đo
+`latency_ms` quanh `with_provider_retry(...)`, cộng dồn `usage_total`, đo `duration_s` từ
+`run_t0`. `lg/runtime.py` cần state MỚI (`lg/state.py`): `turn_started_at` (đồng hồ
+`duration_s`, reset đúng điểm `asks` đã reset — một turn, không phải một thread, vì
+`RUN_FINISHED` ở backend này vốn đã bắn mỗi turn, không phải mỗi thread) và `turn_usage`
+(cộng dồn bởi `call_model`, `dataclasses.asdict(Usage(...))` — JSON-checkpointable, cùng
+quy ước với `ledger`). `latency_ms` đo trong `lg/adapter.py::_generate()` (tổng thời gian
+CẢ retry, không chỉ lần thử cuối) rồi gửi qua `AIMessage.response_metadata` cho
+`call_model` đọc lại.
 
-**Phần `step=` — đã sửa.** Phát hiện lúc review `middleware.py` (N-10): trên backend
-`durable`/graph, MỌI lời gọi `_emit` mang ý nghĩa "xảy ra ở bước nào" (`MODEL_REQUEST`/
-`MODEL_RESPONSE`/`TOOL_REQUESTED`/`POLICY_DECIDED`/`TOOL_STARTED`/`TOOL_FINISHED`/
-`TAINT_RAISED`/`ERROR_RAISED`/`BUDGET_RESERVED`/`BUDGET_EXHAUSTED` — 11 điểm emit,
-`lg/runtime.py`) thiếu `step=`, nên `Event.step` của chúng luôn `None`, trong khi backend
-cổ điển (`run.py`/`dispatch.py`) LUÔN truyền `step=` cho đúng các kind đó. Vô hại lúc phát
-hiện — `ModelCall.identity.step`/`ToolInvocation.identity.step` (`middleware.py`) vẫn
-đúng trên cả hai backend vì đọc từ `state`/biến cục bộ, không đọc từ `Event` — nhưng là
-một bất đối xứng backend thật, và bất kỳ `Exporter`/OTel span nào đọc `event.step` trực
-tiếp (không qua `middleware.py`) trên backend `durable` đã luôn thấy `None`. Đã thêm
-`step=state.get("step", 0)` vào cả 11 điểm emit, khớp đúng backend cổ điển; verify bằng
-in trực tiếp `event.step` qua một run `durable=True` thật — không còn `None` nào ngoài
-`run.started`/`run.finished` (đúng như backend cổ điển, hai kind đó không mang step).
-`usage`/`latency_ms`/`duration_s` (khoảng lệch GỐC của N-6) vẫn còn mở, chưa đụng tới.
+Phần `step=` (bất đối xứng backend, phát hiện lúc review `middleware.py`, N-10): 11 điểm
+`_emit` trong `lg/runtime.py` thiếu `step=`, `Event.step` luôn `None` ở đó dù backend cổ
+điển luôn có. Đã thêm `step=state.get("step", 0)` vào cả 11; verify bằng in trực tiếp
+`event.step` qua một run `durable=True` thật — không còn `None` nào ngoài `run.started`/
+`run.finished` (đúng như backend cổ điển).
+
+Verify cả hai phần: `tests/test_n5_n6_retry_and_usage.py` (8 test — retry thành công sau
+N lần lỗi tạm thời trên cả hai backend, lỗi KHÔNG tạm thời không bao giờ retry, hết
+`MAX_ATTEMPTS` vẫn hạ cánh mềm thành `Result(ERROR)` chứ không crash, retry không sống
+lâu hơn ngân sách wall-clock, cả hai event mang đủ trường, `turn_usage` reset đúng theo
+turn chứ không cộng dồn qua các lượt `try_run()` khác nhau trên cùng một thread).
 
 **N-7 (đã sửa) — `Agent.with_()` làm mất bốn trường, MỌI lần gọi.**
 `transcript`/`exporters`/`accepts_tainted`/`sensitive` biến mất khỏi agent phái sinh —
@@ -393,7 +413,7 @@ không có quarantine, trên cùng bộ tool. Chênh lệch không có ý nghĩa
 
 ## 7. Còn mở hôm nay — nói thẳng, không giấu
 
-Sáu mục, không hơn không kém:
+Bốn mục, không hơn không kém (N-5/N-6 vừa đóng — xem `## 3`):
 
 1. **`AuthEvidence` cho S-11** — mô hình xác thực người duyệt thật (chữ ký kênh,
    `channel_message_id`), chặn một callback CỐ TÌNH khai gian danh tính. Thiết kế riêng,
@@ -409,7 +429,6 @@ Sáu mục, không hơn không kém:
 5. **N-3 — LangGraph không hỗ trợ `returns=`.** Từ N-10, `Agent(durable=True, returns=...)`
    raise `ConfigError` ngay lúc dựng thay vì âm thầm để `Result.value` luôn `None` — bản
    thân khoảng trống (chưa parse) vẫn còn mở, chỉ không còn im lặng.
-6. **N-5 / N-6 — retry cấp provider chưa cài; `model.response` thiếu `usage`/`latency_ms`.**
 
 Không mục nào ở trên chặn v1.0 (xem `design/08-roadmap-and-release-plan.md §3` cho điều
 kiện release) — mỗi mục đã có lý do hoãn cụ thể, không phải bị bỏ quên.

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any, Mapping, Sequence
 
 from .errors import BudgetExceeded, ProviderRateLimited, ProviderTimeout, ProviderUnavailable, ToolContractError
@@ -17,6 +18,7 @@ from .context.window import manage as manage_context
 from .middleware import _call_scope
 from .models.pricing import MAX_CONTEXT
 from .observe.events import EventBus, EventKind
+from .retry import with_provider_retry
 #: `RunContext` is re-exported here on purpose — `harness/__init__.py` imports it
 #: from this module, so it is not dead however it looks to a linter (Round 39).
 from .dispatch import Dispatcher, RunContext as RunContext
@@ -40,6 +42,7 @@ class RunEngine:
     async def run(self, message: str, *, messages: Sequence[Mapping[str, Any]] = (),
                   on_delta=None) -> Result:
         run_id = self._bus._run_id
+        run_t0 = time.monotonic()
         msgs: list[Mapping[str, Any]] = list(messages) + [{"role": "user", "content": message}]
         usage_total = Usage()
         text = ""
@@ -103,14 +106,20 @@ class RunEngine:
                 # for `returns=`, one call site over. `asyncio.CancelledError` is not an
                 # `Exception` subclass (Python's own hierarchy), so this catch cannot
                 # swallow a cancellation — T-6.2 still holds.
+                def _on_retry(exc, attempt, wait_s):
+                    self._bus.emit(EventKind.ERROR_RAISED, step=step, where="provider",
+                                   type=type(exc).__name__, message=str(exc),
+                                   retryable=True, attempt=attempt, wait_s=wait_s)
+                model_t0 = time.monotonic()
                 try:
                     with _call_scope(step=step):
-                        resp = await self._p.complete(req, on_delta=on_delta)
+                        resp = await with_provider_retry(
+                            lambda: self._p.complete(req, on_delta=on_delta),
+                            deadline_s=self._l.remaining_wall_clock(), on_retry=_on_retry)
                 except Exception as exc:
-                    # Transient-by-nature provider failures are flagged retryable=True
-                    # for the audit trail even though nothing acts on it automatically
-                    # yet — same shape as EFFECT_PROFILES.retryable existing since
-                    # Round 5 before T-6.3 gave it a reader (ADR-042).
+                    # N-5: this is the FINAL failure — retries (if the error class and
+                    # remaining wall-clock allowed any) already happened inside
+                    # `with_provider_retry`, each one already its own `_on_retry` event.
                     transient = isinstance(exc, (ProviderTimeout, ProviderRateLimited,
                                                  ProviderUnavailable, TimeoutError))
                     self._bus.emit(EventKind.ERROR_RAISED, step=step, where="provider",
@@ -118,11 +127,16 @@ class RunEngine:
                                    retryable=transient)
                     stop, detail = StopReason.ERROR, f"{type(exc).__name__}: {exc}"
                     break
+                latency_ms = (time.monotonic() - model_t0) * 1000
                 self._l.settle(reservation, resp.usage, price)
                 self._l.count_step()
                 usage_total = usage_total + resp.usage
                 self._bus.emit(EventKind.MODEL_RESPONSE, step=step, stop_reason=resp.stop_reason,
-                               cost_usd=str(self._l.spent))
+                               cost_usd=str(self._l.spent), latency_ms=latency_ms,
+                               input_tokens=resp.usage.input_tokens,
+                               output_tokens=resp.usage.output_tokens,
+                               cache_read_tokens=resp.usage.cache_read_input_tokens,
+                               cache_creation_tokens=resp.usage.cache_creation_input_tokens)
 
                 text = "".join(b.get("text", "") for b in resp.content if b.get("type") == "text") or text
                 msgs.append({"role": "assistant", "content": list(resp.content)})
@@ -180,7 +194,12 @@ class RunEngine:
             # cancellation happen). Clean up — same as every other stop reason, an
             # observability record — but re-raise instead of returning.
             self._bus.emit(EventKind.RUN_FINISHED, stop_reason=StopReason.CANCELLED.value,
-                           steps=step, cost_usd=str(self._l.spent), tainted=self._taint.tainted)
+                           steps=step, cost_usd=str(self._l.spent), tainted=self._taint.tainted,
+                           duration_s=time.monotonic() - run_t0,
+                           input_tokens=usage_total.input_tokens,
+                           output_tokens=usage_total.output_tokens,
+                           cache_read_tokens=usage_total.cache_read_input_tokens,
+                           cache_creation_tokens=usage_total.cache_creation_input_tokens)
             raise
 
         # T-6.4 (chaos test "model trả rác" found this): `_parse_returns` used to be
@@ -202,7 +221,12 @@ class RunEngine:
                 self._bus.emit(EventKind.ERROR_RAISED, step=step, where="returns",
                                type="ToolContractError", message=detail, retryable=False)
         self._bus.emit(EventKind.RUN_FINISHED, stop_reason=stop.value, steps=step,
-                       cost_usd=str(self._l.spent), tainted=self._taint.tainted)
+                       cost_usd=str(self._l.spent), tainted=self._taint.tainted,
+                       duration_s=time.monotonic() - run_t0,
+                       input_tokens=usage_total.input_tokens,
+                       output_tokens=usage_total.output_tokens,
+                       cache_read_tokens=usage_total.cache_read_input_tokens,
+                       cache_creation_tokens=usage_total.cache_creation_input_tokens)
         return Result(text, stop, step, self._l.spent, usage_total, run_id,
                       self._taint.tainted, tuple(msgs), value, detail,
                       tuple(self._dispatch.ran))

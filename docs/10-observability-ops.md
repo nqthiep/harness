@@ -65,21 +65,22 @@ console concern, never a diagnostic one — which is precisely why it was accept
 The Anthropic adapter maps vendor exceptions to the harness hierarchy. Nothing else in the
 codebase catches a vendor exception type — that is what keeps the provider seam real.
 
-**The "Retry" column below is the intended contract, not yet the shipped behavior — N-5
-(`design/07-risks-and-open-issues.md §3`).** What ships today (T-6.4, ADR-044): a
-provider error is CAUGHT and returned as `Result(stop_reason=ERROR)`, on both backends —
-`try_run()`/`atry_run()` never raises for it. Nothing yet automatically retries a model
-call; `EFFECT_PROFILES.retryable`-driven retry (T-6.3) is a TOOL-call mechanism, a
-different layer. `error.raised`'s `retryable=` field is stamped correctly per row below
-today, for audit — that part of the contract is real, the auto-retry part is not.
+**N-5, closed.** A provider error is CAUGHT and, on the class of failure the table below
+marks retryable, retried automatically — `src/harness/retry.py::with_provider_retry()`,
+one implementation shared by both backends (`run.py`'s `self._p.complete(...)`,
+`lg/adapter.py::ProviderChatModel._generate()`'s `self.provider.complete(...)`). Only on
+final failure (retries exhausted, or the error class isn't retryable at all) does
+`try_run()`/`atry_run()` return `Result(stop_reason=ERROR)` — it still never raises for
+this. `EFFECT_PROFILES.retryable`-driven retry (T-6.3) stays a separate, TOOL-call
+mechanism, a different layer.
 
 | Vendor | Harness | Retry |
 |---|---|---|
 | `AuthenticationError`, `PermissionDeniedError` (401/403) | `ProviderAuthError` | No |
 | `BadRequestError`, `NotFoundError` (400/404) | `ProviderBadRequest` | No |
-| `RateLimitError` (429) | `ProviderRateLimited` | Intended: yes, honoring `Retry-After`. Not built yet (N-5) |
-| `InternalServerError` (5xx) | `ProviderUnavailable` | Intended: yes, exponential backoff. Not built yet (N-5) |
-| `APIConnectionError`, `APITimeoutError` | `ProviderTimeout` | Intended: yes, exponential backoff. Not built yet (N-5) |
+| `RateLimitError` (429) | `ProviderRateLimited` | Yes — honors a real `Retry-After` header when the vendor sent one (`models/anthropic.py::_retry_after()`), exponential backoff with jitter otherwise |
+| `InternalServerError` (5xx) | `ProviderUnavailable` | Yes — exponential backoff |
+| `APIConnectionError`, `APITimeoutError` | `ProviderTimeout` | Yes — exponential backoff |
 | HTTP 200 + `stop_reason == "refusal"` | *not* an error → `StopReason.MODEL_REFUSAL` | No |
 
 The refusal row matters more than it looks. Current models return a refusal as a **200**
@@ -88,8 +89,12 @@ presents a confident empty answer. The harness makes it an explicit outcome, and
 server-side refusal fallbacks by default so a routine refusal is routed to a fallback model
 rather than surfacing as a dead end.
 
-Retry budget is bounded by the run's wall clock, never by an independent retry count — so
-retries cannot outlive the budget.
+Retry budget is bounded by the run's wall clock (`Ledger.remaining_wall_clock()`, passed
+as `retry.py`'s `deadline_s=`), never by an independent retry count alone — retries
+cannot outlive the budget. `error.raised`'s `retryable=` field is stamped on every
+attempt (`attempt=`/`wait_s=` alongside it — one event per retry, never for the final,
+re-raised failure) and on the final failure too, when its exception class is inherently
+transient-typed, whether or not a retry actually ran.
 
 ## 4. Packaging, versioning, release
 
