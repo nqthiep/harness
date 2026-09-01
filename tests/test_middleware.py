@@ -1,15 +1,17 @@
 """`harness.middleware` — framework-managed base class, composed from three existing
-seams (`ModelProvider`, a tool's plain callable, `Exporter`). The rule under test in
-every case: a `Middleware` can add restriction/observation, never bypass what the six
-core seams already decided — most importantly, it must never see a tool call `Policy`
-already denied.
+seams (`ModelProvider`, a tool's plain callable, `Exporter`). Two things under test in
+every case: (1) each hook gets ONE context object (`ModelCall`/`ToolInvocation`/`Event`),
+never a grab bag of positional arguments; (2) a `Middleware` can add
+restriction/observation, never bypass what the six core seams already decided — most
+importantly, it must never see a tool call `Policy` already denied.
 """
 import sys
 import unittest
 
 sys.path.insert(0, "src")
 
-from harness import Agent, Middleware, ShortCircuit, tool, with_middleware
+from harness import (Agent, Middleware, ModelCall, ShortCircuit, ToolInvocation, tool,
+                     with_middleware)
 from harness.models.fake import FakeModel
 
 
@@ -29,24 +31,81 @@ class Recorder(Middleware):
     def __init__(self):
         self.calls = []
 
-    def before_model(self, request):
-        self.calls.append(("before_model", len(request.messages)))
-        return request
+    def before_model(self, call: ModelCall):
+        assert call.response is None            # not decided yet at this point
+        self.calls.append(("before_model", len(call.request.messages)))
+        return call.request
 
-    def after_model(self, request, response):
-        self.calls.append(("after_model", response.stop_reason))
-        return response
+    def after_model(self, call: ModelCall):
+        assert call.response is not None
+        self.calls.append(("after_model", call.response.stop_reason))
+        return call.response
 
-    def before_tool(self, name, kwargs):
-        self.calls.append(("before_tool", name, dict(kwargs)))
-        return kwargs
+    def before_tool(self, call: ToolInvocation):
+        assert call.result is None               # not run yet at this point
+        self.calls.append(("before_tool", call.name, dict(call.kwargs)))
+        return call.kwargs
 
-    def after_tool(self, name, kwargs, result):
-        self.calls.append(("after_tool", name, result))
-        return result
+    def after_tool(self, call: ToolInvocation):
+        self.calls.append(("after_tool", call.name, call.result))
+        return call.result
 
     def on_event(self, event):
         self.calls.append(("event", event.kind.value))
+
+
+class ContextObjectShape(unittest.TestCase):
+    """The thing that changed: one object per phase, not mismatched positional args."""
+
+    def test_model_call_carries_request_and_response(self):
+        seen = {}
+
+        class Peek(Middleware):
+            def before_model(self, call):
+                seen["before"] = call
+                return call.request
+            def after_model(self, call):
+                seen["after"] = call
+                return call.response
+
+        script = [FakeModel.text("hi")]
+        a = Agent(name="p", job="x", provider=FakeModel(script))
+        with_middleware(a, Peek()).try_run("hello")
+        self.assertIsInstance(seen["before"], ModelCall)
+        self.assertIsNone(seen["before"].response)
+        self.assertIsInstance(seen["after"], ModelCall)
+        self.assertIsNotNone(seen["after"].response)
+        self.assertIs(seen["before"].request, seen["after"].request)
+
+    def test_tool_invocation_carries_name_kwargs_and_result(self):
+        seen = {}
+
+        class Peek(Middleware):
+            def before_tool(self, call):
+                seen["before"] = call
+                return call.kwargs
+            def after_tool(self, call):
+                seen["after"] = call
+                return call.result
+
+        script = [FakeModel.tool_call("look_up", {"order": "A1"}), FakeModel.text("ok")]
+        a = Agent(name="p", job="x", provider=FakeModel(script), tools=[look_up],
+                 allowed_hosts=None)
+        with_middleware(a, Peek()).try_run("check A1")
+        self.assertIsInstance(seen["before"], ToolInvocation)
+        self.assertEqual(seen["before"].name, "look_up")
+        self.assertEqual(dict(seen["before"].kwargs), {"order": "A1"})
+        self.assertIsNone(seen["before"].result)
+        self.assertIsInstance(seen["after"], ToolInvocation)
+        self.assertEqual(seen["after"].result, {"status": "shipped", "order": "A1"})
+
+    def test_model_call_and_tool_invocation_are_frozen(self):
+        call = ModelCall(request=None)             # type: ignore[arg-type]
+        with self.assertRaises(AttributeError):
+            call.response = "x"                     # type: ignore[misc]
+        inv = ToolInvocation(name="x", kwargs={})
+        with self.assertRaises(AttributeError):
+            inv.result = "y"                        # type: ignore[misc]
 
 
 class MiddlewareBasics(unittest.TestCase):
@@ -104,12 +163,12 @@ class MiddlewareBasics(unittest.TestCase):
         order = []
 
         class First(Middleware):
-            def before_tool(self, name, kwargs):
-                order.append("first"); return kwargs
+            def before_tool(self, call):
+                order.append("first"); return call.kwargs
 
         class Second(Middleware):
-            def before_tool(self, name, kwargs):
-                order.append("second"); return kwargs
+            def before_tool(self, call):
+                order.append("second"); return call.kwargs
 
         script = [FakeModel.tool_call("look_up", {"order": "A1"}), FakeModel.text("ok")]
         a = Agent(name="p", job="x", provider=FakeModel(script), tools=[look_up],
@@ -129,10 +188,10 @@ class ShortCircuiting(unittest.TestCase):
             return "real result"
 
         class Cache(Middleware):
-            def before_tool(self, name, kwargs):
-                if name == "expensive":
+            def before_tool(self, call):
+                if call.name == "expensive":
                     raise ShortCircuit("cached result")
-                return kwargs
+                return call.kwargs
 
         script = [FakeModel.tool_call("expensive", {"x": 1}), FakeModel.text("ok")]
         a = Agent(name="p", job="x", provider=FakeModel(script), tools=[expensive],
@@ -147,7 +206,7 @@ class ShortCircuiting(unittest.TestCase):
 
     def test_after_tool_can_replace_the_result(self):
         class Redactor(Middleware):
-            def after_tool(self, name, kwargs, result):
+            def after_tool(self, call):
                 return "[redacted]"
 
         script = [FakeModel.tool_call("look_up", {"order": "A1"}), FakeModel.text("ok")]
@@ -181,8 +240,8 @@ class CannotBypassCoreEnforcement(unittest.TestCase):
         hook is never invoked at all for a denied call, so there's nothing to "return
         ALLOW" from."""
         class NeverDenies(Middleware):
-            def before_tool(self, name, kwargs):
-                return kwargs             # would-be "approve everything", if it ran
+            def before_tool(self, call):
+                return call.kwargs        # would-be "approve everything", if it ran
 
         script = [FakeModel.tool_call("wipe", {"x": 1}), FakeModel.text("done")]
         a = Agent(name="p", job="x", provider=FakeModel(script), tools=[wipe],

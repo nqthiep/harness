@@ -19,13 +19,34 @@ almost every real one wants exactly one or two — and `Protocol` has no notion 
 optional method. A base class with no-op/pass-through defaults lets a subclass override
 only what it needs; that ergonomics gap, not a change of philosophy, is the whole reason
 this one seam looks different from the rest.
+
+**One context object per phase, not a grab bag of positional arguments** — the direct
+answer to a real question this design started with two mismatched shapes for
+(`before_model(request)` vs. `before_tool(name, kwargs)` vs. `on_event(event)`, three
+different calling conventions to remember). `ModelCall` carries `before_model`/
+`after_model`'s payload; `ToolInvocation` carries `before_tool`/`after_tool`'s; `Event`
+(already `run.py`/`lg/runtime.py`'s own envelope, `observe/events.py`) needed no new
+type, since it was already exactly this pattern.
+
+**What did NOT make it into either context object, and why: identity.** `run_id`/
+`session_id`/`tenant_id`/`step`/a tool call's own `call_id` would make both types
+genuinely uniform with `Event` — and are deliberately left out rather than added
+unreliably. Verified, not assumed: a `contextvars.ContextVar` set before a run starts
+does not survive the durable engine's own tool/model execution path, because
+`lg/runtime.py` runs its sync nodes through `loop.run_in_executor()`, which does not
+copy the calling context into the worker thread (plain `asyncio.run()` inside that
+thread starts a fresh one). Threading identity down correctly means changing the call
+sites in `run.py`/`dispatch.py`/`lg/runtime.py` themselves — the one thing every
+docstring in this file promises this module does not do. Left open rather than shipped
+half-working on one engine and silently not on the other.
 """
 from __future__ import annotations
 
 import functools
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+from ._value import value
 from .models.base import ModelRequest, ModelResponse
 
 if TYPE_CHECKING:
@@ -33,7 +54,32 @@ if TYPE_CHECKING:
     from .observe.events import Event
     from .tools import ToolSpec
 
-__all__ = ["Middleware", "ShortCircuit", "with_middleware"]
+__all__ = ["Middleware", "ModelCall", "ToolInvocation", "ShortCircuit", "with_middleware"]
+
+
+@value
+class ModelCall:
+    """`before_model`/`after_model`'s one argument. `response` is `None` in
+    `before_model` (the call hasn't happened yet) and always set in `after_model`."""
+    __hash__ = None                      # holds a ModelRequest, itself unhashable
+    request: ModelRequest
+    response: ModelResponse | None = None
+
+
+@value
+class ToolInvocation:
+    """`before_tool`/`after_tool`'s one argument. `result` is `None` in `before_tool`
+    (the function hasn't run yet) and always set in `after_tool`.
+
+    A different type from `harness.ToolCall` (`policy/base.py`) on purpose: that one
+    carries a `ToolSpec` and exists for a `Policy` to decide ALLOW/ASK/DENY *before*
+    dispatch; this one carries the actual keyword arguments and exists for a
+    `Middleware` to observe or modify what happens *after* that decision already ran.
+    """
+    __hash__ = None                      # holds a Mapping
+    name: str
+    kwargs: Mapping[str, Any]
+    result: Any = None
 
 
 class ShortCircuit(Exception):
@@ -53,31 +99,34 @@ class Middleware:
     either backend without needing to know which one is underneath.
     """
 
-    def before_model(self, request: ModelRequest) -> ModelRequest:
-        """Immediately before the provider is called. Return `request` unchanged, or a
-        replacement (`dataclasses.replace(request, ...)`) — e.g. to inject content or
-        swap `request.model`. Changing `system`/`tools` differently between otherwise
-        identical calls trips the cache-determinism linter (`context/linter.py`,
-        `NonDeterministicPromptError`); mutate `messages`, not structure, unless the
-        cache break is intended.
+    def before_model(self, call: ModelCall) -> ModelRequest:
+        """Immediately before the provider is called. Return `call.request` unchanged,
+        or a replacement (`dataclasses.replace(call.request, ...)`) — e.g. to inject
+        content or swap the model. Changing `system`/`tools` differently between
+        otherwise identical calls trips the cache-determinism linter
+        (`context/linter.py`, `NonDeterministicPromptError`); mutate `messages`, not
+        structure, unless the cache break is intended.
         """
-        return request
+        return call.request
 
-    def after_model(self, request: ModelRequest, response: ModelResponse) -> ModelResponse:
-        """Immediately after the provider returns. Return `response` unchanged, or a
-        replacement built with `dataclasses.replace(response, ...)`."""
-        return response
+    def after_model(self, call: ModelCall) -> ModelResponse:
+        """Immediately after the provider returns (`call.response` is always set here).
+        Return it unchanged, or a replacement built with
+        `dataclasses.replace(call.response, ...)`."""
+        assert call.response is not None
+        return call.response
 
-    def before_tool(self, name: str, kwargs: dict) -> dict:
+    def before_tool(self, call: ToolInvocation) -> Mapping[str, Any]:
         """After `Policy` has already ruled ALLOW on this call — never for one it
-        denied. Return `kwargs` (unchanged or modified), or raise `ShortCircuit(result)`
-        to skip the tool's own function and use `result` instead."""
-        return kwargs
+        denied. Return `call.kwargs` (unchanged or modified), or raise
+        `ShortCircuit(result)` to skip the tool's own function and use `result`
+        instead."""
+        return call.kwargs
 
-    def after_tool(self, name: str, kwargs: dict, result: Any) -> Any:
+    def after_tool(self, call: ToolInvocation) -> Any:
         """After the tool's function returned (or after `before_tool` short-circuited
-        it). Return `result` unchanged, or a replacement."""
-        return result
+        it) — `call.result` holds it. Return it unchanged, or a replacement."""
+        return call.result
 
     def on_event(self, event: "Event") -> None:
         """Every `Event` this run emits (`docs/05-data-and-state.md §1`) — the same
@@ -127,10 +176,10 @@ class _MiddlewareProvider:
 
     async def complete(self, request: ModelRequest, *, on_delta=None) -> ModelResponse:
         for mw in self._mws:
-            request = mw.before_model(request)
+            request = mw.before_model(ModelCall(request))
         response = await self._inner.complete(request, on_delta=on_delta)
         for mw in self._mws:
-            response = mw.after_model(request, response)
+            response = mw.after_model(ModelCall(request, response))
         return response
 
 
@@ -160,12 +209,12 @@ def _wrap_tool(spec: "ToolSpec", middlewares: Sequence[Middleware]) -> "ToolSpec
     async def wrapped(**kwargs: Any) -> Any:
         for mw in middlewares:
             try:
-                kwargs = mw.before_tool(name, kwargs)
+                kwargs = dict(mw.before_tool(ToolInvocation(name, kwargs)))
             except ShortCircuit as sc:
                 return sc.result
         result = await fn(**kwargs)
         for mw in middlewares:
-            result = mw.after_tool(name, kwargs, result)
+            result = mw.after_tool(ToolInvocation(name, kwargs, result))
         return result
 
     return replace(spec, fn=wrapped)

@@ -231,21 +231,21 @@ every time. `Middleware` is one base class covering all three, composed by
 from harness import Agent, Middleware, ShortCircuit, with_middleware
 
 class Logging(Middleware):
-    def before_model(self, request):
-        print(f"-> {request.model}: {len(request.messages)} messages")
-        return request
-    def after_model(self, request, response):
-        print(f"<- {response.stop_reason}, {response.usage.total} tokens")
-        return response
+    def before_model(self, call):        # call: ModelCall — call.request, call.response
+        print(f"-> {call.request.model}: {len(call.request.messages)} messages")
+        return call.request
+    def after_model(self, call):
+        print(f"<- {call.response.stop_reason}, {call.response.usage.total} tokens")
+        return call.response
 
 class Cache(Middleware):
-    def before_tool(self, name, kwargs):
-        if (hit := my_cache.get(name, kwargs)) is not None:
+    def before_tool(self, call):         # call: ToolInvocation — call.name/.kwargs/.result
+        if (hit := my_cache.get(call.name, call.kwargs)) is not None:
             raise ShortCircuit(hit)          # skip the real tool, use `hit` instead
-        return kwargs
-    def after_tool(self, name, kwargs, result):
-        my_cache.put(name, kwargs, result)
-        return result
+        return call.kwargs
+    def after_tool(self, call):
+        my_cache.put(call.name, call.kwargs, call.result)
+        return call.result
 
 agent = with_middleware(base_agent, Logging(), Cache())
 agent.run("...")             # same Agent surface — try_run/run/arun/atry_run unchanged
@@ -256,6 +256,34 @@ full), `Middleware` is a plain base class with five independent, optional hooks
 (`before_model`/`after_model`/`before_tool`/`after_tool`/`on_event`) — subclass it and
 override only what you need; every hook not overridden is a no-op. `with_middleware()`
 returns a **new** `Agent` (frozen, ADR-004); the original is untouched.
+
+**One context object per phase, not a grab bag of positional arguments.** Every hook
+takes exactly one argument:
+
+| Hook | Argument | Fields |
+|---|---|---|
+| `before_model`/`after_model` | `ModelCall` | `.request: ModelRequest`, `.response: ModelResponse \| None` (`None` in `before_model`, always set in `after_model`) |
+| `before_tool`/`after_tool` | `ToolInvocation` | `.name: str`, `.kwargs: Mapping`, `.result: Any` (`None` in `before_tool`, always set in `after_tool`) |
+| `on_event` | `Event` | the same envelope an `Exporter` gets — `docs/05-data-and-state.md §1` |
+
+Both `ModelCall` and `ToolInvocation` are frozen (`@value`, like every other value type
+— ADR-004's rule extends here); the *before* and *after* calls are two different
+instances, not one mutated in place. `ToolInvocation` is a different type from
+`harness.ToolCall` (`policy/base.py`) on purpose: that one carries a `ToolSpec` for a
+`Policy` to rule ALLOW/ASK/DENY *before* dispatch; this one carries the real keyword
+arguments and result for a `Middleware` to observe *after* that ruling already happened.
+
+**What is deliberately not in either context object: identity** — no `run_id`,
+`session_id`, `tenant_id`, `step`, or a tool call's own `call_id`. Not an oversight:
+threading that down correctly would mean changing the call sites in `run.py`/
+`dispatch.py`/`lg/runtime.py` themselves, which is exactly what this module promises not
+to do. It was tried the cheap way first and rejected on evidence, not guessed: a
+`contextvars.ContextVar` set before a run starts does not survive the durable engine's
+own tool/model execution path, because `lg/runtime.py` runs its sync nodes through
+`loop.run_in_executor()`, which starts a fresh context in the worker thread rather than
+copying the caller's. Shipping identity that works on one engine and silently doesn't on
+the other would be worse than not having it — this is the honest state until someone
+decides the deeper (core) change is worth making.
 
 **This is sugar, not a seventh seam.** `with_middleware()` is built entirely from three
 seams already documented above — it wraps `provider=`, wraps each tool's plain callable,
