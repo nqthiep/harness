@@ -215,7 +215,7 @@ class RunEngine:
         value = None
         if stop is StopReason.COMPLETED and self._a.returns is not None:
             try:
-                value = self._parse_returns(text)
+                value = parse_returns(self._a.returns, text)
             except ToolContractError as exc:
                 stop, detail = StopReason.ERROR, str(exc)
                 self._bus.emit(EventKind.ERROR_RAISED, step=step, where="returns",
@@ -231,36 +231,6 @@ class RunEngine:
                       self._taint.tainted, tuple(msgs), value, detail,
                       tuple(self._dispatch.ran))
 
-    def _parse_returns(self, text: str):
-        """Turn the final answer into `Agent(returns=...)`, validated — ADR-022.
-
-        Round 33 found `returns=` reached the request and the response was never parsed,
-        so `Result.value` was always None: the parameter was accepted and half-honoured.
-        A response that does not fit is an error, never a silent None.
-        """
-        import dataclasses
-        want = self._a.returns
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise ToolContractError(
-                f"this agent was asked for {want.__name__}, but the model replied with "
-                f"text that is not {want.__name__}:\n\n    {text[:120]!r}\n\n"
-                f"  ({exc})"
-            ) from None
-        if not (isinstance(want, type) and dataclasses.is_dataclass(want)):
-            return data
-        fields = {f.name for f in dataclasses.fields(want)}
-        missing = sorted(f.name for f in dataclasses.fields(want)
-                         if f.name not in data
-                         and f.default is dataclasses.MISSING
-                         and f.default_factory is dataclasses.MISSING)
-        if missing:
-            raise ToolContractError(
-                f"the model's answer is missing {', '.join(missing)} for "
-                f"{want.__name__}.\n\n  Got: {sorted(data)}"
-            )
-        return want(**{k: v for k, v in data.items() if k in fields})
 
     def _manage_context(self, msgs: list, _unused: int, step: int) -> list:
         """T-2.6, wired.  Round 27 found window.manage() was built, tested, and never
@@ -286,6 +256,39 @@ def canonical_len(req) -> str:
     input token count — no tokenizer emits more tokens than characters (ADR-026)."""
     return _canonical({"system": list(req.system), "tools": list(req.tools),
                        "messages": list(req.messages)})
+
+
+def parse_returns(want: type, text: str):
+    """Turn a final answer into `Agent(returns=...)`, validated — ADR-022.
+
+    Module-level (N-3) so `lg/runtime.py::finish()` can call the SAME parse the classic
+    loop always has, rather than growing a second implementation that could drift.
+    Round 33 found `returns=` reached the request and the response was never parsed, so
+    `Result.value` was always None: the parameter was accepted and half-honoured. A
+    response that does not fit is an error, never a silent None.
+    """
+    import dataclasses
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ToolContractError(
+            f"this agent was asked for {want.__name__}, but the model replied with "
+            f"text that is not {want.__name__}:\n\n    {text[:120]!r}\n\n"
+            f"  ({exc})"
+        ) from None
+    if not (isinstance(want, type) and dataclasses.is_dataclass(want)):
+        return data
+    fields = {f.name for f in dataclasses.fields(want)}
+    missing = sorted(f.name for f in dataclasses.fields(want)
+                     if f.name not in data
+                     and f.default is dataclasses.MISSING
+                     and f.default_factory is dataclasses.MISSING)
+    if missing:
+        raise ToolContractError(
+            f"the model's answer is missing {', '.join(missing)} for "
+            f"{want.__name__}.\n\n  Got: {sorted(data)}"
+        )
+    return want(**{k: v for k, v in data.items() if k in fields})
 
 
 #: Every provider stop reason maps to exactly one StopReason.  Unknown -> ERROR, never

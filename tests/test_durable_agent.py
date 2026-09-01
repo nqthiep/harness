@@ -122,9 +122,49 @@ class DurableGuards(unittest.TestCase):
     """Every place `durable=True` deliberately does NOT try to behave like the classic
     backend refuses loudly, with a next step — never a silent no-op (§45)."""
 
-    def test_returns_is_refused_at_construction(self):
-        with self.assertRaises(ConfigError):
-            Agent(name="d", job="x", provider=FakeModel([]), durable=True, returns=str)
+    def test_returns_parses_the_final_answer(self):
+        """N-3, closed: `durable=True` used to refuse `returns=` outright at
+        construction (`ConfigError`) — the durable engine never parsed a final answer
+        against it, so `Result.value` would have silently stayed `None` forever.
+        `lg/runtime.py::finish()` now runs the same `parse_returns()` the classic
+        backend uses, before `run.finished` fires."""
+        import dataclasses
+
+        @dataclasses.dataclass
+        class Order:
+            id: str
+            eta_days: int
+
+        a = Agent(name="d", job="x", returns=Order,
+                 provider=FakeModel([FakeModel.text('{"id": "o1", "eta_days": 3}')]),
+                 durable=True, allowed_hosts=None)
+        r = a.try_run("status?")
+        self.assertTrue(r.ok, r.detail)
+        self.assertEqual(r.value, Order(id="o1", eta_days=3))
+
+    def test_returns_a_bad_answer_is_a_result_not_a_raise(self):
+        """The other half of N-2/N-3 parity: a final answer that doesn't fit `returns=`
+        is a run OUTCOME (`stop_reason=ERROR`), never an unhandled raise out of
+        `try_run()` — same contract the classic backend already holds (T-6.4)."""
+        import dataclasses
+
+        @dataclasses.dataclass
+        class Order:
+            id: str
+            eta_days: int
+
+        a = Agent(name="d", job="x", returns=Order,
+                 provider=FakeModel([FakeModel.text("not json at all")]),
+                 durable=True, allowed_hosts=None)
+        try:
+            r = a.try_run("status?")
+        except Exception as exc:
+            self.fail(f"a bad final answer crashed out of try_run(): "
+                     f"{type(exc).__name__}: {exc}")
+        self.assertFalse(r.ok)
+        self.assertEqual(r.stop_reason, StopReason.ERROR)
+        self.assertIsNone(r.value)
+        self.assertIn("Order", r.detail)
 
     def test_chat_is_refused(self):
         a = Agent(name="d", job="x", provider=FakeModel([]), durable=True,

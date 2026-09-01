@@ -175,23 +175,26 @@ class LangGraphProviderRaiseCungPhaiKhongCrash(unittest.TestCase):
 
 class MutationN2ReturnsFixCoTacDung(unittest.TestCase):
     def test_khoi_phuc_hanh_vi_cu_thi_test_garbage_do(self):
-        """Mutation thật trên `run.py`: khôi phục hành vi CŨ — gọi `_parse_returns`
-        KHÔNG qua try/except — bằng cách monkeypatch `RunEngine.run` tạm thời để bỏ
-        nhánh bắt lỗi mới. Xác nhận test garbage ở trên thật sự đỏ nếu thiếu bản vá."""
+        """Mutation thật trên `run.py`: khôi phục hành vi CŨ — gọi `parse_returns`
+        KHÔNG qua try/except — bằng cách monkeypatch hàm module-level tạm thời để bỏ
+        nhánh bắt lỗi mới. Xác nhận test garbage ở trên thật sự đỏ nếu thiếu bản vá.
+        `parse_returns` chuyển thành hàm module-level (từ method `_parse_returns`) khi
+        N-3 gắn nó vào `lg/runtime.py::finish()` nữa — cùng một implementation, cả hai
+        backend gọi."""
         import harness.run as run_mod
 
-        original_parse = run_mod.RunEngine._parse_returns
+        original_parse = run_mod.parse_returns
 
-        # Mô phỏng: `_parse_returns` không còn được bọc try/except trong `run()` — cách
+        # Mô phỏng: `parse_returns` không còn được bọc try/except trong `run()` — cách
         # đơn giản nhất để chứng minh phụ thuộc mà không copy-paste toàn bộ `run()`: cho
-        # `_parse_returns` chính nó raise một lỗi KHÔNG PHẢI `ToolContractError`, thứ
+        # `parse_returns` chính nó raise một lỗi KHÔNG PHẢI `ToolContractError`, thứ
         # try/except trong `run()` không bắt (nó chỉ bắt `ToolContractError`) — nếu bản
         # vá N-2 thật sự chỉ bắt đúng `ToolContractError` (đúng thiết kế, không bắt-tất),
         # lỗi này PHẢI vẫn raise ra ngoài `try_run()`.
-        def _boom(self, text):
+        def _boom(want, text):
             raise KeyError("mutation: một lỗi try/except N-2 không được bắt")
 
-        run_mod.RunEngine._parse_returns = _boom
+        run_mod.parse_returns = _boom
         try:
             @dataclasses.dataclass
             class Ans:
@@ -205,7 +208,7 @@ class MutationN2ReturnsFixCoTacDung(unittest.TestCase):
                                        "chứng minh bản vá không bắt-tất-mọi-lỗi"):
                 agent.try_run("thử")
         finally:
-            run_mod.RunEngine._parse_returns = original_parse
+            run_mod.parse_returns = original_parse
 
 
 if __name__ == "__main__":

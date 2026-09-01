@@ -16,7 +16,7 @@ tệp này chỉ giữ đủ để hiểu quyết định, không lặp lại to
 
 **Tất cả 58 phát hiện gốc đã được xét. 10 phát hiện mới (N-1…N-10): N-1…N-9 tự bắt được
 trong lúc xây M6-M10, N-10 đóng phản hồi trực tiếp của người dùng ("2 API interfaces gây
-khó dùng") sau đó.** Còn mở thật sự, hôm nay: **3 mục** — xem `## 7`.
+khó dùng") sau đó.** Còn mở thật sự, hôm nay: **2 mục** — xem `## 7`.
 
 ### Bảo mật (S-1…S-29)
 
@@ -70,7 +70,7 @@ khó dùng") sau đó.** Còn mở thật sự, hôm nay: **3 mục** — xem `#
 |---|---|---|
 | N-1 | LangGraph không timeout per-tool | **Đã sửa** — `Ledger.tool_timeout()` + `_with_timeout()`, cùng logic hai thông điệp với `dispatch.py` |
 | N-2 | `try_run()` raise thẳng khi `returns=` sai kiểu | **Đã sửa** |
-| N-3 | LangGraph không hỗ trợ `returns=` | **Còn mở** |
+| N-3 | LangGraph không hỗ trợ `returns=` | **Đã sửa** — `Runtime.finish()` giờ gọi `run.py::parse_returns()` trước khi phát `run.finished`, cùng implementation với backend cổ điển |
 | N-4 | Lỗi provider crash thẳng ra ngoài, cả hai backend | **Đã sửa** |
 | N-5 | Retry cấp provider đã công bố nhưng chưa cài | **Đã sửa** — `retry.py::with_provider_retry()`, một implementation cho cả hai backend |
 | N-6 | `model.response` VÀ `run.finished` thiếu trường tài liệu đã hứa | **Đã sửa** — `usage`/`latency_ms`/`duration_s` giờ emit đầy đủ trên cả hai backend |
@@ -237,12 +237,32 @@ riêng rộng (30s) nhưng ngân sách CẤP RUN hẹp hơn (`wall_clock_s=0.05`
 `_parse_returns()` giờ chạy TRƯỚC khi `RUN_FINISHED` phát, bắt `ToolContractError` và hạ
 xuống `Result(stop_reason=ERROR)` — model trả rác là một OUTCOME, không phải crash.
 
-**N-3 — LangGraph không hỗ trợ `returns=`.** `build_agent()` không có tham số này;
-`Result.value` luôn `None` trên backend đó. Khoảng trống parity thật. **N-10
-(`Agent(durable=True)`) đóng phần "âm thầm"**: `Agent(durable=True, returns=...)` giờ
-raise `ConfigError` ngay lúc dựng thay vì để `Result.value` lặng lẽ luôn `None` — nhưng
-bản thân khoảng trống (LangGraph chưa parse `returns=`) vẫn còn mở, giờ chỉ là bị chặn
-sớm thay vì bị giấu.
+**N-3 (đã sửa) — LangGraph không hỗ trợ `returns=`.** `build_agent()` không có tham số
+này; `Result.value` luôn `None` trên backend đó. N-10 (`Agent(durable=True)`) đã đóng
+phần "âm thầm" trước — `Agent(durable=True, returns=...)` raise `ConfigError` ngay lúc
+dựng thay vì để `Result.value` lặng lẽ luôn `None` — bản vá này đóng nốt bản thân khoảng
+trống, gỡ luôn `ConfigError` đó.
+
+Hoá ra MỘT nửa đã có sẵn, không cần sửa: `_output_format(returns)` (yêu cầu model trả
+đúng hình dạng) đi qua `Agent._asm` — CÙNG `ContextAssembler` cả hai backend dùng chung
+(`lg/adapter.py::ProviderChatModel._generate()` build request từ `self.asm`, không dựng
+request riêng) — nên phía GỬI ĐI đã đúng từ trước, không có gì để sửa ở đó. Nửa thiếu
+thật là phía ĐỌC VỀ: không nơi nào trên backend durable từng gọi
+`run.py::_parse_returns()` để parse câu trả lời cuối.
+
+Sửa: chuyển `_parse_returns` từ method riêng của `RunEngine` thành hàm module-level
+`run.py::parse_returns(want, text)` (không đổi logic, chỉ đổi chỗ ở — `agent.py` VÀ
+`lg/runtime.py` đều đã import từ `run.py`, không có import vòng); `build_agent()` nhận
+thêm `returns=`, thread xuống `Runtime._returns`; `Runtime.finish()` gọi `parse_returns`
+NGAY TRƯỚC khi phát `run.finished` — parity đúng với T-6.4's bản vá cho backend cổ điển
+(nếu parse SAU khi graph đã trả về, `run.finished` sẽ báo `completed` cho một câu trả
+lời `returns=` từ chối, đúng lỗi T-6.4 đã sửa). `agent.py::_state_to_result()` parse LẠI
+(cùng `text`, cùng `returns`, xác định) để dựng `Result.value` thật — giá trị đó không
+bao giờ đi qua state đã checkpoint, vì state phải giữ JSON-checkpointable còn một
+dataclass instance thì không. `test_durable_agent.py` (2 test thay chỗ test cũ khẳng
+định `ConfigError`), `tests/test_n3_durable_returns.py` (3: `run.finished` báo đúng
+`error` cho câu trả lời hỏng thay vì `completed` cũ rồi mới sửa; báo đúng `completed`
+cho câu trả lời tốt; escape hatch `build_agent()` thô cũng parse đúng).
 
 **N-4 (đã sửa) — lỗi provider crash thẳng ra ngoài, cả hai backend.** MỌI lần gọi
 provider thật gặp rate limit/timeout tạm thời crash chương trình gọi nó — không có
@@ -457,7 +477,7 @@ không có quarantine, trên cùng bộ tool. Chênh lệch không có ý nghĩa
 
 ## 7. Còn mở hôm nay — nói thẳng, không giấu
 
-Ba mục, không hơn không kém (N-1/N-5/N-6/N-8 vừa đóng — xem `## 3`):
+Hai mục, không hơn không kém (N-1/N-3/N-5/N-6/N-8 vừa đóng — xem `## 3`):
 
 1. **`AuthEvidence` cho S-11** — mô hình xác thực người duyệt thật (chữ ký kênh,
    `channel_message_id`), chặn một callback CỐ TÌNH khai gian danh tính. Thiết kế riêng,
@@ -465,9 +485,6 @@ Ba mục, không hơn không kém (N-1/N-5/N-6/N-8 vừa đóng — xem `## 3`):
    kiểm toán bên ngoài.
 2. **S-9 phần re-pointing-nhãn** — cần `ServerIdentity`+`fingerprint`, hoãn tới khi quan
    sát được một lần re-pointing MCP thật (cùng lý do K-12).
-3. **N-3 — LangGraph không hỗ trợ `returns=`.** Từ N-10, `Agent(durable=True, returns=...)`
-   raise `ConfigError` ngay lúc dựng thay vì âm thầm để `Result.value` luôn `None` — bản
-   thân khoảng trống (chưa parse) vẫn còn mở, chỉ không còn im lặng.
 
 **S-4 không còn nằm trong danh sách này** — không vì đóng hoàn toàn, mà vì phần còn lại
 của nó không phải một việc CÒN PHẢI LÀM: N-8 (xem `## 3`) đóng đúng nửa engineering thật

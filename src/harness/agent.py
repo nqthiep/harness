@@ -13,7 +13,7 @@ from typing import Any, Callable, Literal, Sequence
 from .budget.ledger import Budget, Ledger
 from .context.assembler import ContextAssembler
 from .context.linter import PrefixWatcher, check_determinism
-from .errors import ConfigError, SyncInAsyncContextError, UnsafeToolSetError
+from .errors import ConfigError, SyncInAsyncContextError, ToolContractError, UnsafeToolSetError
 from .middleware import _run_scope
 from .observe.console import ConsoleExporter
 from .observe.events import EventBus
@@ -178,16 +178,10 @@ class Agent:
         object.__setattr__(self, "max_asks_per_run", max_asks_per_run)
         object.__setattr__(self, "tenant_id", tenant_id)
         object.__setattr__(self, "session_id", session_id)
-        if durable and returns is not None:
-            # N-3, design/07-risks-and-open-issues.md: the durable engine does not parse
-            # a final answer against `returns=` yet — `Result.value` would silently stay
-            # `None` forever, which is exactly the "quiet gap" ADR-022 exists to prevent.
-            raise ConfigError(
-                "durable=True doesn't support returns= yet.\n\n"
-                "  Drop returns= for now, or use durable=False — see N-3 in "
-                "design/07-risks-and-open-issues.md.\n\n"
-                "  -> docs/03-public-api.md"
-            )
+        # N-3, design/07-risks-and-open-issues.md (closed): the durable engine now
+        # parses the final answer against `returns=` too, in `lg/runtime.py::finish()`
+        # before `run.finished` fires — the same guard that used to raise `ConfigError`
+        # here is gone; `durable=True` and `returns=` are no longer mutually exclusive.
         object.__setattr__(self, "durable", durable)
         object.__setattr__(self, "checkpoint", checkpoint)
 
@@ -290,7 +284,7 @@ class Agent:
                             tenant_id=self.tenant_id):
                 out = await graph.ainvoke({"messages": [HumanMessage(message)], "step": 0},
                                           config=config)
-            return _state_to_result(out, before, thread_id)
+            return _state_to_result(out, before, thread_id, returns=self.returns)
         finally:
             await close()
 
@@ -350,6 +344,7 @@ class Agent:
             sensitive=self._grants.sensitive, approve=self.approve,
             checkpointer=checkpointer, exporters=tuple(exporters),
             max_asks_per_run=self.max_asks_per_run, tenant_id=self.tenant_id,
+            returns=self.returns,
         )
 
         async def close() -> None:
@@ -663,7 +658,8 @@ async def _build_checkpointer(checkpoint: Any, name: str) -> Any:
     return saver, conn
 
 
-def _state_to_result(state: Any, before: int, run_id: str) -> Result:
+def _state_to_result(state: Any, before: int, run_id: str,
+                     *, returns: type | None = None) -> Result:
     """Graph state -> the same `Result` the classic backend returns — the point at
     which every LangChain type this run touched stops existing for the caller."""
     from langchain_core.messages import AIMessage, ToolMessage
@@ -695,8 +691,22 @@ def _state_to_result(state: Any, before: int, run_id: str) -> Result:
             called = call_names.get(m.tool_call_id)
             if called and getattr(m, "status", "success") != "error":
                 tools_run.append(called)
+    # N-3: `lg/runtime.py::finish()` already validated this (and downgraded `stop`/
+    # `detail` above if it didn't fit) BEFORE `run.finished` fired — this re-parse just
+    # builds the actual `Result.value` object, which never travels through checkpointed
+    # graph state (state must stay JSON-checkpointable; an arbitrary dataclass instance
+    # is not). `try_run()`/`atry_run()` never raise for a run outcome (IDL-11): if this
+    # ever disagreed with `finish()`'s own check, the disagreement becomes ERROR here
+    # too rather than an unhandled exception out of a method documented not to raise.
+    value = None
+    if stop is StopReason.COMPLETED and returns is not None:
+        from .run import parse_returns
+        try:
+            value = parse_returns(returns, text)
+        except ToolContractError as exc:
+            stop, detail = StopReason.ERROR, str(exc)
     return Result(text, stop, steps, cost, usage, run_id, tainted,
-                 tuple(_lc_to_native(msgs)), None, detail, tuple(tools_run))
+                 tuple(_lc_to_native(msgs)), value, detail, tuple(tools_run))
 
 
 def _output_format(returns: type) -> dict:

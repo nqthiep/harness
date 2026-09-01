@@ -17,7 +17,7 @@ from langgraph.types import interrupt
 
 from ..budget.ledger import Ledger
 from ..dispatch import MAX_ATTEMPTS, RETRY_BACKOFF_MAX_S, RETRY_BACKOFF_S
-from ..errors import BudgetExceeded
+from ..errors import BudgetExceeded, ToolContractError
 from ..idempotency import execute_once, idempotency_key
 from ..memory.inmemory import InMemoryStore
 from ..middleware import _call_scope
@@ -29,7 +29,7 @@ from ..policy.engine import PolicyEngine
 from ..policy.label import Grants, Integrity, Label
 from ..result import Money, StopReason, Usage
 from ..retry import retry_scope
-from ..run import CONTINUE, _MAP
+from ..run import CONTINUE, _MAP, parse_returns
 from ..secrets import redact, redaction_scope
 from ..context.window import CLEARED, EDIT_AT, KEEP_RECENT_STEPS
 from ..models.pricing import MAX_CONTEXT
@@ -42,13 +42,21 @@ class Runtime:
                  price, max_output: int, model_name: str = "claude-opus-5",
                  exporters=(), approve=None, decisions: DecisionLog | None = None,
                  grants: Grants | None = None, max_asks_per_run: int = 20,
-                 tenant_id: str | None = None) -> None:
+                 tenant_id: str | None = None, returns: type | None = None) -> None:
         # T-8.1 — deployment-level config, like `_grants` just below: fixed for this
         # compiled graph, not per-thread. `session_id` needs no separate field here —
         # LangGraph's own `thread_id` (== `run_id` per `_run_id(state)`) already IS the
         # closest thing this backend has to a session identity (a thread spans many
         # `invoke()` calls, the same shape T-8.6's future `Session` resource names).
         self._tenant_id = tenant_id
+        # N-3: deployment-level config, same as `_grants`/`_tenant_id` — one compiled
+        # graph, so one `returns=` for every thread it serves. `finish()` is the only
+        # reader (validates the final answer BEFORE `run.finished` fires, so the event
+        # reports the corrected outcome — parity with `run.py`'s own `_parse_returns`
+        # timing fix, T-6.4). `output_format` itself already reaches the model through
+        # `Agent._asm` (`ContextAssembler`, shared with the classic backend) — this only
+        # closes the OTHER half: nothing ever parsed the answer back on this backend.
+        self._returns = returns
         self._model, self._tools = model, toolset
         self._model_name = model_name
         self._budget = ledger.budget          # the spec; the spend lives per turn
@@ -596,6 +604,26 @@ class Runtime:
         stop = state.get("stop_reason") or "completed"
         self._emit(state, EventKind.STEP_FINISHED, step=state.get("step", 0),
                    stop_reason=stop, tool_calls=[])
+        detail = state.get("detail", "")
+        # N-3, parity with run.py's own `_parse_returns` fix (T-6.4): validated HERE,
+        # before `run.finished` fires below — not left to `agent.py::_state_to_result`
+        # after the graph has already returned, which would report `run.finished` as
+        # COMPLETED even for an answer `returns=` rejects (the exact bug T-6.4 fixed for
+        # the classic backend). `STEP_FINISHED` just above is deliberately NOT
+        # corrected — same asymmetry `run.py` already has (only the final, run-level
+        # outcome gets the corrected value).
+        if stop == "completed" and self._returns is not None:
+            text = ""
+            msgs = state.get("messages") or []
+            if msgs and isinstance(getattr(msgs[-1], "content", None), str):
+                text = msgs[-1].content
+            try:
+                parse_returns(self._returns, text)
+            except ToolContractError as exc:
+                stop, detail = "error", str(exc)
+                self._emit(state, EventKind.ERROR_RAISED, step=state.get("step", 0),
+                           where="returns", type="ToolContractError", message=detail,
+                           retryable=False)
         led = self._ledger(state)
         # Tính lại từ message, không đọc `state["tainted"]" — L-3. Cái key đó chỉ còn là
         # quan sát cho người gọi ngoài (parity, event), không node nào trong graph đọc nó
@@ -610,7 +638,7 @@ class Runtime:
                    input_tokens=u.input_tokens, output_tokens=u.output_tokens,
                    cache_read_tokens=u.cache_read_input_tokens,
                    cache_creation_tokens=u.cache_creation_input_tokens)
-        return {"stop_reason": stop, "spent_usd": str(led.spent.decimal)}
+        return {"stop_reason": stop, "detail": detail, "spent_usd": str(led.spent.decimal)}
 
     def _manage(self, messages, state) -> list:
         """Context growth, ported from T-2.6 (docs/07-cost.md §3).

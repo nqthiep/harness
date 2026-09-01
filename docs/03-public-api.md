@@ -210,15 +210,17 @@ agent.run("they're asking for a refund")   # same session_id -> picks up mid-con
 
 | Not supported when `durable=True` | What happens | Use instead |
 |---|---|---|
-| `returns=` | `ConfigError` at construction (N-3) | `durable=False`, or parse the text answer yourself |
 | `.chat()` | `ConfigError` | Call `run()`/`try_run()` repeatedly with the same `session_id=` |
 | `.resume(transcript)` | `ConfigError` | Nothing to do — call `run()` again with the same `session_id=` |
 | `on_delta=` (token streaming) | `ConfigError` | `durable=False` for a streamed run |
-| Per-tool timeout (N-1) | Not enforced | Keep tool implementations bounded themselves for now |
 
-All five are the LangGraph backend's own pre-existing limits (`design/07-risks-and-open-issues.md`),
+All three are the LangGraph backend's own pre-existing limits (`design/07-risks-and-open-issues.md`),
 now reachable from the primary surface instead of only from the escape hatch — refused
-loudly, at the point they'd matter, rather than silently downgraded.
+loudly, at the point they'd matter, rather than silently downgraded. `returns=` (N-3) and
+a per-tool timeout (N-1) used to be in this table too — both closed: `returns=` is parsed
+in `lg/runtime.py::finish()` before `run.finished` fires, same as the classic backend;
+every tool call is clamped by `Ledger.tool_timeout()`, same helper the classic backend's
+`dispatch.py::_invoke` already used.
 
 ### 3.6 `harness.middleware` — cross-cutting behavior without touching a seam per concern
 
