@@ -26,6 +26,17 @@ không phải "sửa đại chỗ đầu tiên".
 người viết agent tự khai, với đầy đủ ý thức về những gì `effect="danger"` kéo theo (duyệt
 tay, không chạy song song, và luật lethal-trifecta lúc dựng agent). Nhập module này không
 bao giờ tự nó tạo ra bộ ba chết người.
+
+**Vì sao `refresh_codebase_docs` là một tool tường minh, không phải một bước tự động
+trước mỗi run.** OpenWiki "code mode" sinh wiki kiến trúc (`openwiki/`) với bằng chứng
+gắn dòng code cụ thể — khác tài liệu viết tay, nó tự đối chiếu lại khi code đổi nên
+không lỗi thời âm thầm. Nhưng chạy nó tốn một lượt gọi model RIÊNG của chính OpenWiki
+(tiền, API key, thời gian) — tự động hoá trước mỗi phiên nghĩa là trả phí đó cho mọi
+run kể cả khi không ai cần đọc lại wiki, trái với mọi seam khác trong harness (không gì
+chạy nếu không có ai chủ động gọi tới nó). Nên đây là một tool y hệt `run_tests` hay
+`git_commit`: có mặt khi cần, im lặng khi không ai gọi. `openwiki` không phải dependency
+của harness (không có trong `pyproject.toml`, cùng khuôn `viking` extra của ADR-035) —
+máy không cài thì tool trả lỗi đọc được, không phải một trường hợp đặc biệt.
 """
 from __future__ import annotations
 
@@ -116,7 +127,7 @@ class CodeTools:
         return f"{head}\n{body}" if body else head
 
     def tools(self) -> list:
-        """Bảy tool, effect đã đặt sẵn — xem docstring module cho từng quyết định."""
+        """Mười một tool, effect đã đặt sẵn — xem docstring module cho từng quyết định."""
         me = self
 
         @tool(effect="read")
@@ -265,5 +276,32 @@ class CodeTools:
                 return add
             return await me._run(["git", "commit", "-m", message])
 
+        @tool(effect="write")
+        async def refresh_codebase_docs() -> str:
+            """Cập nhật wiki mô tả kiến trúc repo (thư mục `openwiki/`) qua OpenWiki
+            "code mode" — mỗi khẳng định gắn bằng chứng dòng code cụ thể, tự đối chiếu
+            lại khi code đổi, nên KHÔNG lỗi thời âm thầm như tài liệu viết tay.
+
+            Tuỳ chọn thật sự: `openwiki` không phải dependency của harness (không có
+            trong `pyproject.toml` — cùng khuôn `viking` extra, ADR-035: chạy như tiến
+            trình ngoài, không vendor vào thư viện). Máy không cài `openwiki` thì tool
+            này trả lỗi "not found" đọc được — như mọi lỗi khác trong file này, không
+            phải một trường hợp đặc biệt phải xử lý riêng.
+
+            Không tự động chạy — chỉ khi MODEL chủ động gọi (đúng thứ đã bàn kỹ trước
+            khi thêm tool này): tự động chạy trước mỗi phiên sẽ tốn một lượt gọi model
+            RIÊNG của chính OpenWiki (tiền, API key, thời gian) cho mọi run kể cả khi
+            không ai cần đọc lại wiki — trái với mọi seam khác trong harness, vốn không
+            gì chạy nếu không có ai gọi tới nó.
+
+            `--init` lần đầu (chưa có `openwiki/`), `--update` các lần sau — heuristic
+            dựa trên sự tồn tại của thư mục, không phải tri thức chắc chắn về hành vi
+            nội bộ của CLI; sai thì `openwiki` tự báo lỗi, đọc được ngay trong kết quả
+            trả về (IDL-30, fail visible) chứ không âm thầm làm sai việc.
+            """
+            cmd = ["openwiki", "--update" if (me.root / "openwiki").is_dir() else "--init"]
+            return await me._run(cmd)
+
         return [list_files, read_source, search_code, outline, write_source,
-                edit_source, run_tests, git_status, git_diff, git_commit]
+                edit_source, run_tests, git_status, git_diff, git_commit,
+                refresh_codebase_docs]

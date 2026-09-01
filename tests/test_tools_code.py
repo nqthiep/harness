@@ -17,6 +17,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from shutil import which
 
 sys.path.insert(0, "src")
 
@@ -159,7 +160,8 @@ class PhanLoaiEffectNoiDungSuThat(Base):
         for name in ("list_files", "read_source", "search_code", "outline",
                      "git_status", "git_diff"):
             self.assertIs(got[name], Effect.READ, name)
-        for name in ("write_source", "edit_source", "run_tests", "git_commit"):
+        for name in ("write_source", "edit_source", "run_tests", "git_commit",
+                     "refresh_codebase_docs"):
             self.assertIs(got[name], Effect.WRITE, name)
 
     def test_khong_co_tool_danger_nao_trong_module_nay(self):
@@ -284,6 +286,58 @@ class QuetBiCatBoPhaiNoiRo(Base):
         os.makedirs(os.path.join(d.name, "pkg"))
         Path(d.name, "pkg", "a.py").write_text(SRC, encoding="utf-8")
         return d.name
+
+
+class GiaLapSandbox:
+    """Ghi lại đúng lệnh được gọi, không chạy gì thật — dùng để kiểm heuristic
+    `--init`/`--update` mà không phụ thuộc máy test có cài `openwiki` hay không."""
+    def __init__(self):
+        self.calls: list = []
+
+    async def run(self, cmd, *, cwd, env, timeout):
+        self.calls.append(tuple(cmd))
+        from harness.sandbox import Completed
+        return Completed(0, "ok", "", False)
+
+
+class CapNhatWikiBangOpenwiki(Base):
+    """`refresh_codebase_docs`: tool tường minh (chọn theo yêu cầu người dùng — "cách
+    tường minh như các tool khác"), model phải tự gọi, không có gì tự động chạy nó."""
+
+    def test_chua_co_thu_muc_openwiki_thi_goi_init(self):
+        sb = GiaLapSandbox()
+        ct = CodeTools(self.root, sandbox=sb)
+        T = {t.name: t for t in ct.tools()}
+        asyncio.run(T["refresh_codebase_docs"].fn())
+        self.assertEqual(sb.calls, [("openwiki", "--init")])
+
+    def test_da_co_thu_muc_openwiki_thi_goi_update_khong_phai_init_lai(self):
+        os.makedirs(os.path.join(self.root, "openwiki"))
+        sb = GiaLapSandbox()
+        ct = CodeTools(self.root, sandbox=sb)
+        T = {t.name: t for t in ct.tools()}
+        asyncio.run(T["refresh_codebase_docs"].fn())
+        self.assertEqual(sb.calls, [("openwiki", "--update")])
+
+    def test_effect_la_write(self):
+        self.assertIs(self.T["refresh_codebase_docs"].effect, Effect.WRITE)
+
+    def test_khong_co_openwiki_tren_may_thi_bao_loi_doc_duoc_khong_crash(self):
+        """Không mock: máy test này (như hầu hết máy) không cài `openwiki`. IDL-30 fail
+        visible — `Subprocess.run` bắt `FileNotFoundError` và trả về exit 127 đọc được,
+        không phải traceback hay im lặng làm sai việc."""
+        if which("openwiki") is not None:
+            self.skipTest("máy này có cài openwiki thật, bỏ qua test giả định vắng mặt")
+        out = self.call("refresh_codebase_docs")
+        self.assertTrue(out.startswith("exit 127"), out)
+
+    def test_khong_tu_dong_chay_chi_khi_model_goi(self):
+        """Chọn theo yêu cầu người dùng: cách tường minh như mọi tool khác trong
+        `CodeTools` — không có móc nào tự gọi `refresh_codebase_docs` khi tạo `CodeTools`
+        hay khi lấy danh sách tool; nó chỉ chạy khi `.fn()` được gọi trực tiếp."""
+        sb = GiaLapSandbox()
+        CodeTools(self.root, sandbox=sb).tools()
+        self.assertEqual(sb.calls, [], "tạo CodeTools/lấy tools() không được tự chạy gì")
 
 
 def _co_git() -> bool:

@@ -115,7 +115,7 @@ lead = Agent(name="Lead", job="...", tools=[*code.tools(), git_push],
 | tool | effect | why |
 |---|---|---|
 | `list_files`, `read_source`, `search_code`, `outline`, `git_status`, `git_diff` | `read` | look, don't change anything the agent can't just look at again |
-| `write_source`, `edit_source`, `git_commit`, `run_tests` | `write` | changes something, but undoable (`git reset`, overwrite again) |
+| `write_source`, `edit_source`, `git_commit`, `run_tests`, `refresh_codebase_docs` | `write` | changes something, but undoable (`git reset`, overwrite again) |
 | `git_push` — **yours, not the module's** | `danger` | not reliably undoable once someone else has pulled |
 
 Two of those deserve their reasons said out loud.
@@ -135,6 +135,14 @@ instructions, not a silent edit of the first match.
 agent reads an entire file to find one function, paying for all of it, every time.
 `outline` returns the class/def map with line numbers; `search_code` returns `file:line`
 hits.
+
+**`refresh_codebase_docs` shells out to [OpenWiki](https://github.com/langchain-ai/openwiki)
+"code mode"** (`openwiki --init`/`--update`, not a harness dependency — install it yourself
+if you want this tool to do anything) to regenerate a `openwiki/` wiki whose claims cite
+exact `repo://path#Lx-Ly` evidence, so it can't go stale the way hand-written docs do. It is
+a tool exactly like `run_tests` or `git_commit`: nothing calls it but the model, on purpose —
+auto-running it before every session would spend a whole extra model call of OpenWiki's own
+on every run, whether or not anyone needed the wiki refreshed.
 
 A single `run_shell(cmd: str)` has to be classified `danger` for the worst command it
 could ever run — every `git diff`, every `ls`, every test run then needs a human's "yes."

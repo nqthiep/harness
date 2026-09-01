@@ -2454,6 +2454,56 @@ from 718), ruff clean, mypy unchanged.
 
 ---
 
+### ADR-072 — `refresh_codebase_docs`: OpenWiki "code mode" as an explicit `CodeTools` tool, never an automatic step
+
+**Status:** Accepted
+
+**Context.** Evaluated two external candidates for helping a coding agent (or its human)
+keep architecture documentation from going stale: `volcengine/OpenViking` (AGPLv3, a
+context-database/agent-memory framework with its own competing agent runtime — rejected;
+its license and its "VikingBot" framework both conflict with ADR-001's own-agent-loop
+stance, and the user explicitly ruled it out) and `langchain-ai/openwiki` (MIT, a CLI that
+only reads a repo and writes a wiki, never edits source). OpenWiki ships two modes: personal
+mode ingests Notion/Gmail/local-git/etc. into a per-machine, non-git-tracked wiki with
+explicitly no evidence verification for connector-derived facts; code mode reads the
+current repo only, writes a git-trackable `openwiki/` directory, and backs every claim with
+a `repo://path#Lx-Ly` citation that gets reconciled against the code on `--update`. The user
+asked to use code mode "như một thành phần mặc định khi harness hoạt động như một coding
+agent" (as a default component when the harness acts as a coding agent), then, given a
+choice between passive documentation, an explicit tool, or fully-automatic invocation,
+chose explicit: "cách tường minh như các tool khác" (the explicit way, like the other
+tools).
+
+**Decision.** Add `refresh_codebase_docs` to `CodeTools.tools()`, `effect="write"`
+(undoable via `git reset`/`git diff`, same class as `write_source`/`git_commit`/
+`run_tests` — not `danger`; it never pushes or touches anything outside `root`). It runs
+`openwiki --init` when `root/openwiki/` does not yet exist, `openwiki --update` otherwise,
+through the existing `me._run()` helper — same confinement, same `Sandbox`, same `PASS_ENV`
+allowlist as every other tool in the module, no new mechanism. `openwiki` is **not** added
+to `pyproject.toml`: it runs as an external process, the same arrangement ADR-035 already
+uses for `viking`'s optional extra. A machine without it installed gets `Subprocess`'s
+existing `FileNotFoundError` → `exit 127` handling (IDL-30, fail visible) — not a new
+special case.
+
+Explicit, not automatic, because automatic means paying for it on every run whether or not
+anyone needs the wiki refreshed: OpenWiki's own `--update` pass is itself a model call
+(tokens, an API key, wall-clock time), and no other seam in this harness runs anything
+without something — model or human — choosing to call it. An agent author who wants it to
+run every session can still say so, the same way they already opt into `run_tests` or
+`git_commit` running unattended: by having the model call it, or by building an agent whose
+job description tells it to.
+
+**Test.** `tests/test_tools_code.py::CapNhatWikiBangOpenwiki` — five tests: the `--init`
+vs `--update` heuristic (verified against a fake `Sandbox` that records the exact argv,
+regression-checked by reverting the heuristic to a hardcoded `--init` and confirming the
+`--update` test goes red), `effect` is `Effect.WRITE`, real (non-mocked) fail-visible
+behavior on a machine without `openwiki` installed (`exit 127`, matching the module's
+`ChayLenhThat` class's own "don't mock, let the real environment error show" discipline),
+and that constructing `CodeTools`/calling `.tools()` never invokes the sandbox at all —
+the tool only runs when something calls `.fn()` directly.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
@@ -2518,3 +2568,4 @@ from 718), ruff clean, mypy unchanged.
 | IDL-58 | A path-confining tool is constructed with its root; a module-level tool function confines to the CWD or not at all | `confine()` existed unused for two milestones because the tools that needed it had no root to pass — the missing constructor was the bug, not the missing call (ADR-065) |
 | IDL-59 | An escalating policy escalates on the SIGNAL, never on "the cheaper rung ran out of work" | Editing always has one more stale result to blank, so compaction gated on that would never have run once (ADR-066) |
 | IDL-60 | Context size is measured over the whole request payload, arguments included — never over `message.content` alone | A LangChain `AIMessage` carrying only tool calls has empty `content`; the arguments are the part that never gets blanked, and they measured as zero (ADR-066) |
+| IDL-61 | An external doc-generation CLI (`openwiki`) is wired in as a tool the model must call, never a step the harness runs on its own | Every other seam in this library runs on nothing but an explicit call; `--update` is itself a paid model call, so auto-running it would bill every run for a wiki nobody asked to re-read (ADR-072) |
