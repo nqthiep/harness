@@ -12,7 +12,7 @@ from .middleware import (Middleware, ModelCall, RunIdentity, ShortCircuit,
                         ToolInvocation, with_middleware)
 from .models.base import ModelProvider
 from .policy.base import Ruling, Policy, ToolCall, Verdict
-from .policy.decision import Actor, Approval
+from .policy.decision import Actor, Approval, AuthEvidence
 from .result import Money, Result, StopReason, Step, Usage
 from .run import RunContext
 from .secrets import Secret, safe_for_display
@@ -24,7 +24,7 @@ __version__ = "0.1.0.dev0"
 __all__ = [
     "Agent", "tool", "Result", "StopReason", "Usage", "Step", "Money", "RunContext",
     "Effect", "Secret", "safe_for_display", "Policy", "Verdict", "Ruling", "ToolCall",
-    "ToolSpec", "Actor", "Approval", "Session", "SessionExpiredError",
+    "ToolSpec", "Actor", "Approval", "AuthEvidence", "Session", "SessionExpiredError",
     "Budget", "DEFAULT_BUDGET", "ModelProvider", "Middleware", "ModelCall",
     "ToolInvocation", "RunIdentity", "ShortCircuit", "with_middleware",
     "HarnessError", "ConfigError", "MissingEffectError", "ToolSchemaError",

@@ -21,6 +21,7 @@ from .middleware import _call_scope
 from .observe.events import EventKind
 from .policy.base import Ruling, ToolCall, Verdict
 from .policy.builtin import check_flow, emits_of
+from .policy.decision import actor_json, evidence_json
 from .policy.label import Integrity, Label
 from .secrets import redact
 from .tools import EFFECT_PROFILES, ToolSpec
@@ -105,20 +106,26 @@ class Dispatcher:
             # can make it call a `write` tool 40 times with slightly different args, 40
             # ASKs later the 41st gets approved on reflex. A cap that DENIES once crossed,
             # rather than silently auto-approving, is the fail-closed direction.
+            actor = evidence = None
             if d.verdict is Verdict.ASK and self._e._asks > self._e._a.max_asks_per_run:
                 d = Ruling(Verdict.DENY,
                           f"more than {self._e._a.max_asks_per_run} approval requests in "
                           f"this run — refusing rather than risk reflex-approval fatigue",
                           "ask-cap")
             else:
-                # Actor discarded here: the classic loop has no DecisionLog to record
-                # into (agent.py builds/tears down state per atry_run(), nothing persists
-                # a grant across calls the way the LangGraph backend's checkpointed
-                # DecisionLog does) — S-11's reported-actor channel has nowhere to land.
-                d, _actor = await self._e._engine.resolve(d, call, ctx, self._e._a.approve)
+                # S-11, đã sửa — the classic loop has no `DecisionLog` to record a
+                # `Decision` into (agent.py builds/tears down state per `atry_run()`,
+                # nothing persists a grant across calls the way the LangGraph backend's
+                # checkpointed `DecisionLog` does), but `POLICY_DECIDED` is this
+                # backend's own audit trail (the transcript IS the record here) — actor/
+                # evidence now ride along in it instead of being discarded.
+                d, actor, evidence = await self._e._engine.resolve(
+                    d, call, ctx, self._e._a.approve,
+                    require_evidence=self._e._a.require_approval_evidence)
             self._e._bus.emit(EventKind.POLICY_DECIDED, step=step, tool=b["name"],
                            call_id=b["id"], verdict=d.verdict.name, reason=d.reason,
-                           policy=d.policy)
+                           policy=d.policy,
+                           actor=actor_json(actor), evidence=evidence_json(evidence))
             planned.append((b, spec, d))
 
         # I-3: every tool_use gets exactly one tool_result, in the model's call order.

@@ -26,7 +26,8 @@ from ..middleware import _call_scope
 from ..observe.events import EventBus, EventKind
 from ..policy.base import Ruling, ToolCall, Verdict
 from ..policy.builtin import emits_of
-from ..policy.decision import POLICY_ENGINE_VERSION, Actor, Decision, DecisionLog, Scope
+from ..policy.decision import (POLICY_ENGINE_VERSION, Actor, AuthEvidence, Decision,
+                              DecisionLog, Scope, actor_json, evidence_json)
 from ..policy.engine import PolicyEngine
 from ..policy.label import Grants, Integrity, Label
 from ..result import Money, StopReason, Usage
@@ -44,7 +45,8 @@ class Runtime:
                  price, max_output: int, model_name: str = "claude-opus-5",
                  exporters=(), approve=None, decisions: DecisionLog | None = None,
                  grants: Grants | None = None, max_asks_per_run: int = 20,
-                 tenant_id: str | None = None, returns: type | None = None) -> None:
+                 tenant_id: str | None = None, returns: type | None = None,
+                 require_approval_evidence: bool = False) -> None:
         # T-8.1 — deployment-level config, like `_grants` just below: fixed for this
         # compiled graph, not per-thread. `session_id` needs no separate field here —
         # LangGraph's own `thread_id` (== `run_id` per `_run_id(state)`) already IS the
@@ -92,6 +94,11 @@ class Runtime:
         # `_run_tools`'s own comment at the call site for what this actually closes.
         self._idem_cache: dict[str, InMemoryStore] = {}
         self._approve = approve
+        # S-11, đã sửa — deployment-level config, same as `_returns`/`_grants` just
+        # above: one compiled graph, one policy for every thread it serves. Read by
+        # `_regate`/`approval_gate` at each `.resolve()` call — see there for what it
+        # actually enforces.
+        self._require_approval_evidence = require_approval_evidence
         # Đọc bởi `_run_tools` khi gắn nhãn L-1 lên kết quả tool — S-16/S-3. Cấu hình
         # mức deployment, không đổi giữa các run, nên sống trên object này là an toàn
         # (khác `Ledger`/nhãn của một run, phải sống trong state — xem R-4 ở dưới).
@@ -335,6 +342,7 @@ class Runtime:
             ctx = _Ctx(label=self._effective_label(state), safety=self._safety(state),
                       tenant_id=self._tenant_id)
             reported_actor: Actor | None = None
+            reported_evidence: AuthEvidence | None = None
             if asks > self._max_asks_per_run:
                 # Approval fatigue is a channel the model controls — deny once the cap is
                 # crossed rather than let the (asks+1)-th request get approved on reflex.
@@ -354,11 +362,14 @@ class Runtime:
                 d = Ruling(Verdict.ALLOW if ok else Verdict.DENY,
                              "approved" if ok else "declined by approver", "approval")
             else:
-                d, reported_actor = asyncio.run(self._engine_for(_run_id(state)).resolve(
-                    Ruling(Verdict.ASK, p["reason"], "policy"), call, ctx, self._approve))
+                d, reported_actor, reported_evidence = asyncio.run(
+                    self._engine_for(_run_id(state)).resolve(
+                        Ruling(Verdict.ASK, p["reason"], "policy"), call, ctx, self._approve,
+                        require_evidence=self._require_approval_evidence))
             self._emit(state, EventKind.POLICY_DECIDED, step=state.get("step", 0),
                        tool=p["tool"], call_id=p["call"]["id"], verdict=d.verdict.name,
-                       reason=d.reason, policy=d.policy)
+                       reason=d.reason, policy=d.policy,
+                       actor=actor_json(reported_actor), evidence=evidence_json(reported_evidence))
             # Phê duyệt là một SỰ KIỆN, không phải một cờ. Ghi nó ra sổ, scoped tới đúng
             # lời gọi này: `call_id` khác None nên grant không sống quá lượt — "duyệt vĩnh
             # viễn" không biểu diễn được (policy/decision.py).
@@ -367,14 +378,18 @@ class Runtime:
                 scope=Scope(tool=p["tool"], args=dict(p["call"].get("args", {})),
                             server=spec.server if spec is not None else None,
                             call_id=p["call"]["id"]),
-                # S-11: `reported_actor` is real identity ONLY when the `approve=`
-                # callback returned `Approval(ok, actor=...)` instead of a plain `bool` —
-                # the common case still falls back to this placeholder, which is a
-                # self-declared "someone called the callback", not verified identity
-                # (07-risks: the full fix needs AuthEvidence, not built here).
+                # S-11, đã sửa: `reported_actor` is real identity ONLY when the
+                # `approve=` callback returned `Approval(ok, actor=...)` instead of a
+                # plain `bool` — the common case still falls back to this placeholder,
+                # which is a self-declared "someone called the callback", not verified
+                # identity. `reported_evidence` (also from `Approval`) is the proof, when
+                # the callback supplied one — `require_approval_evidence=True` is what
+                # actually enforces it being present for a `human` actor (`resolve()`
+                # already downgraded `d.verdict` to DENY above if it wasn't).
                 actor=(reported_actor if reported_actor is not None else
                        (Actor.human("approver", via="callback")
                         if self._approve is not None else Actor.policy(d.policy))),
+                evidence=reported_evidence,
                 decided_at=_now(), expires_at=None, run_id=_run_id(state), reason=d.reason,
                 policy_version=POLICY_ENGINE_VERSION))
             out.append({**p, "verdict": int(d.verdict), "reason": d.reason})

@@ -36,7 +36,8 @@ _MISSING: Any = object()
 class Agent:
     __slots__ = ("name", "job", "toolset", "model", "effort", "budget", "safety",
                  "approve", "policies", "allowed_hosts", "provider", "returns",
-                 "max_parallel_tools", "max_asks_per_run", "transcript", "exporters",
+                 "max_parallel_tools", "max_asks_per_run", "require_approval_evidence",
+                 "transcript", "exporters",
                  "tenant_id", "session_id", "durable", "checkpoint",
                  "_asm", "_watch", "_as_tool_budget", "_grants", "_durable_thread")
 
@@ -59,6 +60,7 @@ class Agent:
     returns: type | None
     max_parallel_tools: int
     max_asks_per_run: int
+    require_approval_evidence: bool
     transcript: str | None
     exporters: tuple[Any, ...]
     tenant_id: str | None
@@ -100,6 +102,12 @@ class Agent:
         exporters: Sequence[Any] = (),
         max_parallel_tools: int = 8,
         max_asks_per_run: int = 20,
+        # S-11, đã sửa — off by default (a callback that never supplies `AuthEvidence`
+        # keeps working exactly as before, same backward-compat discipline every other
+        # opt-in gate here follows). ON, `PolicyEngine.resolve()` DENIES a `human` actor
+        # reported with no evidence instead of trusting a bare self-declared name — see
+        # `policy/decision.py::AuthEvidence`, `design/07-risks-and-open-issues.md` S-11.
+        require_approval_evidence: bool = False,
         # T-8.1, docs/17-research-alignment.md M8 — envelope v1 metadata. No natural
         # default exists for either (no multi-tenancy, no Session resource — T-8.6 —
         # built yet): `None` unless the caller supplies one, stamped onto every Event
@@ -176,6 +184,7 @@ class Agent:
         object.__setattr__(self, "exporters", tuple(exporters))
         object.__setattr__(self, "max_parallel_tools", max_parallel_tools)
         object.__setattr__(self, "max_asks_per_run", max_asks_per_run)
+        object.__setattr__(self, "require_approval_evidence", require_approval_evidence)
         object.__setattr__(self, "tenant_id", tenant_id)
         object.__setattr__(self, "session_id", session_id)
         # N-3, design/07-risks-and-open-issues.md (closed): the durable engine now
@@ -345,6 +354,7 @@ class Agent:
             checkpointer=checkpointer, exporters=tuple(exporters),
             max_asks_per_run=self.max_asks_per_run, tenant_id=self.tenant_id,
             returns=self.returns,
+            require_approval_evidence=self.require_approval_evidence,
         )
 
         async def close() -> None:
@@ -532,7 +542,8 @@ class Agent:
         base = {k: getattr(self, k) for k in
                 ("name", "job", "model", "effort", "returns", "budget", "safety", "approve",
                  "policies", "allowed_hosts", "provider", "max_parallel_tools",
-                 "max_asks_per_run", "tenant_id", "session_id", "transcript", "exporters",
+                 "max_asks_per_run", "require_approval_evidence",
+                 "tenant_id", "session_id", "transcript", "exporters",
                  "durable", "checkpoint")}
         base["tools"] = list(self.toolset)
         base["accepts_tainted"] = self._grants.accepts_tainted

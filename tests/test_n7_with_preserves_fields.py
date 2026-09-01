@@ -37,6 +37,13 @@ class WithGiuLaiMoiTruong(unittest.TestCase):
         b = a.with_(name="B")
         self.assertEqual(b._grants.sensitive, frozenset({"read_db"}))
 
+    def test_require_approval_evidence_khong_bi_mat(self):
+        """S-11: cùng lớp lỗi N-7 sửa — một trường mới thêm vào `Agent` phải được liệt
+        kê trong `base` dict của `with_()`, không thì mất y hệt bốn trường N-7 tìm ra."""
+        a = Agent(name="A", job="j", require_approval_evidence=True)
+        b = a.with_(name="B")
+        self.assertTrue(b.require_approval_evidence)
+
     def test_override_tuong_minh_van_hoat_dong(self):
         """`with_()` phải vẫn cho GHI ĐÈ khi caller cố tình muốn — không phải khoá
         cứng bốn trường này lại."""

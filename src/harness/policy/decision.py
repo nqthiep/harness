@@ -47,6 +47,32 @@ class Actor:
 
 
 @value
+class AuthEvidence:
+    """S-11, đã sửa — bằng chứng đính kèm một `Actor`, không phải một trường thêm để
+    trang trí. review-security.md's "sửa tối thiểu" tự đặt sàn: ít nhất `channel_message_id`
+    + `principal` DO CHÍNH KÊNH TRẢ VỀ (không phải do callback tự gõ tay) — sàn đó là
+    BẮT BUỘC ở đây (`channel_message_id`/`principal` không có default), `signature`/
+    `verified_at` là phần THÊM khi kênh thật sự ký được (Slack request signing, một OAuth
+    session token, ...).
+
+    **Ranh giới trung thực, nói thẳng thay vì giấu**: harness không xác thực CHỮ KÝ nào ở
+    đây — không phụ thuộc SDK của một kênh cụ thể (Slack/Twilio/...) cho một cơ chế đáng
+    lẽ generic. Việc xác thực chữ ký (nếu kênh có) là việc của CHÍNH `approve=` callback,
+    bên duy nhất giữ secret của kênh đó — cùng triết lý provider-seam xuyên suốt thiết kế
+    này (`Policy`, `approve=` chính nó): harness định nghĩa HỢP ĐỒNG, người triển khai điền
+    nó. Cái `AuthEvidence` đóng được, tách biệt với xác thực chữ ký: buộc một callback
+    KHÔNG THỂ báo danh tính `human` bằng một chuỗi trần trụi nữa nếu deployment bật
+    `require_approval_evidence=True` — nó phải chủ động dựng một bản ghi bằng chứng đầy
+    đủ, không phải chỉ gõ một cái tên.
+    """
+    channel: str
+    channel_message_id: str
+    principal: str
+    signature: bytes | None = None
+    verified_at: datetime | None = None
+
+
+@value
 class Approval:
     """Bọc trả về TÙY CHỌN cho callback `approve=` — S-11.
 
@@ -57,14 +83,14 @@ class Approval:
     trả về) — `Decision.actor` ghi đúng danh tính đó thay vì placeholder chung
     `Actor.human("approver", via="callback")` mọi callback trả `bool` đều nhận.
 
-    Vẫn chưa phải bằng chứng đã xác thực (`AuthEvidence` — chữ ký kênh, `channel_message_id`
-    — mà review đề xuất là bản sửa đầy đủ): đây chỉ mở đường cho callback TỰ báo danh tính
-    thật, không ép buộc nó phải chứng minh. Rẻ hơn, và đóng đúng phần "harness không có
-    cách nào nhận identity" — phần "callback tự khai gian" vẫn còn nguyên, ghi lại ở
-    `07-risks`.
+    `evidence=` (S-11, đã sửa) là bằng chứng thật đi kèm — xem `AuthEvidence`. Không bắt
+    buộc theo mặc định (một callback vẫn được phép chỉ báo `actor=` không kèm bằng chứng,
+    y hệt hôm nay); `Agent(require_approval_evidence=True)` là nơi một deployment BẬT bắt
+    buộc, DENY một actor `human` không kèm `evidence` thay vì âm thầm tin.
     """
     ok: bool
     actor: "Actor | None" = None
+    evidence: "AuthEvidence | None" = None
 
 
 @value
@@ -128,6 +154,10 @@ class Decision:
     #: ALLOW was granted under policy-engine v1.0" apart from a future v1.1 that changed
     #: how a verdict composes.
     policy_version: str | None = None
+    #: S-11, đã sửa — bằng chứng đi cùng `actor`, khi `approve=` callback trả về một.
+    #: `None` là hợp lệ (chưa bắt buộc theo mặc định) — audit log giờ TỰ NÓI ĐƯỢC một
+    #: `Decision` có bằng chứng hay chỉ là lời tự khai, thay vì phải đoán.
+    evidence: "AuthEvidence | None" = None
 
     def __post_init__(self) -> None:
         if self.verdict is Verdict.ASK:
@@ -175,3 +205,25 @@ class DecisionLog:
                 continue
             worst = d.verdict if worst is None else max(worst, d.verdict)
         return Verdict.ASK if worst is None else worst
+
+
+def actor_json(actor: "Actor | None") -> dict[str, Any] | None:
+    """S-11, đã sửa — `POLICY_DECIDED`'s payload shape for `actor`, one definition both
+    backends share (rather than each hand-rolling the same three fields)."""
+    if actor is None:
+        return None
+    return {"kind": actor.kind, "id": actor.id, "via": actor.via}
+
+
+def evidence_json(evidence: "AuthEvidence | None") -> dict[str, Any] | None:
+    """S-11, đã sửa — same reasoning as `actor_json`. `signature` is reported as
+    presence only (`has_signature`), not the raw bytes: every event payload must be
+    JSON-serializable (05 §1) and a transcript is not the place to duplicate a
+    cryptographic signature verbatim — `Decision.evidence` (durable backend's
+    `DecisionLog`) is where the full `AuthEvidence`, signature included, actually
+    lives."""
+    if evidence is None:
+        return None
+    return {"channel": evidence.channel, "channel_message_id": evidence.channel_message_id,
+            "principal": evidence.principal, "has_signature": evidence.signature is not None,
+            "verified_at": evidence.verified_at.isoformat() if evidence.verified_at else None}

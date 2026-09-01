@@ -40,6 +40,7 @@ import json
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Mapping
 
 from starlette.applications import Starlette
@@ -52,7 +53,7 @@ from ..idempotency import execute_once
 from ..memory.base import Store
 from ..memory.inmemory import InMemoryStore
 from ..observe.events import Event, to_dict
-from ..policy.decision import Actor, Approval
+from ..policy.decision import Actor, Approval, AuthEvidence
 from ..result import Result, StopReason
 from ..secrets import redact
 
@@ -104,6 +105,29 @@ def _result_json(result: Result) -> dict[str, Any]:
     }
 
 
+def _evidence_from_body(raw: Any) -> "AuthEvidence | None":
+    """S-11, đã sửa — `POST .../approvals/{call_id}`'s optional `evidence` object.
+    `None` means the caller supplied nothing (today's behavior, unchanged); a dict
+    missing `channel`/`channel_message_id`/`principal` (`AuthEvidence`'s own required
+    floor — review-security.md's "sửa tối thiểu") is a 400, not a silent `None` — a
+    caller that tried and typo'd a field should not read back as one that never tried.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ValueError("'evidence' must be a JSON object")
+    missing = [k for k in ("channel", "channel_message_id", "principal") if not raw.get(k)]
+    if missing:
+        raise ValueError(f"'evidence' is missing {', '.join(missing)}")
+    verified_at = raw.get("verified_at")
+    signature = raw.get("signature")
+    return AuthEvidence(
+        channel=raw["channel"], channel_message_id=raw["channel_message_id"],
+        principal=raw["principal"],
+        signature=bytes.fromhex(signature) if signature else None,
+        verified_at=datetime.fromisoformat(verified_at) if verified_at else None)
+
+
 @dataclass
 class _Run:
     id: str
@@ -114,8 +138,9 @@ class _Run:
     result: Result | None = None
     error: str | None = None
     task: "asyncio.Task[None] | None" = None
-    #: call_id -> Future[(ok, approved_by)] — see `_bridge_approvals`.
-    pending: "dict[str, asyncio.Future[tuple[bool, str | None]]]" = field(default_factory=dict)
+    #: call_id -> Future[(ok, approved_by, evidence)] — see `_bridge_approvals`.
+    pending: "dict[str, asyncio.Future[tuple[bool, str | None, AuthEvidence | None]]]" = \
+        field(default_factory=dict)
     pending_info: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def snapshot(self) -> dict[str, Any]:
@@ -136,23 +161,30 @@ def _bridge_approvals(run: _Run):
     already awaits, just fed by an HTTP request instead of an in-process callback.
     """
     async def approve(call: Any, ctx: Any) -> Approval:
-        fut: "asyncio.Future[tuple[bool, str | None]]" = asyncio.get_running_loop().create_future()
+        fut: "asyncio.Future[tuple[bool, str | None, AuthEvidence | None]]" = \
+            asyncio.get_running_loop().create_future()
         run.pending[call.id] = fut
         run.pending_info[call.id] = {"tool": call.name, "arguments": dict(call.arguments)}
         was_running = run.status == _STATUS_RUNNING
         run.status = _STATUS_WAITING
         try:
-            ok, approved_by = await fut
+            ok, approved_by, evidence = await fut
         finally:
             run.pending.pop(call.id, None)
             run.pending_info.pop(call.id, None)
             if was_running and not run.pending:
                 run.status = _STATUS_RUNNING
-        # S-11: `approved_by` is exactly as self-declared as any other `approve=`
-        # callback's report — the HTTP caller types a name into a JSON body, nothing
-        # authenticates it. `AuthEvidence` (07-risks) is the same open gap here as
-        # everywhere else in this codebase, not a new one this module introduces.
-        return Approval(ok, actor=Actor.human(approved_by or "anonymous", via="service-api"))
+        # S-11, đã sửa: `approved_by`/`evidence` are exactly as self-declared as any
+        # other `approve=` callback's report — the HTTP caller controls the JSON body,
+        # nothing here authenticates it (module docstring's "No authentication" is
+        # unchanged by this). `evidence` gives an operator sitting a REAL channel
+        # integration in front of this endpoint (one that already verified a Slack
+        # signature, an OAuth session, ...) somewhere to put that proof instead of a
+        # bare name; `Agent(require_approval_evidence=True)` is the knob that then
+        # REFUSES a human actor with none, rather than trusting it. Neither of those two
+        # things happens unless the deployment opts into them.
+        return Approval(ok, actor=Actor.human(approved_by or "anonymous", via="service-api"),
+                        evidence=evidence)
     return approve
 
 
@@ -222,15 +254,15 @@ class _RunRegistry:
         run.task.cancel()
         return True
 
-    def resolve_approval(self, run_id: str, call_id: str, ok: bool,
-                         approved_by: str | None) -> bool:
+    def resolve_approval(self, run_id: str, call_id: str, ok: bool, approved_by: str | None,
+                         evidence: "AuthEvidence | None" = None) -> bool:
         run = self._runs.get(run_id)
         if run is None:
             return False
         fut = run.pending.get(call_id)
         if fut is None or fut.done():
             return False
-        fut.set_result((ok, approved_by))
+        fut.set_result((ok, approved_by, evidence))
         return True
 
     async def subscribe(self, run_id: str) -> "tuple[list[str], asyncio.Queue[str | None]] | None":
@@ -302,8 +334,18 @@ def create_app(agent: Agent, *, store: Store | None = None) -> Starlette:
         body: Mapping[str, Any] = await request.json()
         ok = bool(body.get("approve", False))
         approved_by = body.get("approved_by")
+        # S-11, đã sửa — optional `evidence`: an operator sitting a real channel
+        # integration in front of this endpoint (one that already verified a Slack
+        # signature, an OAuth session, ...) has somewhere to put that proof. Malformed
+        # over silently-ignored: a caller that TRIED to supply evidence and typo'd a
+        # required field gets told so, not treated as if they supplied nothing.
+        try:
+            evidence = _evidence_from_body(body.get("evidence"))
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         resolved = registry.resolve_approval(
-            request.path_params["run_id"], request.path_params["call_id"], ok, approved_by)
+            request.path_params["run_id"], request.path_params["call_id"], ok, approved_by,
+            evidence)
         if not resolved:
             return JSONResponse({"error": "no such pending approval"}, status_code=404)
         return JSONResponse({"resolved": True, "approve": ok})

@@ -432,19 +432,35 @@ The engine — not a policy — resolves a surviving `ASK`:
 |---|---|
 | provided, returns `bool` | `ALLOW` / `DENY` from the value |
 | provided, returns `Approval(ok, actor=...)` | `ALLOW` / `DENY` from `ok`, `Decision.actor` set to the reported `actor` |
+| provided, returns `Approval(ok, actor=Actor.human(...), evidence=None)`, `require_approval_evidence=True` | **DENY**, regardless of `ok` — S-11 |
 | absent, `safety="strict"` | **DENY** |
 | absent, effect is `danger` | **DENY** |
 | absent, otherwise | `ALLOW`, plus a one-time warning event |
 
-**`Actor` is a self-declaration, not verified identity (review-security.md S-11).** A
-callback returning a plain `bool` (the common case) gives the engine no way to know who
-actually approved — `Decision.actor` records a generic placeholder
+**`Actor` is a self-declaration; `AuthEvidence` is what a channel can attach (S-11,
+closed).** A callback returning a plain `bool` (the common case) gives the engine no way
+to know who actually approved — `Decision.actor` records a generic placeholder
 (`Actor.human("approver", via="callback")`), the same for every call that callback ever
 resolves. Return `Approval(ok, actor=Actor.human(id=..., via=...))` instead when the
 callback genuinely knows who clicked — an authenticated Slack interaction, an OAuth
-session — and the audit log records that identity instead. This closes "the harness has
-no channel for real identity"; it does not close "a callback can still lie about who
-approved" — that needs an authenticated-evidence model this design hasn't built (07-risks).
+session — and the audit log records that identity instead.
+
+That alone still does not stop a callback from lying about identity. `Approval(ok,
+actor=..., evidence=AuthEvidence(channel=..., channel_message_id=..., principal=...))`
+is the harder version: fields the CHANNEL itself returned, not typed in by the callback —
+review-security.md S-11's own stated floor. `Agent(require_approval_evidence=True)` /
+`build_agent(require_approval_evidence=True)` is the deployment-level enforcement: a
+`human` actor reported with no `evidence` gets DENIED by `PolicyEngine.resolve()`
+instead of trusted. Off by default — a callback that never supplies evidence keeps
+working exactly as before.
+
+**What this does not do, stated plainly.** The harness never verifies a `signature` —
+that needs a specific channel's SDK and secret (Slack's signing scheme differs from
+Twilio's differs from a custom OAuth flow), which the `approve=` callback holds and the
+harness deliberately does not depend on. `AuthEvidence` gives that callback somewhere
+real to put proof once it verifies one; a callback that fabricates the whole
+`AuthEvidence` record is a threat this mechanism does not claim to close — same "provider
+seam" boundary as `Policy`/`approve=` itself.
 
 Relaxing `Policy.check` to async was the alternative and was rejected: purity is what makes
 policies cheap enough to evaluate on every call, and hidden I/O from a third-party policy on
@@ -640,7 +656,7 @@ def create_app(agent: Agent, *, store: Store | None = None) -> "starlette.applic
 | `GET /v1/runs/{id}` | `{"id", "status", "result", "error", "pending_approvals"}`. `status` is one of `running`, `waiting_approval`, `done`, `error`, `cancelled`. |
 | `GET /v1/runs/{id}/events` | `text/event-stream` — buffered history first, then live-tails. Every line is a JSON `Event` (envelope v1 fields included), already `redact()`-ed. |
 | `POST /v1/runs/{id}/cancel` | `200` while cancellable, `409` once the run has already finished, `404` for an unknown id. |
-| `POST /v1/runs/{id}/approvals/{call_id}` | Body `{"approve": bool, "approved_by": str?}`. Resolves a pending `ASK` the same way any `approve=` callback would — `approved_by` is exactly as self-declared as any other `approve=` report (S-11's open gap, not a new one). |
+| `POST /v1/runs/{id}/approvals/{call_id}` | Body `{"approve": bool, "approved_by": str?, "evidence": {"channel": str, "channel_message_id": str, "principal": str, "signature": hex-str?, "verified_at": iso-str?}?}`. Resolves a pending `ASK` the same way any `approve=` callback would — `approved_by`/`evidence` are exactly as self-declared as any other `approve=` report (S-11, closed: `evidence` gives an operator's real channel integration somewhere to put proof; `Agent(require_approval_evidence=True)` is what then enforces it's present). A malformed `evidence` object (missing a required field) is a `400`, not silently ignored. |
 
 **Not in v1:** authentication (put this behind your own reverse proxy — the module is
 not the security boundary, same posture `EgressPolicy` takes toward real network
