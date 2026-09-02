@@ -266,6 +266,9 @@ restart, which the LangGraph checkpointer alone does not give you for anything o
 graph state. Planning stays the model's job (ADR-023 is unchanged: no second model call
 for reflection); *remembering* the plan is the harness's. See ADR-061.
 
+`examples/coding_agent.py §6` runs this end to end — adds a task, starts it, writes the
+fix, finishes it, and prints the real `TaskLedger.summary()` afterward.
+
 ## 6. Going in circles is its own failure — and it's caught for free
 
 The expensive way a long coding session fails is not "ran out of budget." It's the agent
@@ -288,6 +291,10 @@ never trips it, because each `write_source` carries a different body and that re
 counter. See ADR-062, and `tests/test_progress_stall.py` for the twelve-lap case that
 proves honest work is not killed.
 
+`examples/coding_agent.py §6` reproduces the stall directly: a scripted model calling the
+same tool with the same arguments eight times in a row stops at step 6 with
+`StopReason.STALLED`, not at the 300-step budget ceiling.
+
 ## 7. Who approved the `git push` — and can you still prove it tomorrow?
 
 A long coding session accumulates approvals: a push here, a migration there, each one a
@@ -296,7 +303,8 @@ human's decision that an auditor may ask about weeks later. `DecisionLog` record
 not approve `push(branch="release")`, which is the part most frameworks skip.
 
 ```python
-from harness import Agent, DecisionLog
+from harness import Agent
+from harness.policy.decision import DecisionLog   # not re-exported from `harness` itself
 
 log = DecisionLog(journal="approvals.jsonl")     # append-only, created 0600
 lead = Agent(name="Lead", job="...", tools=[...], approve=my_callback, decisions=log)

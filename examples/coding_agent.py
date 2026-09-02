@@ -8,17 +8,19 @@ fit together. With a key it uses a real model instead:
     export ANTHROPIC_API_KEY=sk-ant-...
     pip install 'harness[graph]' langchain-anthropic
 
-Five points, each a runnable block:
+Six points, each a runnable block:
   1. Narrow coding tools, correctly effect-classified — not one `run_shell` that covers
      everything.
   2. `Workspace.confine()` — a file-touching tool only ever sees below one root.
-  3. `Sandbox` — shell commands run through a clean-environment subprocess, with a
-     timeout, swappable later for a real Docker/Firecracker sandbox without touching
-     anything above it.
-  4. A "long-run" budget — not repeated `run()` calls, but ONE `invoke()` given enough
-     steps/time for the agent to work through many tool calls on its own.
-  5. A checkpointer — a session survives across multiple `graph.invoke()` calls, resumable
-     by `thread_id`.
+  3. Lethal trifecta — external (reads the web) + danger (git_push) in the SAME agent is
+     refused at construction, before any tool call happens.
+  4/5. A "long-run" budget + checkpointer — ONE `invoke()` given enough steps/time for the
+     agent to work through many tool calls on its own, surviving across multiple
+     `graph.invoke()` calls by `thread_id` — plus a Trajectory contract to judge the
+     result, instead of reading a transcript by eye.
+  6. `TaskLedger` (durable across compaction) + `ProgressLedger` (mechanical stall
+     detection, no extra tokens) — two additions AFTER the original blueprint, included
+     here to prove they actually run, not just that they're documented.
 """
 import asyncio
 import os
@@ -256,6 +258,56 @@ report = check_trajectory(
     effect_of={"write_source": "write", "git_commit": "write",
               "git_push": "danger", "run_tests": "read"})
 print(f"  trajectory.ok = {report.ok}  (tools_run = {eval_result.tools_run})")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+heading("6. TaskLedger + ProgressLedger — a durable task list, and mechanical stall detection")
+# Both were added AFTER the blueprint's original five points (§5/§6 in
+# CODING_AGENT_BLUEPRINT.md). TaskLedger is OPT-IN — you build it and wire its `.tools()`
+# in yourself. ProgressLedger is the OPPOSITE — every Agent, every run, both backends,
+# has one automatically; there is nothing to configure.
+from harness.tasks import TaskLedger                                     # noqa: E402
+from harness.memory.inmemory import InMemoryStore                        # noqa: E402
+from harness.result import StopReason                                    # noqa: E402
+
+task_store = InMemoryStore()
+task_ledger = TaskLedger(task_store)
+task_tools = task_ledger.tools()
+list_tasks, add_task, start_task, finish_task, block_task = task_tools
+
+tracked_agent = ClassicAgent(
+    name="Coder-with-ledger", job="Track work as you go.",
+    tools=[*task_tools, write_source],
+    budget="$1, 30 steps",
+    provider=FakeModel([
+        FakeModel.tool_call("add_task", {"title": "fix hello.py"}),
+        FakeModel.tool_call("start_task", {"task_id": "t1"}),
+        FakeModel.tool_call("write_source", {"path": "hello.py", "text": "print('hi v4')"}),
+        FakeModel.tool_call("finish_task", {"task_id": "t1", "note": "fixed"}),
+        FakeModel.text("Done."),
+    ]))
+tracked_agent.try_run("Fix hello.py, track progress.")
+print("  " + asyncio.run(task_ledger.summary()).replace("\n", "\n  "))
+print("  -> durable across compaction: progress lives in the Store, not in the "
+     "conversation history — clearing old tool results doesn't make the agent forget "
+     "what it's doing.")
+
+print()
+looping_agent = ClassicAgent(
+    name="Coder-stuck", job="List the files.",
+    tools=[list_files],
+    budget="$5, 300 steps, 45m",         # a very generous step ceiling — without
+                                         # ProgressLedger this would have to run all
+                                         # 300 steps before stopping
+    provider=FakeModel([FakeModel.tool_call("list_files", {})] * 8
+                       + [FakeModel.text("(never reached)")]))
+loop_result = looping_agent.try_run("List the files (deliberately scripted to repeat).")
+print(f"  list_files() called identically 8 times in a row -> stopped at step "
+     f"{loop_result.steps}, stop_reason={loop_result.stop_reason.value!r}")
+print(f"  == StopReason.STALLED: {loop_result.stop_reason is StopReason.STALLED}")
+print("  -> not the budget (300-step ceiling) — ProgressLedger recognized 6 consecutive "
+     "steps with no new tool+args signature and stopped EARLY, at no extra model-call "
+     "cost to notice it.")
 
 print(f"""
 {'─' * 70}
