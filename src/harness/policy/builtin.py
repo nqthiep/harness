@@ -85,6 +85,40 @@ class TaintPolicy:
         return check_flow(ctx.label, call.spec, self._grants)
 
 
+class RequireBeforePolicy:
+    """A tool may not be ATTEMPTED until another tool has already been called earlier in
+    this run — "consult the advisor before touching this" as a structural gate, not a
+    prompt the model can forget or talk itself past.
+
+    **What this is not.** It never GRANTS anything — it can only turn ALLOW into DENY
+    (P-2: a policy only ever restricts, `PolicyEngine.decide()`'s `max()` composition).
+    The tool it requires (an "advisor" subagent, most naturally) is read for its
+    OPINION, exactly like `search` or `fetch` — never for a verdict. Design/00-foundation
+    §4.2's invariant D-1 is why: `Actor` deliberately has no `Model` variant, so a model
+    — however much stronger, however framed as "the advisor" — can never be the one who
+    grants a `Decision`. Only a human or an operator can, through `approve=`, exactly as
+    before this policy existed; this policy only makes an attempt WITHOUT that first step
+    impossible, never approves the attempt itself.
+
+    `ctx.tools_called` (`dispatch.py::RunContext`/`lg/runtime.py::_Ctx`) is the source of
+    truth — tool NAMES only, populated from completed calls earlier in the run, never
+    arguments or results (IDL-15).
+    """
+
+    def __init__(self, *, tool: str, requires: str, reason: str | None = None) -> None:
+        self._tool, self._requires = tool, requires
+        self._reason = reason or (
+            f"{tool!r} needs {requires!r} to have been called earlier in this run first")
+        self.name = f"require-before:{tool}"
+
+    def check(self, call: ToolCall, ctx: Any) -> Ruling:
+        if call.name != self._tool:
+            return Ruling(Verdict.ALLOW, "", self.name)
+        if self._requires in getattr(ctx, "tools_called", frozenset()):
+            return Ruling(Verdict.ALLOW, "", self.name)
+        return Ruling(Verdict.DENY, self._reason, self.name)
+
+
 class EgressPolicy:
     """Advisory, không phải kiểm soát mạng thật — design/review-security.md S-18.
 

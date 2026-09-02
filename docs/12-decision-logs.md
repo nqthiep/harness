@@ -1685,6 +1685,66 @@ leak this fix closes, made concrete rather than asserted.
 
 ---
 
+### ADR-061 — Advisor consultation is a `Policy` gate, never a grant
+**Status:** Accepted (user request: "model mạnh xử lý vấn đề khó... phương pháp advisor")
+
+**Context.** The user asked for two things: smarter multi-model use in general, and
+specifically an "advisor" pattern — a strong model the agent consults when stuck. The
+first half needs no new mechanism: `model=`, `effort=`, and subagent delegation
+(`.as_tool()`) already let a developer route cheap work to a cheap model and hard work
+to a strong one, explicitly, in their own code (docs/07-cost.md §4/§6) — ADR-006 already
+covers why the harness itself never auto-picks a model. The second half — advisor —
+*is* buildable as exactly that: a subagent tool, with no new harness code, whose
+description tells the primary agent when to call it (docs/06-safety.md's existing
+"expressible today, with no new machinery" framing for reflection/self-critique).
+
+The open question was whether to go further: make consultation MANDATORY before a
+dangerous tool, rather than trust the model to remember a prompt instruction. The
+naive shape — let the advisor's own verdict decide ALLOW/DENY for the dangerous call,
+the same way a human approver does — was rejected immediately on inspection: it
+recreates exactly the mistake `design/00-foundation.md §4.2`'s invariant D-1 was
+written to name ("`Actor` cố ý KHÔNG có biến thể `Model`... đó chính là chỗ agno
+sai" — no `Model` variant, on purpose, because that is where agno's design let a
+model approve its own action). An advisor is still a model, however much stronger; if
+it could grant a `Decision`, the harness would be letting one model rubber-stamp
+another's dangerous action, precisely the self-authorization R-3 ("Model không cầm
+công tắc an toàn nào") exists to forbid.
+
+**Decision.** `RequireBeforePolicy` (`policy/builtin.py`) DENIES a named tool until
+another named tool has already completed earlier in the same run — a purely
+PROCEDURAL gate (P-2: a `Policy` can only ever restrict). It never grants anything; the
+actual ALLOW for the gated tool still has to come from wherever it always did
+(`approve=`, or the effect's own default). The advisor tool it gates on is read for its
+OPINION exactly like `search` or `fetch` — the model may ignore what it says, and the
+policy does not care what it said, only that it was called.
+
+`ctx.tools_called: frozenset[str]` is the fact the policy reads — tool NAMES that
+completed earlier in this run, never arguments or results (IDL-15: `Policy.check`
+already excludes message history on purpose, so this stays consistent with that — a
+bare name is not exfiltratable content). Sourced for free from state each backend
+already has: `dispatch.py::RunContext.tools_called` reads `Dispatcher.ran`
+(classic — already tracked for `Result.tools_run`); `lg/runtime.py::Runtime._tools_called()`
+scans checkpointed `state["messages"]` for `AIMessage.tool_calls` with a matching
+`ToolMessage` (durable) — which, by construction, excludes the CURRENT, not-yet-dispatched
+batch, so calling both the advisor and the gated tool in the same model turn does not
+satisfy the gate (the advisor hasn't answered yet at decide time). Both fields are
+appended with a `frozenset()` default, same backward-compat shape ADR-060's `tenant_id`
+used.
+
+**Rejected alternative.** Advisor-as-`approve=` callback (the advisor's verdict directly
+resolves the ASK). Rejected for the D-1/R-3 reason above — it is not a smaller version
+of this feature, it is a different, disallowed one.
+
+**Tests.** `tests/test_advisor_gate.py` (10): the policy unit (deny without prerequisite,
+allow with, unaffected for other tools, safe against a bare `ctx` with no
+`tools_called`, and that its `DENY` wins `PolicyEngine.decide()`'s `max()` composition
+over an `approve=` that would have said yes); real runs through both `Agent` and
+`build_agent()` proving the gate blocks and un-blocks correctly; the same-batch case
+proving a same-turn "consult + act" does not satisfy it. `examples/advisor_pattern.py`
+runs both the blocked and the allowed scenario end to end.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |

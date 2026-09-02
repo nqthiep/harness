@@ -373,14 +373,20 @@ class RunContext:                       # dispatch.py — the classic backend's 
     deadline: float                     # monotonic clock
     tenant_id: str | None = None        # threaded from Agent.tenant_id — a Policy can
                                         # read this to decide differently per tenant
+    tools_called: frozenset[str] = frozenset()   # names only, of tools already COMPLETED
+                                        # earlier in this run (ADR-061) — for
+                                        # RequireBeforePolicy and anything similar
     @property
     def tainted(self) -> bool: ...      # True iff label.integrity is UNTRUSTED — kept
                                         # for callbacks written against the one-axis model
-    # Deliberately absent: the message history. Tools must not read the transcript —
-    # it is the largest available exfiltration surface. See §06.4.
-    # The LangGraph backend's equivalent (lg/runtime.py::_Ctx) carries the same three
-    # fields Policy.check actually reads — label, safety, tenant_id — under a lighter
-    # __slots__ type; the two are kept in sync by tests/test_parity.py.
+    # Deliberately absent: the message history, and tool ARGUMENTS/RESULTS even for
+    # `tools_called` above — a Policy must not be able to read the transcript, it is the
+    # largest available exfiltration surface. See §06.4.
+    # The LangGraph backend's equivalent (lg/runtime.py::_Ctx) carries the same four
+    # fields Policy.check actually reads — label, safety, tenant_id, tools_called —
+    # under a lighter __slots__ type; parity across both is exercised directly by
+    # tests/test_n9_tenant_in_context.py (tenant_id) and tests/test_advisor_gate.py
+    # (tools_called), each running the identical scenario through both backends.
 
 class Policy(Protocol):
     name: str
@@ -411,6 +417,12 @@ final = max(p.check(call, ctx) for p in policies)   # by Verdict value
 | `TaintPolicy` | `check_flow(ctx.label, spec, grants)` — two branches, one per `Label` axis. `label.integrity is UNTRUSTED and effect is DANGER and name not in grants.accepts_tainted` → **DENY**; `label.confidentiality is SECRET and max_confidentiality is PUBLIC` → **DENY**. `accepts_tainted` is never a tool-decorator field — only `Agent(accepts_tainted=[...])` / `build_agent(accepts_tainted=[...])` set it (S-16). |
 | `EgressPolicy` | `effect is EXTERNAL` and a host argument is outside `allowed_hosts` → **DENY**. Default `allowed_hosts=()` — an empty allowlist denies every external host (T-7.2). Inactive (unrestricted) only when `allowed_hosts=None` is passed explicitly. |
 *(There is no `ApprovalPolicy`. See below — approval is not a policy.)*
+
+### Opt-in built-ins (`policy/builtin.py`, not in the table above)
+
+| Policy | Rule |
+|---|---|
+| `RequireBeforePolicy(tool=, requires=, reason=None)` | `call.name == tool` and `requires not in ctx.tools_called` → **DENY**; otherwise `ALLOW` (never a stronger verdict than that — P-2). "Consult the advisor before an irreversible action" (§07-cost.md §4, ADR-061), or any "tool X must have run first" sequencing that doesn't need a full `RequireBeforePolicy`-per-step state machine (§06.4's "state machine is a Policy"). |
 
 ### Approval is a resolution step, not a policy (ADR-021)
 
