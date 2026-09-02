@@ -1745,6 +1745,76 @@ runs both the blocked and the allowed scenario end to end.
 
 ---
 
+### ADR-067 — `tools_called_ever`: `RequireBeforePolicy` survives real compaction on the
+durable backend
+
+**Status:** Accepted (integrity audit of a large concurrent merge that landed ADR-061's
+advisor gate and real compaction — `context/window.py`'s `compact()`, ported to the
+durable backend as `Runtime._compact()` — in the same window, written by two sessions
+neither aware of the other).
+
+**Context.** `Runtime._tools_called()` (ADR-061) answered "which tools already
+completed" by scanning `state["messages"]` on every call: an `AIMessage.tool_calls`
+entry counted if a matching `ToolMessage` existed. That was correct on its own, and
+`Dispatcher.ran` (classic backend) was correct on its own — but real compaction
+(`Runtime._compact`, run once the context window crosses `COMPACT_AT`) drops whole
+`AIMessage`/`ToolMessage` step pairs older than `_KEEP_RECENT_MESSAGES`, replacing them
+with a single taint-preserving tombstone that carries no tool names (S-19: it can't
+carry names AND drop content, or the label it protects would itself be reconstructable
+from what was supposedly cleared). A `consult_advisor` call made early in a long-running
+thread ages out exactly like any other step. Once it does, `_tools_called()`'s
+message-scan stops finding it, and `RequireBeforePolicy` (`policy/builtin.py`) DENIES a
+`wipe` attempt it had genuinely already cleared — not a security hole (the failure is
+fail-closed, over-restrictive, never over-permissive), but a real correctness gap in
+exactly the long-conversation case the advisor pattern exists for.
+
+Confirmed by direct repro before writing a fix, not inferred from reading the two
+features' code side by side: a synthetic `state["messages"]` with an early
+`consult_advisor` step and 400 filler steps, run through the real `Runtime._manage()`/
+`_compact()`, showed `_tools_called()` reporting `consult_advisor` before compaction and
+not after. The classic backend was checked the same way and found immune:
+`Dispatcher.ran` is a plain list appended to for the life of one `Dispatcher`
+(one per `try_run()` call) and is never touched by `_manage_context()`, which only ever
+edits/drops the separate `msgs` list sent to the provider.
+
+**Decision.** Add `state["tools_called_ever"]` (`lg/state.py`): a list `_run_tools`
+appends to — one name per call that gets ANY `ToolMessage` this step (declined, tool
+gone, errored, or succeeded — the same "completed" criterion `_tools_called()` already
+used), never replaced, never pruned by compaction (`RemoveMessage` targets `messages`,
+not this key). `_tools_called()` now returns the UNION of the message scan and this
+field, rather than switching to the field alone: the scan stays a harmless, redundant
+safety net so a checkpoint written before this field existed still answers correctly for
+whatever hasn't been compacted away yet, and the field is what makes the answer correct
+once it has been.
+
+**Rejected alternative.** Special-case compaction to never drop a step containing a call
+`RequireBeforePolicy` might later need. Rejected: `_compact()` has no way to know which
+future policy might ask about which past tool without importing policy configuration
+into the context-management layer — a much larger coupling for the same result
+`tools_called_ever` gets by simply not forgetting in the first place.
+
+**Tests.** `tests/test_advisor_gate.py::DurableGateSurvivesCompaction` (3): a real
+`build_agent()` run long enough to trigger genuine compaction (large tool-call
+*arguments*, per `test_context_compaction.py`'s own technique — arguments are never
+edited/cleared, so they inflate the ratio in far fewer steps than growing it through
+tool *results* would) with `consult_advisor` early and `wipe` after — asserts the run
+actually compacted, and that `wipe` is NOT denied; a companion asserts the gate still
+DENIES `wipe` correctly when `consult_advisor` was never called, so the fix could not
+have simply disabled the gate. `MutationTuyChonEverFieldCoTacDung` reverts
+`_tools_called()` to the message-scan-only version and confirms the first test then
+fails — proof the new coverage depends on the patch, not on some other mechanism
+accidentally masking the bug.
+
+**Known gap, not closed by this ADR.** Two OTHER forward references to decision-log
+entries were found dangling during the same audit and are left as-is (separate,
+pre-existing gaps from the same merge, not this fix's to invent): `lg/runtime.py`'s own
+per-turn-reset comment cites "ADR-062" for the stall detector (`progress.py`), and
+`tests/test_m3.py` cites "ADR-066" for real compaction itself — neither section exists
+yet. This entry deliberately does not claim either number, to avoid colliding with
+whichever entry eventually gets written for them.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |

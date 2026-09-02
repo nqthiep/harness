@@ -61,6 +61,22 @@ class AgentState(TypedDict, total=False):
     #: `finish`), unlike `RUN_STARTED` (once per thread, ever) — the two were already
     #: asymmetric before this field existed; `duration_s` matches the one that repeats.
     turn_started_at: float
+    #: Compaction-immune record of tool names that have COMPLETED (in the same sense
+    #: `Runtime._tools_called()` already used: any matching `ToolMessage` exists, success
+    #: or not), ever, on this thread — mirrors `dispatch.py::Dispatcher.ran` on the
+    #: classic backend, which is a plain list appended-to for the life of one run and
+    #: never pruned. Before this field existed, `_tools_called()` re-derived its answer
+    #: by scanning `state["messages"]` on every call — which real compaction
+    #: (`Runtime._compact`, `context/window.py`) can silently erase: once the step
+    #: carrying an early `consult_advisor` call ages past `_KEEP_RECENT_MESSAGES`, its
+    #: `AIMessage`/`ToolMessage` pair is dropped for a taint-preserving tombstone that
+    #: does not carry tool names. `RequireBeforePolicy` (policy/builtin.py) would then
+    #: DENY a tool it had genuinely already cleared, purely because the conversation had
+    #: grown long enough to compact — confirmed by direct repro, not just read from the
+    #: code. Appended to, never pruned by compaction (`RemoveMessage` targets `messages`,
+    #: not this key), so the record this field holds survives exactly the same drop that
+    #: erases the message-scan answer.
+    tools_called_ever: list[str]
     #: N-3 (design/07-risks-and-open-issues.md) — the parsed `build_agent(returns=...)`
     #: answer, set once by `finish()`. Bug found on review: `finish()` already called
     #: `parse_returns()` to VALIDATE the final answer, but threw the parsed result away
