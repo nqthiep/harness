@@ -64,6 +64,19 @@ class McpServerPolicy:
     allow: frozenset[str] | None = None
 
 
+def _sdk_attr(obj: Any, snake: str, camel: str) -> Any:
+    """The MCP Python SDK's Pydantic attribute names moved from the wire's camelCase (the
+    SDK this module was originally written against) to snake_case, with camelCase kept
+    only as the JSON alias, as of SDK 2.1.1 — `Tool.inputSchema`, `ToolAnnotations.
+    readOnlyHint`/`destructiveHint`/`openWorldHint`, `CallToolResult.isError` among them.
+    `pyproject.toml` pins `mcp>=1.9` with no upper bound, so read whichever name the
+    installed SDK actually exposes rather than assuming one.
+    """
+    if hasattr(obj, snake):
+        return getattr(obj, snake)
+    return getattr(obj, camel, None)
+
+
 def _effect_from_hints(ann: Any) -> Effect:
     """Fail-closed exactly like Microsoft's own `_map_mcp_annotations_to_labels`
     (design/03 §5.3 M-2) — chép lại nguyên cả chỗ dễ sai:
@@ -83,9 +96,10 @@ def _effect_from_hints(ann: Any) -> Effect:
     """
     if ann is None:
         return Effect.DANGER
-    if getattr(ann, "readOnlyHint", None) is True:
-        return Effect.READ if getattr(ann, "openWorldHint", None) is False else Effect.EXTERNAL
-    if getattr(ann, "destructiveHint", None) is False:
+    if _sdk_attr(ann, "read_only_hint", "readOnlyHint") is True:
+        open_world = _sdk_attr(ann, "open_world_hint", "openWorldHint")
+        return Effect.READ if open_world is False else Effect.EXTERNAL
+    if _sdk_attr(ann, "destructive_hint", "destructiveHint") is False:
         return Effect.WRITE
     return Effect.DANGER
 
@@ -97,6 +111,13 @@ def _effect_for(tool: Any, policy: McpServerPolicy) -> Effect:
     if not policy.trusted:
         return policy.default_effect
     return _effect_from_hints(getattr(tool, "annotations", None))
+
+
+def _input_schema(tool: Any) -> Mapping[str, Any]:
+    """`mcp.types.Tool`'s input-schema field is `inputSchema` on the wire (MCP is JSON-RPC,
+    camelCase) — see `_sdk_attr` above for why the Python attribute name can't be assumed.
+    """
+    return _sdk_attr(tool, "input_schema", "inputSchema")
 
 
 def classify_mcp_tool(tool: Any, policy: McpServerPolicy, call: McpCall) -> ToolSpec:
@@ -122,7 +143,7 @@ def classify_mcp_tool(tool: Any, policy: McpServerPolicy, call: McpCall) -> Tool
         return await call(tool.name, kwargs)          # protocol name, not the prefixed one
 
     return ToolSpec(
-        name=name, description=description, input_schema=dict(tool.inputSchema),
+        name=name, description=description, input_schema=dict(_input_schema(tool)),
         effect=_effect_for(tool, policy), fn=_fn, source=f"mcp:{policy.identity}",
         server=str(policy.identity),
     )
@@ -137,7 +158,7 @@ def _unwrap(result: Any) -> str:
     returning the error text as if it were a result, lets it flow into the same
     `classify()`/retry machinery any other tool exception does.
     """
-    if getattr(result, "isError", False):
+    if _sdk_attr(result, "is_error", "isError") is True:
         raise McpToolError(_text(result))
     return _text(result)
 
