@@ -14,7 +14,7 @@ import json
 import time
 from typing import Any
 
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import interrupt
 
 from ..budget.ledger import Ledger
@@ -336,7 +336,7 @@ class Runtime:
     def policy_gate(self, state) -> dict:
         calls = getattr(state["messages"][-1], "tool_calls", []) or []
         ctx = _Ctx(label=self._effective_label(state), safety=self._safety(state),
-                  tenant_id=self._tenant_id)
+                  tenant_id=self._tenant_id, tools_called=self._tools_called(state))
         pending, denied = [], []
         for c in calls:
             self._emit(state, EventKind.TOOL_REQUESTED, step=state.get("step", 0),
@@ -387,7 +387,7 @@ class Runtime:
             call = ToolCall(p["call"]["id"], p["tool"], p["call"].get("args", {}), spec,
                            idempotency_key(_run_id(state), p["call"]["id"]))
             ctx = _Ctx(label=self._effective_label(state), safety=self._safety(state),
-                      tenant_id=self._tenant_id)
+                      tenant_id=self._tenant_id, tools_called=self._tools_called(state))
             reported_actor: Actor | None = None
             reported_evidence: AuthEvidence | None = None
             if asks > self._max_asks_per_run:
@@ -487,7 +487,8 @@ class Runtime:
                         idempotency_key(_run_id(state), p["call"]["id"]))
         if label is None:
             label = self._effective_label(state)
-        ctx = _Ctx(label=label, safety=self._safety(state), tenant_id=self._tenant_id)
+        ctx = _Ctx(label=label, safety=self._safety(state), tenant_id=self._tenant_id,
+                  tools_called=self._tools_called(state))
         r = self._engine_for(_run_id(state)).decide(call, ctx)
         if r.verdict is not Verdict.ASK:
             return r
@@ -805,6 +806,23 @@ class Runtime:
     def _safety(self, state) -> str:
         return state.get("workflow", {}).get("safety", "standard")
 
+    def _tools_called(self, state) -> "frozenset[str]":
+        """Names only, of tools that have ALREADY COMPLETED earlier in this run — never
+        arguments, never results (IDL-15: a `Policy.check(call, ctx)` gets no message
+        history, so a compromised/malicious tool schema can't use it to exfiltrate the
+        conversation; a bare tool NAME is not content). A tool_call counts as "completed"
+        only once a matching `ToolMessage` exists — which by construction excludes the
+        CURRENT, not-yet-dispatched batch (its `ToolMessage`s don't exist until
+        `_run_tools` runs, later in the pipeline than every `ctx` this feeds). Built for
+        `RequireBeforePolicy` (policy/builtin.py) — "the model must have consulted X
+        before Y is even offered to an approver" — but general enough for any policy
+        that only needs "was tool T already run this run", not its content.
+        """
+        msgs = state.get("messages") or []
+        done_ids = {m.tool_call_id for m in msgs if isinstance(m, ToolMessage)}
+        return frozenset(tc.get("name") for m in msgs if isinstance(m, AIMessage)
+                         for tc in (m.tool_calls or []) if tc.get("id") in done_ids)
+
     def _bus_for(self, run_id: str) -> EventBus:
         if run_id not in self._bus_cache:
             self._bus_cache[run_id] = EventBus(run_id, self._exporters,
@@ -954,11 +972,15 @@ def _run_id(state) -> str:
 
 
 class _Ctx:
-    __slots__ = ("label", "safety", "tenant_id")
+    __slots__ = ("label", "safety", "tenant_id", "tools_called")
     #: Same fix as `dispatch.py::RunContext.tenant_id` — a `Policy.check(call, ctx)` on
     #: this backend had the identical gap (`tests/test_roadmap.py`'s S-03).
-    def __init__(self, *, label: Label, safety: str, tenant_id: str | None = None) -> None:
+    #: `tools_called` — same shape/reasoning as `dispatch.py::RunContext.tools_called`
+    #: (advisor-consultation gate, `RequireBeforePolicy`) — see `Runtime._tools_called`.
+    def __init__(self, *, label: Label, safety: str, tenant_id: str | None = None,
+                 tools_called: "frozenset[str]" = frozenset()) -> None:
         self.label, self.safety, self.tenant_id = label, safety, tenant_id
+        self.tools_called = tools_called
 
 
 async def _with_timeout(coro, timeout: float):

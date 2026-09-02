@@ -248,10 +248,46 @@ Reading-heavy fan-out runs on the cheap model; only the summaries reach the expe
 model's context. For a 20-page research task this is typically a 5–10× reduction, and the
 decision is explicit and legible in the code rather than hidden in a router.
 
+**The advisor variant of the same lever (ADR-061).** The subagent doesn't have to be
+"cheap"; it can be the STRONG model, consulted the other direction — a fast/cheap
+"worker" agent that calls a strong "advisor" subagent when it's stuck, instead of a
+strong orchestrator calling cheap readers:
+
+```python
+advisor = Agent(name="Advisor", job="Analyze a hard problem, recommend an approach.",
+                model="claude-opus-5", effort="high", budget="$0.05")
+
+@tool(effect="read")
+def consult_advisor(situation: str) -> str:
+    """Ask the advisor before an uncertain or high-stakes decision."""
+    return advisor.run(situation).text
+
+worker = Agent(name="Worker", job="Handle routine requests. Consult consult_advisor "
+                                  "before anything irreversible.",
+               model="claude-haiku-4-5", tools=[..., consult_advisor])
+```
+
+Zero new mechanism — this is the same subagent-as-tool primitive above, just used in
+the direction the task calls for. `examples/advisor_pattern.py` is a full working
+version, including the hardened variant below.
+
+**Making "consult first" structural, not just a prompt instruction.**
+`policy/builtin.py::RequireBeforePolicy` DENIES a tool until another tool has already
+completed earlier in the run — `policies=[RequireBeforePolicy(tool="wipe",
+requires="consult_advisor")]` makes `wipe` unreachable until `consult_advisor` has run,
+regardless of whether the model remembered to, and regardless of what `approve=` would
+otherwise have said. It is a plain restriction (P-2), never a grant: the advisor's
+answer is read like any other tool result, and the actual ALLOW for the gated tool still
+comes from `approve=`/the effect's own default, exactly as before — an advisor, being
+still a model, can never itself be the one who grants a `Decision` (ADR-061,
+design/00-foundation.md §4.2's D-1).
+
 **Automatic model routing is deferred** (ADR-006). No routing policy could be named in
 Round 6 that the council agreed was correct today, and an LLM-based router pays a model
 call to decide which model to call. Deferred, not designed-around: `ModelProvider` is a
-seam, so a router can be added later without touching the loop.
+seam, so a router can be added later without touching the loop. Nothing above is that —
+`model=`, `effort=`, and which subagent to define are still the application author's
+explicit choices, in their own code.
 
 ## 5. Performance
 

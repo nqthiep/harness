@@ -62,6 +62,14 @@ class RunContext:
     #: caller supplies `Agent(principal=...)` — a tool/policy reads `ctx.principal`,
     #: never the model.
     principal: str | None = None
+    #: Names only, of tools that COMPLETED earlier in this run — never arguments, never
+    #: results (same IDL-15 reasoning the comment above states: a `Policy` gets no
+    #: message history, and a tool name alone is not content). Built for
+    #: `RequireBeforePolicy` (policy/builtin.py — "the model must have consulted X
+    #: before Y is even offered to an approver"), general enough for any policy that
+    #: only needs "was tool T already run this run". Appended, same backward-compat
+    #: shape as `tenant_id`/`principal` above.
+    tools_called: "frozenset[str]" = frozenset()
 
     @property
     def tainted(self) -> bool:
@@ -96,7 +104,8 @@ class Dispatcher:
         calls = [b for b in resp.content if b.get("type") == "tool_use"]
         ctx = RunContext(run_id, self._e._a.name, step, self._e._taint.label,
                          self._e._a.safety, self._e._l.remaining_wall_clock(),
-                         tenant_id=self._e._a.tenant_id, principal=self._e._a.principal)
+                         tenant_id=self._e._a.tenant_id, principal=self._e._a.principal,
+                         tools_called=frozenset(self.ran))
         planned: list[tuple[dict, ToolSpec | None, Ruling | None]] = []
 
         for b in calls:

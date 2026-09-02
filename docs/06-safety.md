@@ -193,6 +193,27 @@ two documented rules; the first run that mutates a shared policy now raises and 
 fix. Workflow state does **not** survive a process restart: persist it yourself, or rebuild
 it from the transcript.
 
+**`RequireBeforePolicy`** (ADR-061) is a built-in of this same shape, for one recurring
+case: a tool that must not even be ATTEMPTED until another tool has run earlier in this
+run — "consult an advisor before an irreversible action" (§07-cost.md §4), most
+commonly.
+
+```python
+policies=[RequireBeforePolicy(tool="wipe", requires="consult_advisor")]
+```
+
+Config-only, `check()` stays pure (POL-4) — no factory needed on the classic backend, and
+`policies=[lambda: RequireBeforePolicy(...)]` on the LangGraph backend for the same
+per-thread-instance reason every other configured policy needs it. It reads
+`ctx.tools_called: frozenset[str]` — tool NAMES that completed EARLIER in this run, never
+arguments or results (§4's own message-history exclusion applies here too) — and can only
+ever turn an attempt into `DENY`, never into `ALLOW`: the actual permission for the gated
+tool still comes from wherever it always did (`approve=`, or the effect's own default).
+That is deliberate, not a limitation to work around — see invariant D-1 in
+`design/00-foundation.md §4.2`: `Actor` has no `Model` variant, so nothing a model
+says — however framed as "advice" from however strong a model — can itself be the thing
+that grants a `Decision`.
+
 ## 5. Secrets
 
 ```python
