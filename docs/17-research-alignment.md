@@ -1,327 +1,349 @@
-# §17 — Đối chiếu với nghiên cứu hợp nhất, và kế hoạch xây tiếp
+# §17 — Alignment against the unified research, and the build-out plan
 
-> Nguồn: *"Nghiên cứu hợp nhất: Agent Framework, Agent Harness, Interface và Kiến trúc"*
-> (snapshot 29/08/2026), gồm 12 framework, 9 harness, ma trận 10 nhóm tiêu chí có trọng
-> số, phụ lục API interface với 5 anti-pattern và một interface đề xuất.
+> Source: *"Unified Research: Agent Framework, Agent Harness, Interface and
+> Architecture"* (snapshot 2026-08-29), covering 12 frameworks, 9 harnesses, a
+> weighted 10-category matrix, and an API interface appendix with 5 anti-patterns and
+> one proposed interface.
 >
-> Tài liệu này làm ba việc: **học gì**, **tránh gì**, và **xây gì tiếp**. Mọi khoảng trống
-> nêu ở đây đều được **kiểm bằng cách chạy code**, không phải bằng đọc lại tài liệu của
-> chính mình — vì 41 vòng vừa qua đã cho thấy đọc không tìm ra thứ chỉ có chạy mới tìm ra.
+> This document does three things: **what to learn**, **what to avoid**, and **what to
+> build next**. Every gap named here is **checked by running code**, not by rereading
+> our own documentation — the past 41 rounds have shown that reading doesn't find what
+> only running finds.
 
-> **Trạng thái hôm nay: kế hoạch M6-M10 ở `## 4` đã XONG hoàn toàn** — xem
-> `design/08-roadmap-and-release-plan.md` cho bảng "cái gì đã xong, ở đâu, test nào".
-> Tệp NÀY giữ nguyên như một bản GHI PHÂN TÍCH tại thời điểm viết (điểm tự chấm §1, so
-> sánh framework §2/§3, quyết định interface §3.3) — không sửa lại các con số/trạng thái
-> cũ để giả vờ chúng luôn đúng; mỗi bảng bên dưới có chú thích ngay cạnh cho biết mục đó
-> đã đóng ở đâu.
+> **Current status: the M6-M10 plan in `## 4` is COMPLETELY DONE** — see
+> `design/08-roadmap-and-release-plan.md` for the table of what's done, where, and
+> which tests. THIS file stays as an ANALYSIS RECORD at the time it was written
+> (the self-score in §1, the framework comparisons in §2/§3, the interface decision in
+> §3.3) — old numbers/statuses are not rewritten to pretend they were always current;
+> every table below has an annotation right next to it stating where that item was
+> closed.
 
 ---
 
-## 1. Tự chấm theo đúng ma trận trọng số của nghiên cứu
+## 1. Self-scoring against the research's own weighted matrix
 
-Đây là **tự chấm**, nên nó không so sánh được trực tiếp với điểm của nghiên cứu (khác
-người chấm, và họ chấm các dự án đã trưởng thành). Giá trị của nó nằm ở **hình dạng**:
-chiều nào cao, chiều nào thấp.
+This is a **self-score**, so it isn't directly comparable to the research's own scores
+(a different grader, and they scored already-mature projects). Its value is in its
+**shape**: which dimensions are high, which are low.
 
-| Chiều | Trọng số | Điểm | Đóng góp | Vì sao |
+| Dimension | Weight | Score | Contribution | Why |
 |---|---:|:---:|---:|---|
-| Control / Safety | 15% | 4/5 | 12.0 | Taint lattice, effect class, policy lattice, từ chối lúc dựng, Secret, egress. **Trừ điểm: không có lớp Isolation nào** |
-| Reliability | 12% | 3/5 | 7.2 | Trần ngân sách, checkpoint, resume. **Trừ: không có idempotency key, cancellation bị nuốt, không có failure injection** |
-| Testability | 12% | 4/5 | 9.6 | 233 test, FakeModel, parity suite, property test, conformance. **Trừ: không có trajectory contract khai báo được, không có golden set** |
-| Extensibility | 10% | 4/5 | 8.0 | 5 seam, đã chứng minh bằng bản cài đặt bên thứ ba. **Trừ: không có MCP** |
-| Observability | 10% | 3/5 | 6.0 | 15 event kind đóng, exporter, transcript. **Trừ: không có OTel thật, envelope thiếu traceId/tenantId/schemaVersion** |
-| Cost efficiency | 10% | 4/5 | 8.0 | Trần pre-flight, cache 95.3%, ADR-026. **Trừ: không đo cost/successful task** |
-| Developer experience | 10% | 4/5 | 8.0 | Lỗi đọc ở lớp ≤5, progressive disclosure. **Trừ: SC-1b chưa đo** |
-| Integration | 8% | 2/5 | 3.2 | **Không có MCP, không có Service API, không có connector** |
-| Performance | 6% | 2/5 | 2.4 | **Chưa đo latency/throughput/concurrency lần nào** |
-| Intelligence | 5% | 3/5 | 3.0 | effort, adaptive thinking, `returns=`, subagent. Không routing (ADR-006) |
-| Ecosystem | 2% | 1/5 | 0.4 | Chưa có |
-| **Tổng** | **100%** | | **67.8** | |
+| Control / Safety | 15% | 4/5 | 12.0 | Taint lattice, effect class, policy lattice, refused at construction, `Secret`, egress. **Penalty: no isolation layer at all** |
+| Reliability | 12% | 3/5 | 7.2 | A budget ceiling, checkpointing, resume. **Penalty: no idempotency key, cancellation swallowed, no failure injection** |
+| Testability | 12% | 4/5 | 9.6 | 233 tests, `FakeModel`, a parity suite, property tests, conformance. **Penalty: no declarable trajectory contract, no golden set** |
+| Extensibility | 10% | 4/5 | 8.0 | 5 seams, proven with a third-party implementation. **Penalty: no MCP** |
+| Observability | 10% | 3/5 | 6.0 | 15 closed event kinds, exporters, a transcript. **Penalty: no real OTel, an envelope missing traceId/tenantId/schemaVersion** |
+| Cost efficiency | 10% | 4/5 | 8.0 | A pre-flight ceiling, 95.3% cache hit rate, ADR-026. **Penalty: cost/successful-task never measured** |
+| Developer experience | 10% | 4/5 | 8.0 | Errors reading at grade <=5, progressive disclosure. **Penalty: SC-1b not yet measured** |
+| Integration | 8% | 2/5 | 3.2 | **No MCP, no Service API, no connectors** |
+| Performance | 6% | 2/5 | 2.4 | **Latency/throughput/concurrency never measured** |
+| Intelligence | 5% | 3/5 | 3.0 | `effort`, adaptive thinking, `returns=`, subagents. No routing (ADR-006) |
+| Ecosystem | 2% | 1/5 | 0.4 | Doesn't exist yet |
+| **Total** | **100%** | | **67.8** | |
 
-Để tham chiếu, nghiên cứu chấm LangGraph 89.4, PydanticAI 87.1, Goose 83.5, Pi 76.8.
+For reference, the research scored LangGraph at 89.4, PydanticAI at 87.1, Goose at
+83.5, Pi at 76.8.
 
-**Kết luận trung thực lúc viết: harness này mạnh ở đúng những chiều nặng ký nhất (Safety,
-Cost, Testability, DX) và yếu ở Integration, Performance, Observability, Reliability.**
-Kế hoạch dưới đây (`## 4`) xếp theo `trọng số × khoảng trống`, không theo thứ tự thích
-làm — và **đã chạy xong toàn bộ**. Bảng 67.8/100 ở trên là điểm GỐC, trước M6-M10; một
-điểm tự chấm mới đòi cùng độ nghiêm ngặt bản gốc có (so với corpus thật, người chấm khác)
-mà việc tự động đối chiếu không tái tạo được — `design/08-roadmap-and-release-plan.md §2`
-đối chiếu từng lý do TRỪ ĐIỂM ở cột "Vì sao" với code hôm nay, thay vì bịa một con số mới.
+**The honest conclusion at the time this was written: this harness is strong on
+exactly the heaviest-weighted dimensions (Safety, Cost, Testability, DX) and weak on
+Integration, Performance, Observability, Reliability.** The plan below (`## 4`) is
+ordered by `weight x gap`, not by what's fun to build — and **has since run to
+completion**. The 67.8/100 table above is the ORIGINAL score, before M6-M10; a new
+self-score would need the same rigor the original had (against a real corpus, a
+different grader) that an automated pass can't reproduce —
+`design/08-roadmap-and-release-plan.md §2` checks each PENALTY reason in the "Why"
+column against today's code instead of inventing a new number.
 
 ---
 
-## 2. ĐIỂM MẠNH ĐỂ HỌC THEO
+## 2. STRENGTHS WORTH LEARNING FROM
 
-### 2.1 Những điều nghiên cứu nói đúng, và harness đã làm
+### 2.1 What the research gets right, and where the harness already does it
 
-| Nguyên tắc trong nghiên cứu | Ở đâu trong harness |
+| Principle in the research | Where in the harness |
 |---|---|
-| *"Thiết kế harness để agent **khó làm sai**"* | 83 failure mode, xếp theo thang Impossible → Documented ([§08](08-poka-yoke.md)) |
-| *"Model được quyền **đề xuất** tool call, không được tự cấp quyền thực thi"* | Policy gate là một cạnh đồ thị, chứng minh bằng `unguarded_paths()` (ADR-032) |
-| Poka-Yoke lớp **Schema** | `@tool` sinh JSON Schema, `strict:true`, `additionalProperties:false` |
-| Poka-Yoke lớp **Execution** | Graph có transition tường minh, bounded loop, timeout |
-| Poka-Yoke lớp **Permission** | Verdict lattice compose bằng `max()` — policy chỉ thắt chặt được (P-2) |
-| Poka-Yoke lớp **Human gate** | `approve=` + `interrupt()` bền vững |
-| Poka-Yoke lớp **Budget** | Trần 3 trục, giữ chỗ **trước** mỗi lần gọi (ADR-017/026) |
-| Poka-Yoke lớp **Audit** | 15 event kind đóng, transcript, mọi verdict được ghi |
-| Anti-pattern 1 *(chỉ có `run(prompt)->str`)* | `Result` mang stop_reason, cost, usage, steps, tainted, messages, value, `tools_run` |
-| Anti-pattern 2 *(final text là state duy nhất)* | Transcript + checkpoint; state là event log |
-| Anti-pattern 5 *(coi protocol là security boundary)* | Ranh giới nằm ở policy engine, không ở transport |
-| *"Cost/successful task, không phải cost/task"* | Công thức đúng — **chưa đo**, xem M8 |
-| *"Approval không thay thế isolation"* (Cline) | Đã nêu trong [§01.5](01-requirements.md) non-goals — **nhưng đó là lảng tránh, xem M7** |
+| *"Design the harness so the agent finds it hard to get wrong"* | 83 failure modes, ranked Impossible -> Documented ([§08](08-poka-yoke.md)) |
+| *"The model may PROPOSE a tool call, never self-grant execution"* | The policy gate is a graph edge, proven by `unguarded_paths()` (ADR-032) |
+| Poka-Yoke's **Schema** layer | `@tool` generates a JSON Schema, `strict:true`, `additionalProperties:false` |
+| Poka-Yoke's **Execution** layer | An explicit-transition graph, a bounded loop, timeouts |
+| Poka-Yoke's **Permission** layer | The verdict lattice composes with `max()` — a policy can only ever tighten (P-2) |
+| Poka-Yoke's **Human gate** layer | `approve=` + a durable `interrupt()` |
+| Poka-Yoke's **Budget** layer | A 3-axis ceiling, reserved **before** every call (ADR-017/026) |
+| Poka-Yoke's **Audit** layer | 15 closed event kinds, a transcript, every verdict recorded |
+| Anti-pattern 1 *(only `run(prompt)->str`)* | `Result` carries stop_reason, cost, usage, steps, tainted, messages, value, `tools_run` |
+| Anti-pattern 2 *(final text as the only state)* | A transcript + checkpointing; state is an event log |
+| Anti-pattern 5 *(treating the protocol as the security boundary)* | The boundary sits at the policy engine, not the transport |
+| *"Cost/successful-task, not cost/task"* | The right formula — **not yet measured**, see M8 |
+| *"Approval doesn't substitute for isolation"* (Cline) | Already stated as a non-goal in [§01.5](01-requirements.md) — **but that was an evasion, see M7** |
 
-### 2.2 Những điều đáng học mà harness **chưa có** — đã kiểm bằng code (lúc viết)
+### 2.2 What's worth learning that the harness **lacked** — checked by code (at the time)
 
 ```
-Event envelope hiện có : ['seq','ts','run_id','kind','step','data']
-Nghiên cứu §8 đòi      : + schemaVersion, traceId, tenantId
-RunContext hiện có     : ['agent_name','deadline','run_id','safety','step','tainted']
-Nghiên cứu đòi         : + principal, tenantId, scopes
-ToolCall hiện có       : ['id','name','arguments','spec']
-Nghiên cứu đòi         : + authorization{principal,scopes}, idempotency_key,
+Current event envelope : ['seq','ts','run_id','kind','step','data']
+The research wants     : + schemaVersion, traceId, tenantId
+Current RunContext     : ['agent_name','deadline','run_id','safety','step','tainted']
+The research wants     : + principal, tenantId, scopes
+Current ToolCall       : ['id','name','arguments','spec']
+The research wants     : + authorization{principal,scopes}, idempotency_key,
                            budget{timeout_ms,max_retries}
-grep -ril idempot src/ → chỉ một dòng comment, không có cơ chế
-grep -ril sandbox src/ → KHÔNG CÓ
-grep -ril mcp src/     → KHÔNG CÓ
+grep -ril idempot src/ -> just one comment line, no mechanism
+grep -ril sandbox src/ -> NOTHING
+grep -ril mcp src/     -> NOTHING
 ```
 
-**Bảng snapshot LÚC VIẾT — cột "Trạng thái" giữ nguyên như một mốc, cột mới bên phải nói
-hôm nay:**
+**A snapshot table AT THE TIME OF WRITING — the "Status" column is kept as a fixed
+marker, the new column on the right says what's true today:**
 
-| # | Điểm mạnh cần học | Từ đâu | Trạng thái lúc viết | Hôm nay |
+| # | Strength worth learning | From | Status when written | Today |
 |---|---|---|---|---|
-| S-01 | **Idempotency key trên mỗi tool call** | Anti-pattern 3; OWASP duplicate-action | Chưa có | `execute_once` (T-6.1) xây xong, caller thật ở MỨC RUN (T-9.2) — MỨC TOOL CALL vẫn mở, `design/07 §7` mục 2 |
-| S-02 | **Approval là một BẢN GHI**, không phải boolean: decision id, actor, policy version, expiry, audit entry | §6 acceptance criteria | Chưa có | **Xong** — `Decision`/`DecisionLog` (T-8.2) |
-| S-03 | **Principal / tenant / scopes** trong ngữ cảnh và trong tool envelope | Anti-pattern 4; tool envelope §8 | Chưa có | **Tenant xong** (`RunContext.tenant_id`, N-9); principal/scopes vẫn mở, rộng hơn những gì T-8.1 hứa |
-| S-04 | **Lớp Isolation**: workspace-rooted, network egress mặc định chặn, secret không vào sandbox | Bảng Poka-Yoke, OpenHands/Goose | Chưa có | **Xong** — M7 (`workspace.py`, `Sandbox`, egress-deny-default) |
-| S-05 | **Trajectory contract khai báo được** (Given/When/Then: tool nào phải gọi, tool nào cấm, ≤N call, ≤T token, ≤C cost, retry không nhân đôi side effect) | §9 | Có mảnh, chưa thành contract | **Xong** — `harness.eval.Trajectory` (T-10.1) |
-| S-06 | **Cost per successful task** thay cho cost per task | §10 | Chưa đo | **Xong** — `cost_per_success` (T-8.4) |
-| S-07 | **Canonical event model + adapter cho nhiều transport** | Phụ lục §10 | Có event model, chưa có adapter | **Xong** — `to_dict()`, ba transport (T-9.3) |
-| S-08 | **Service API**: `POST /v1/runs`, `GET /runs/{id}`, SSE events, approvals, cancel, resume | Phụ lục §8 | Chưa có (§01 chọn library-first) | **Xong** (trừ `resume`, chủ ý — `harness[server]`, T-9.2) |
-| S-09 | **MCP làm tool boundary** (không phải toàn bộ API) | §5 protocol | Chưa có | **Xong** — `harness.mcp` (T-9.1) |
-| S-10 | **Cancellation đúng quy ước** — huỷ giữa model call, tool call, approval, stream | §6 acceptance criteria | **Có lỗi, xem 3.2** | **Xong** — T-6.2 |
-| S-11 | **Failure injection** trong bộ test | §9 | Chưa có | **Xong** — `harness.testing.chaos` (T-6.4) |
-| S-12 | **Đo p50/p95 latency, throughput, concurrency** | §10 | Chưa đo lần nào | **Xong** — `harness.eval.benchmark` (T-10.3) |
-| S-13 | **Pass rate kèm khoảng tin cậy 95%**, không dùng một con số đơn lẻ | §9, Terminal-Bench | Chưa có | **Xong** — `run_golden_set` (T-10.2) |
-| S-14 | **Backpressure**: client chậm không làm đầy memory hay mất event âm thầm | §6 | Chưa xét | Vẫn chưa xét — `harness.server`'s SSE buffer không có trần; không phát hiện thấy trong pilot nào (chưa có pilot) |
+| S-01 | **An idempotency key on every tool call** | Anti-pattern 3; OWASP duplicate-action | Absent | `execute_once` (T-6.1) built, a real caller at the RUN LEVEL (T-9.2) — the TOOL-CALL LEVEL was still open, see `design/07 §7` item 2 |
+| S-02 | **Approval as a RECORD**, not a boolean: decision id, actor, policy version, expiry, an audit entry | §6 acceptance criteria | Absent | **Done** — `Decision`/`DecisionLog` (T-8.2) |
+| S-03 | **Principal / tenant / scopes** in context and in the tool envelope | Anti-pattern 4; tool envelope §8 | Absent | **Tenant done** (`RunContext.tenant_id`, N-9); principal/scopes still open, wider than what T-8.1 promised |
+| S-04 | **An isolation layer**: workspace-rooted, network egress denied by default, secrets never entering the sandbox | The Poka-Yoke table, OpenHands/Goose | Absent | **Done** — M7 (`workspace.py`, `Sandbox`, egress-deny-default) |
+| S-05 | **A declarable trajectory contract** (Given/When/Then: which tools must be called, which are forbidden, <=N calls, <=T tokens, <=C cost, a retry never duplicating a side effect) | §9 | Partial pieces, not yet a contract | **Done** — `harness.eval.Trajectory` (T-10.1) |
+| S-06 | **Cost per successful task** instead of cost per task | §10 | Not measured | **Done** — `cost_per_success` (T-8.4) |
+| S-07 | **A canonical event model + an adapter for multiple transports** | Appendix §10 | Had an event model, no adapter | **Done** — `to_dict()`, three transports (T-9.3) |
+| S-08 | **A Service API**: `POST /v1/runs`, `GET /runs/{id}`, SSE events, approvals, cancel, resume | Appendix §8 | Absent (§01 chose library-first) | **Done** (except `resume`, deliberately — `harness[server]`, T-9.2) |
+| S-09 | **MCP as a tool boundary** (not the whole API) | §5, protocol | Absent | **Done** — `harness.mcp` (T-9.1) |
+| S-10 | **Cancellation following the real convention** — cancelling mid-model-call, mid-tool-call, mid-approval, mid-stream | §6 acceptance criteria | **Had a bug, see 3.2** | **Done** — T-6.2 |
+| S-11 | **Failure injection** in the test suite | §9 | Absent | **Done** — `harness.testing.chaos` (T-6.4) |
+| S-12 | **Measuring p50/p95 latency, throughput, concurrency** | §10 | Never measured | **Done** — `harness.eval.benchmark` (T-10.3) |
+| S-13 | **A pass rate with a 95% confidence interval**, never a single bare number | §9, Terminal-Bench | Absent | **Done** — `run_golden_set` (T-10.2) |
+| S-14 | **Backpressure**: a slow client never fills memory or silently loses events | §6 | Never considered | Still not addressed — `harness.server`'s SSE buffer has no ceiling; not observed in any pilot (no pilot has run yet) |
 
 ---
 
-## 3. ĐIỂM YẾU ĐỂ TRÁNH
+## 3. WEAKNESSES TO AVOID
 
-### 3.1 Từ các dự án trong nghiên cứu
+### 3.1 From projects in the research
 
-| # | Điểm yếu | Của ai | Harness tránh bằng cách nào |
+| # | Weakness | Whose | How the harness avoids it |
 |---|---|---|---|
-| W-01 | **Token/call explosion, semantics mờ sau abstraction role/task** | CrewAI | Không có abstraction "role"/"crew". Subagent là một tool có ngân sách nằm trong ngân sách cha (ADR-030), đo được |
-| W-02 | **"Phải tự xây permission, sandbox, MCP, subagent, plan"** | Pi | An toàn không được để lại cho người dùng: `recall` ship sẵn là `external`, tool `danger` mặc định bị từ chối |
-| W-03 | **Approval bị nhầm là isolation** | Cline | Nghiên cứu nói thẳng, và harness **đang mắc đúng lỗi này** → M7 |
-| W-04 | **Surface rộng, lẫn lộn agent với data abstraction** | LlamaIndex | 5 seam, không phải 9. Phép thử plugin boundary ([§02.4](02-architecture.md)) |
-| W-05 | **Migration risk vì có successor** | AutoGen, Semantic Kernel | Không xây trên thứ có successor path đã công bố |
-| W-06 | **Release velocity cao → regression risk**, chữ ký tool lỗi thời | OpenCode, Mastra | Pin phiên bản; parity suite chống trôi; `contract` version |
-| W-07 | **Vendor coupling, alpha churn** | Codex | Provider là một seam; `AnthropicProvider` là adapter, không phải core |
-| W-08 | **Operationally nặng** | OpenHands | Service API là **extra**, không phải lõi. Core vẫn 3 dependency, import 87 ms |
-| W-09 | **"Stars không phải adoption"** | Toàn bộ §2 | Không lập luận từ độ phổ biến |
-| W-10 | **Một pass rate đơn lẻ để tuyên bố tốt hơn** | §9 | Mọi con số đều kèm cách đo; SC-4 = 95.3% có benchmark chạy được |
+| W-01 | **Token/call explosion, blurred semantics behind a role/task abstraction** | CrewAI | No "role"/"crew" abstraction. A subagent is a tool with a budget inside the parent's budget (ADR-030), measurable |
+| W-02 | **"You must build permission, sandbox, MCP, subagent, plan yourself"** | Pi | Safety is never left to the caller: `recall` ships already `external`, a `danger` tool is refused by default |
+| W-03 | **Approval mistaken for isolation** | Cline | The research states this plainly, and the harness **was making exactly this mistake** -> M7 |
+| W-04 | **A wide surface, conflating the agent with a data abstraction** | LlamaIndex | 5 seams, not 9. A plugin-boundary test ([§02.4](02-architecture.md)) |
+| W-05 | **Migration risk from having a stated successor** | AutoGen, Semantic Kernel | Not built on anything with a published successor path |
+| W-06 | **High release velocity -> regression risk**, stale tool signatures | OpenCode, Mastra | Pinned versions; a parity suite guards against drift; a `contract` version |
+| W-07 | **Vendor coupling, alpha churn** | Codex | The provider is a seam; `AnthropicProvider` is an adapter, not core |
+| W-08 | **Operationally heavy** | OpenHands | The Service API is an **extra**, not core. Core stays at 3 dependencies, an 87ms import |
+| W-09 | **"Stars aren't adoption"** | All of §2 | No argument here is built on popularity |
+| W-10 | **A single pass rate used to claim superiority** | §9 | Every number ships with how it was measured; SC-4 = 95.3% has a runnable benchmark |
 
-### 3.2 Điểm yếu của **chính harness này**, đo được lúc viết — cả năm **ĐÃ ĐÓNG**
+### 3.2 Weaknesses of **this harness itself**, measured at the time — all five now **CLOSED**
 
-**Y-01 — `CancelledError` bị nuốt. ĐÃ SỬA (T-6.2).** Đo lúc đó:
+**Y-01 — `CancelledError` swallowed. FIXED (T-6.2).** Measured at the time:
 
 ```
-t.cancel(); await t   →  trả về Result(stop_reason="cancelled")
-                          KHÔNG raise CancelledError
-side effect chạy ngầm →  Không (tool bị huỷ đúng) ✓
+t.cancel(); await t   ->  returns Result(stop_reason="cancelled")
+                          does NOT raise CancelledError
+a side effect running in the background -> No (the tool was correctly cancelled) OK
 ```
 
-Phần side effect **đúng**. Nhưng nuốt `CancelledError` phá vỡ giao thức huỷ của asyncio:
-một `TaskGroup` hoặc `asyncio.wait_for` bao ngoài sẽ không thấy việc huỷ đã xảy ra. Đây
-là lớp lỗi đã biết, và nghiên cứu liệt kê cancellation thành một acceptance test riêng.
-`try_run()` trả về `Result` là thiết kế (IDL-11) — nhưng **huỷ không phải một stop reason
-bình thường**, nó là một tín hiệu điều khiển.
+The side-effect part was **correct**. But swallowing `CancelledError` breaks asyncio's
+own cancellation protocol: an outer `TaskGroup` or `asyncio.wait_for` never sees that
+the cancellation happened. This is a known failure class, and the research lists
+cancellation as its own acceptance test. `try_run()` returning a `Result` is a design
+choice (IDL-11) — but **cancellation isn't an ordinary stop reason**, it's a control
+signal.
 
-**Y-02 — Không có lớp Isolation. ĐÃ ĐÓNG MỘT PHẦN (M7).** [§01.5](01-requirements.md) ghi
-sandbox là non-goal vì "cần process/WASM isolation — một sản phẩm khác". Nghiên cứu bác
-lại điều đó ở mức nguyên tắc: *"approval không đồng nghĩa sandbox"*, và Isolation là một
-trong 8 lớp Poka-Yoke. Không thể đóng gói container trong một thư viện, nhưng ba việc thư
-viện làm được đã xây: workspace root (T-7.1), chặn egress mặc định (T-7.2), một seam để
-cắm sandbox thật (`Sandbox`, T-7.3 — `InProcess`/`Subprocess` ship sẵn, KHÔNG claim
-namespace/cgroup isolation, ADR-047 nói thẳng; một container runtime thật vẫn là việc của
-người vận hành).
+**Y-02 — No isolation layer. PARTIALLY CLOSED (M7).** [§01.5](01-requirements.md)
+recorded sandboxing as a non-goal because it "needs process/WASM isolation — a
+different product." The research rejects that at the level of principle: *"approval
+does not mean sandbox,"* and Isolation is one of 8 Poka-Yoke layers. A container can't
+be packaged inside a library, but the three things a library CAN do are now built: a
+workspace root (T-7.1), egress denied by default (T-7.2), a seam for plugging in a real
+sandbox (`Sandbox`, T-7.3 — `InProcess`/`Subprocess` ship out of the box, making NO
+claim of namespace/cgroup isolation, ADR-047 says so plainly; a real container runtime
+is still the operator's job).
 
-**Y-03 — Envelope thiếu trường để truy vết đa tenant. ĐÃ SỬA (T-8.1), rồi vá thêm một lỗ
-(N-9).** Không có `tenant_id`, `trace_id`, `schema_version` lúc viết. Envelope v1 thêm cả
-bốn — nhưng lúc mới xây, `tenant_id` chỉ tới được `Event`/`EventBus` (telemetry), CHƯA
-tới được `Policy.check()` (`RunContext`/`_Ctx`) — một policy không quyết định khác nhau
-được theo tenant cho tới N-9 (`design/07 §3`).
+**Y-03 — The envelope lacked fields for multi-tenant tracing. FIXED (T-8.1), then a
+second hole patched (N-9).** No `tenant_id`, `trace_id`, `schema_version` at the time.
+Envelope v1 added all four — but when it was first built, `tenant_id` only reached
+`Event`/`EventBus` (telemetry), had NOT yet reached `Policy.check()`
+(`RunContext`/`_Ctx`) — a policy couldn't decide differently per tenant until N-9
+(`design/07 §3`).
 
-**Y-04 — Integration 2/5. ĐÃ ĐÓNG (M9).** Không MCP, không Service API lúc viết. Nghiên
-cứu xếp Integration 8% và nói *"MCP nên là tool boundary"* — khoảng trống lớn nhất theo
-trọng số lúc đó. `harness.mcp` (T-9.1) + `harness.server` (T-9.2) đóng cả hai.
+**Y-04 — Integration at 2/5. CLOSED (M9).** No MCP, no Service API at the time. The
+research weights Integration at 8% and says *"MCP should be the tool boundary"* — the
+largest weighted gap at the time. `harness.mcp` (T-9.1) + `harness.server` (T-9.2)
+close both.
 
-**Y-05 — Performance chưa từng được đo. ĐÃ ĐÓNG (M10).** 6% trọng số, và con số duy nhất
-từng đo là import time — giờ là một phép đo GỌI ĐƯỢC (`import_cold_start_ms()`), cộng
-p50/p95/throughput/concurrency thật (`harness.eval.benchmark`, T-10.3).
+**Y-05 — Performance never measured. CLOSED (M10).** 6% weight, and the only number
+ever measured was import time — now a CALLABLE measurement
+(`import_cold_start_ms()`), plus real p50/p95/throughput/concurrency
+(`harness.eval.benchmark`, T-10.3).
 
 ---
 
-## 3.3 API interface: có cần thiết kế lại không?
+## 3.3 The API interface: does it need a redesign?
 
-**Không.** Kiểm theo đúng năm contract mà nghiên cứu tách ra, hai contract mạnh, một
-contract có **lỗi ngữ nghĩa** (đã sửa ở vòng 43), và hai contract **thiếu hẳn** — thiếu
-không phải là sai, và bổ sung không đòi hỏi phá vỡ [§04.8](04-interfaces.md).
+**No.** Checked against the exact five contracts the research separates out: two
+contracts strong, one contract with a **semantic bug** (fixed in Round 43), and two
+contracts **entirely missing** — missing isn't the same as wrong, and adding them
+requires no breaking change to [§04.8](04-interfaces.md).
 
-| Contract | Trạng thái | Chi tiết |
+| Contract | Status | Detail |
 |---|---|---|
-| **1. Invocation** | **Mạnh** | `run` / `try_run` / `arun` / `atry_run` / `chat` / `resume` / `aresume` / `as_tool` / `with_`. Ngang PydanticAI về số dạng gọi; `run` raise và `try_run` trả về là một quyết định rõ ràng (IDL-11) mà nhiều thư viện không có |
-| **2. Tool** | **Mạnh — có thể là phần đi trước mặt bằng chung** | Không thư viện nào trong nghiên cứu suy ra **năm hành vi từ một phân loại `effect`**: song song được, retry được, làm bẩn run, verdict mặc định, mức audit. Schema chỉ kiểm hình dạng dữ liệu; `effect` kiểm *hệ quả* |
-| **3. Event / stream** | **Yếu lúc viết → Mạnh (T-8.5)** | Lúc viết: chỉ có `on_delta(str)`. Nay: `async for ev in agent.stream(msg)` trên taxonomy 16 kind (envelope v1 đầy đủ), cộng transport SSE (`harness.server`) và CLI `--json` cùng hình dạng (T-9.3) |
-| **4. Session / state** | **Yếu lúc viết → Mạnh (T-8.6)** | Nghiên cứu: *"Session ID phải được xem là resource có lifecycle"* — ownership, TTL, concurrent writer, fork, conflict. Nay: `harness.Session` — id/owner/TTL/`.fork()`/`.resume_from()`, backend cổ điển (LangGraph có `thread_id` sẵn làm session primitive của nó) |
-| **5. Transport** | **Vắng, có chủ ý → mở qua extra (M9)** | Library-first ([§01](01-requirements.md)) vẫn đúng cho CORE. `harness[server]` (Service API) và `harness[mcp]` (client) mở transport như extra, không đổi lõi |
+| **1. Invocation** | **Strong** | `run` / `try_run` / `arun` / `atry_run` / `chat` / `resume` / `aresume` / `as_tool` / `with_`. On par with PydanticAI's number of call forms; `run` raising vs. `try_run` returning is a clear, deliberate decision (IDL-11) many libraries lack |
+| **2. Tool** | **Strong — possibly ahead of the field** | No library in the research derives **five behaviors from one `effect` classification**: parallel-safety, retryability, whether it taints the run, the default verdict, the audit level. A schema only checks data shape; `effect` checks *consequence* |
+| **3. Event / stream** | **Weak at the time -> Strong (T-8.5)** | At the time: only `on_delta(str)`. Now: `async for ev in agent.stream(msg)` over a 16-kind taxonomy (a full envelope v1), plus an SSE transport (`harness.server`) and a CLI `--json` sharing the same shape (T-9.3) |
+| **4. Session / state** | **Weak at the time -> Strong (T-8.6)** | The research: *"a session id must be treated as a resource with a lifecycle"* — ownership, TTL, concurrent writers, forking, conflicts. Now: `harness.Session` — id/owner/TTL/`.fork()`/`.resume_from()`, on the classic backend (LangGraph already has `thread_id` as its own session primitive) |
+| **5. Transport** | **Deliberately absent -> opened via an extra (M9)** | Library-first ([§01](01-requirements.md)) still holds for CORE. `harness[server]` (the Service API) and `harness[mcp]` (the client) open transport as extras, without changing core |
 
-### Lỗi ngữ nghĩa đã tìm ra nhờ đọc kỹ nghiên cứu
+### A semantic bug found by reading the research closely
 
-Nghiên cứu cảnh báo một chi tiết tinh vi của PydanticAI: *"trong một số chế độ, final
-output có thể kết thúc run trước khi dangling tool calls được thực thi."* Hội đồng đem
-đúng câu đó ra thử harness của mình:
+The research flags a subtle PydanticAI detail: *"in some modes, the final output can
+end the run before dangling tool calls are ever executed."* The council put exactly
+that claim to the test against its own harness:
 
 ```
-model trả:  text "Xong rồi nhé." + tool_use{ghi}   với stop_reason "end_turn"
-vòng lặp :  stop_reason=completed · tool đã chạy: []      ← BỎ IM LẶNG
-            tool_use trong hội thoại: ['c1']
-            tool_result:              []                   ← VI PHẠM I-3
-graph    :  tool đã chạy: [1] · có ToolMessage: True       ← ĐÚNG
+model returns:  text "All done." + tool_use{write}   with stop_reason "end_turn"
+the loop     :  stop_reason=completed . tools that ran: []      <- SILENTLY DROPPED
+                tool_use in the conversation: ['c1']
+                tool_result:                  []                 <- VIOLATES I-3
+the graph    :  tools that ran: [1] . has a ToolMessage: True    <- CORRECT
 ```
 
-Hai lỗi trong một. Tool bị bỏ, **và** hội thoại lưu lại mang một `tool_use` không có
-`tool_result` — nếu phát lại hội thoại đó cho provider, nó bị từ chối thẳng.
+Two bugs in one. The tool was dropped, **and** the saved conversation carries a
+`tool_use` with no matching `tool_result` — replaying that conversation to the provider
+would be refused outright.
 
-**Luật đã sửa: tool call được chạy vì nó CÓ MẶT, không phải vì provider dán nhãn
-`"tool_use"`.** Backend graph vốn đã làm đúng; lần này là vòng lặp đuổi theo — lần đầu
-tiên sự thua kém đảo chiều sau bảy vòng.
+**The fix: a tool call runs because it EXISTS, not because the provider happened to
+label it `"tool_use"`.** The graph backend already got this right; this time the
+hand-written loop was the one catching up — the first time the underdog reversed after
+seven rounds.
 
-### Cần học ở thư viện nào, điểm gì — cụ thể
+### Which library to learn from, for what — specifically
 
-| Thư viện | Điểm đáng học | Vì sao harness cần |
+| Library | The point worth learning | Why the harness needs it |
 |---|---|---|
-| **PydanticAI** | `run_stream_events()` và `iter()` — tiêu thụ **event** chứ không chỉ text | Đóng contract 3. Taxonomy 15 kind đã có; chỉ thiếu cửa ra kiểu pull |
-| **PydanticAI** | Dependency injection (`deps_type`) tách state khỏi agent | Hiện muốn một `Agent` phục vụ nhiều tenant phải `with_()` ra bản sao. DI cho phép **một** agent, **nhiều** ngữ cảnh — và là chỗ tự nhiên để đặt `principal`/`tenant_id` (S-03) |
-| **OpenAI Agents SDK** | **Run state + interruptions là first-class**: serialize được, ngắt được, resume được | `resume(transcript_path)` của harness yếu hơn: state là một file, không phải một đối tượng có kiểu |
-| **LangGraph** | Stream có **version** (`astream_events(version=...)`) | Taxonomy đã đổi hai lần (vòng 27, 35) mà không có version → chính là Y-03 |
-| **OpenHands** | Agent Server REST/OpenAPI + WebSocket, session API key | Hình dạng cho M9; đã có OpenAPI nghĩa là contract test được |
-| **Goose** | Nhiều session đồng thời **cách ly nhau** | Contract 4. Vòng 37 đã sửa rò rỉ ngân sách/taint giữa thread, nhưng vẫn chưa có đối tượng Session |
-| **Cline** | Approval là bản ghi có actor và audit | S-02 |
-| **Mastra** | `.generate()` / `.stream()` trả riêng `toolCalls`/`toolResults`/`steps`/`usage` | **Không học.** `Result` gom lại một chỗ là cố ý — bốn promise rời rạc dễ bị đọc thiếu một cái |
-| **CrewAI** | — | **Không học.** Nghiên cứu ghi rõ: nhiều knob trên Agent → surface lớn, semantics ẩn sau abstraction |
+| **PydanticAI** | `run_stream_events()` and `iter()` — consuming **events**, not just text | Closes contract 3. The 15-kind taxonomy already existed; only a pull-style exit was missing |
+| **PydanticAI** | Dependency injection (`deps_type`) separating state from the agent | Today, serving multiple tenants from one `Agent` means `with_()`-ing a copy each time. DI allows **one** agent, **many** contexts — and is the natural place to put `principal`/`tenant_id` (S-03) |
+| **OpenAI Agents SDK** | **Run state + interruptions as first-class**: serializable, interruptible, resumable | The harness's `resume(transcript_path)` is weaker: state is a plain file, not a typed object |
+| **LangGraph** | A **versioned** stream (`astream_events(version=...)`) | The taxonomy has already changed twice (Rounds 27, 35) with no version — this is exactly Y-03 |
+| **OpenHands** | An Agent Server over REST/OpenAPI + WebSocket, a session API key | The shape for M9; having an OpenAPI spec makes the contract testable |
+| **Goose** | Multiple sessions running concurrently, **isolated from each other** | Contract 4. Round 37 fixed a budget/taint leak across threads, but there was still no Session object |
+| **Cline** | Approval as a record with an actor and an audit trail | S-02 |
+| **Mastra** | `.generate()` / `.stream()` returning separate `toolCalls`/`toolResults`/`steps`/`usage` | **Not adopted.** Gathering it all into one `Result` is deliberate — four separate promises make it easy to miss reading one |
+| **CrewAI** | — | **Not adopted.** The research states plainly: many knobs on Agent -> a wide surface, semantics hidden behind an abstraction |
 
-### Quyết định
+### The decision
 
-**Không thiết kế lại. Sửa một, bổ sung hai, giữ nguyên phần còn lại.**
+**No redesign. Fix one, add two, leave the rest unchanged.**
 
-Contract 1 và 2 là phần mạnh nhất của gói này và đang được §04.8 bảo hành — phá chúng để
-"hiện đại hoá" là đổi thứ đã chứng minh lấy thứ chưa. Contract 3 và 4 thêm vào được
-**mà không đổi chữ ký nào đang có**: `Agent.stream()` là một phương thức mới,
-`Session` là một đối tượng mới. Contract 5 vốn đã nằm ngoài phạm vi có chủ ý.
+Contracts 1 and 2 are this package's strongest parts and are already protected by
+§04.8 — breaking them to "modernize" would trade something proven for something
+unproven. Contracts 3 and 4 can be added **without changing any existing signature**:
+`Agent.stream()` is a new method, `Session` is a new object. Contract 5 was already
+deliberately out of scope.
 
-Việc này bổ sung hai task vào kế hoạch:
+This adds two tasks to the plan:
 
-- **T-8.5 Event stream có thể tiêu thụ** — `async for ev in agent.stream(msg)` trên đúng
-  taxonomy 15 kind, có `schema_version`. Nghiên cứu đòi phân biệt text delta, tool-call
-  delta, tool result, approval request, retry, cancellation, final — đây là chỗ chúng
-  xuất hiện.
-- **T-8.6 `Session` là resource** — id, ownership, TTL, fork, resume, và ranh giới đồng
-  thời. Vòng 37 đã sửa phần rò rỉ; đây là phần đặt tên cho thứ đã tồn tại ngầm.
+- **T-8.5 A consumable event stream** — `async for ev in agent.stream(msg)` over the
+  exact 15-kind taxonomy, carrying `schema_version`. The research wants text deltas,
+  tool-call deltas, tool results, approval requests, retries, cancellation, and finals
+  distinguished — this is where they appear.
+- **T-8.6 `Session` as a resource** — id, ownership, TTL, fork, resume, and a
+  concurrency boundary. Round 37 fixed the leak; this names the thing that already
+  existed implicitly.
 
-Cả hai nằm ở M8 chứ không sớm hơn: chúng phụ thuộc envelope v1 (T-8.1), vì thêm một cửa
-ra stream trước khi envelope có version là bày ra một contract rồi phải phá nó.
-
----
-
-## 4. KẾ HOẠCH — M6 đến M10
-
-**✅ ĐÃ XONG TOÀN BỘ.** Bảng dưới đây là kế hoạch GỐC, giữ nguyên làm bằng chứng mỗi task
-đã trả lời đủ chín mục trước khi code tồn tại — `design/08-roadmap-and-release-plan.md §1`
-là bảng "đã xong ở đâu, ADR nào, test nào" cho từng dòng dưới đây.
-
-Xếp theo `trọng số × khoảng trống`. Mỗi task theo đúng chín mục [§VIII của HARNESS.md](../HARNESS.md):
-**What · Why · Where · How · Depends · Contract · Failure · Test · Done**.
-
-### M6 — Reliability: idempotency, cancellation, failure injection *(12% × gap 2/5)*
-
-| Task | Nội dung |
-|---|---|
-| **T-6.1 Idempotency key** | **What** Mỗi tool call mang `idempotency_key = f"{run_id}:{call_id}"`; `write`/`danger` đi qua một `IdempotencyStore` trước khi chạy. **Why** Anti-pattern 3: client timeout rồi retry có thể gửi email hai lần. **Where** `dispatch.py`, `lg/runtime.py`, seam `Store`. **How** Tra key trước khi thực thi; trúng thì trả kết quả cũ, không chạy lại. **Contract** `execute_once(key, fn) -> (result, was_replayed)`. **Failure** Store chết → fail closed với `write`/`danger`, fail open với `read`. **Test** Retry cùng key không nhân đôi; hai key khác nhau thì chạy hai lần. **Done** AC mới + một dòng parity. |
-| **T-6.2 Cancellation đúng chuẩn** | **What** `CancelledError` được re-raise sau khi dọn dẹp. **Why** Y-01. **Where** `run.py`, `lg/runtime.py`. **How** Bắt để dọn, ghi `run.finished(cancelled)`, rồi `raise`. **Failure** Không được để tool chạy tiếp sau khi huỷ (hiện đã đúng). **Test** `TaskGroup` bao ngoài thấy được việc huỷ; side effect không rò. |
-| **T-6.3 Retry policy theo effect class** | **What** `read`/`external` retry được; `write`/`danger` không bao giờ tự retry. **Why** Bảng effect class đã suy ra "retryable" nhưng chưa ai đọc nó để retry. **Test** Property: không có `write`/`danger` nào chạy hai lần vì retry. |
-| **T-6.4 Failure injection** | **What** `harness.testing.chaos`: provider timeout, tool raise, store chết, policy raise, model trả rác. **Why** §9. **Done** Mọi kịch bản có một hành vi được khẳng định, không cái nào crash. |
-
-### M7 — Isolation: lớp Poka-Yoke duy nhất đang trống *(15% × gap)*
-
-| Task | Nội dung |
-|---|---|
-| **T-7.1 Workspace root** | **What** Tool đụng file chỉ thấy được dưới một `workspace=` đã khai. **How** Chuẩn hoá đường dẫn rồi từ chối mọi thứ thoát ra — **từ chối, không escape** (IDL-44 đã dùng đúng cách này cho key). **Test** `../../etc/passwd`, symlink, đường dẫn tuyệt đối, `..` mã hoá URL. |
-| **T-7.2 Egress mặc định chặn** | **What** `allowed_hosts` mặc định là `()` — chặn tất cả — chứ không phải `None` = cho tất cả. **Why** "Default an toàn: network outbound bị giới hạn". **Failure** Đây là breaking change → cần một phiên bản deprecation. |
-| **T-7.3 Seam Sandbox** | **What** Protocol `Sandbox` với `run(cmd, *, cwd, env, timeout) -> Completed`; ship `InProcess` (không cách ly, nói rõ) và `Subprocess` (env sạch, cwd = workspace, không secret). **Why** Không nhét container vào thư viện, nhưng phải có chỗ cắm. **Done** Ai đó cắm được Docker/Firecracker mà không sửa core — chứng minh bằng một bản cài đặt bên thứ ba như §I.1 của `proof.py`. |
-| **T-7.4 Secret không vào sandbox** | **What** `Sandbox.run` không bao giờ nhận `Secret`; env được lọc trắng. **Test** Red-team: secret không xuất hiện trong env của tiến trình con. |
-
-### M8 — Observability & Audit *(10% × gap)*
-
-| Task | Nội dung |
-|---|---|
-| **T-8.1 Envelope v1** | `schema_version`, `trace_id`, `tenant_id`, `session_id` vào `Event`; `seq` đã có. Có version thì mới đổi được mà không phá exporter. |
-| **T-8.2 Approval là bản ghi** | `ApprovalRecord(decision_id, actor, policy_version, decided_at, expires_at, verdict, reason)` thay cho `bool`. **Why** S-02. **Failure** Approval hết hạn không dùng lại được. **Test** Cùng một approval không mở khoá được lần chạy thứ hai. |
-| **T-8.3 OTel exporter thật** | Hiện `[otel]` chỉ là tên extra. Map 15 event kind sang span; propagate trace id. |
-| **T-8.4 Cost per successful task** | `harness.eval.cost_per_success(runs)` — `tổng chi phí / P(thành công)`, kèm khoảng tin cậy. **Why** S-06, và §10 nói thẳng cost/task là công thức sai. |
-
-### M9 — Integration: MCP và Service API *(8% × gap 3/5 — khoảng trống lớn nhất)*
-
-| Task | Nội dung |
-|---|---|
-| **T-9.1 MCP client làm tool boundary** | **What** `harness.mcp.connect(server)` trả về `ToolSpec`. **Why** MCP là nơi có sẵn cả một hệ sinh thái tool. **How** Tool từ MCP **bắt buộc** khai `effect`; không khai thì mặc định `external` (làm bẩn run) chứ không phải `read`. **Failure** Đây là điểm mấu chốt: một server MCP là bên thứ ba không đáng tin, nên nó **không phải** security boundary (anti-pattern 5) — policy engine vẫn gác. |
-| **T-9.2 Service API** | `POST /v1/runs`, `GET /v1/runs/{id}`, `GET /v1/runs/{id}/events` (SSE), `POST .../approvals/{id}`, `POST .../cancel`, `POST .../resume`. Là **extra** `harness[server]`, core không đổi. |
-| **T-9.3 Canonical event model + adapter** | Một event model, nhiều transport: in-process, SSE, CLI/JSON. Không transport nào có semantics riêng. |
-
-### M10 — Evaluation *(12% Testability, phần còn thiếu)*
-
-| Task | Nội dung |
-|---|---|
-| **T-10.1 Trajectory contract** | Viết được đúng như §9 của nghiên cứu: `must_call`, `must_not_call`, `requires_approval`, `max_model_calls`, `max_tokens`, `max_cost`, `output_schema`, `no_duplicate_side_effects`. Chạy được với `FakeModel`. |
-| **T-10.2 Golden set + pass rate có CI** | Task set đại diện + negative case + adversarial prompt + tool failure + policy violation. Báo cáo pass rate **kèm khoảng tin cậy 95%**, tokens, cost — không bao giờ một con số trần trụi. |
-| **T-10.3 Benchmark hiệu năng** | p50/p95 latency theo span, throughput với concurrency, cold start. Đóng Y-05. |
+Both sit in M8 rather than earlier: they depend on envelope v1 (T-8.1), since adding a
+stream exit before the envelope is versioned would ship a contract only to have to
+break it.
 
 ---
 
-## 5. Thứ tự, và vì sao
+## 4. THE PLAN — M6 through M10
 
-**Đã chạy đúng thứ tự này** (`design/08-roadmap-and-release-plan.md §1` ghi lại việc thật).
+**DONE, COMPLETELY.** The table below is the ORIGINAL plan, kept as-is as evidence that
+every task answered all nine points before any code existed —
+`design/08-roadmap-and-release-plan.md §1` is the table of "done where, which ADR,
+which test" for each row below.
+
+Ordered by `weight x gap`. Every task follows the exact nine points from
+[HARNESS.md §VIII](../HARNESS.md): **What · Why · Where · How · Depends · Contract ·
+Failure · Test · Done**.
+
+### M6 — Reliability: idempotency, cancellation, failure injection *(12% x gap 2/5)*
+
+| Task | Content |
+|---|---|
+| **T-6.1 An idempotency key** | **What** Every tool call carries `idempotency_key = f"{run_id}:{call_id}"`; `write`/`danger` go through an `IdempotencyStore` before running. **Why** Anti-pattern 3: a client timeout followed by a retry can send an email twice. **Where** `dispatch.py`, `lg/runtime.py`, the `Store` seam. **How** Look up the key before executing; a hit returns the stored result instead of re-running. **Contract** `execute_once(key, fn) -> (result, was_replayed)`. **Failure** The store dies -> fail closed for `write`/`danger`, fail open for `read`. **Test** A retry with the same key doesn't duplicate; two different keys run twice. **Done** New ACs + one parity row. |
+| **T-6.2 Correct cancellation** | **What** `CancelledError` is re-raised after cleanup. **Why** Y-01. **Where** `run.py`, `lg/runtime.py`. **How** Catch it to clean up, log `run.finished(cancelled)`, then `raise`. **Failure** A tool must never keep running after cancellation (already correct today). **Test** An outer `TaskGroup` sees the cancellation; no side effect leaks. |
+| **T-6.3 Retry policy by effect class** | **What** `read`/`external` can retry; `write`/`danger` never auto-retry. **Why** The effect-class table already derives "retryable" but nothing reads it to actually retry. **Test** Property: no `write`/`danger` ever runs twice because of a retry. |
+| **T-6.4 Failure injection** | **What** `harness.testing.chaos`: a provider timeout, a tool raising, a dead store, a policy raising, a model returning garbage. **Why** §9. **Done** Every scenario asserts a specific behavior, none of them crash. |
+
+### M7 — Isolation: the one Poka-Yoke layer still empty *(15% x gap)*
+
+| Task | Content |
+|---|---|
+| **T-7.1 A workspace root** | **What** A tool touching files can only see what's under a declared `workspace=`. **How** Normalize the path, then reject anything that escapes it — **refuse, don't escape** (IDL-44 already uses this exact approach for keys). **Test** `../../etc/passwd`, symlinks, absolute paths, URL-encoded `..`. |
+| **T-7.2 Egress denied by default** | **What** `allowed_hosts` defaults to `()` — deny everything — not `None` = allow everything. **Why** "Safe by default: network egress is restricted." **Failure** This is a breaking change -> needs a deprecation cycle. |
+| **T-7.3 The `Sandbox` seam** | **What** A `Sandbox` Protocol with `run(cmd, *, cwd, env, timeout) -> Completed`; ships `InProcess` (no isolation, stated plainly) and `Subprocess` (a clean env, cwd = the workspace, no secrets). **Why** Don't embed a container inside the library, but there must be a place to plug one in. **Done** Someone can plug in Docker/Firecracker without touching core — proven with a third-party implementation, per `proof.py §I.1`'s exact pattern. |
+| **T-7.4 Secrets never reach the sandbox** | **What** `Sandbox.run` never accepts a `Secret`; the env is allowlisted. **Test** Red-team: no secret ever appears in a child process's environment. |
+
+### M8 — Observability & Audit *(10% x gap)*
+
+| Task | Content |
+|---|---|
+| **T-8.1 Envelope v1** | `schema_version`, `trace_id`, `tenant_id`, `session_id` added to `Event`; `seq` already existed. Only a version makes the taxonomy changeable without breaking exporters. |
+| **T-8.2 Approval as a record** | `ApprovalRecord(decision_id, actor, policy_version, decided_at, expires_at, verdict, reason)` replacing a `bool`. **Why** S-02. **Failure** An expired approval cannot be reused. **Test** The same approval can't unlock a second run. |
+| **T-8.3 A real OTel exporter** | `[otel]` was just an extra's name today. Map the 15 event kinds to spans; propagate the trace id. |
+| **T-8.4 Cost per successful task** | `harness.eval.cost_per_success(runs)` — `total cost / P(success)`, with a confidence interval. **Why** S-06, and §10 states plainly that cost/task is the wrong formula. |
+
+### M9 — Integration: MCP and the Service API *(8% x gap 3/5 — the largest weighted gap)*
+
+| Task | Content |
+|---|---|
+| **T-9.1 An MCP client as the tool boundary** | **What** `harness.mcp.connect(server)` returns `ToolSpec`s. **Why** MCP is where a whole tool ecosystem already exists. **How** A tool from MCP is **required** to declare `effect`; an undeclared one defaults to `external` (taints the run), never to `read`. **Failure** This is the critical point: an MCP server is an untrusted third party, so it is **not** a security boundary (anti-pattern 5) — the policy engine still gates every call. |
+| **T-9.2 The Service API** | `POST /v1/runs`, `GET /v1/runs/{id}`, `GET /v1/runs/{id}/events` (SSE), `POST .../approvals/{id}`, `POST .../cancel`, `POST .../resume`. An **extra**, `harness[server]`, core unchanged. |
+| **T-9.3 A canonical event model + adapter** | One event model, several transports: in-process, SSE, CLI/JSON. No transport gets its own semantics. |
+
+### M10 — Evaluation *(the remaining part of Testability's 12%)*
+
+| Task | Content |
+|---|---|
+| **T-10.1 A trajectory contract** | Declarable exactly as §9 of the research describes: `must_call`, `must_not_call`, `requires_approval`, `max_model_calls`, `max_tokens`, `max_cost`, `output_schema`, `no_duplicate_side_effects`. Runnable against `FakeModel`. |
+| **T-10.2 A golden set + a CI-gated pass rate** | A representative task set + negative cases + adversarial prompts + tool failures + policy violations. Reports pass rate **with a 95% confidence interval**, tokens, cost — never a bare number. |
+| **T-10.3 A performance benchmark** | p50/p95 latency per span, throughput under concurrency, cold start. Closes Y-05. |
+
+---
+
+## 5. Order, and why
+
+**This is the order it actually ran in** (`design/08-roadmap-and-release-plan.md §1`
+records what really happened).
 
 ```
-M6 Reliability ──► M7 Isolation ──► M8 Observability ──► M9 Integration ──► M10 Eval
-   idempotency        workspace         envelope v1         MCP                trajectory
-   cancellation       egress deny       approval record     service API        golden set
-   retry policy       sandbox seam      OTel + cost/success adapters           benchmark
-   chaos              secret jail
+M6 Reliability --> M7 Isolation --> M8 Observability --> M9 Integration --> M10 Eval
+   idempotency       workspace        envelope v1          MCP                trajectory
+   cancellation      egress deny      approval record      service API        golden set
+   retry policy      sandbox seam     OTel + cost/success  adapters           benchmark
+   chaos             secret jail
 ```
 
-M6 đi trước vì idempotency là điều kiện tiên quyết cho retry, cho service API (idempotency
-key trong header) và cho M10 (contract "retry không nhân đôi side effect"). M7 trước M9 vì
-mở MCP ra mà chưa có isolation là mở rộng bề mặt tấn công trước khi dựng tường.
+M6 comes first because idempotency is a prerequisite for retry, for the Service API
+(an idempotency key in the header), and for M10 (the "a retry never duplicates a side
+effect" contract). M7 before M9 because opening up MCP before isolation exists widens
+the attack surface before the wall is built.
 
-**Một cảnh báo cho chính hội đồng.** Nghiên cứu cảnh báo về *surface rộng* (LlamaIndex) và
-*operationally nặng* (OpenHands). Kế hoạch này thêm MCP, HTTP server, sandbox, eval —
-đúng những thứ làm một thư viện phình ra. Ràng buộc giữ nguyên: **core vẫn 3 dependency và
-import dưới 100 ms**; mọi thứ ở M7–M10 là `extra`, và phép thử plugin boundary
-([§02.4](02-architecture.md)) áp cho từng seam mới. Nếu một mục nào không qua được phép
-thử đó, nó không được vào.
+**A warning aimed at the council itself.** The research warns about *a wide surface*
+(LlamaIndex) and being *operationally heavy* (OpenHands). This plan adds MCP, an HTTP
+server, a sandbox, eval — exactly the things that bloat a library. The constraint held
+throughout: **core stays at 3 dependencies and imports in under 100ms**; everything in
+M7-M10 is an `extra`, and the plugin-boundary test ([§02.4](02-architecture.md)) applies
+to every new seam. Anything that fails that test doesn't get in.
 
-## 6. Điều kiện hoàn thành
+## 6. Completion condition
 
-**Vế thứ hai đã đạt: 13/14 mục `S-01…S-14` có một test đang chạy chứng minh chúng tồn
-tại** (`## 2.2` — chỉ S-14, backpressure, còn mở, mức độ thấp, chưa quan sát thấy trong
-thực tế vì chưa có pilot nào chạy). Vế thứ nhất (tự chấm lại ≥ 85) cần một người chấm
-thật, không phải một con số tự động — xem `design/08-roadmap-and-release-plan.md §2`/`§3`.
+**The second half is met: 13/14 of items `S-01…S-14` have a running test proving they
+exist** (`## 2.2` — only S-14, backpressure, remains open, low severity, never observed
+in practice because no pilot has run yet). The first half (a re-grade of >= 85) needs a
+real human grader, not an automated number — see
+`design/08-roadmap-and-release-plan.md §2`/`§3`.
 
-Nghiên cứu nói đúng điều mà 41 vòng vừa qua đã học được bằng cách trả giá:
+The research says exactly what the past 41 rounds learned the hard way:
 
-> *Quyết định cuối cùng cần một pilot 2–4 tuần có cùng model, cùng task set, cùng tool set
-> và cùng security policy.* Không có con số nào ở trên thay thế được việc đó.
+> *The final decision needs a 2-4 week pilot with the same model, the same task set, the
+> same tool set, and the same security policy.* No number above substitutes for that.

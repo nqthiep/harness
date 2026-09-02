@@ -62,7 +62,7 @@ Measured against an independent study of 12 frameworks and 9 harnesses
 ([`docs/17`](docs/17-research-alignment.md)): a self-scored **67.8/100** on that study's
 weighted matrix *before* the growth roadmap — strong on Safety, Cost, Testability, DX;
 weak on Integration, Performance, Observability, Reliability. M6–M10 closed the concrete
-gaps that score named (see `design/08-roadmap-and-release-plan.md §3.2` for what closed
+gaps that score named (see `design/08-roadmap-and-release-plan.md §2` for what closed
 each one); re-scoring against the original study's own rigor needs a human grader, not
 another self-assessment — that table is honest about the difference.
 
