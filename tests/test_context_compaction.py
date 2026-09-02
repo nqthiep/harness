@@ -1,22 +1,29 @@
-"""Nén context THẬT — `context/window.py::compact`, dùng bởi vòng lặp classic.
+"""Nén context THẬT — `context/window.py::compact`, và nó chạy trên cả hai backend.
 
 Suốt hai milestone, `manage()` trả về `"compact_needed"` và không ai làm gì với nó ngoài
 phát một sự kiện. Hệ quả cụ thể: một phiên dài xoá nội dung kết quả tool cho tới khi hết
 chỗ để xoá, rồi đâm thẳng vào giới hạn context của provider và bị từ chối request — thất
 bại ở đúng chỗ mà tính năng này tồn tại để tránh.
 
-Backend graph (`lg/runtime.py`) có phần nén riêng của nó, CHƯA đủ đối xứng với phần này
-— xem ghi chú ở cuối file.
+Nhóm cuối (`BackendGraphVaChuyenRuaTaint`) là nhóm quan trọng nhất trên backend graph: nén
+mà làm rớt nhãn thì chính nó là đường rửa taint (S-19).
 """
 import sys
 import unittest
 
 sys.path.insert(0, "src")
+sys.path.insert(0, "tests")
+
+from fake_chat import FakeChat
+from langchain_core.messages import HumanMessage
 
 from harness import Agent, tool
 from harness.context.window import CLEARED, KEEP_RECENT_STEPS, compact, manage
+from harness.lg import build_agent
+from harness.lg.runtime import _context_chars
 from harness.models.fake import FakeModel
 from harness.observe.events import EventKind
+from harness.policy.label import Integrity
 from harness.result import StopReason
 
 
@@ -139,11 +146,56 @@ class VongLapClassic(unittest.TestCase):
         self.assertIn("bigger window", r.detail)
 
 
-# Backend graph (lg/runtime.py::_manage): CHƯA nén thật — chỉ xoá nội dung tool result
-# cũ, không bao giờ trả "compacted"/"compact_needed" và không dừng run khi hết chỗ xoá.
-# Cố ý không kiểm tra ở đây: cấy `compact()` vào backend đó cần thêm bia mộ giữ nhãn
-# taint (S-19 — bỏ một ToolMessage UNTRUSTED khỏi state là tự rửa taint của cả run),
-# một quyết định thiết kế riêng, chưa nằm trong lượt vá này.
+class BackendGraphVaChuyenRuaTaint(unittest.TestCase):
+    def _run(self):
+        @tool(effect="external")
+        def fetch(url: str, body: str) -> str:
+            """Đọc một trang web — kết quả là UNTRUSTED."""
+            return "kết quả ngắn"
+
+        script = [FakeChat.call("fetch", {"url": f"http://x/{i}", "body": "B" * 40_000},
+                                f"c{i}") for i in range(40)]
+        graph, rt = build_agent(model=FakeChat(script=script + [FakeChat.text("xong")]),
+                                tools=[fetch], model_name="claude-haiku-4-5",
+                                budget="$500, 60 steps", allowed_hosts=None)
+        return rt, graph.invoke({"messages": [HumanMessage("đi")], "step": 0})
+
+    def test_context_duoc_do_ke_ca_THAM_SO_cua_tool_call(self):
+        """Một `AIMessage` chỉ mang tool_calls có `content == ""`: tham số nằm ở
+        `.tool_calls`. Phép đo cũ cộng đúng `len(str(m.content))`, nên nó bỏ sót ĐÚNG cái
+        phần không bao giờ được xoá — và việc nén không bao giờ chạy."""
+        from langchain_core.messages import AIMessage
+        m = AIMessage(content="", tool_calls=[
+            {"name": "edit_source", "args": {"body": "B" * 5_000}, "id": "c1"}])
+        self.assertEqual(len(str(m.content)), 0)
+        self.assertGreater(_context_chars([m]), 5_000)
+
+    def test_nen_chay_va_so_message_bi_chan_tren(self):
+        _, out = self._run()
+        self.assertEqual(out.get("stop_reason"), "completed")
+        self.assertLess(len(out["messages"]), 40)
+
+    def test_nhiem_vu_goc_khong_bao_gio_bi_bo(self):
+        _, out = self._run()
+        self.assertIsInstance(out["messages"][0], HumanMessage)
+        self.assertEqual(out["messages"][0].content, "đi")
+
+    def test_nen_KHONG_rua_taint(self):
+        """S-19, và là lý do bản nén ở backend này không xoá trắng. Nhãn hiệu dụng ở đây
+        được TÍNH LẠI từ các message còn trong context (L-3), nên bỏ một `ToolMessage`
+        UNTRUSTED khỏi state chính là hạ nhãn của cả run — bằng đúng thao tác mà việc dọn
+        context tự gọi là dọn dẹp. Bia mộ mang `join` của mọi nhãn đã bỏ là thứ chặn nó."""
+        rt, out = self._run()
+        self.assertTrue(out.get("tainted"), "run mất trạng thái tainted sau khi nén")
+        self.assertIs(rt._effective_label(out).integrity, Integrity.UNTRUSTED,
+                      "nén đã rửa sạch taint — đúng lỗ hổng S-19")
+
+    def test_co_dung_mot_bia_mo(self):
+        _, out = self._run()
+        tombs = [m for m in out["messages"]
+                 if getattr(m, "id", "") == "harness-compaction-tombstone"]
+        self.assertEqual(len(tombs), 1)
+        self.assertEqual(tombs[0].content, CLEARED)
 
 
 if __name__ == "__main__":

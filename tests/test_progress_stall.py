@@ -1,26 +1,30 @@
-"""Stall detector cơ học — `src/harness/progress.py`, vòng lặp classic (`run.py`).
+"""Stall detector cơ học — `src/harness/progress.py`, trên CẢ HAI backend.
 
 Vì sao cần nó, nói bằng một con số: một agent lặp lại đúng một lời gọi tool cho đến khi
 chạm trần 300 bước sẽ trả tiền cho 300 lượt gọi model để không đi tới đâu. Trần ngân sách
 vẫn bắt được — nhưng bắt muộn nhất có thể, và `stop_reason` nó trả về (`step_limit`) mô tả
 sai chuyện đã xảy ra.
 
-Nhóm test ở đây tương ứng đúng ba điều `progress.py` tự hứa, trên vòng lặp classic:
+Nhóm test ở đây tương ứng đúng bốn điều `progress.py` tự hứa:
 
 1. Lặp lại thì dừng, và dừng bằng `StopReason.STALLED` chứ không phải một `ERROR` chung.
 2. Một chữ ký MỚI đưa bộ đếm về 0 — vòng sửa-code-chạy-test bình thường không bị giết oan.
-3. Không đụng tới các trần cũ: step limit và budget vẫn dừng đúng như trước
-   (`tests/test_redteam.py::RT06`, `tests/test_walkthrough.py::rt06` đã sửa cho điều này).
-
-Cố ý không kiểm tra ở đây: đối chiếu hai backend (graph backend chưa nối `ProgressLedger`
-— task theo dõi riêng, R-17) và checkpoint-qua-lượt trên graph backend.
+3. Hai backend hành xử giống nhau (R-17: hai bản cài của một luật luôn trôi khỏi nhau).
+4. Không đụng tới các trần cũ: step limit và budget vẫn dừng đúng như trước
+   (`tests/test_redteam.py::RT06`, `tests/test_walkthrough.py::rt06`,
+   `tests/test_lg.py`, `tests/test_parity.py` đã sửa cho điều này).
 """
 import sys
 import unittest
 
 sys.path.insert(0, "src")
+sys.path.insert(0, "tests")
+
+from fake_chat import FakeChat
+from langchain_core.messages import HumanMessage
 
 from harness import Agent, tool
+from harness.lg import build_agent
 from harness.models.fake import FakeModel
 from harness.observe.events import EventKind
 from harness.progress import STALL_AFTER, ProgressLedger, arguments_of, signature
@@ -130,6 +134,92 @@ class VongLapClassic(unittest.TestCase):
                   provider=FakeModel(script)).try_run("go")
         self.assertIs(r.stop_reason, StopReason.COMPLETED)
         self.assertEqual(r.text, "xong")
+
+
+class BackendGraph(unittest.TestCase):
+    def test_lap_lai_dung_tren_graph(self):
+        chat = FakeChat(script=[FakeChat.call("look", {"path": "a.py"}, f"c{i}")
+                                for i in range(50)])
+        graph, _ = build_agent(model=chat, tools=[look], budget="$5, 100 steps")
+        out = graph.invoke({"messages": [HumanMessage("go")], "step": 0})
+        self.assertEqual(out.get("stop_reason"), StopReason.STALLED.value)
+        self.assertIn("không có lời gọi tool nào mới", out.get("detail", ""))
+
+    def test_cong_viec_that_khong_bi_giet_oan_tren_graph(self):
+        script = []
+        for i in range(12):
+            script.append(FakeChat.call("edit", {"path": "a.py", "body": f"v{i}"}, f"e{i}"))
+            script.append(FakeChat.call("look", {"path": "a.py"}, f"l{i}"))
+        script.append(FakeChat.text("xong"))
+        graph, _ = build_agent(model=FakeChat(script=script), tools=[look, edit],
+                               budget="$5, 100 steps")
+        out = graph.invoke({"messages": [HumanMessage("go")], "step": 0})
+        self.assertEqual(out.get("stop_reason"), "completed")
+
+    def test_bo_dem_nam_trong_state_da_checkpoint_chu_khong_tren_runtime(self):
+        """IDL-47: một `Runtime` phục vụ mọi thread. Bộ đếm sống trên nó sẽ trộn tiến độ
+        của cuộc hội thoại này vào cuộc hội thoại khác."""
+        from harness.lg.state import AgentState
+        self.assertIn("seen_calls", AgentState.__annotations__)
+        self.assertIn("stalled_steps", AgentState.__annotations__)
+
+        chat = FakeChat(script=[FakeChat.call("look", {"path": "a.py"}, f"c{i}")
+                                for i in range(50)])
+        graph, rt = build_agent(model=chat, tools=[look], budget="$5, 100 steps")
+        out = graph.invoke({"messages": [HumanMessage("go")], "step": 0})
+        self.assertGreaterEqual(out.get("stalled_steps", 0), STALL_AFTER)
+        self.assertFalse(hasattr(rt, "_progress"))
+
+
+class BoDemResetMoiLuot(unittest.TestCase):
+    """Bug thật, tìm thấy khi tự review lại lượt vá stall detector: `asks` được reset
+    mỗi lượt hội thoại mới (`_is_new_turn`, S-25(b)) nhưng `stalled_steps`/`seen_calls`
+    thì KHÔNG — đọc thẳng từ state đã checkpoint không qua ranh giới lượt nào cả. Một
+    `Chat` nhiều lượt trên cùng một `thread_id` để lại `stalled_steps` gần chạm
+    `STALL_AFTER` (hoặc `seen_calls` đầy chữ ký của lượt đó) khi lượt trước kết thúc, và
+    lượt SAU thừa hưởng nguyên con số đó — một bước "kiểm tra lại" bình thường ở đầu lượt
+    mới có thể trùng đúng chữ ký của lượt trước và bị dừng oan gần như ngay lập tức."""
+
+    def test_luot_moi_khong_thua_huong_bo_dem_cua_luot_truoc(self):
+        from langgraph.checkpoint.memory import MemorySaver
+
+        # Lượt 1: 6 lời gọi `look(a.py)` giống hệt nhau — đưa stalled_steps lên 5, VẪN
+        # DƯỚI STALL_AFTER(6) — rồi kết thúc lượt bằng một câu trả lời chữ.
+        turn1 = [FakeChat.call("look", {"path": "a.py"}, f"a{i}") for i in range(6)]
+        turn1.append(FakeChat.text("tạm nghỉ"))
+        # Lượt 2: MỞ ĐẦU bằng đúng một lời gọi trùng chữ ký lượt 1 (một bước "xem lại"
+        # hoàn toàn bình thường) — nếu bộ đếm không reset, bước này tự nó đã chạm trần.
+        # Rồi làm việc THẬT (edit một file khác) và kết thúc bình thường.
+        turn2 = [FakeChat.call("look", {"path": "a.py"}, "b0"),
+                FakeChat.call("edit", {"path": "b.py", "body": "x"}, "b1"),
+                FakeChat.text("xong")]
+
+        graph, _ = build_agent(model=FakeChat(script=turn1 + turn2), tools=[look, edit],
+                               budget="$5, 100 steps", checkpointer=MemorySaver())
+        cfg = {"configurable": {"thread_id": "t-stall-reset"}}
+        out1 = graph.invoke({"messages": [HumanMessage("đi 1")], "step": 0}, cfg)
+        self.assertEqual(out1.get("stop_reason"), "completed",
+                         "lượt 1 phải hoàn thành bình thường")
+        self.assertEqual(out1.get("stalled_steps"), 5)
+
+        out2 = graph.invoke({"messages": [HumanMessage("đi 2")]}, cfg)
+        self.assertEqual(out2.get("stop_reason"), "completed",
+                         "lượt 2 bị dừng STALLED oan ngay bước đầu — bộ đếm của lượt 1 "
+                         "tràn sang lượt 2")
+
+
+class HaiBackendGiongNhau(unittest.TestCase):
+    def test_cung_mot_kich_ban_thi_cung_mot_stop_reason_va_cung_mot_cau(self):
+        script_loop = [FakeModel.tool_call("look", {"path": "a.py"})] * 50
+        r = Agent(name="Loop", job="j", tools=[look], budget="$5, 100 steps",
+                  provider=FakeModel(script_loop)).try_run("go")
+        chat = FakeChat(script=[FakeChat.call("look", {"path": "a.py"}, f"c{i}")
+                                for i in range(50)])
+        graph, _ = build_agent(model=chat, tools=[look], budget="$5, 100 steps")
+        out = graph.invoke({"messages": [HumanMessage("go")], "step": 0})
+
+        self.assertEqual(r.stop_reason.value, out.get("stop_reason"))
+        self.assertEqual(r.detail, out.get("detail"))
 
 
 if __name__ == "__main__":

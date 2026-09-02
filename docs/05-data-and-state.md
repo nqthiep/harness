@@ -34,7 +34,7 @@ tracer/OTel exporter — T-8.3 — propagates one in), `tenant_id` and `session_
 | `taint.raised` | First tainted content | `source_tool`, `call_id` |
 | `context.managed` | Editing or compaction ran | `strategy` (`edited` \| `compacted` \| `compact_needed`), `tokens_before`, `messages`, `messages_dropped` |
 | `error.raised` | Any handled error | `where`, `type`, `message`, `retryable`, `attempt`. `wait_s` too for a provider retry (N-5) — one event per retry attempt, never for the final, re-raised failure |
-| `progress.stalled` | Tool calls kept happening but nothing NEW did, for `STALL_AFTER` (6) steps in a row | `stalled_steps` — the run stops with `StopReason.STALLED`, classic backend only for now (see `progress.py`) |
+| `progress.stalled` | Tool calls kept happening but nothing NEW did, for `STALL_AFTER` (6) steps in a row | `stalled_steps` — the run stops with `StopReason.STALLED`, both backends (see `progress.py`) |
 
 **Design rules for payloads**
 
