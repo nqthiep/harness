@@ -391,5 +391,46 @@ class StateSchema(unittest.TestCase):
                          f"node returns keys the schema drops: {undeclared}")
 
 
+class MoiEventCoStep(unittest.TestCase):
+    """Bug thật, tìm thấy khi tự review lượt vá này: R-17 (một luật, không hai bản có
+    thể lệch nhau) — vòng lặp classic (`run.py`/`dispatch.py`) gắn `step=` cho mọi
+    event ngoại trừ những event mức-run (`run.started`/`run.finished`/
+    `budget.unlimited`, vốn không có khái niệm step), nhưng backend graph từng bỏ sót
+    `step=` ở gần chục điểm gọi `_emit`. Test này chạy một kịch bản có tool call qua cả
+    hai backend rồi khẳng định mọi event không-phải-mức-run đều mang `step` khác
+    `None` trên CẢ HAI, không chỉ backend classic."""
+
+    RUN_LEVEL = {"run.started", "run.finished", "budget.unlimited"}
+
+    def test_step_co_mat_tren_moi_event_khong_phai_muc_run(self):
+        class Collector:
+            def __init__(self):
+                self.rows = []
+
+            def emit(self, e):
+                self.rows.append((e.kind.value, e.step))
+
+            def close(self):
+                pass
+
+        col_graph = Collector()
+        script = [FakeChat.call("look", {"ma": "A"}), FakeChat.text("done")]
+        graph, _ = mk(script, tools=[look], exporters=[col_graph])
+        run(graph)
+
+        col_loop = Collector()
+        from harness import Agent
+        from harness.models.fake import FakeModel
+        Agent(name="p", job="j", provider=FakeModel(
+            [FakeModel.tool_call("look", {"ma": "A"}), FakeModel.text("done")]),
+              tools=[look], budget="$5", exporters=[col_loop]).try_run("go")
+
+        for label, col in (("graph", col_graph), ("classic", col_loop)):
+            missing = [kind for kind, step in col.rows
+                      if kind not in self.RUN_LEVEL and step is None]
+            self.assertEqual(missing, [],
+                             f"{label} backend: these events are missing step=: {missing}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -21,6 +21,7 @@ from ..budget.ledger import Ledger
 from ..dispatch import MAX_ATTEMPTS, RETRY_BACKOFF_MAX_S, RETRY_BACKOFF_S
 from ..errors import BudgetExceeded, ToolContractError
 from ..idempotency import execute_once, idempotency_key
+from ..memory.base import Store
 from ..memory.inmemory import InMemoryStore
 from ..middleware import _call_scope
 from ..observe.events import EventBus, EventKind
@@ -53,7 +54,8 @@ class Runtime:
                  exporters=(), approve=None, decisions: DecisionLog | None = None,
                  grants: Grants | None = None, max_asks_per_run: int = 20,
                  tenant_id: str | None = None, returns: type | None = None,
-                 require_approval_evidence: bool = False) -> None:
+                 require_approval_evidence: bool = False,
+                 idempotency_store: Store | None = None) -> None:
         # T-8.1 — deployment-level config, like `_grants` just below: fixed for this
         # compiled graph, not per-thread. `session_id` needs no separate field here —
         # LangGraph's own `thread_id` (== `run_id` per `_run_id(state)`) already IS the
@@ -100,6 +102,15 @@ class Runtime:
         # `_run_tools` still falls back to its existing behavior either way. See
         # `_run_tools`'s own comment at the call site for what this actually closes.
         self._idem_cache: dict[str, InMemoryStore] = {}
+        # T-6.1, the wider half of S-4 this backend can actually close (docstring,
+        # `idempotency.py`): `None` by default — `_run_tools` then falls back to the
+        # in-memory `_idem_for()` cache above, same as always. A caller who supplies a
+        # real `Store` (`memory/sqlite.py::SqliteStore`, say) gets a `write`/`danger`
+        # call replayed instead of re-run if the process crashes INSIDE this node and
+        # LangGraph resumes it from the last checkpoint — `thread_id`/`call_id` both
+        # survive that restart, unlike on the classic backend (see the module docstring
+        # for why this is not offered there). Deployment-level config, same as `_grants`.
+        self._idempotency_store = idempotency_store
         self._approve = approve
         # S-11, đã sửa — deployment-level config, same as `_returns`/`_grants` just
         # above: one compiled graph, one policy for every thread it serves. Read by
@@ -575,6 +586,15 @@ class Runtime:
                 # (`call_id="c1"`, reused across dozens of tests) can never collide
                 # across two different steps of the same run.
                 key = idempotency_key(f"{_run_id(state)}:{state.get('step', 0)}", call["id"])
+                # T-6.1, the wider half of S-4: a caller-supplied persistent `Store`
+                # (`self._idempotency_store`) takes over from the in-memory `idem` cache
+                # for exactly the calls where an unrecorded double-effect on resume-
+                # after-a-crash is undetectable — `write`/`danger` (`not retryable`).
+                # `read`/`external` always keep using `idem`: replaying a persisted
+                # `read` across a restart would return stale content, a correctness bug,
+                # not a safety feature (`idempotency.py`'s module docstring).
+                store = (self._idempotency_store
+                        if self._idempotency_store is not None and not retryable else idem)
                 try:
                     args = {k: v for k, v in call.get("args", {}).items()
                             if not k.startswith("_")}
@@ -593,17 +613,17 @@ class Runtime:
                         # the child's own `child_wall_clock` bounded it, so a tool
                         # author who set `timeout_s=` on a subagent-backed tool got no
                         # enforcement of that number whatsoever. Dedup stays hand-rolled
-                        # (`idem.get`/`.put`), same as before — only the missing timeout
-                        # is new.
+                        # (`store.get`/`.put`, same `store` selected just above), same as
+                        # before — only the missing timeout is new.
                         async def _call_subagent() -> tuple[str, bool]:
-                            cached = await idem.get(key)
+                            cached = await store.get(key)
                             if cached is not None:
                                 return json.loads(cached), True
                             value = await asyncio.get_running_loop().run_in_executor(
                                 _SUBAGENT_EXECUTOR, _run_subagent, spec, args, led)
                             encoded = value if isinstance(value, str) else json.dumps(
                                 value, sort_keys=True, ensure_ascii=False, default=str)
-                            await idem.put(key, json.dumps(
+                            await store.put(key, json.dumps(
                                 encoded, sort_keys=True, ensure_ascii=False))
                             return encoded, False
 
@@ -617,7 +637,7 @@ class Runtime:
                                 value, sort_keys=True, ensure_ascii=False, default=str)
 
                         payload, replayed = asyncio.run(
-                            _with_timeout(execute_once(idem, key, _call), timeout))
+                            _with_timeout(execute_once(store, key, _call), timeout))
                     ok = True
                     break
                 except asyncio.CancelledError:

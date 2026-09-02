@@ -16,24 +16,58 @@ HTTP client's own `Idempotency-Key` header, deduping a whole RUN across two sepa
 are the second caller, wired in later: `idempotency_key(run_id, call_id)` — folded with
 `step` too, so two different calls sharing `FakeModel.tool_call()`'s convenience default
 id never collide in a test — dedupes a single TOOL call retried mid-run. Scoped
-in-memory (`Dispatcher.__init__`'s fresh `InMemoryStore`; `Runtime._idem_for()`'s
+in-memory by default (`Dispatcher.__init__`'s fresh `InMemoryStore`; `Runtime._idem_for()`'s
 per-thread cache, same shape as `_bus_cache`/`_policy_cache`) — it closes the retry
 window WITHIN one live run/thread (a call whose fn() succeeded but whose
 encode/truncate/taint-check step right after it then raised would otherwise silently
-call fn() again), not across a process crash. That wider half of S-4 stays exactly
-where it already was: `docs/05-data-and-state.md §3`'s resume rule (`write`/`danger`
-tool results are never re-executed on resume) is the answer there, and remains one —
-this module's own honest boundary, restated: exactly-once across a crash needs a
-durable execution engine, a stated non-goal.
+call fn() again), not across a process crash. `docs/05-data-and-state.md §3`'s resume
+rule (`write`/`danger` tool results are never re-executed on resume) is the answer for
+the classic backend, where `run_id` is generated fresh every `atry_run()` so nothing
+about a retried request survives to key against anyway.
+
+**The durable backend is different, and `Runtime(idempotency_store=...)` closes the
+wider half of S-4 there.** LangGraph checkpoints AFTER a node completes, so a crash
+inside `_run_tools` re-executes the WHOLE batch on resume — a `git_push` that already
+succeeded included. `thread_id` (== `run_id`) and the checkpointed `call_id` both
+survive that restart, so `idempotency_key(run_id, call_id)` means something durable
+there in a way it never can on the classic backend. A caller who wants that guarantee
+supplies a real `Store` (`memory/sqlite.py::SqliteStore`, say) — `execute_once` is used
+for exactly the calls where an unrecorded double-effect is undetectable (`write`/
+`danger`; `EFFECT_PROFILES[...].retryable is False`), never for `read`/`external`,
+where replaying a stale recorded result across a restart is a correctness bug, not a
+safety feature — re-running a read is what its effect class already means: safe, and
+current.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import weakref
 from typing import Awaitable, Callable, TypeVar
 
 from .memory.base import Store
 
 T = TypeVar("T")
+
+#: S-4 re-verify (design/07-risks-and-open-issues.md) — `Store` has no CAS/insert-if-
+#: absent (`memory/base.py::Store.put` is an unconditional write), so a plain
+#: get-then-put has a TOCTOU window: two concurrent `execute_once` calls sharing a key
+#: can both miss the `get`, both run `fn` (a REAL double side effect for `write`/
+#: `danger`), both `put`. A per-key `asyncio.Lock` closes that race WITHIN one process
+#: — strictly weaker than a persistent-store-level protocol (two separate processes
+#: racing the same key are still unprotected), but a real improvement over none, and
+#: honestly scoped to what an in-process primitive can promise. `WeakValueDictionary`
+#: so a key's lock does not outlive every caller holding it — this module has no
+#: lifecycle hook to explicitly release one.
+_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+
+
+def _lock_for(key: str) -> asyncio.Lock:
+    lock = _locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _locks[key] = lock
+    return lock
 
 
 def idempotency_key(run_id: str, call_id: str) -> str:
@@ -70,21 +104,25 @@ async def execute_once(
     LOUD instead of silently returning success while the record never got written —
     fail visible (IDL-30), the same choice this whole design makes everywhere else.
     """
-    try:
-        cached = await store.get(key)
-    except Exception:
-        if not fail_open:
-            raise
-        cached = None
-    if cached is not None:
-        return json.loads(cached), True
-    result = await fn()
-    try:
-        await store.put(key, json.dumps(result, sort_keys=True, ensure_ascii=False))
-    except Exception:
-        if not fail_open:
-            raise
-        # fail_open: the call already ran and produced a real result — losing the
-        # record means a future replay of this same key won't be caught, but returning
-        # an error here for a call that SUCCEEDED would be strictly worse.
-    return result, False
+    # In-process TOCTOU close — see the module-level note on `_locks`. Two callers
+    # racing the SAME key serialize here; the second one through sees the first's `put`
+    # via `store.get` and replays instead of re-running `fn`.
+    async with _lock_for(key):
+        try:
+            cached = await store.get(key)
+        except Exception:
+            if not fail_open:
+                raise
+            cached = None
+        if cached is not None:
+            return json.loads(cached), True
+        result = await fn()
+        try:
+            await store.put(key, json.dumps(result, sort_keys=True, ensure_ascii=False))
+        except Exception:
+            if not fail_open:
+                raise
+            # fail_open: the call already ran and produced a real result — losing the
+            # record means a future replay of this same key won't be caught, but returning
+            # an error here for a call that SUCCEEDED would be strictly worse.
+        return result, False

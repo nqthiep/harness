@@ -9,6 +9,7 @@ from typing import Any, Sequence
 
 
 from ..budget.ledger import Budget, Ledger
+from ..memory.base import Store
 from ..models import pricing
 from ..errors import ConfigError
 from ..policy.builtin import EffectPolicy, EgressPolicy, TaintPolicy
@@ -31,7 +32,8 @@ def build_agent(*, model, tools: Sequence[Any] = (), budget: Any = None,
                 approve=None, checkpointer=None, exporters: Sequence[Any] = (),
                 max_asks_per_run: int = 20, tenant_id: str | None = None,
                 returns: type | None = None,
-                require_approval_evidence: bool = False):
+                require_approval_evidence: bool = False,
+                idempotency_store: Store | None = None):
     """Compile an agent graph.  Returns (compiled_graph, runtime).
 
     `exporters=` is the spelling `Agent` uses for the same seam (Round 35 parity). It used
@@ -57,6 +59,13 @@ def build_agent(*, model, tools: Sequence[Any] = (), budget: Any = None,
     callback that resolves an ASK by reporting a `human` `Actor` with no `AuthEvidence`
     gets DENIED instead of trusted — see `policy/decision.py::AuthEvidence`,
     `design/07-risks-and-open-issues.md` S-11.
+
+    `idempotency_store=` (T-6.1, closed): `None` by default — a `write`/`danger` tool
+    call whose fn() already succeeded before a process crash inside `run_tools` gets
+    re-executed on resume, same as always. Supply a real `Store` (`memory.SqliteStore`,
+    say) and it gets replayed instead: `thread_id`/`call_id` both survive that restart,
+    which is what makes `idempotency_key(run_id, call_id)` durable on this backend in a
+    way it never can be on the classic loop (see `idempotency.py`'s module docstring).
     """
     toolset = ToolSet(tools)
     # The construction-time refusals are part of the design, not of the loop: Round 35's
@@ -106,7 +115,8 @@ def build_agent(*, model, tools: Sequence[Any] = (), budget: Any = None,
                  max_output=pricing.MAX_OUTPUT.get(model_name, 8_000), model_name=model_name,
                  exporters=exporters, approve=approve, grants=grants,
                  max_asks_per_run=max_asks_per_run, tenant_id=tenant_id, returns=returns,
-                 require_approval_evidence=require_approval_evidence)
+                 require_approval_evidence=require_approval_evidence,
+                 idempotency_store=idempotency_store)
     compiled = build(rt).compile(checkpointer=checkpointer)
 
     broken = unguarded_paths(compiled)
