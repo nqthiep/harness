@@ -44,6 +44,18 @@ class WithGiuLaiMoiTruong(unittest.TestCase):
         b = a.with_(name="B")
         self.assertTrue(b.require_approval_evidence)
 
+    def test_principal_khong_bi_mat(self):
+        a = Agent(name="A", job="j", principal="user-42")
+        b = a.with_(name="B")
+        self.assertEqual(b.principal, "user-42")
+
+    def test_decisions_khong_bi_mat(self):
+        from harness.policy.decision import DecisionLog
+        log = DecisionLog()
+        a = Agent(name="A", job="j", decisions=log)
+        b = a.with_(name="B")
+        self.assertIs(b.decisions, log)
+
     def test_override_tuong_minh_van_hoat_dong(self):
         """`with_()` phải vẫn cho GHI ĐÈ khi caller cố tình muốn — không phải khoá
         cứng bốn trường này lại."""

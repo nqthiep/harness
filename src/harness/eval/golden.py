@@ -89,10 +89,11 @@ async def run_golden_set(agent: "Agent", cases: "Sequence[GoldenCase]", *,
     if not cases:
         raise ValueError("run_golden_set needs at least one case")
 
+    effect_of = {spec.name: spec.effect for spec in agent.toolset}
     results: list[GoldenCaseResult] = []
     for case in cases:
         result, events = await _run_with_events(agent, case.message)
-        traj = (check_trajectory(case.contract, result, events)
+        traj = (check_trajectory(case.contract, result, events, effect_of=effect_of)
                if case.contract is not None else TrajectoryResult(ok=True))
         results.append(GoldenCaseResult(case.name, result, traj))
 

@@ -8,9 +8,11 @@ is replaced.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import dataclasses
 import json
 import time
+from typing import Any
 
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import interrupt
@@ -27,15 +29,22 @@ from ..policy.builtin import emits_of
 from ..policy.decision import (POLICY_ENGINE_VERSION, Actor, AuthEvidence, Decision,
                               DecisionLog, Scope, actor_json, evidence_json)
 from ..policy.engine import PolicyEngine
+from ..progress import STALL_AFTER, ProgressLedger, stall_reason
 from ..policy.label import Grants, Integrity, Label
 from ..result import Money, StopReason, Usage
 from ..retry import retry_scope
 from ..run import CONTINUE, _MAP, parse_returns
 from ..secrets import redact, redaction_scope
-from ..context.window import CLEARED, EDIT_AT, KEEP_RECENT_STEPS
+from ..context.window import CLEARED, COMPACT_AT, EDIT_AT, KEEP_RECENT_STEPS
 from ..models.pricing import MAX_CONTEXT
 from ..tools import EFFECT_PROFILES
 from .graph import INTERRUPT, MAX_PAUSES
+
+#: Bao nhiêu message CUỐI được giữ nguyên khi nén. Đếm bằng message chứ không bằng
+#: "bước", vì ở backend này một bước là một `AIMessage` cộng N `ToolMessage` (mỗi lời gọi
+#: một cái) — không phải hai như ở vòng lặp classic, nơi mọi `tool_result` gộp vào MỘT
+#: message (I-4). Ba bước × (1 + trung bình 2 lời gọi) là khoảng con số này.
+_KEEP_RECENT_MESSAGES = KEEP_RECENT_STEPS * 3
 
 
 class Runtime:
@@ -177,6 +186,16 @@ class Runtime:
         # `run.finished`'s `input_tokens`/`output_tokens`/...
         turn_started_at = time.time() if _is_new_turn(state) else state.get("turn_started_at", 0.0)
         turn_usage = {} if _is_new_turn(state) else (state.get("turn_usage") or {})
+        # The mechanical stall detector (`progress.py`, ADR-062) needs the identical
+        # per-turn reset and had been missing it: `stalled_steps`/`seen_calls` were read
+        # straight from checkpointed state with no turn boundary at all, so a `Chat`-
+        # style conversation that ended one turn at (say) 4-of-6 toward STALL_AFTER, or
+        # with `seen_calls` full of that turn's tool signatures, carried that count
+        # into the NEXT turn — a routine "check status" step at the start of a brand
+        # new turn could repeat a signature from a completely different turn and fire
+        # `PROGRESS_STALLED` a few steps in.
+        stalled_steps = 0 if _is_new_turn(state) else state.get("stalled_steps", 0)
+        seen_calls = [] if _is_new_turn(state) else list(state.get("seen_calls", ()))
         if state.get("step", 0) == 0:
             # `step` lives in checkpointed state (thread-scoped), so this fires once per
             # THREAD — not once per compiled graph. A `self._started` instance flag here
@@ -195,11 +214,26 @@ class Runtime:
         if led.remaining_steps() <= 0:
             return {"stop_reason": "step_limit", "detail": "reached the step limit",
                     "ledger": led.snapshot(), "asks": asks,
-                    "turn_started_at": turn_started_at, "turn_usage": turn_usage}
+                    "turn_started_at": turn_started_at, "turn_usage": turn_usage,
+                    "stalled_steps": stalled_steps, "seen_calls": seen_calls}
         if led.remaining_wall_clock() <= 0:
             return {"stop_reason": "timeout", "detail": "ran out of time",
                     "ledger": led.snapshot(), "asks": asks,
-                    "turn_started_at": turn_started_at, "turn_usage": turn_usage}
+                    "turn_started_at": turn_started_at, "turn_usage": turn_usage,
+                    "stalled_steps": stalled_steps, "seen_calls": seen_calls}
+        # Checked HERE and not in `run_tools`, even though that is where the observation
+        # is made: this gate is the only node that clears `stop_reason` (see the comment
+        # at the end of this method), so a stop set anywhere upstream of it is wiped
+        # before `_after_budget` ever reads it. Sitting beside the step and wall-clock
+        # ceilings is also where it belongs — it is a ceiling, on a different axis.
+        if stalled_steps >= STALL_AFTER:
+            self._emit(state, EventKind.PROGRESS_STALLED, step=state.get("step", 0),
+                       stalled_steps=stalled_steps)
+            return {"stop_reason": StopReason.STALLED.value,
+                    "detail": stall_reason(stalled_steps),
+                    "ledger": led.snapshot(), "asks": asks,
+                    "turn_started_at": turn_started_at, "turn_usage": turn_usage,
+                    "stalled_steps": stalled_steps, "seen_calls": seen_calls}
         text = json.dumps([m.content for m in state["messages"]],
                           ensure_ascii=False, default=str)
         input_tokens = max(1, len(text) // 4)
@@ -212,7 +246,8 @@ class Runtime:
                        axis="usd", spent=str(led.spent))
             return {"stop_reason": "budget_exhausted", "detail": str(exc),
                     "ledger": led.snapshot(), "asks": asks,
-                    "turn_started_at": turn_started_at, "turn_usage": turn_usage}
+                    "turn_started_at": turn_started_at, "turn_usage": turn_usage,
+                    "stalled_steps": stalled_steps, "seen_calls": seen_calls}
         self._emit(state, EventKind.BUDGET_RESERVED, step=state.get("step", 0),
                    estimate_usd=str(res.estimate), spent_usd=str(led.spent))
         # `stop_reason` is cleared here, and only here.  It is checkpointed like every
@@ -222,7 +257,8 @@ class Runtime:
         # the caller got their own message echoed back (Round 37).
         return {"spent_usd": str(led.spent.decimal), "ledger": led.snapshot(), "asks": asks,
                 "max_tokens": max_tokens, "stop_reason": None, "detail": "",
-                "turn_started_at": turn_started_at, "turn_usage": turn_usage}
+                "turn_started_at": turn_started_at, "turn_usage": turn_usage,
+                "stalled_steps": stalled_steps, "seen_calls": seen_calls}
 
     def call_model(self, state) -> dict:
         led = self._ledger(state)
@@ -301,7 +337,8 @@ class Runtime:
                     tool_call_id=c["id"], status="error"))
                 continue
             d = self._engine_for(_run_id(state)).decide(
-                ToolCall(c["id"], c["name"], c.get("args", {}), spec), ctx)
+                ToolCall(c["id"], c["name"], c.get("args", {}), spec,
+                        idempotency_key(_run_id(state), c["id"])), ctx)
             self._emit(state, EventKind.POLICY_DECIDED, step=state.get("step", 0),
                        tool=c["name"], call_id=c["id"], verdict=d.verdict.name,
                        reason=d.reason, policy=d.policy)
@@ -336,7 +373,8 @@ class Runtime:
                 out.append(p); continue
             asks += 1
             spec = self._tools.get(p["tool"])
-            call = ToolCall(p["call"]["id"], p["tool"], p["call"].get("args", {}), spec)
+            call = ToolCall(p["call"]["id"], p["tool"], p["call"].get("args", {}), spec,
+                           idempotency_key(_run_id(state), p["call"]["id"]))
             ctx = _Ctx(label=self._effective_label(state), safety=self._safety(state),
                       tenant_id=self._tenant_id, tools_called=self._tools_called(state))
             reported_actor: Actor | None = None
@@ -434,7 +472,8 @@ class Runtime:
         trước khi bất kỳ call nào trong batch này chạy).
         """
         spec = self._tools.get(p["tool"])
-        call = ToolCall(p["call"]["id"], p["tool"], p["call"].get("args", {}), spec)
+        call = ToolCall(p["call"]["id"], p["tool"], p["call"].get("args", {}), spec,
+                        idempotency_key(_run_id(state), p["call"]["id"]))
         if label is None:
             label = self._effective_label(state)
         ctx = _Ctx(label=label, safety=self._safety(state), tenant_id=self._tenant_id,
@@ -531,24 +570,35 @@ class Runtime:
                             if not k.startswith("_")}
                     if spec.subagent is not None:
                         # `_run_subagent` calls `asyncio.run()` internally (it drives
-                        # the child's own `atry_run()`); nesting it inside the
-                        # `asyncio.run()` below (for `execute_once`/`_with_timeout`)
-                        # would raise "asyncio.run() cannot be called from a running
-                        # event loop". So this branch stays synchronous, exactly as
-                        # before N-1/N-8 — the child's own budget cap
-                        # (`child_wall_clock`) is what bounds it, same as always — and
-                        # dedup is done by hand around the plain sync call instead of
-                        # through `execute_once`.
-                        cached = asyncio.run(idem.get(key))
-                        if cached is not None:
-                            payload, replayed = json.loads(cached), True
-                        else:
-                            value = _run_subagent(spec, args, led)
-                            payload = value if isinstance(value, str) else json.dumps(
+                        # the child's own `atry_run()`), so it cannot run directly on
+                        # THIS coroutine's event loop — nesting a second `asyncio.run()`
+                        # inside it raises "cannot be called from a running event loop".
+                        # `run_in_executor(_SUBAGENT_EXECUTOR, ...)` hops it onto a real
+                        # OS thread that has no running loop of its own, which is what
+                        # lets `asyncio.timeout` below actually bound it — deliberately
+                        # NOT `asyncio.to_thread` (see `_SUBAGENT_EXECUTOR`'s own
+                        # comment for why that seemingly-equivalent call does not
+                        # actually cut a retry off promptly). Before this fix the whole
+                        # branch ran fully synchronously with NO timeout at all: only
+                        # the child's own `child_wall_clock` bounded it, so a tool
+                        # author who set `timeout_s=` on a subagent-backed tool got no
+                        # enforcement of that number whatsoever. Dedup stays hand-rolled
+                        # (`idem.get`/`.put`), same as before — only the missing timeout
+                        # is new.
+                        async def _call_subagent() -> tuple[str, bool]:
+                            cached = await idem.get(key)
+                            if cached is not None:
+                                return json.loads(cached), True
+                            value = await asyncio.get_running_loop().run_in_executor(
+                                _SUBAGENT_EXECUTOR, _run_subagent, spec, args, led)
+                            encoded = value if isinstance(value, str) else json.dumps(
                                 value, sort_keys=True, ensure_ascii=False, default=str)
-                            asyncio.run(idem.put(key, json.dumps(
-                                payload, sort_keys=True, ensure_ascii=False)))
-                            replayed = False
+                            await idem.put(key, json.dumps(
+                                encoded, sort_keys=True, ensure_ascii=False))
+                            return encoded, False
+
+                        payload, replayed = asyncio.run(
+                            _with_timeout(_call_subagent(), timeout))
                     else:
                         async def _call() -> str:
                             with _call_scope(step=state.get("step", 0), call_id=call["id"]):
@@ -608,7 +658,14 @@ class Runtime:
                        tool=spec.name, call_id=call["id"], is_error=False, replayed=replayed)
         self._emit(state, EventKind.STEP_FINISHED, step=state.get("step", 0),
                    stop_reason="tool_use", tool_calls=[p["tool"] for p in state.get("_pending", [])])
+        # Observed on what the MODEL asked for, not on `_pending`: a model that keeps
+        # re-requesting a tool policy keeps denying is stalled in exactly the sense this
+        # detects, and `_pending` has already had those calls removed.
+        prog = ProgressLedger(seen=state.get("seen_calls", ()),
+                              stalled_steps=state.get("stalled_steps", 0))
+        prog.observe(_last_tool_calls(state["messages"]))
         return {"messages": msgs + self._manage(state["messages"] + msgs, state),
+                "seen_calls": prog.seen, "stalled_steps": prog.stalled_steps,
                 "_pending": [], "tainted": label.integrity is Integrity.UNTRUSTED,
                 # A subagent settles into THIS ledger, so its spend has to reach state or
                 # the parent's ceiling leaks exactly as it did in Round 28.
@@ -628,13 +685,11 @@ class Runtime:
         # the classic backend). `STEP_FINISHED` just above is deliberately NOT
         # corrected — same asymmetry `run.py` already has (only the final, run-level
         # outcome gets the corrected value).
+        value = None
         if stop == "completed" and self._returns is not None:
-            text = ""
-            msgs = state.get("messages") or []
-            if msgs and isinstance(getattr(msgs[-1], "content", None), str):
-                text = msgs[-1].content
+            text = _final_text(state.get("messages") or [])
             try:
-                parse_returns(self._returns, text)
+                value = _returns_as_state(parse_returns(self._returns, text))
             except ToolContractError as exc:
                 stop, detail = "error", str(exc)
                 self._emit(state, EventKind.ERROR_RAISED, step=state.get("step", 0),
@@ -654,7 +709,8 @@ class Runtime:
                    input_tokens=u.input_tokens, output_tokens=u.output_tokens,
                    cache_read_tokens=u.cache_read_input_tokens,
                    cache_creation_tokens=u.cache_creation_input_tokens)
-        return {"stop_reason": stop, "detail": detail, "spent_usd": str(led.spent.decimal)}
+        return {"stop_reason": stop, "detail": detail,
+               "spent_usd": str(led.spent.decimal), "value": value}
 
     def _manage(self, messages, state) -> list:
         """Context growth, ported from T-2.6 (docs/07-cost.md §3).
@@ -666,9 +722,16 @@ class Runtime:
         and the tool_use/tool_result pairing stays intact (invariant I-3).
         """
         window = MAX_CONTEXT.get(self._model_name, 200_000)
-        used = sum(len(str(m.content)) for m in messages) // 4
+        used = _context_chars(messages) // 4
         if used / window < EDIT_AT:
             return []
+        # Ngưỡng nén đọc theo TỈ LỆ, không theo "xoá nội dung đã hết chỗ để xoá": mỗi
+        # bước lại làm đúng một kết quả tool cũ đi, nên nhánh xoá LUÔN có việc để làm và
+        # nhánh nén sẽ không bao giờ chạy — trong khi cửa sổ vẫn phình, vì một message đã
+        # xoá nội dung vẫn tốn phần vỏ và các `AIMessage` mang tool_calls thì không bao
+        # giờ được xoá. Ở 80% cửa sổ, xoá thêm một kết quả cũ không phải một phương án.
+        if used / window >= COMPACT_AT:                       # noqa: SIM102
+            return self._compact(messages, state, used=used, window=window)
         results = [m for m in messages if isinstance(m, ToolMessage)]
         stale = results[:-KEEP_RECENT_STEPS] if len(results) > KEEP_RECENT_STEPS else []
         # `additional_kwargs=dict(m.additional_kwargs)` giữ nguyên nhãn L-1 của message
@@ -685,6 +748,39 @@ class Runtime:
         self._emit(state, EventKind.CONTEXT_MANAGED, step=state.get("step", 0), strategy="edited",
                    tokens_before=used, messages=len(messages))
         return edited
+
+    def _compact(self, messages, state, *, used: int, window: int) -> list:
+        """Bỏ hẳn những bước cũ nhất khi không còn gì để xoá nội dung — nhưng KHÔNG được
+        bỏ nhãn theo (S-19).
+
+        Nhãn hiệu dụng ở backend này được TÍNH LẠI từ các message còn trong context
+        (`_effective_label`, L-3), nên xoá một `ToolMessage` UNTRUSTED khỏi state chính là
+        hạ nhãn của cả run xuống — một đường rửa taint hoàn hảo, bằng đúng thao tác mà
+        việc nén context gọi là dọn dẹp. Bản cài này vì thế không xoá trắng: nó gộp nhãn
+        của MỌI message bị bỏ vào một `ToolMessage` bia mộ duy nhất, rỗng nội dung nhưng
+        mang `join` của các nhãn đó, và giữ bia mộ ấy lại trong context.
+
+        Cặp `tool_use`/`tool_result` luôn đi cùng nhau (I-3): một `AIMessage` mang
+        tool_calls chỉ bị bỏ khi mọi `ToolMessage` trả lời nó cũng bị bỏ trong cùng lượt.
+        """
+        from langchain_core.messages import RemoveMessage
+
+        # `messages[1:...]` — chỉ số 1 là chỗ nhiệm vụ gốc được giữ lại, không phải một
+        # lát cắt tuỳ tiện: bỏ nó đi thì model mất luôn việc nó đang làm.
+        keep_from = len(messages) - _KEEP_RECENT_MESSAGES
+        droppable = [m for m in messages[1:keep_from] if getattr(m, "id", None)]
+        if not droppable:
+            return []
+        label = Label()
+        for m in droppable:
+            label = label.join(_msg_label(m))
+        tomb = ToolMessage(content=CLEARED, tool_call_id="compacted",
+                           id="harness-compaction-tombstone")
+        _stamp_label(tomb, label)
+        self._emit(state, EventKind.CONTEXT_MANAGED, step=state.get("step", 0),
+                   strategy="compacted", tokens_before=used, messages=len(messages),
+                   messages_dropped=len(droppable))
+        return [RemoveMessage(id=m.id) for m in droppable] + [tomb]
 
     # ── helpers ──────────────────────────────────────────────────────────────
     def _safety(self, state) -> str:
@@ -727,6 +823,36 @@ def _is_new_turn(state) -> bool:
     """True when the newest message came from the caller rather than from the loop."""
     msgs = state.get("messages") or []
     return bool(msgs) and type(msgs[-1]).__name__ == "HumanMessage"
+
+
+def _context_chars(messages) -> int:
+    """Kích thước context, tính cả THAM SỐ của tool_call.
+
+    Bản trước cộng đúng `len(str(m.content))`. Trên LangChain, một `AIMessage` chỉ mang
+    tool_calls có `content == ""` — tham số nằm ở `.tool_calls`, không nằm ở `.content`.
+    Nên phép đo cũ bỏ sót đúng cái phần KHÔNG BAO GIỜ được xoá nội dung: một agent code
+    gọi `edit_source(path, old, new)` bốn mươi lần được tính là ~0 ký tự, và việc nén
+    context không bao giờ chạy — cho tới lúc provider từ chối request. Vòng lặp classic
+    không có lỗi này vì nó đo bằng `canonical(message)`, tức cả khối `tool_use`.
+    """
+    total = 0
+    for m in messages:
+        total += len(str(m.content))
+        calls = getattr(m, "tool_calls", None)
+        if calls:
+            total += len(str(calls))
+    return total
+
+
+def _last_tool_calls(messages) -> list:
+    """The most recent batch of tool calls the model asked for. Walked backwards rather
+    than read off `messages[-1]`: the policy gate appends a `ToolMessage` for every
+    denied call, so the last message is often not the model's."""
+    for m in reversed(list(messages)):
+        calls = getattr(m, "tool_calls", None)
+        if calls:
+            return list(calls)
+    return []
 
 
 def _provider_stop(msg) -> str:
@@ -843,6 +969,48 @@ async def _with_timeout(coro, timeout: float):
     coroutine rather than passing `coro` to `asyncio.run()` directly."""
     async with asyncio.timeout(timeout):
         return await coro
+
+
+#: A subagent tool call's real work runs here (`run_in_executor`), never via
+#: `asyncio.to_thread` — module-level so it survives across the many `asyncio.run()`
+#: calls `_run_tools` makes (one per retry attempt). `asyncio.to_thread` always targets
+#: the CURRENT loop's own *default* executor, and `asyncio.run()`'s own cleanup calls
+#: `loop.shutdown_default_executor()`, which BLOCKS until every thread ever submitted to
+#: that executor finishes — including one a cancelled `asyncio.timeout` gave up on but
+#: could not actually stop (a running OS thread cannot be interrupted from outside it).
+#: Verified directly: a `to_thread`-based version timed out its `await` at 0.05s exactly
+#: as expected, then `asyncio.run()` itself did not RETURN for the full 5s the orphaned
+#: thread kept running — the timeout appeared to work locally and silently ate the whole
+#: point of having one. A separately owned executor is untouched by that shutdown call,
+#: so a cancelled attempt's orphaned thread runs out its course in the background without
+#: blocking the NEXT retry attempt's own `asyncio.run()` from returning promptly.
+_SUBAGENT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    thread_name_prefix="harness-subagent")
+
+
+def _final_text(messages) -> str:
+    """The model's final answer as plain text — N-3. `AIMessage.content` is a `str` for
+    most chat models but a list of content blocks for some (Anthropic's own SDK shape),
+    same ambiguity `run.py` already resolves for `resp.content`; handled the identical
+    way here so a malformed `returns=` answer is diagnosed off the same text on both
+    backends, instead of silently reading `""` whenever content isn't a bare string."""
+    content = messages[-1].content if messages else ""
+    if isinstance(content, str):
+        return content
+    return "".join(b.get("text", "") for b in content
+                   if isinstance(b, dict) and b.get("type") == "text")
+
+
+def _returns_as_state(value: Any) -> Any:
+    """`parse_returns` may hand back a dataclass INSTANCE (the classic loop's
+    `Result.value` holds exactly that) — state is checkpointed, and a class instance is
+    not guaranteed to round-trip through a checkpointer the way a `dict` is (IDL-42's
+    same reasoning, one level up). Convert only when needed; the parsed JSON for a
+    non-dataclass `returns=` is already a plain `dict`/`list`/scalar and passes through
+    unchanged."""
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.asdict(value)
+    return value
 
 
 def _run_subagent(spec, args: dict, led: Ledger) -> str:

@@ -37,9 +37,13 @@ def _noop_tool():
 
 
 class ProviderTimeout(unittest.TestCase):
-    def test_provider_timeout_tra_result_khong_crash(self):
+    def test_provider_timeout_lien_tuc_tra_result_khong_crash(self):
+        """`fail_calls` không đáy: mọi lần gọi đều timeout, nên retry.py cuối cùng phải
+        bỏ cuộc (hết `MAX_ATTEMPTS` hoặc hết wall-clock) chứ không lặp mãi — kịch bản
+        THẬT SỰ vẫn kết thúc lỗi, khác kịch bản một lần timeout rồi hồi phục bên dưới."""
         agent = Agent(name="A", job="j", model="claude-opus-5",
-                      provider=TimeoutProvider(), budget="$5")
+                      provider=TimeoutProvider(fail_calls=range(10_000)),
+                      budget="$5, 20 steps, 5s")
         try:
             r = agent.try_run("thử")
         except Exception as exc:      # chính test này cấm crash
@@ -48,6 +52,18 @@ class ProviderTimeout(unittest.TestCase):
         self.assertIn(r.stop_reason, (StopReason.ERROR, StopReason.TIMEOUT),
                       f"provider timeout phải có stop_reason lỗi rõ ràng, không phải "
                       f"{r.stop_reason}")
+
+    def test_mot_lan_timeout_thoang_qua_thi_retry_roi_thanh_cong(self):
+        """Bug thật: `retry.py::RETRYABLE` từng thiếu `TimeoutError` trần —
+        `TimeoutProvider` (double giả lập) raise đúng loại đó, không phải
+        `ProviderTimeout`, nên một timeout THOÁNG QUA (chỉ lần gọi đầu) trước đây làm
+        cả run fail ngay, dù bản thân request thứ hai lẽ ra thành công. Regression-
+        verify: revert `TimeoutError` khỏi `RETRYABLE` thì test này đỏ."""
+        agent = Agent(name="A", job="j", model="claude-opus-5",
+                      provider=TimeoutProvider(fail_calls=(0,)), budget="$5")
+        r = agent.try_run("thử")
+        self.assertTrue(r.ok, f"lẽ ra hồi phục sau một timeout thoáng qua: {r.detail}")
+        self.assertEqual(r.stop_reason, StopReason.COMPLETED)
 
 
 class ToolRaise(unittest.TestCase):

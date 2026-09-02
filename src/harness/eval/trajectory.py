@@ -59,7 +59,14 @@ def _cost_usd(result: "Result") -> float:
 
 
 def check_trajectory(contract: Trajectory, result: "Result",
-                     events: "Sequence[Event]") -> TrajectoryResult:
+                     events: "Sequence[Event]", *,
+                     effect_of: Mapping[str, str] | None = None) -> TrajectoryResult:
+    """`effect_of`: tool name -> `"read"|"write"|"external"|"danger"`, required only
+    when `contract.no_duplicate_side_effects` is set — needed to tell a duplicate
+    `read` (harmless; nothing stops a tool with no side effect from being called twice
+    with the same arguments) from a duplicate `write`/`danger` (an actual double-run of
+    a side effect, the thing this check exists to catch). `golden.py`'s caller passes
+    `{spec.name: spec.effect for spec in agent.toolset}`."""
     violations: list[str] = []
     ran = set(result.tools_run)
 
@@ -104,11 +111,19 @@ def check_trajectory(contract: Trajectory, result: "Result",
             violations.append(f"output_schema: {exc.message}")
 
     if contract.no_duplicate_side_effects:
+        if effect_of is None:
+            raise ValueError(
+                "Trajectory.no_duplicate_side_effects needs effect_of= (tool name -> "
+                "effect) — there is no way to tell a harmless duplicate read from a "
+                "double-run of a write/danger side effect without it")
         # A tool that actually STARTED (`tool.started`, not merely requested — a denied
         # or deduped-in-batch request never reaches this kind, T-2.5) more than once
         # under the same canonical arguments double-ran a side effect. `tool.started`
         # carries no `arguments` of its own (dispatch.py) — only `tool.requested` does,
-        # correlated by `call_id`.
+        # correlated by `call_id`. A `read`/`external` tool has no side effect to
+        # double-run in the first place (§04.8's own taxonomy), so only `write`/`danger`
+        # count here — otherwise every idempotent lookup called twice reads as a
+        # violation of a check named "duplicate SIDE EFFECTS."
         from ..context.assembler import canonical as _canonical
         args_by_call: dict[str, Any] = {
             str(e.data["call_id"]): e.data.get("arguments", {})
@@ -118,8 +133,11 @@ def check_trajectory(contract: Trajectory, result: "Result",
         for e in events:
             if e.kind.value != "tool.started":
                 continue
+            name = str(e.data.get("tool", ""))
+            if effect_of.get(name) not in ("write", "danger"):
+                continue
             args = args_by_call.get(str(e.data.get("call_id", "")), {})
-            key = (str(e.data.get("tool", "")), _canonical(args))
+            key = (name, _canonical(args))
             seen[key] = seen.get(key, 0) + 1
         dupes = {k: v for k, v in seen.items() if v > 1}
         if dupes:

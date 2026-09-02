@@ -1,11 +1,16 @@
 """Event taxonomy and bus — docs/05-data-and-state.md §1, task T-3.1.
 
-Sixteen kinds, closed.  A raising exporter is disabled for the rest of the run: a
+Seventeen kinds, closed.  A raising exporter is disabled for the rest of the run: a
 telemetry bug must never take down an agent.
 
 `BUDGET_UNLIMITED` (`budget.unlimited`) is the 16th, added for S-20 (ADR-041,
 docs/12-decision-logs.md) — `docs/04-interfaces.md`/`docs/07-cost.md` had already
 promised it ("Unlimited is possible; it is not silent") before any code emitted it.
+
+`PROGRESS_STALLED` (`progress.stalled`) is the 17th, added for the mechanical stall
+detector (`progress.py`) — a run that keeps calling tools but stops producing anything
+new gets its own outcome (`StopReason.STALLED`) instead of silently burning budget until
+`STEP_LIMIT` catches it late.
 
 **Envelope v1** (T-8.1, docs/17-research-alignment.md M8, ADR-048): `schema_version`,
 `trace_id`, `tenant_id`, `session_id` — the four fields a multi-tenant deployment or a
@@ -39,7 +44,7 @@ class EventKind(str, Enum):
     TOOL_REQUESTED = "tool.requested";   POLICY_DECIDED   = "policy.decided"
     TOOL_STARTED = "tool.started";       TOOL_FINISHED    = "tool.finished"
     TAINT_RAISED = "taint.raised";       CONTEXT_MANAGED  = "context.managed"
-    ERROR_RAISED = "error.raised"
+    ERROR_RAISED = "error.raised"; PROGRESS_STALLED = "progress.stalled"
 
 
 @value

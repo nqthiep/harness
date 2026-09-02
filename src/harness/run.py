@@ -18,6 +18,8 @@ from .context.window import manage as manage_context
 from .middleware import _call_scope
 from .models.pricing import MAX_CONTEXT
 from .observe.events import EventBus, EventKind
+from .policy.decision import DecisionLog
+from .progress import ProgressLedger
 from .retry import with_provider_retry
 #: `RunContext` is re-exported here on purpose — `harness/__init__.py` imports it
 #: from this module, so it is not dead however it looks to a linter (Round 39).
@@ -37,6 +39,15 @@ class RunEngine:
         # no-approver fallback), across the whole run — a `RunEngine` is built fresh per
         # `atry_run()` so this is safely per-run, not shared state (R-4).
         self._asks = 0
+        # Mechanical stall detection (`progress.py`) — costs no tokens, built fresh per
+        # run like `_asks` above.
+        self._progress = ProgressLedger()
+        # The approval audit book. Default: fresh per run — an `Agent` is a frozen
+        # template shared by concurrent runs, so a log living on it would accumulate
+        # every run's rows for the life of the process. An operator who wants the record
+        # to outlive the run passes their own (`Agent(decisions=DecisionLog(journal=...))`)
+        # and owns its lifetime.
+        self._decisions = agent.decisions if agent.decisions is not None else DecisionLog()
         self._dispatch = Dispatcher(self)
 
     async def run(self, message: str, *, messages: Sequence[Mapping[str, Any]] = (),
@@ -165,11 +176,31 @@ class RunEngine:
                 if resp.stop_reason == "tool_use" or has_calls:
                     results = await self._dispatch._run_tools(resp, step, run_id)
                     msgs.append({"role": "user", "content": results})   # I-4: one message
-                    msgs = self._manage_context(msgs, input_tokens, step)
+                    msgs, context_full = self._manage_context(msgs, input_tokens, step)
+                    if context_full:
+                        # Nothing left to blank and nothing left to drop. Stopping here
+                        # with a reason beats letting the provider reject the next
+                        # request for a cause the caller has to guess at (IDL-30). Not
+                        # its own `StopReason`: it is a run that cannot continue, which
+                        # is what `ERROR` means — same call as MAX_PAUSES makes.
+                        stop, detail = StopReason.ERROR, (
+                            "the conversation no longer fits in this model's context "
+                            "window, and there is nothing left to clear or drop — give "
+                            "the agent a smaller job, or a model with a bigger window")
+                        break
+                    calls = [b for b in resp.content if b.get("type") == "tool_use"]
                     self._bus.emit(EventKind.STEP_FINISHED, step=step,
                                    stop_reason=resp.stop_reason,
-                                   tool_calls=[b["name"] for b in resp.content
-                                               if b.get("type") == "tool_use"])
+                                   tool_calls=[b["name"] for b in calls])
+                    # Observed AFTER dispatch, never before: stopping between a
+                    # `tool_use` and its `tool_result` would leave the stored
+                    # conversation in violation of invariant I-3.
+                    stalled = self._progress.observe(calls)
+                    if stalled:
+                        self._bus.emit(EventKind.PROGRESS_STALLED, step=step,
+                                       stalled_steps=self._progress.stalled_steps)
+                        stop, detail = StopReason.STALLED, stalled
+                        break
                     step += 1
                     continue
                 self._bus.emit(EventKind.STEP_FINISHED, step=step,
@@ -232,7 +263,7 @@ class RunEngine:
                       tuple(self._dispatch.ran))
 
 
-    def _manage_context(self, msgs: list, _unused: int, step: int) -> list:
+    def _manage_context(self, msgs: list, _unused: int, step: int) -> tuple[list, bool]:
         """T-2.6, wired.  Round 27 found window.manage() was built, tested, and never
         called from the loop — so `context.managed` was one of three event kinds the
         code could not emit.
@@ -240,15 +271,23 @@ class RunEngine:
         The size is measured from the messages being managed, not from the token count of
         the request already sent: that count predates the tool results just appended,
         which are exactly what makes the window grow.
+
+        Returns `(messages, context_full)` — `context_full=True` means `manage_context`
+        reported `"compact_needed"`: nothing left to edit or drop, the conversation
+        genuinely does not fit any more. A caller that ignores this and just keeps using
+        `out` sends the same over-window request again next step, forever — this used
+        to be silently dropped here, so `manage_context`'s own "compact_needed" return
+        value had no reader.
         """
         window = MAX_CONTEXT.get(self._a.model, 200_000)
         used = sum(len(_canonical(m)) for m in msgs) // 4
         out, action = manage_context(msgs, used_tokens=used, context_window=window)
         if action == "none":
-            return msgs
+            return msgs, False
         self._bus.emit(EventKind.CONTEXT_MANAGED, step=step, strategy=action,
-                       tokens_before=used, messages=len(msgs))
-        return out
+                       tokens_before=used, messages=len(msgs),
+                       messages_dropped=len(msgs) - len(out))
+        return out, action == "compact_needed"
 
 
 def canonical_len(req) -> str:

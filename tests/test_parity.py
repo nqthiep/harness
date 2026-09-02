@@ -213,8 +213,12 @@ class Parity(unittest.TestCase):
         self.assertEqual(self.assertSame(got, "stop"), "step_limit")
 
     def test_the_budget_stops_both(self):
-        got = self.both([C("look", {"ma": "A"}, f"c{i}") for i in range(50)] + [T("done")],
-                        tools=["look"], budget="$0.02, 40 steps")
+        # Distinct arguments: this asserts the SPEND ceiling, and a repeated identical
+        # call now trips the stall detector first — on the graph backend sooner than on
+        # the loop, because the two estimate input tokens differently, so a repeating
+        # script would make this test fail as a false parity break.
+        got = self.both([C("look", {"ma": f"A{i}"}, f"c{i}") for i in range(50)]
+                        + [T("done")], tools=["look"], budget="$0.02, 40 steps")
         self.assertEqual(self.assertSame(got, "stop"), "budget_exhausted")
 
     def test_a_short_lived_secret_is_redacted_on_both(self):

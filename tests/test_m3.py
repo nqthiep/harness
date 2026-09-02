@@ -7,6 +7,7 @@ from harness.models.fake import FakeModel
 from harness.observe.console import ConsoleExporter
 from harness.observe.events import EventKind
 from harness.observe.transcript import read
+from harness.result import StopReason
 
 RAN: list = []
 
@@ -206,7 +207,40 @@ class M3(unittest.TestCase):
         a.try_run("go")
         managed = [e for e in read(self.path) if e["kind"] == "context.managed"]
         self.assertTrue(managed, "context management never ran even at raised limits")
-        self.assertEqual(managed[0]["data"]["strategy"], "edited")
+        # ADR-066: real compaction now runs alongside editing (context/window.py), and
+        # this fixture's 40k-token results are large enough that the ratio crosses
+        # COMPACT_AT (0.80) in the same step it first crosses EDIT_AT (0.60) — so the
+        # very first context.managed event here is legitimately "compacted", not
+        # "edited". "not none" is the actual claim this test makes.
+        self.assertIn(managed[0]["data"]["strategy"], ("edited", "compacted"))
+
+    def test_compact_needed_dung_run_thay_vi_lap_lai_lang_le(self):
+        """Bug thật: `manage_context()` đã hứa trả `"compact_needed"` khi hết chỗ dọn
+        (`window.py`'s own docstring), nhưng `RunEngine._manage_context` chỉ dùng
+        `out`, vứt luôn `action` — mỗi lượt tiếp theo lại gửi đúng request đã quá khổ,
+        không có gì báo dừng. Patch `manage_context` để CHẮC CHẮN rơi vào nhánh này
+        (không phụ thuộc dựng đúng số token thật) rồi khẳng định run dừng có lý do,
+        không lặp tới hết ngân sách."""
+        import harness.run as run_mod
+        real_manage = run_mod.manage_context
+        calls = {"n": 0}
+
+        def _force_compact_needed(msgs, *, used_tokens, context_window):
+            calls["n"] += 1
+            return list(msgs), "compact_needed"
+
+        m = FakeModel([FakeModel.tool_call("look", {"x": 1}), FakeModel.text("done")])
+        a = Agent(name="T", job="j", tools=[look], provider=m,
+                  budget="$500, 60 steps", transcript=self.path)
+        run_mod.manage_context = _force_compact_needed
+        try:
+            r = a.try_run("go")
+        finally:
+            run_mod.manage_context = real_manage
+        self.assertEqual(calls["n"], 1, "lẽ ra dừng ngay sau lượt compact_needed đầu "
+                         "tiên, không gọi lại manage_context lần hai")
+        self.assertEqual(r.stop_reason, StopReason.ERROR)
+        self.assertIn("context", r.detail.lower())
 
     def test_context_management_is_documented_as_not_default_reachable(self):
         """Round 27: max_result_tokens(4,000) x budget.steps(20) = 80,000 tokens, and the

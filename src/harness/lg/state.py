@@ -37,6 +37,13 @@ class AgentState(TypedDict, total=False):
     #: silently discards an undeclared key (IDL-41), and an undiscarded counter is what
     #: keeps a paused model from becoming an unbounded loop.
     paused: int
+    #: Mechanical stall detection (`progress.py`), checkpointed for the same reason the
+    #: ledger is (IDL-47): a `Runtime` serves every thread, so a counter held on it would
+    #: mix one conversation's progress into another's. `seen_calls` holds 16-hex-char
+    #: digests, never the arguments themselves — a `write_file` call can carry a whole
+    #: file, and a checkpoint is not the place for a second copy of it.
+    seen_calls: list[str]
+    stalled_steps: int
     #: N-6 — running `Usage` total for THIS TURN (reset alongside `asks`/
     #: `turn_started_at` in `budget_gate`, accumulated by `call_model`), serialized as
     #: `dataclasses.asdict(Usage(...))` — JSON-checkpointable, same convention as
@@ -54,3 +61,16 @@ class AgentState(TypedDict, total=False):
     #: `finish`), unlike `RUN_STARTED` (once per thread, ever) — the two were already
     #: asymmetric before this field existed; `duration_s` matches the one that repeats.
     turn_started_at: float
+    #: N-3 (design/07-risks-and-open-issues.md) — the parsed `build_agent(returns=...)`
+    #: answer, set once by `finish()`. Bug found on review: `finish()` already called
+    #: `parse_returns()` to VALIDATE the final answer, but threw the parsed result away
+    #: — `returns=` worked as a rejection filter and nothing else on the raw
+    #: `build_agent()` escape hatch (no way to retrieve the value it just validated).
+    #: `Agent(durable=True, returns=...)` was unaffected (`agent.py::_state_to_result`
+    #: re-parses the text a second time, entirely outside checkpointed state), which is
+    #: exactly how this stayed uncaught. A JSON-safe `dict`/scalar/list, never the
+    #: dataclass INSTANCE `run.py`'s `Result.value` holds: state is checkpointed, and a
+    #: class instance is not something a checkpointer can promise to round-trip (IDL-42's
+    #: same reasoning, one level up — a `Decimal` crosses as a string for the identical
+    #: reason).
+    value: Any

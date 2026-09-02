@@ -38,7 +38,8 @@ class Agent:
                  "approve", "policies", "allowed_hosts", "provider", "returns",
                  "max_parallel_tools", "max_asks_per_run", "require_approval_evidence",
                  "transcript", "exporters",
-                 "tenant_id", "session_id", "durable", "checkpoint",
+                 "tenant_id", "session_id", "principal", "decisions",
+                 "durable", "checkpoint",
                  "_asm", "_watch", "_as_tool_budget", "_grants", "_durable_thread")
 
     # Declared for the type checker.  The fields are set through `object.__setattr__`
@@ -65,6 +66,8 @@ class Agent:
     exporters: tuple[Any, ...]
     tenant_id: str | None
     session_id: str | None
+    principal: str | None
+    decisions: Any
     durable: bool
     checkpoint: Any
     _asm: Any
@@ -114,6 +117,22 @@ class Agent:
         # this agent's runs emit.
         tenant_id: str | None = None,
         session_id: str | None = None,
+        # S-03 re-check (design/07-risks-and-open-issues.md, `tests/test_roadmap.py`) —
+        # who this agent acts on behalf of. Same "no natural default, `None` unless
+        # supplied" reasoning as `tenant_id`/`session_id` right above; flows into
+        # `RunContext.principal` (`dispatch.py`) for a tool/policy to read, never onto
+        # anything the model sees. Classic backend only for now — `durable=True` does
+        # not yet thread this through to `build_agent()`.
+        principal: str | None = None,
+        # The approval audit book (`policy/decision.py`). `None` — the default — means a
+        # fresh in-memory `DecisionLog` per run, built in `RunEngine`: an `Agent` is a
+        # frozen template shared across concurrent runs, so a log held here would grow
+        # for the life of the process and mix every run's rows into one object's memory.
+        # Pass one explicitly (`DecisionLog(journal="approvals.jsonl")`) when you want
+        # the record to outlive the run — then its lifetime is yours, not the agent's.
+        # Classic backend only for now — `durable=True` does not yet thread this through
+        # to `build_agent()`.
+        decisions: Any | None = None,
         # Backend unification (the "2 API interfaces" complaint this closes): ONE Agent,
         # ONE set of methods, regardless of `durable`. `durable=True` runs on the
         # LangGraph engine (`harness.lg.build_agent()`) instead of the hand-written loop,
@@ -187,12 +206,34 @@ class Agent:
         object.__setattr__(self, "require_approval_evidence", require_approval_evidence)
         object.__setattr__(self, "tenant_id", tenant_id)
         object.__setattr__(self, "session_id", session_id)
+        object.__setattr__(self, "principal", principal)
+        object.__setattr__(self, "decisions", decisions)
         # N-3, design/07-risks-and-open-issues.md (closed): the durable engine now
         # parses the final answer against `returns=` too, in `lg/runtime.py::finish()`
         # before `run.finished` fires — the same guard that used to raise `ConfigError`
         # here is gone; `durable=True` and `returns=` are no longer mutually exclusive.
         object.__setattr__(self, "durable", durable)
         object.__setattr__(self, "checkpoint", checkpoint)
+        # `principal=`/`decisions=` are classic-backend-only, stated in their own
+        # docstrings above — `build_agent()` has no parameter to hand either to, so a
+        # `durable=True` agent given one would silently do nothing with it. Same "fail
+        # visible, not silent" treatment as `on_delta=`/`.chat()`/`.resume()` under
+        # `durable=True` right below: refuse at construction, loudly, rather than accept
+        # a promise this backend cannot keep yet.
+        if durable and principal is not None:
+            raise ConfigError(
+                "durable=True doesn't thread principal= through to build_agent() yet — "
+                "RunContext.principal would never be set.\n\n"
+                "  Drop principal=, or use durable=False.\n\n"
+                "  -> design/07-risks-and-open-issues.md"
+            )
+        if durable and decisions is not None:
+            raise ConfigError(
+                "durable=True doesn't thread decisions= through to build_agent() yet — "
+                "the DecisionLog you passed would never be written to.\n\n"
+                "  Drop decisions=, or use durable=False.\n\n"
+                "  -> design/07-risks-and-open-issues.md"
+            )
 
         output_format = _output_format(returns) if returns is not None else None
         asm = ContextAssembler(model=model, job=job, tools=toolset, effort=effort,
@@ -368,14 +409,14 @@ class Agent:
     async def stream(self, message: str, *, on_delta=None):
         """T-8.5, docs/17-research-alignment.md M8 — `async for ev in agent.stream(msg)`
         over the real event stream, on the taxonomy `docs/05-data-and-state.md §1`
-        already closes over (16 kinds) and carrying envelope v1 (T-8.1: `schema_version`,
+        already closes over (17 kinds) and carrying envelope v1 (T-8.1: `schema_version`,
         `trace_id`, `tenant_id`, `session_id` are already on every `Event`, nothing extra
         to add here). `on_delta=` stays the separate, existing mechanism for token-level
         text streaming — this method does not multiplex deltas into the yielded stream
         as a new kind; the taxonomy is closed on purpose (docs/05 §1), and "tool-call
         delta"/"tool result"/"approval request"/"retry"/"cancellation"/"final" (the
         research-required distinctions T-8.5 names) are ALL already representable on the
-        existing 16: `tool.requested`, `tool.finished`, `policy.decided` (verdict=ASK),
+        existing kinds: `tool.requested`, `tool.finished`, `policy.decided` (verdict=ASK),
         `error.raised` (retryable=True), `run.finished` (cancelled), `run.finished`
         (final) respectively — inventing a parallel event shape for streaming would be a
         second taxonomy to keep in sync with the first.
@@ -543,7 +584,8 @@ class Agent:
                 ("name", "job", "model", "effort", "returns", "budget", "safety", "approve",
                  "policies", "allowed_hosts", "provider", "max_parallel_tools",
                  "max_asks_per_run", "require_approval_evidence",
-                 "tenant_id", "session_id", "transcript", "exporters",
+                 "tenant_id", "session_id", "principal", "decisions",
+                 "transcript", "exporters",
                  "durable", "checkpoint")}
         base["tools"] = list(self.toolset)
         base["accepts_tainted"] = self._grants.accepts_tainted
