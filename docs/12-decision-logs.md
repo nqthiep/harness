@@ -1077,7 +1077,7 @@ passed EXPLICITLY remains the unrestricted escape hatch — the identical shape 
 typing the word that means it, not by omission.
 
 **Breaking change, accepted without a multi-version deprecation cycle.** docs/17's own
-T-7.2 line calls for "một phiên bản deprecation" (a deprecation version). This project has
+T-7.2 line calls for "a deprecation version". This project has
 not shipped a 1.0 — design/08-roadmap-and-release-plan.md's own release plan places all of
 M6–M10 before v1.0, and a real deprecate-then-break cycle matters most for a stable API
 with external users, which this codebase does not have yet at its current 67.8/100
@@ -1183,9 +1183,9 @@ row every time, not just at the original grant). Only `policy_version` was missi
 ADR-048) is stamped at both sites `lg/runtime.py` records a `Decision` — the original
 grant and S-29's reuse-logs-a-row-every-time record.
 
-**T-8.2's own Failure/Test criteria were already true, not fixed here.** "Approval hết
-hạn không dùng lại được" — `DecisionLog.lookup()` already filters `not d.live_at(now)`.
-"Cùng một approval không mở khoá được lần chạy thứ hai" — `lookup()` already filters
+**T-8.2's own Failure/Test criteria were already true, not fixed here.** "An expired
+approval cannot be reused" — `DecisionLog.lookup()` already filters `not d.live_at(now)`.
+"The same approval cannot unlock a second run" — `lookup()` already filters
 `d.run_id != run_id` first, so a grant is structurally incapable of crossing a run
 boundary regardless of expiry. Both are now covered by
 `tests/test_m8_t82_approval_record.py`, closing the verification gap rather than a code
@@ -1325,9 +1325,9 @@ of `stream()` itself — this is a bug `with_()`'s own callers hit regardless of
 ### ADR-053 — `Session` names what Round 37 already isolated; scoped to the classic backend
 **Status:** Accepted (M8/T-8.6)
 
-**Context.** docs/17's T-8.6: "`Session` là resource — id, ownership, TTL, fork, resume,
-và ranh giới đồng thời. Vòng 37 đã sửa phần rò rỉ; đây là phần đặt tên cho thứ đã tồn tại
-ngầm." The state isolation this depends on already exists — one `Ledger`/`TaintTracker`/
+**Context.** docs/17's T-8.6: "`Session` is a resource — id, ownership, TTL, fork, resume,
+and concurrency boundary. Round 37 fixed the leak; this is the part that names something
+that already existed implicitly." The state isolation this depends on already exists — one `Ledger`/`TaintTracker`/
 `EventBus`/`DecisionLog` per run or thread, never shared (Round 37's original fix, and
 S-15/S-24/S-29 in this session's own history for the LangGraph backend specifically).
 What's missing is a name and a handful of resource-lifecycle properties.
@@ -1384,7 +1384,7 @@ same anti-pattern ADR-043/047 name for `execute_once`/`Sandbox`.
 - `classify_mcp_tool(tool, policy, call) -> ToolSpec` — M-1 (untrusted server: hint
   never participates, `policy.effects` or `default_effect` decide), M-2 (trusted server:
   hint becomes the default, mapped fail-closed — `readOnlyHint is True` exactly, not
-  "anything but `False`", the bug-for-bug fix chép lại from Microsoft's own
+  "anything but `False`", the bug-for-bug fix copied from Microsoft's own
   `_map_mcp_annotations_to_labels`), M-3 (`accepts_tainted` only from `policy`, never a
   hint — kept a `McpServerPolicy` field the caller merges into `Agent(accepts_tainted=)`,
   not something this module wires in on its own, matching how `Grants` already works for
@@ -1392,8 +1392,8 @@ same anti-pattern ADR-043/047 name for `execute_once`/`Sandbox`.
   `ToolSet`'s existing duplicate-name guard can never silently merge two servers' tools
   of the same protocol name.
 - `connect(session, policy) -> list[ToolSpec]` — calls `tools/list` exactly once, never
-  again on its own initiative. That is §5.4's rug-pull requirement ("phân loại được chốt
-  tại thời điểm bind") implemented as an absence rather than a check: nothing in this
+  again on its own initiative. That is §5.4's rug-pull requirement ("classification is
+  locked in at bind time") implemented as an absence rather than a check: nothing in this
   module re-lists mid-run, and `ToolSpec` is frozen, so a stale spec is never mutated in
   place — a fresh `connect()` call is the only way to get a new classification, and it
   returns wholly new objects.
@@ -1686,7 +1686,8 @@ leak this fix closes, made concrete rather than asserted.
 ---
 
 ### ADR-061 — Advisor consultation is a `Policy` gate, never a grant
-**Status:** Accepted (user request: "model mạnh xử lý vấn đề khó... phương pháp advisor")
+**Status:** Accepted (user request: "a strong model to handle hard problems... an advisor
+pattern")
 
 **Context.** The user asked for two things: smarter multi-model use in general, and
 specifically an "advisor" pattern — a strong model the agent consults when stuck. The
@@ -1703,12 +1704,12 @@ dangerous tool, rather than trust the model to remember a prompt instruction. Th
 naive shape — let the advisor's own verdict decide ALLOW/DENY for the dangerous call,
 the same way a human approver does — was rejected immediately on inspection: it
 recreates exactly the mistake `design/00-foundation.md §4.2`'s invariant D-1 was
-written to name ("`Actor` cố ý KHÔNG có biến thể `Model`... đó chính là chỗ agno
-sai" — no `Model` variant, on purpose, because that is where agno's design let a
-model approve its own action). An advisor is still a model, however much stronger; if
-it could grant a `Decision`, the harness would be letting one model rubber-stamp
-another's dangerous action, precisely the self-authorization R-3 ("Model không cầm
-công tắc an toàn nào") exists to forbid.
+written to name ("`Actor` deliberately has NO `Model` variant... that's exactly where
+agno went wrong" — no `Model` variant, on purpose, because that is where agno's design
+let a model approve its own action). An advisor is still a model, however much stronger;
+if it could grant a `Decision`, the harness would be letting one model rubber-stamp
+another's dangerous action, precisely the self-authorization R-3 ("the model holds no
+safety switch") exists to forbid.
 
 **Decision.** `RequireBeforePolicy` (`policy/builtin.py`) DENIES a named tool until
 another named tool has already completed earlier in the same run — a purely

@@ -179,13 +179,13 @@ against slow architectural drift, which no ordinary test catches.
 | AC-65 | **`returns=` refuses an instance at construction**, naming the fix. | H39.2 |
 | AC-66 | **A subagent tool runs on the graph backend**, its spend settles into the parent's ledger, and the parent's ceiling holds against greedy children. | ADR-030, H41.1 |
 | AC-67 | **`examples/full_agent.py` runs** — one set of tools and policies, built on both backends, printing which capability each delivers. | H41.3 |
-| AC-68 | **`CancelledError` propagate ra ngoài** sau khi run dọn dẹp — một `TaskGroup` bao ngoài phải thấy được việc huỷ. | [§17](17-research-alignment.md) Y-01, T-6.2 |
-| AC-69 | **Retry cùng idempotency key không lặp lại một side effect** đã xảy ra. | R-25, T-6.1 |
-| AC-70 | **Đường dẫn thoát khỏi workspace bị từ chối** — `..`, symlink, tuyệt đối, mã hoá URL. | R-24, T-7.1 |
-| AC-71 | **Một `Sandbox` của bên thứ ba cắm được mà không sửa core**, chứng minh như §I.1 của `examples/proof.py`. | T-7.3 |
-| AC-72 | **Pass rate luôn báo cáo kèm khoảng tin cậy 95%, tokens và cost** — không bao giờ một con số trần trụi. | S-13, T-10.2 |
-| AC-73 | **Tool call chạy vì nó có mặt, không vì stop_reason** — một turn "end_turn" mang `tool_use` vẫn thực thi, trên cả hai backend. | Round 43 H43.1 |
-| AC-74 | **Hội thoại lưu lại luôn giữ I-3** — mỗi `tool_use` có đúng một `tool_result`, kể cả ở turn kết thúc. | I-3, H43.1 |
+| AC-68 | **`CancelledError` propagates outward** after the run cleans up — an outer `TaskGroup` must be able to see that cancellation happened. | [§17](17-research-alignment.md) Y-01, T-6.2 |
+| AC-69 | **A retry with the same idempotency key never repeats a side effect** that already happened. | R-25, T-6.1 |
+| AC-70 | **A path that escapes the workspace is refused** — `..`, symlink, absolute, URL-encoded. | R-24, T-7.1 |
+| AC-71 | **A third-party `Sandbox` plugs in without touching core**, proven the same way §I.1 of `examples/proof.py` does. | T-7.3 |
+| AC-72 | **Pass rate always reports with a 95% confidence interval, tokens, and cost** — never a bare number. | S-13, T-10.2 |
+| AC-73 | **A tool call runs because it is present, not because of `stop_reason`** — a turn that ends `"end_turn"` while carrying a `tool_use` still executes it, on both backends. | Round 43 H43.1 |
+| AC-74 | **The saved conversation always preserves I-3** — every `tool_use` has exactly one `tool_result`, even on the turn that ends the run. | I-3, H43.1 |
 | AC-33 | Every conditional subsystem is either reachable from the shipped defaults or declares in the docs that it is not | P-10 |
 | AC-31 | **Every public parameter is read somewhere in the package.** *`max_parallel_tools` was accepted, stored and documented for two milestones without anything reading it (Round 26).* | NFR-09 |
 | AC-28 | Every `Secret` guarantee (unhashable, unpicklable, weakly registered) is exercised, not just declared | ADR-024 |
