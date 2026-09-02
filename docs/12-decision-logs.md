@@ -1745,6 +1745,400 @@ runs both the blocked and the allowed scenario end to end.
 
 ---
 
+### ADR-062 — Stall detection is mechanical and free; `STALLED` is its own stop reason; the check sits in the budget gate
+
+**Status:** Accepted
+
+**Context.** A long session fails in two very different ways. The first — out of money,
+steps, or time — `Budget` has caught since Round 1. The second is more expensive: the
+agent is still running, still calling tools, still billing, but repeating what it just
+did. The budget ceiling does catch it, at the *last possible moment* and under a
+`stop_reason` (`step_limit`) that describes the wrong thing. Nothing distinguished "did
+300 steps of work" from "did the same step 300 times."
+
+**Decision — read the signal the harness already has.** `progress.py` marks a step as
+*no progress* when it made at least one tool call and **every** call in it repeats a
+`tool+args` signature seen earlier in the run. `STALL_AFTER = 6` consecutive such steps
+stops the run with `StopReason.STALLED`. No model is consulted, so this costs **zero
+tokens** — which is what keeps it clear of ADR-023: paying for a second model call to ask
+"am I stuck?" is exactly what that ADR refused, and this is not that.
+
+**Precedent, so this is not a new species of mechanism.** `MAX_PAUSES` already stops a
+model that keeps pausing ("stopping rather than paying for a loop"); `max_asks_per_run`
+(S-25) already cuts on a mechanical count; the `tool+args` dedup (T-2.5) already computes
+this exact signature, but only *within* one step. This is T-2.5 looked at across steps.
+
+**Why one new signature resets the counter.** A real coding loop is
+`write_source(file, new-body)` then `run_tests()`. `run_tests()` repeats identically every
+lap — but `write_source` carries a different body, so the step contains something new and
+the counter goes to zero. The counter only climbs when the agent has stopped changing the
+world *and* stopped reading anything it has not already read. `tests/test_progress_stall.py`
+runs twelve such laps and asserts the run completes, because a detector that kills honest
+work is worse than no detector.
+
+**Why `STALLED` and not `ERROR`.** The `MAX_PAUSES` precedent maps to `ERROR`, and that is
+the weaker choice: an agent going in circles and an agent that crashed call for different
+responses (rewrite the job or the tool set, versus fix the failure). A closed enum gaining
+a member is additive — `ok` is still `COMPLETED`-only, and every existing branch on
+`ERROR` keeps meaning what it meant.
+
+**Why the graph backend checks in the budget gate, not where it observes.** `run_tools`
+is where the calls are seen, but `budget_gate` is the only node that *clears*
+`stop_reason` (it must, or a finished thread would route straight to `finish` forever —
+Round 37). A stop set upstream of it is wiped before `_after_budget` reads it. So the tools
+node records `seen_calls`/`stalled_steps` into state, and the gate reads them beside the
+step and wall-clock ceilings — which is where a ceiling on a third axis belongs anyway.
+
+**Two things kept out of state.** The counter and the seen-set are checkpointed
+`AgentState` keys, not attributes on `Runtime` (IDL-47: a Runtime serves every thread, and
+a counter on it mixes one conversation's progress into another's). And `seen_calls` holds
+16-hex-char digests, never the arguments: a `write_file` call can carry an entire file, and
+a checkpoint is not the place for a second copy of user content.
+
+**Known limit, stated rather than discovered later.** `MAX_TRACKED = 512` bounds the
+seen-set, so a signature that falls out of the window and returns counts as new. The
+mechanism therefore errs toward *missing* a stall rather than toward killing a live run —
+the correct direction for something that can end someone else's run.
+
+**Four existing tests changed, and why that is not weakening them.**
+`test_redteam.py::RT06`, `test_walkthrough.py::rt06`, `test_lg.py::the_budget_is_still_a_ceiling`
+and `test_parity.py::the_budget_stops_both` each drove a runaway with one identical call
+repeated, and each now trips the stall detector before the ceiling it means to prove. They
+were changed to vary their arguments, so each still proves its own ceiling; the repeating
+case moved to `tests/test_progress_stall.py`, where it is the subject rather than the
+fixture.
+
+**Test.** `tests/test_progress_stall.py` — the rule computed directly; a new signature
+resetting the counter across twelve honest laps; tool-free steps not counted;
+underscore-prefixed arguments not manufacturing fake progress (they are stripped before a
+tool runs, so two calls differing only there are one call); the digest not containing the
+argument text; `input` (Anthropic) and `args` (LangChain) producing one signature; the
+stop on both backends, with the same `stop_reason` and the same sentence; and the counter
+living in `AgentState`, not on the `Runtime`.
+
+---
+
+### ADR-063 — The decision log is an append-only JSONL journal, and the classic loop finally has one
+
+**Status:** Accepted
+
+**Context.** Two gaps with one root. `dispatch.py` said the first out loud in a comment:
+*"the classic loop has no DecisionLog to record into … S-11's reported-actor channel has
+nowhere to land"* — on the hand-written backend, `resolve()` computed who approved a
+`danger` call and threw the answer away. The second: the graph backend does keep a book,
+in RAM, on the `Runtime`. A process restart erases every approval in it — including one a
+human pressed a button for thirty seconds earlier. `approve=INTERRUPT` is sold as a
+durable wait that survives a restart; the *record* of what that wait produced did not.
+
+**Decision 1 — persistence is an append-only JSONL journal, not a `Store`.** D-2 says this
+book is append-only. A key-value `Store` forces read-modify-write of the entire list for
+every new row, so one interrupted write loses the whole approval history — precisely what
+D-2 exists to prevent. A file opened `O_APPEND` degrades to one bad line, not zero good
+ones. `observe/transcript.py` already chose this shape for the same reason
+([§05.2](05-data-and-state.md#2-transcript-format): "An audit log you can edit is not an
+audit log"). `DecisionLog(journal=path)` loads on construction and appends one line per
+`record()`, `flush` + `fsync` each time — a run writes a handful of rows, not one per
+event, so the transcript's every-64-events compromise does not apply here.
+
+**Decision 2 — sync, not async.** `record`/`lookup` are called from `_regate`, synchronous
+code inside a LangGraph node, *and* from the classic loop's async dispatch path. An async
+API would force `asyncio.run()` in the middle of a graph node. Synchronous file I/O is
+what lets one implementation serve both backends — the alternative is two, which is how
+the two backends drift (R-17).
+
+**Decision 3 — the classic loop records every resolved ASK, including denials.** Same
+shape the graph's `approval_gate` already used: one row per resolved ASK, scoped to that
+`call_id`, carrying the actor the callback reported (S-11) instead of discarding it. The
+ask-cap denial is recorded too — a log that only records what was permitted cannot answer
+"what did we refuse, and why", the same rule that makes `policy.decided` fire for `ALLOW`
+as well as `DENY` ([§05.1](05-data-and-state.md)). The loop also gains the graph's S-29
+reuse: a live row answers without asking a person the same question twice, and a later
+`DENY` row revokes it, because `lookup` composes with `max()` and needs no second rule.
+An empty log returns `ASK`, so behaviour with no seeded grant is exactly what it was.
+
+**Decision 4 — the default is a fresh in-memory log per run, and `Agent` keeps its shape.**
+`Agent(decisions=...)` is optional; `None` builds one per run inside `RunEngine`. An
+`Agent` is a frozen template shared across concurrent runs, so a book living on it would
+accumulate every run's rows for the life of the process. An operator who wants the record
+to outlive the run passes their own and owns its lifetime. `build_agent(decisions=...)`
+now forwards to the parameter `Runtime` has accepted since S-29 but that nothing passed —
+it existed and was unreachable.
+
+**The privacy trade-off, stated rather than discovered.** `Scope.args` is written to the
+journal as the **real argument values**, not a digest — it has to be, because
+`Scope.matches` locks a grant to those exact values (that ternary is the design this
+project took from Microsoft's `ToolApprovalRule` precisely because everyone else approves
+the verb and ignores the object). That makes this file more sensitive than a transcript,
+which digests arguments by default ([§05.1](05-data-and-state.md)). Mitigation: the
+journal is created `0600`. It is not encryption, and the file should be treated as
+credential-adjacent.
+
+**A corrupt row raises; it is never skipped.** Skipping means continuing with an approval
+book that is missing rows — possibly missing the `DENY` that just revoked something
+(IDL-30). The error names the file and the line number.
+
+**Test.** `tests/test_decision_journal.py` — JSON round-trip preserving every field;
+`Verdict` written as a NAME, not an `IntEnum` number, so the file still parses if the
+lattice is reordered; an unknown schema version refused rather than guessed; write-then-
+reopen recovering the grant; append-only proved by asserting the new file content starts
+with the old; revocation by appending a `DENY`; a corrupt line raising with `file:line`;
+mode `0600`; the classic loop recording the reported actor, recording denials, reusing a
+live grant without asking twice, not leaking another run's grant into this one, and still
+falling through to the callback when the book is empty; `with_()` not dropping the field
+(the N-7 class); and `build_agent(decisions=...)` reaching the `Runtime`.
+
+---
+
+### ADR-064 — `execute_once` gets its caller: the LangGraph backend only, and only for `write`/`danger`
+
+**Status:** Accepted (supersedes ADR-043's "not wired yet", and corrects one line of T-6.1's spec)
+
+**Context.** ADR-043 shipped `execute_once` as a standalone contract and refused to wire
+it, on a specific ground: the key is `f"{run_id}:{call_id}"`, and nothing could supply a
+`run_id` that spans two executions of the same call, so any wiring would be dead code. The
+condition it named has since become false on one backend — and stayed true on the other.
+
+**Decision 1 — wire the graph backend.** LangGraph writes a checkpoint *after* a node
+completes, so a crash inside `run_tools` re-executes the entire batch on resume: a
+`git_push` that already succeeded runs a second time. Both halves of the key survive that
+restart — `run_id` is the `thread_id`, and `call_id` comes from an AIMessage checkpointed
+*before* the tools node ran. That is a real, nameable bug with a real key, which is exactly
+what ADR-043 said it was waiting for. `build_agent(idempotency_store=...)` (a `Store`;
+`SqliteStore` for it to mean anything across a process) turns it on; without it nothing
+changes and nothing extra is read or written.
+
+**Decision 2 — do not wire the classic loop.** `run_id` is generated fresh in every
+`atry_run()`, and `aresume()` goes through `atry_run()`. Reusing the old id is not a small
+fix: [§05.2](05-data-and-state.md#2-transcript-format) guarantees `seq` is gap-free within
+a run, and a resumed run restarts `seq` at 0. So the key could only ever catch a duplicate
+`call_id` inside one run — which the T-2.5 dedup in `dispatch.py` already handles a step
+earlier, for free. ADR-043's reasoning still holds there, and is left in force rather than
+quietly overridden for symmetry.
+
+**Decision 3 — `read`/`external` do NOT go through it, which contradicts T-6.1's spec on
+purpose.** T-6.1 says read/external pass through `execute_once` with `fail_open=True`.
+Replaying a recorded `read` after a restart returns the file *as it was before the crash*.
+For a coding agent that is not a weaker guarantee, it is a wrong answer — and re-running a
+read is precisely what its effect class already promises is safe. So `fail_open` has no
+caller on the dispatch path; it stays part of the tested primitive. A spec line that turns
+out to be wrong is better corrected in the open than implemented because it was written
+down.
+
+**A bug this wiring introduced, and the fix.** Routing the call through a coroutine broke
+subagent tools: `_run_subagent` is synchronous and spins its own `asyncio.run`, which
+raises inside a running loop (`tests/test_lg.py::test_a_subagent_tool_actually_runs` caught
+it immediately). Rather than exempt subagents from the guard, the call hops onto a real OS
+thread — **not** `asyncio.to_thread`, which always targets the current loop's own default
+executor; `asyncio.run()`'s cleanup blocks on `shutdown_default_executor()`, which waits
+for every thread ever submitted to that executor, including one an earlier attempt's
+timeout gave up on but could not actually stop, so a `to_thread`-based version appeared to
+time out correctly while silently keeping the NEXT retry's own `asyncio.run()` from
+returning promptly (found separately, N-1's own subagent-timeout fix). `_SUBAGENT_EXECUTOR`
+— a dedicated, module-level `ThreadPoolExecutor` no event loop owns — is what the call
+actually runs on (`run_in_executor`), so a cancelled attempt's orphaned thread runs out its
+course in the background without blocking anything after it. The cost is the same as
+`asyncio.to_thread` would have been: nothing next to launching a whole child agent, and a
+subagent tool whose effect is `danger` is exactly the kind that must not run twice.
+
+**Test.** `tests/test_idempotency_wired.py` — the same thread and call id running the tools
+node twice pushes once; the replayed result equals the first result exactly; no store means
+unchanged behaviour (two pushes); a `read` is deliberately NOT replayed; two different
+`call_id`s are two real pushes; two threads do not share a record; and the whole thing
+proven across a genuinely new `SqliteStore` handle, which is the case the mechanism exists
+for.
+
+---
+
+### ADR-065 — `CodeTools`: confinement needs a root, so it needs a constructor; and `read_file` stops being an exfiltration primitive
+
+**Status:** Accepted
+
+**Context.** `confine()` shipped with M7 (T-7.1) and was never called by the file tools
+this library actually hands out. `CODING_AGENT_BLUEPRINT.md` said so in writing — "if you
+use them as-is, there is no root confinement" — which documented the hole rather than
+closing it. `read_file(path="../../.ssh/id_rsa")` is one `tool_use` block, on the tools
+the beginner path exists to provide precisely because a beginner has not yet thought about
+path confinement.
+
+**Decision 1 — the coding tools are a class taking `root`, not module-level functions.**
+A module-level `@tool` has no root to confine against; that is the whole reason these two
+never called `confine()`. `CodeTools(root=...)` follows the shape `VikingStore.tools()`
+and `TaskLedger.tools()` already established: an object holds the resource, `tools()`
+returns tools with it closed over, effects already classified.
+
+**Decision 2 — `read_file`/`write_file` confine to the process CWD.** They needed *a*
+root and CWD is the only one a module-level tool has. It is a behaviour change (an
+absolute path now raises `WorkspaceEscapeError` instead of working), taken on the same
+ground as every other fail-closed default here: an unconfined, model-facing file tool is
+the exfiltration primitive, and "documented as unsafe" is not a safety property. An agent
+whose root is not the CWD uses `CodeTools`.
+
+**Decision 3 — `run_tests` is `write`, which corrects this project's own blueprint.** That
+document's table listed it as `read`. A test run writes caches and artifacts, and two runs
+in parallel fight over them; `write` is the only class that states all three relevant facts
+(not parallel-safe, never auto-retried, still auto-allowed outside `safety="strict"`).
+Found by implementing it, and corrected in the open rather than kept consistent with a
+sentence.
+
+**Decision 4 — `edit_source` refuses an ambiguous match.** Whole-file rewrites cost tokens
+proportional to the file and are the main source of "fixed one line, deleted three
+functions." Exact-string replacement costs tokens proportional to the change — but only
+when the string is unique. Two matches means the model does not know which site it is
+editing, so the tool returns an error that says how to disambiguate rather than editing the
+first one. Zero matches likewise says to re-read the file rather than guessing.
+
+**Decision 5 — `outline` and `search_code` exist because reading whole files is the real
+cost.** A `read_source`-only agent reads an entire file to find one function, pays for all
+of it, and fills the window with what it did not need. `outline` (Python, via `ast`)
+returns the class/def map with line numbers; `search_code` returns `file:line` hits. For a
+non-Python file `outline` says so plainly instead of guessing — there is one parser here,
+and pretending otherwise is worse than declining.
+
+**Decision 6 — nothing in this module is `danger` or `external`.** `git_push`, `deploy`,
+and anything that reaches the network are the agent author's to declare, with the
+lethal-trifecta rule and human approval that come with those classes. Importing this module
+can therefore never, by itself, produce the construction-time refusal.
+
+**Environment: an allowlist, not `os.environ`.** `Sandbox.run` uses `env` verbatim (T-7.4),
+so `PASS_ENV` is the complete list of what a child command sees: `PATH`, `HOME`, `LANG`,
+`LC_ALL`, `TZ`. No provider key, no CI token. `HOME` is in it because `git commit` reads
+`~/.gitconfig` — leaving it out is the "Author identity unknown" failure
+`examples/coding_agent.py` already hit once.
+
+**Test.** `tests/test_tools_code.py` (39) — `../`, absolute paths and a write outside the
+root all refused, with the escaping write proven not to have created the file; the two
+builtin tools refused the same way; `outline` shorter than the file it maps, honest about
+non-Python, and naming the line on a syntax error; `search_code` returning `file:line` and
+reporting a bad regex; `.git`/`__pycache__` skipped; a binary file not poured into context;
+an ambiguous edit refused with the file byte-identical afterwards; the effect table
+asserted tool by tool with `run_tests` pinned to `write`; the env allowlist proven not to
+carry a planted secret; and — not mocked — a real `git commit`, a real passing and a real
+failing `pytest` run, plus `; touch canary` passed as a `target` proving argv is argv and
+not a shell string.
+
+---
+
+### ADR-066 — Compaction drops whole steps; it does not summarize, and it is driven by the ratio, not by editing running dry
+
+**Status:** Accepted
+
+**Context.** `manage()` had returned `"compact_needed"` since T-2.6 and no caller did
+anything with it but emit an event. A long run therefore edited (blanking old tool-result
+content) until there was nothing left to blank, then walked into the provider's context
+limit and had the request rejected — a failure at exactly the point this feature exists to
+prevent.
+
+**Decision 1 — drop the oldest whole steps; do not summarize.** Summarizing costs a model
+call out of the same budget the caller set as a ceiling, for a gain nobody here has
+measured: the trade ADR-023 refused. Worse, a summary is model output derived from tool
+results that may be UNTRUSTED, so it would have to carry the `join` of every label it
+summarizes or compaction becomes a perfect taint-laundering path (the S-19 class). That is
+a design, not a helper. What dropping actually loses is the model's own earlier reasoning
+and the record of tools it already called — survivable precisely because
+`harness.tasks.TaskLedger` (ADR-061) keeps the plan in a `Store` rather than in the
+transcript: one cheap `list_tasks` rebuilds it.
+
+**Decision 2 — a step is dropped whole, and `messages[0]` never is.** An assistant turn
+and the user message carrying its `tool_result` blocks go together or not at all; half a
+pair is the I-3 violation the editing path exists to avoid. The first user message is the
+task, and an agent that forgets the task is worse than one with a short memory.
+
+**Decision 3 — no "[n steps were dropped]" marker.** It would need a role. A second
+consecutive `user` message right after the task is a shape not every provider accepts, and
+folding the note into the task itself would invalidate the cached prefix — the single
+largest cost lever in the system ([§02.1](02-architecture.md)). The drop is recorded in
+`context.managed` (`messages_dropped`), which is where a person looks anyway.
+
+**Decision 4 — compaction is driven by the RATIO, and the first version got this wrong.**
+It only ran when editing found nothing left to blank. But every step makes exactly one more
+tool result stale, so editing ALWAYS has something to clear — compaction would never have
+run at all, while the window kept growing, because a blanked result still costs its
+envelope and the assistant turns holding the `tool_use` blocks are never blanked. Past
+`COMPACT_AT` (80%), blanking one more old result is not a plan. `tests/test_context_
+compaction.py::test_nen_KHONG_cho_toi_khi_het_cho_xoa` pins the corrected order.
+
+**A measurement bug this surfaced on the graph backend.** `_manage` sized the context as
+`sum(len(str(m.content)))`. On LangChain an `AIMessage` carrying only tool calls has
+`content == ""` — the arguments live in `.tool_calls`. So the estimate missed exactly the
+part that is never blanked: an agent calling `edit_source(path, old, new)` forty times
+measured as roughly zero characters, and context management never ran at all on that
+backend. The classic loop was never affected because it measures with `canonical(message)`,
+which includes the whole `tool_use` block. Fixed in `_context_chars`.
+
+**The graph backend does not delete; it leaves a labelled tombstone.** Its effective label
+is recomputed from the messages still in context (L-3), so removing an UNTRUSTED
+`ToolMessage` from state lowers the whole run's label — taint laundering performed by the
+operation that calls itself cleanup. Compaction there emits `RemoveMessage` for each
+dropped message plus ONE empty `ToolMessage` stamped with the `join` of every label it
+removed. Verified end to end: after a forty-step run of an `external` tool, compaction has
+cut 82 messages to 12 and the effective label is still UNTRUSTED.
+
+**When nothing can be cleared and nothing can be dropped, the run stops with a sentence.**
+Not a new `StopReason` — this is a run that cannot continue, which is what `ERROR` means,
+the same call `MAX_PAUSES` makes. `Result.detail` names the cause and the two things a
+person can do about it (smaller job, bigger window), instead of letting the provider reject
+the next request for a reason the caller has to guess at (IDL-30).
+
+**Test.** `tests/test_context_compaction.py` (16) — the unit rules (task kept, recent steps
+kept, no orphaned `tool_result`, a short conversation untouched); the full ladder
+`none → edited → compacted → compact_needed`; the corrected ordering pinned; a forty-step
+classic run completing with a bounded message count and both strategies observed; the
+stop-with-a-sentence path; `_context_chars` counting a tool call's arguments; and on the
+graph — compaction running, the task preserved, exactly one tombstone, and the run still
+UNTRUSTED afterwards.
+
+---
+
+### ADR-072 — `refresh_codebase_docs`: OpenWiki "code mode" as an explicit `CodeTools` tool, never an automatic step
+
+**Status:** Accepted
+
+**Context.** Evaluated two external candidates for helping a coding agent (or its human)
+keep architecture documentation from going stale: `volcengine/OpenViking` (AGPLv3, a
+context-database/agent-memory framework with its own competing agent runtime — rejected;
+its license and its "VikingBot" framework both conflict with ADR-001's own-agent-loop
+stance, and the user explicitly ruled it out) and `langchain-ai/openwiki` (MIT, a CLI that
+only reads a repo and writes a wiki, never edits source). OpenWiki ships two modes: personal
+mode ingests Notion/Gmail/local-git/etc. into a per-machine, non-git-tracked wiki with
+explicitly no evidence verification for connector-derived facts; code mode reads the
+current repo only, writes a git-trackable `openwiki/` directory, and backs every claim with
+a `repo://path#Lx-Ly` citation that gets reconciled against the code on `--update`. The user
+asked to use code mode "như một thành phần mặc định khi harness hoạt động như một coding
+agent" (as a default component when the harness acts as a coding agent), then, given a
+choice between passive documentation, an explicit tool, or fully-automatic invocation,
+chose explicit: "cách tường minh như các tool khác" (the explicit way, like the other
+tools).
+
+**Decision.** Add `refresh_codebase_docs` to `CodeTools.tools()`, `effect="write"`
+(undoable via `git reset`/`git diff`, same class as `write_source`/`git_commit`/
+`run_tests` — not `danger`; it never pushes or touches anything outside `root`). It runs
+`openwiki --init` when `root/openwiki/` does not yet exist, `openwiki --update` otherwise,
+through the existing `me._run()` helper — same confinement, same `Sandbox`, same `PASS_ENV`
+allowlist as every other tool in the module, no new mechanism. `openwiki` is **not** added
+to `pyproject.toml`: it runs as an external process, the same arrangement ADR-035 already
+uses for `viking`'s optional extra. A machine without it installed gets `Subprocess`'s
+existing `FileNotFoundError` → `exit 127` handling (IDL-30, fail visible) — not a new
+special case.
+
+Explicit, not automatic, because automatic means paying for it on every run whether or not
+anyone needs the wiki refreshed: OpenWiki's own `--update` pass is itself a model call
+(tokens, an API key, wall-clock time), and no other seam in this harness runs anything
+without something — model or human — choosing to call it. An agent author who wants it to
+run every session can still say so, the same way they already opt into `run_tests` or
+`git_commit` running unattended: by having the model call it, or by building an agent whose
+job description tells it to.
+
+**Test.** `tests/test_tools_code.py::CapNhatWikiBangOpenwiki` — five tests: the `--init`
+vs `--update` heuristic (verified against a fake `Sandbox` that records the exact argv,
+regression-checked by reverting the heuristic to a hardcoded `--init` and confirming the
+`--update` test goes red), `effect` is `Effect.WRITE`, real (non-mocked) fail-visible
+behavior on a machine without `openwiki` installed (`exit 127`, matching the module's
+`ChayLenhThat` class's own "don't mock, let the real environment error show" discipline),
+and that constructing `CodeTools`/calling `.tools()` never invokes the sandbox at all —
+the tool only runs when something calls `.fn()` directly.
+
+---
+
 ## Implementation Decision Log
 
 | # | Decision | Rationale |
@@ -1802,3 +2196,11 @@ runs both the blocked and the allowed scenario end to end.
 | IDL-52 | An automatic fix is a change, and the suite runs immediately after | `ruff --fix` removed a re-export and broke `import harness` (H39.4) |
 | IDL-31 | Context-management fixtures are specified per model | Whether the budget or the context window binds first depends on the model's price and window ([§07.3](07-cost.md#3-token-discipline)) |
 | IDL-53 | `budget.unlimited` fires once, at the same `step == 0` site as `RUN_STARTED`, never inside `Ledger` itself | `Ledger` has no `EventBus` access by design (a ledger that emits telemetry is a ledger with a second reason to change); the guard lives with the caller that already fires exactly once per run/thread (ADR-041) |
+| IDL-54 | An agent's plan is durable state in a `Store`, never a key in graph state and never a second model call | ADR-023 rejected spending tokens to think about thinking; it never said the plan should be forgotten at step 40. A `Store` outlives the process, works on both backends, and adds no constructor parameter (ADR-061) |
+| IDL-55 | A run-level ceiling is checked in the node that clears `stop_reason`, never in the node that observes the signal | `budget_gate` is the only place the graph clears `stop_reason` (Round 37, or a finished thread routes to `finish` forever), so a stop set in `run_tools` is wiped before any router reads it (ADR-062) |
+| IDL-56 | An append-only record persists to an append-only file, never to a key-value `Store` | A `Store` rewrites the whole list per row, so one interrupted write loses the entire history — exactly what D-2 exists to prevent (ADR-063) |
+| IDL-57 | A recorded result is replayed only for calls that change the world, never for calls that read it | A replayed `read` returns the state from before the crash. Idempotency protects against a double effect; it must not answer a question about the present with the past (ADR-064) |
+| IDL-58 | A path-confining tool is constructed with its root; a module-level tool function confines to the CWD or not at all | `confine()` existed unused for two milestones because the tools that needed it had no root to pass — the missing constructor was the bug, not the missing call (ADR-065) |
+| IDL-59 | An escalating policy escalates on the SIGNAL, never on "the cheaper rung ran out of work" | Editing always has one more stale result to blank, so compaction gated on that would never have run once (ADR-066) |
+| IDL-60 | Context size is measured over the whole request payload, arguments included — never over `message.content` alone | A LangChain `AIMessage` carrying only tool calls has empty `content`; the arguments are the part that never gets blanked, and they measured as zero (ADR-066) |
+| IDL-61 | An external doc-generation CLI (`openwiki`) is wired in as a tool the model must call, never a step the harness runs on its own | Every other seam in this library runs on nothing but an explicit call; `--update` is itself a paid model call, so auto-running it would bill every run for a wiki nobody asked to re-read (ADR-072) |

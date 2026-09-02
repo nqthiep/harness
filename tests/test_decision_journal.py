@@ -18,9 +18,10 @@ Bốn điều bản nối này tự hứa, tương ứng bốn nhóm test dướ
    một `DecisionLog` MỚI (đại diện cho tiến trình mới) thấy đúng những hàng tiến trình cũ
    đã ghi.
 
-Cố ý không kiểm tra ở đây: backend LangGraph (chưa nối `DecisionLog` theo đúng hình dạng
-này — theo dõi riêng, R-17) và các luật `AuthEvidence`/`require_approval_evidence` đã có
-test riêng ở `tests/test_attack_s11.py`.
+`build_agent(decisions=...)` (ADR-063) — backend LangGraph nối cùng `DecisionLog` này,
+kiểm ở `BuildAgentDecisionsToiDungRuntime` cuối file. Cố ý không kiểm tra lại ở đây các
+luật `AuthEvidence`/`require_approval_evidence`, đã có test riêng ở
+`tests/test_attack_s11.py`.
 """
 import sys
 import tempfile
@@ -28,9 +29,14 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, "src")
+sys.path.insert(0, "tests")
+
+from fake_chat import FakeChat
+from langchain_core.messages import HumanMessage
 
 from harness import Agent, tool
 from harness.idempotency import idempotency_key
+from harness.lg import build_agent
 from harness.models.fake import FakeModel
 from harness.policy.base import Ruling, Verdict
 from harness.policy.decision import Actor, DecisionLog
@@ -231,6 +237,35 @@ class MutationDecisionLogWiringLoadBearing(unittest.TestCase):
                              "không còn phản ánh đúng hành vi 'chưa nối dây'")
         finally:
             DecisionLog.record = original
+
+
+class BuildAgentDecisionsToiDungRuntime(unittest.TestCase):
+    """ADR-063: `build_agent(decisions=...)` phải thực sự tới `Runtime._decisions` —
+    trước bản vá này, `Runtime.__init__` đã nhận tham số `decisions` từ lâu nhưng
+    `build_agent()` chưa từng chuyển tiếp nó, nên đối số này chưa tới được đâu cả."""
+
+    def test_decisions_toi_dung_runtime(self):
+        log = DecisionLog()
+
+        @tool(effect="danger")
+        def wipe(x: int) -> str:
+            """Xoá."""
+            return "gone"
+
+        graph, rt = build_agent(
+            model=FakeChat(script=[FakeChat.call("wipe", {"x": 1}, "c1"),
+                                   FakeChat.text("xong")]),
+            tools=[wipe], budget="$5", decisions=log,
+            approve=lambda call, ctx: True)
+        self.assertIs(rt._decisions, log)
+        graph.invoke({"messages": [HumanMessage("đi")], "step": 0})
+        rows = [d for d in log.all() if d.scope.tool == "wipe"]
+        self.assertTrue(rows, "Runtime không ghi vào đúng DecisionLog đã truyền vào")
+
+    def test_khong_truyen_thi_moi_graph_co_so_rieng(self):
+        graph1, rt1 = build_agent(model=FakeChat(script=[FakeChat.text("hi")]))
+        graph2, rt2 = build_agent(model=FakeChat(script=[FakeChat.text("hi")]))
+        self.assertIsNot(rt1._decisions, rt2._decisions)
 
 
 if __name__ == "__main__":

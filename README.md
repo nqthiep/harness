@@ -99,6 +99,12 @@ Start here for durability: [`examples/durable_agent.py`](examples/durable_agent.
 Start here for a production-shaped agent: [`examples/full_agent.py`](examples/full_agent.py)
 — one set of tools and policies exercising every capability, on both engines.
 
+Start here for a long-running coding agent: [`CODING_AGENT_BLUEPRINT.md`](CODING_AGENT_BLUEPRINT.md)
+and [`examples/coding_agent.py`](examples/coding_agent.py) — narrow, correctly-classified
+tools (`harness.tools.code.CodeTools`), workspace confinement, a sandboxed subprocess, a
+budget sized for a task instead of a question, and the LangGraph checkpointer for a
+session that survives a restart.
+
 Start here for the raw LangGraph escape hatch: [`examples/langgraph_quickstart.py`](examples/langgraph_quickstart.py)
 — five steps, each adding exactly one concept, for a power user who wants LangGraph
 itself rather than `durable=True`.
