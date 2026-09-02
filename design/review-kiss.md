@@ -1,723 +1,177 @@
-# Review đối kháng — KISS, over-engineering, DX
+# Adversarial review — KISS, over-engineering, DX
 
-**Phạm vi:** toàn bộ `design/*.md` (7 tệp, 3750 dòng), đối chiếu với
-`research/11-workflow-and-dx.md` §22, §45 và `research/05-ideal-harness.md` §33 (Minimal
-Core), §35–36.
+**Scope:** all of `design/*.md` (7 files, 3750 lines), checked against
+`research/11-workflow-and-dx.md` §22, §45 and `research/05-ideal-harness.md` §33 (Minimal
+Core), §35-36.
 
-**Luật dùng để xử:** [`00-foundation.md`](00-foundation.md) §8.4 —
-> *"KISS / NOT-OVER-ENGINEER. Nếu một cơ chế không sửa một khuyết điểm **đo được**, cắt nó."*
+**Rule this review applies:** [`00-foundation.md`](00-foundation.md) §8.4 —
+> *"KISS / NOT-OVER-ENGINEER. If a mechanism doesn't fix a **measured** shortcoming, cut
+> it."*
 
-và yêu cầu **Extreme DX** của người dùng: mức đơn giản nhất phải đến được với người mới
-hoàn toàn.
+and the user's **Extreme DX** requirement: the simplest tier must be reachable by a
+complete beginner.
 
-**Tệp này chỉ nhận xét. Nó không sửa tệp thiết kế nào.**
-
----
-
-## Tóm tắt trong ba câu
-
-1. **Bộ khung ý tưởng rất tốt và đã tự cắt đúng nhiều chỗ** (một trục `Effect`, 2 hook thay
-   vì 6, 1 parallel mode thay vì 3, 2 compaction strategy thay vì 5, từ chối state machine
-   cho business logic). Xem §6 — đừng để ai cắt nhầm những chỗ đó.
-2. **Nhưng bản thiết kế đã vượt xa "minimal core" của chính nghiên cứu**: §33 liệt kê **8
-   thứ trong core**; bản thiết kế định nghĩa **62 class** và **38 mã bất biến** (có 3 va
-   chạm namespace). Con số "14 tên" ở [`01`](01-core-api.md) §1 sai ngay bằng ví dụ của
-   chính tệp đó.
-3. **Zero-to-Agent không tiệm tiến và Mức 1 không chạy được** theo đặc tả của
-   [`03`](03-tools-and-mcp.md): ví dụ tool ở Mức 1 là hàm đồng bộ không có `ToolCtx`, còn
-   `ToolSpec.fn` bắt buộc là `Callable[[Mapping, ToolCtx], Awaitable[Any]]`. Mức 2 nhảy 13
-   khái niệm trong một bước và chứa một lỗi `input()` chặn event loop.
+**This file only comments. It does not fix any design file.** (Historical record — see
+[`07-risks-and-open-issues.md`](07-risks-and-open-issues.md) for what was actually done
+with each finding below, checked against today's real code.)
 
 ---
 
-## Đếm khái niệm — con số thật
+## Summary in three sentences
 
-### Đo trên nguồn
+1. **The core ideas are strong and had already cut correctly in many places** (one
+   `Effect` axis, 2 hooks instead of 6, 1 parallel mode instead of 3, 2 compaction
+   strategies instead of 5, refusing a state machine for business logic). See §6 —
+   don't let anyone cut those by mistake.
+2. **But the design had grown well past the research's own "minimal core"**: §33 lists
+   **8 things** belonging in core; the design defined **62 classes** and **38 invariant
+   ids** (3 colliding). The "14 names" claim in [`01`](01-core-api.md) §1 was
+   contradicted by that very file's own example.
+3. **Zero-to-Agent wasn't actually progressive, and Tier 1 didn't run** against
+   [`03`](03-tools-and-mcp.md)'s own spec: the Tier 1 tool example was a synchronous
+   function with no `ToolCtx`, while `ToolSpec.fn` required
+   `Callable[[Mapping, ToolCtx], Awaitable[Any]]`. Tier 2 jumped 13 concepts in one step
+   and contained an `input()` call blocking the event loop.
 
-| phép đo | con số | cách đo |
+---
+
+## Counting concepts — the real numbers
+
+### Measured from source
+
+| measurement | count | how measured |
 |---|---:|---|
-| `class` được định nghĩa trong `design/*.md` | **62** | `grep -oE "class [A-Za-z_]+" design/*.md \| sort -u` (đã trừ 4 từ trong văn xuôi) |
-| type alias / `NewType` công khai | 10 | `Actor`, `EndStrategy`, `ToolName`, `ServerLabel`, `IdempotencyKey`, `NodeName`, `ModelHandler`, `ToolHandler`, `DepsT`, `OutT` |
-| hằng số `Final` người dùng có thể phải chỉnh | 8 | `AS_OF`, `CLEARED`, `COMPACT_AT`, `EDIT_AT`, `INPUT_MARGIN`, `KEEP_RECENT_STEPS`, `MIN_USEFUL_OUTPUT_TOKENS`, `EFFECT_PROFILES` |
-| mã bất biến (`P-n`, `R-n`, `C-n`, `I-n`, `M-n`, `S-n`, `T-n`, `W-n`, `D-n`) | **38** | trong đó **3 va chạm**: `P-3`, `R-1…R-3`, `C-1…C-4` (xem K-13) |
-| tên trong "API công khai tối thiểu" theo tuyên bố | 14 | [`01`](01-core-api.md) §1 |
-| tên **thực sự** được `import` trong 3 ví dụ của chính tệp đó | **20** | 14 tên ví dụ + 6 tên submodule; chỉ 8/20 nằm trong danh sách 14 |
+| `class` defined across `design/*.md` | **62** | `grep -oE "class [A-Za-z_]+" design/*.md \| sort -u` (4 prose false-positives excluded) |
+| public type alias / `NewType` | 10 | `Actor`, `EndStrategy`, `ToolName`, `ServerLabel`, `IdempotencyKey`, `NodeName`, `ModelHandler`, `ToolHandler`, `DepsT`, `OutT` |
+| `Final` constants a user might have to tune | 8 | `AS_OF`, `CLEARED`, `COMPACT_AT`, `EDIT_AT`, `INPUT_MARGIN`, `KEEP_RECENT_STEPS`, `MIN_USEFUL_OUTPUT_TOKENS`, `EFFECT_PROFILES` |
+| invariant ids (`P-n`, `R-n`, `C-n`, `I-n`, `M-n`, `S-n`, `T-n`, `W-n`, `D-n`) | **38** | of which **3 collide**: `P-3`, `R-1…R-3`, `C-1…C-4` (see K-13) |
+| names in the claimed "minimal public API" | 14 | [`01`](01-core-api.md) §1 |
+| names **actually** `import`ed in that same file's own 3 examples | **20** | 14 example names + 6 submodule names; only 8/20 are in the 14-name list |
 
-### Người dùng phải học bao nhiêu tên trước khi…
+### How many names a user has to learn before…
 
-Đếm "tên" = mọi thứ phải gõ hoặc phải hiểu để đọc được đoạn code: kiểu, tham số
-constructor, method, thuộc tính của `Result`, và mỗi mini-DSL dạng chuỗi.
+Counting "a name" = anything that must be typed or understood to read the code: types,
+constructor parameters, methods, `Result` attributes, and every string mini-DSL.
 
-| mốc | tên mới | cộng dồn | cái gì |
+| tier | new names | running total | what |
 |---|---:|---:|---|
-| **Mức 0** — agent chạy được | **8** | 8 | `Agent`, `name`, `job`, `model`, `budget`, DSL `"$0.05"`, `run_sync`, `.text` |
-| **Mức 1** — thêm tool | **+4** | 12 | `tool`, `effect=`, `Effect` (4 giá trị), `tools=` |
-| **Mức 2** — có tác dụng phụ | **+13** | **25** | `Approver`, `Answer`, `Verdict` (3 giá trị), `Human`, `Channel`, `Workspace`, DSL `egress=`, `sandbox=`, `approve=`, `req.scope` → `Scope`, `req.estimated_cost`, `Actor`, `UnsafeToolSetError` |
-| **Mức 3** — "production" | **+16** | **41** | `checkpointer`/`SqliteCheckpointer`, `policies`/`Policy`/`DenyHosts`, `plugins`/`Plugin`/`Retry`/`CostReport`, `end_strategy` (3 giá trị), `stream`/`Event`, `run_id`, `resume`, `StopReason` (8 giá trị), `Result.pending`/`.cost`/`.label`/`.decisions`, `Decision`, `Label` (2 trục × 2 giá trị) |
-| **+ viết tool production** ([`03`](03-tools-and-mcp.md)) | +10 | **51** | `ToolCtx`, `IdempotencyMode` (3), `ToolInputInvalid`, `ToolUnavailable`, `ToolOutcome` (3), `CancelToken`, `timeout_s`, `accepts_tainted`, `max_confidentiality`, `server` |
-| **+ dùng MCP** | +6 | **57** | `McpServerPolicy`, `ServerIdentity`, `trusted`, `default_effect`, `effects`, `allow` |
-| **+ dùng memory** ([`05`](05-cost-and-memory.md)) | +4 | **61** | `Provenance`, `Memo`, `Store`, luật `recall = external` |
+| **Tier 0** — the agent runs | **8** | 8 | `Agent`, `name`, `job`, `model`, `budget`, the `"$0.05"` DSL, `run_sync`, `.text` |
+| **Tier 1** — add a tool | **+4** | 12 | `tool`, `effect=`, `Effect` (4 values), `tools=` |
+| **Tier 2** — a side effect | **+13** | **25** | `Approver`, `Answer`, `Verdict` (3 values), `Human`, `Channel`, `Workspace`, the `egress=` DSL, `sandbox=`, `approve=`, `req.scope` -> `Scope`, `req.estimated_cost`, `Actor`, `UnsafeToolSetError` |
+| **Tier 3** — "production" | **+16** | **41** | `checkpointer`/`SqliteCheckpointer`, `policies`/`Policy`/`DenyHosts`, `plugins`/`Plugin`/`Retry`/`CostReport`, `end_strategy` (3 values), `stream`/`Event`, `run_id`, `resume`, `StopReason` (8 values), `Result.pending`/`.cost`/`.label`/`.decisions`, `Decision`, `Label` (2 axes x 2 values) |
+| **+ writing a production tool** ([`03`](03-tools-and-mcp.md)) | +10 | **51** | `ToolCtx`, `IdempotencyMode` (3), `ToolInputInvalid`, `ToolUnavailable`, `ToolOutcome` (3), `CancelToken`, `timeout_s`, `accepts_tainted`, `max_confidentiality`, `server` |
+| **+ using MCP** | +6 | **57** | `McpServerPolicy`, `ServerIdentity`, `trusted`, `default_effect`, `effects`, `allow` |
+| **+ using memory** ([`05`](05-cost-and-memory.md)) | +4 | **61** | `Provenance`, `Memo`, `Store`, the `recall = external` rule |
 
-**Kết luận về con số.** 8 tên cho "hello world" là **tốt** — ngang hoặc dưới mọi framework
-trong nghiên cứu, và ba trong tám (`job`, `budget`, `.text`) tự giải thích được với một học
-sinh 10 tuổi. **41 tên để tới "production"** là quá nhiều so với tuyên bố "mỗi mức mới lộ ra
-đúng một khái niệm" — thực tế là 8 → 4 → **13** → **16**. Bước từ Mức 1 lên Mức 2 là bước
-gãy: **13 khái niệm trong một lần**, mà tệp mô tả nó là "sandbox và approval xuất hiện".
+**Conclusion on the numbers.** 8 names for "hello world" is **good** — at or below every
+framework in the research, and three of eight (`job`, `budget`, `.text`) are
+self-explanatory to a 10-year-old. **41 names to reach "production"** is too many
+against the claim that "each new tier reveals exactly one concept" — the real
+progression is 8 -> 4 -> **13** -> **16**. The jump from Tier 1 to Tier 2 is where it
+breaks: **13 concepts at once**, described in the file as merely "sandbox and approval
+appear."
 
-**Đồng nghĩa trá hình đã tìm thấy (chi tiết ở K-3, K-4, K-21):**
+**Disguised synonyms found (detailed as K-3, K-4, K-21):**
 
-| khái niệm | các tên đang dùng cho nó | ở đâu |
+| concept | names currently used for it | where |
 |---|---|---|
-| yêu cầu gửi cho người duyệt | `ApprovalRequest` · `AskRequest` · `PauseRequest` | 01 §1.4 · 02 §2.2 · 04 §4.3 |
-| câu trả lời của người duyệt | `Answer` · `AskOutcome` · (`ruling=`) | 01 §1.4 · 02 §2.2 · 01 §2 Mức 3 |
-| người/kênh trả lời | `Approver` · `ApprovalProvider` | 01 §1.4 · 02 §2.2 |
-| sổ ghi `Decision` | `DecisionLog` · `AuditSink` · "audit store" | 02 §2.4 · 02 §3.1 · 04 §4.3 |
-| lỗi tool "sửa được" / "dứt điểm" | `Retry`/`ToolFailed` · `ToolInputInvalid`/`ToolUnavailable` | 01 §5.4 · 03 §2.2 |
+| a request sent to an approver | `ApprovalRequest` · `AskRequest` · `PauseRequest` | 01 §1.4 · 02 §2.2 · 04 §4.3 |
+| an approver's answer | `Answer` · `AskOutcome` · (`ruling=`) | 01 §1.4 · 02 §2.2 · 01 §2 Tier 3 |
+| the person/channel answering | `Approver` · `ApprovalProvider` | 01 §1.4 · 02 §2.2 |
+| the `Decision` log | `DecisionLog` · `AuditSink` · "audit store" | 02 §2.4 · 02 §3.1 · 04 §4.3 |
+| a "fixable" vs. "definitive" tool error | `Retry`/`ToolFailed` · `ToolInputInvalid`/`ToolUnavailable` | 01 §5.4 · 03 §2.2 |
 
-Năm khái niệm đang mang **13 cái tên**. Đó là 8 tên có thể xoá mà không mất một bảo đảm nào.
-
----
-
-## 1. Cắt ngay
-
-### K-1 — `Quarantine` + `Quarantined[T]` (02 §5) · **cắt ngay**
-
-**Cái gì.** Một model phụ, rẻ hơn, để suy luận trên nội dung `UNTRUSTED`; kiểu generic
-`Quarantined[T]` với ràng buộc "`T` phải là kiểu đóng"; `RunConfig.quarantine`; luật
-fail-closed riêng khi `quarantine=None`.
-
-**Vì sao thừa.** Chính [`02`](02-safety-engine.md) mục *Chưa đủ evidence* viết:
-> *"Mẫu dual-LLM/CaMeL chỉ có **một** cài đặt trong toàn nghiên cứu, và nó `@experimental`,
-> không được wire vào, và không concurrency-safe… **Không có eval nào so sánh tỉ lệ
-> prompt-injection thành công có và không có quarantine.**"*
-
-Đây là định nghĩa chính xác của thứ mà luật §8.4 bảo phải cắt: cơ chế không sửa một khuyết
-điểm **đo được**. Nó còn kéo theo: một trường trong `RunConfig`, một generic không kiểm
-được bằng type checker Python (không có cách nào diễn đạt "kiểu đóng"), một nhánh
-fail-closed thứ hai song song với nhánh `ASK`, và một chi phí model không lường trước tính
-vào cùng `Ledger`.
-
-**Đề xuất.** Cắt hẳn khỏi `02`. Chuyển toàn bộ mục §5 sang
-`07-risks-and-open-issues.md` dưới tiêu đề *"ý tưởng có kiến trúc, chờ eval"*. Đường đi
-bình thường mà chính tệp đã mô tả — `UNTRUSTED` + `danger` ⇒ `ASK` (có người) hoặc `DENY` —
-đã đủ và đã có bằng chứng.
+Five concepts carrying **13 names**. That's 8 names removable without losing a single
+guarantee.
 
 ---
 
-### K-2 — `deps_type` / `DepsT` (01 §1.1) · **cắt ngay**
+## Findings
 
-**Cái gì.** `Agent` generic trên `DepsT`, tham số `deps_type: type[DepsT] = object`, tham số
-`deps=` trên cả bốn cách chạy.
+Each finding: what it is, why it's excess, and the recommendation. Severity tiers as
+originally scored: **cut now** (unambiguous), **should cut**, **consider**.
 
-**Vì sao thừa.** Hai lý do độc lập, mỗi lý do đủ để cắt:
-
-1. **Generic không có chỗ đáp.** `ToolSpec.fn` ở [`03`](03-tools-and-mcp.md) §1.1 là
-   `Callable[[Mapping[str, Any], "ToolCtx"], Awaitable[Any]]`. `ToolCtx` (03 §6.2) có 6
-   trường: `run_id`, `call_id`, `cancel`, `label`, `idempotency_key`, `deadline` — **không
-   có `deps`**. Vậy `DepsT` đi vào constructor, đi vào `run()`, và **không tới được bất kỳ
-   người dùng nào**. `01` viết `ToolSpec[DepsT]`, `03` viết `ToolSpec` không generic — hai
-   tệp không đồng ý nó có tồn tại hay không.
-2. **Chính tệp tự khai là chưa đo.** [`01`](01-core-api.md) *Chưa đủ evidence* #3:
-   *"`deps_type` generic có thể làm dốc learning curve… Việc mức 0 không cần chạm tới
-   `deps_type` là suy luận, không phải kết quả đo."* Và §22/§45 của nghiên cứu ghi rõ
-   learning curve **không được đo**. Trích dẫn duy nhất là "PydanticAI có nó" — theo §8.4
-   đó là ý kiến, không phải phát hiện.
-
-**Đề xuất.** Cắt `deps_type`, `DepsT`, và `deps=` khỏi cả bốn signature. Người cần DI đóng
-gói vào closure của tool — Python đã có `functools.partial`. Nếu sau này có nhu cầu đo
-được, thêm lại bằng cách cho `ToolCtx` một trường `deps: Any` — một dòng, không cần generic
-trên `Agent`. Giữ `OutT`/`output_type` (nó có chỗ đáp thật: `Result.output`).
-
----
-
-### K-3 — Ba bộ tên cho một vòng approval (01 §1.4 · 02 §2.2 · 04 §4.3) · **cắt ngay**
-
-**Cái gì.**
-
-| vai | `01` | `02` | `04` |
-|---|---|---|---|
-| request | `ApprovalRequest(scope, reason, label, estimated_cost)` | `AskRequest(call, ruling, reason, proposed_scope, max_grant)` | `PauseRequest(call_id, tool, effect, args, reason)` |
-| response | `Answer(verdict, reason, expires_at)` | `AskOutcome(verdict, actor, reason, scope, grant_for)` | `ResumeToken(decision_id)` |
-| người trả lời | `Approver(fn, *, actor)` | `ApprovalProvider.ask()` | — |
-
-**Vì sao thừa — và vì sao đây không chỉ là đổi tên.** Ba bộ **mâu thuẫn về ngữ nghĩa**, không
-chỉ về chính tả:
-
-- **`actor` đến từ đâu.** `01` gắn `actor` **lúc dựng `Approver`** và gọi đó là "cách bất
-  biến D-1 được thực thi *bằng kiểu*". `02` để `AskOutcome.actor` do **provider tự khai mỗi
-  lần trả lời** ("provider phải nêu tên người"). Đúng một trong hai là D-1; cái còn lại là
-  đúng thứ mà thiết kế đang chê agno.
-- **hạn dùng.** `01` cho người duyệt điền `expires_at` (thời điểm tuyệt đối). `02` chỉ nhận
-  `grant_for: timedelta` rồi runtime `_cap()` theo `max_grant`. Với `01`, một UI hỏng cấp
-  được grant 100 năm — đúng lỗ hổng `always_approve` mà `02` §2.5 nói đã bịt.
-- **resume chở gì.** `01` §1.2: `resume(run_id, *, answer: Answer | None)`. `04` §4.3:
-  *"Payload **DUY NHẤT** `Command(resume=…)` chấp nhận"* là `ResumeToken(decision_id)`, và
-  luật fail-closed #1 nói mọi thứ không phải `ResumeToken` ⇒ `DENY`. Theo `04`, lời gọi
-  `resume(answer=Answer(...))` của `01` bị **từ chối**.
-
-**Đề xuất.** Giữ **một** bộ, và bộ của `02` là bộ đúng về mặt an toàn:
-
-- `AskRequest` → đổi tên thành `ApprovalRequest` (tên của `01`, dễ đọc hơn), giữ trường của
-  `02`.
-- `AskOutcome` → đổi tên thành `Answer`, giữ `grant_for` (bỏ `expires_at`), **bỏ `actor`
-  khỏi kiểu** và gắn nó ở `Approver(fn, *, actor)` theo `01`.
-- `ApprovalProvider` → xoá, dùng `Approver` của `01`.
-- `PauseRequest` → xoá; `04` phát chính `ApprovalRequest` đã redact.
-- `ResumeToken` → giữ, vì nó là bảo đảm thật (kênh resume không chở được `bool`), nhưng
-  `01` phải sửa `resume()` cho khớp: `resume(run_id, *, decision: DecisionId)`.
-
-Xoá được **4 kiểu** và **1 protocol**.
-
----
-
-### K-4 — `DecisionLog` và `AuditSink` là một sổ mang hai protocol (02 §2.4, §3.1) · **cắt ngay**
-
-**Cái gì.** `DecisionLog` (`append` / `lookup` / `since`) và `AuditSink` (`commit` / `emit`).
-`Decision` đi qua **cả hai**: §2.1 bước (5) `AuditSink.commit(decision)`, §2.4
-`DecisionLog.append(decision)`.
-
-**Vì sao thừa.** Cả hai là append-only, cả hai durable, cả hai khoá theo `run_id`, cả hai
-chứa `Decision`. Bằng chứng rằng chính bản thiết kế coi chúng là một: [`04`](04-runtime-durability.md)
-§4.3 viết *"Đổi `ResumeToken` lấy `Decision` từ **audit store**"* — tức tra `lookup` trên cái
-mà `02` gọi là `AuditSink`. Hai protocol cho một store nghĩa là hai cài đặt phải giữ đồng
-bộ, và câu hỏi "ghi vào cái nào trước" không có câu trả lời ở đâu cả.
-
-**Đề xuất.** Gộp thành **một** `AuditSink` với bốn method: `commit` (durable, cho
-`Decision`), `emit` (best-effort, cho event), `lookup`, `since`. `DecisionLog` biến mất.
-Ranh giới durable/best-effort là ranh giới **method**, không phải ranh giới **class** — và
-`02` §3.1 đã lập luận đúng điều đó cho `commit` vs `emit`.
-
----
-
-### K-5 — `Snapshottable` Protocol (04 §5.2): **không implementer nào khớp** · **cắt ngay**
-
-**Cái gì.**
-```python
-class Snapshottable(Protocol):
-    def snapshot(self) -> Mapping[str, Any]: ...
-    @classmethod
-    def restore(cls, snap: Mapping[str, Any] | None, /) -> Self: ...
-```
-`04` khai ba implementer: `Ledger`, `Label`, tập `DecisionId`.
-
-**Vì sao thừa.** Không cái nào cài được protocol này:
-
-- `Ledger.snapshot()` ở [`05`](05-cost-and-memory.md) §A.3 trả `LedgerState`, **không phải**
-  `Mapping[str, Any]`; và `Ledger.restore(cls, budget, state, *, clock)` có **ba** tham số,
-  không phải một positional-only.
-- `Label` ([`00`](00-foundation.md) §3.2) không có `snapshot`/`restore`, và `04` §4.3 nói
-  nhãn đi vào state dưới dạng **hai chuỗi rời** (`label_integrity`, `label_confidentiality`),
-  tức không đi qua protocol này.
-- "tập `DecisionId`" là `list[str]` — một builtin không cài protocol nào.
-
-Một Protocol với **0 implementer đúng** là trừu tượng thuần tuý. Nó cũng là loại lỗi mà `04`
-§3.2 tự cảnh báo: *"một checker luôn trả rỗng cũng pass"*.
-
-**Đề xuất.** Cắt `Snapshottable`. Giữ luật S-1/S-2/S-3 (chúng là những thứ có giá trị thật:
-round-trip, JSON-serialisable, tiền là `str` của `Decimal`) và phát biểu chúng như **test
-tính chất trên state dict**, không như một protocol. `Ledger.snapshot()/restore()` giữ
-nguyên signature của `05` — nó là cái duy nhất có cài đặt thật.
-
----
-
-## 2. Nên cắt
-
-### K-6 — Trục `Confidentiality` không có nguồn phát · **nên cắt (hoặc bổ sung nguồn)**
-
-**Cái gì.** Nửa thứ hai của lattice hai chiều: `PUBLIC < SECRET`, `spec.max_confidentiality`,
-luật "context `SECRET` không gọi được sink `PUBLIC`", `Store.max_confidentiality`, W-2, R-3.
-
-**Vì sao đáng ngờ.** Đi ngược từ đích: **không có gì trong toàn bộ thiết kế đặt nhãn
-`SECRET` lên bất cứ thứ gì.**
-
-- `label_after(spec, current) = current.join(spec.emits)` (02 §4.1) — nhưng `ToolSpec` ở
-  [`03`](03-tools-and-mcp.md) §1.1 **không có trường `emits`**.
-- Không tool nào, không input nào, không cấu hình nào trong 5 tệp sinh ra
-  `Confidentiality.SECRET`.
-- `max_confidentiality` cũng không có trong `ToolSpec` của `03` (chỉ có trong `@tool` của
-  `01` — xem K-15).
-
-Kết quả: `confidentiality` luôn bằng `PUBLIC`, `check_flow` nhánh thứ hai không bao giờ
-chạy, W-2/R-3 là luật về một trạng thái không đạt tới được. Và `02` *Chưa đủ evidence* tự
-ghi: *"Không gói Python nào trong nghiên cứu có kiểu `Secret` chuyên dụng… **không có bằng
-chứng** về việc hai bậc là đủ hay thiếu."*
-
-**Đề xuất.** Chọn một:
-
-- **(a) Cắt** — `Label` thành một trục `Integrity` (đúng ADR-011 hiện có), xoá
-  `max_confidentiality`, W-2, R-3, và nhánh thứ hai của `check_flow`. Xoá ~6 khái niệm.
-- **(b) Giữ nhưng phải có nguồn phát** — thêm `emits: Label` và `max_confidentiality` vào
-  `ToolSpec` của `03`, và nêu **ít nhất một** đường mặc định sinh `SECRET` (ví dụ: giá trị
-  đọc từ secret manager, hoặc `deps` được đánh dấu).
-
-Không được giữ nguyên hiện trạng: một nửa lattice vừa tốn khái niệm vừa tạo cảm giác an
-toàn sai.
-
----
-
-### K-7 — Bốn lớp phòng thủ cho một sai số chưa đo (05 §B.3) · **nên cắt lớp 2**
-
-**Cái gì.** `INPUT_MARGIN = 1.15`, `calibration` (tỉ số tự học, chỉ tăng),
-`hard_max_input_tokens()` + `Reservation.exact`, đệm 20% (`COMPACT_AT = 0.80`), và một vòng
-thử lại xác định. Năm cơ chế cho một bài toán.
-
-**Vì sao thừa.** `Reservation.exact` là lớp không mua được gì quan sát được: khi ngân sách
-rộng, ước lượng nhân 1.15 **cũng đã** nằm trong ngân sách, nên `exact=True` chỉ đổi một
-`bool` mà không đổi hành vi nào ở đâu — không mục nào trong 5 tệp đọc `Reservation.exact`.
-Và `05` tự khai: *"`INPUT_MARGIN = 1.15` là con số kinh nghiệm… chỉ mới quan sát trên một
-họ model."*
-
-**Đề xuất.** Cắt `hard_max_input_tokens()` và `Reservation.exact`. Giữ `INPUT_MARGIN` +
-`calibration` + đệm 20% + một-lần-thử-lại (bốn thứ này có vai rõ ràng và không chồng nhau).
-Ghi lại `hard_max_input_tokens` trong `07-risks` như một lựa chọn nếu số đo cho thấy margin
-không đủ.
-
----
-
-### K-8 — `IdempotencyMode` ba giá trị (03 §1.1) · **nên cắt xuống hai**
-
-**Cái gì.** `NONE` / `KEYED` / `NATIVE`.
-
-**Vì sao thừa.** `NATIVE` khác `KEYED` ở **đúng một** hành vi: `ctx.idempotency_key` được
-truyền cho `fn` để tool gắn lên upstream. Nhưng runtime **luôn** sinh key (03 §4.2) — không
-có lý do gì để giấu nó với tool ở chế độ `KEYED`. Nếu key luôn có mặt trong `ToolCtx`, tác
-giả tool dùng hay không dùng là việc của tác giả, không phải một giá trị enum.
-
-Và `NONE` là vấn đề riêng, xem **K-25**.
-
-**Đề xuất.** `ToolSpec.idempotent: bool` (mặc định `True` cho `write`/`danger` — xem K-25).
-`ctx.idempotency_key` luôn khác `None`. Xoá một enum ba giá trị khỏi bề mặt tác giả tool;
-bảng "harness đảm bảo gì" ở §4.5 vẫn phát biểu được bằng văn xuôi.
-
----
-
-### K-9 — `run()` / `try_run()` / `Result.raise_for_status()` — ba cách nói một điều · **nên cắt một**
-
-**Cái gì.** `run()` raise, `try_run()` không raise, và `Result` có **cả** `.ok` **lẫn**
-`.raise_for_status()`. `RunFailed` lại mang `result: Result[Any]`.
-
-**Vì sao thừa.** Bốn cách viết cùng một chương trình:
-`run()` ≡ `try_run().raise_for_status()` ≡ `try_run()` + `if not r.ok` ≡
-`try_run()` + `match r.stop_reason`. Và `01` tự khai: *"`run` async + `run_sync` là quy ước,
-**không phải phát hiện**."* Không có phát hiện nghiên cứu nào đòi cả bốn.
-
-**Đề xuất.** Giữ `run()` (raise — đường của người mới, ném `RunFailed` mang `.result`) và
-`try_run()` (đường của người viết service). **Cắt `raise_for_status()`** — nó là `run()` viết
-lại. Giữ `.ok` (một property rẻ, đọc được). Nếu phải cắt sâu hơn: cắt `try_run()`, vì
-`except RunFailed as e: e.result` đã cho đúng điều đó.
-
----
-
-### K-10 — Taxonomy OTel 9 span × ~50 attribute (04 §8.2) · **nên cắt xuống 4**
-
-**Cái gì.** `harness.run` / `.step` / `.budget` / `.model` / `.policy` / `.approve` /
-`.tool` / `.subagent` / `.finish`, tổng cộng khoảng 50 attribute đã liệt kê tên.
-
-**Vì sao đáng ngờ.** Bằng chứng được viện dẫn là **mật độ mã** của google-adk-java (11,4
-otel/kLOC). Mật độ mã của người khác không phải một khuyết điểm đo được của ta. Khuyết điểm
-đo được là *"observability genuine only in google-adk and thin elsewhere"* — nó đòi **có**
-observability, không đòi **chín loại span**. Và `04` tự khai: *"nghiên cứu **không** đo
-overhead runtime của mật độ đó. Sampling rate mặc định chưa có cơ sở."*
-
-`harness.step` mang đúng một attribute (`step`) — một span cho một số nguyên. `harness.budget`
-và `harness.finish` mang thông tin đã có trên `harness.run`.
-
-**Đề xuất.** v1 giữ **4 span**: `harness.run` (root), `harness.model`, `harness.policy`,
-`harness.tool`. Bốn quy tắc nội dung (§8.2 điểm 1–4: `effect` trên mọi span tool,
-`decision_id` chứ không `approved=true`, `actor_kind` chứ không `actor_id`, chỉ
-`args_sha256`) là phần **thật sự có giá trị** và phải giữ nguyên — chúng sửa khuyết điểm đo
-được. Năm span còn lại chuyển sang `07-risks` như "mở rộng khi có nhu cầu".
-
----
-
-## 3. Cân nhắc
-
-### K-11 — `end_strategy` ở constructor Mức 3 · **cân nhắc**
-
-Bằng chứng là thật (nghiên cứu §31 bài học 1, và PydanticAI đã đổi mặc định `early` →
-`graceful` vì mặc định cũ sai). Nhưng đây là **tham số duy nhất** trong 13 tham số không gắn
-với một chế độ hỏng nào của harness này, và nó thêm một `Literal` ba giá trị mà không mục
-nào trong 5 tệp mô tả ba giá trị đó làm gì khác nhau **ở đây**. Thêm nữa, từ `"exhaustive"`
-đang mang hai nghĩa khác nhau trong cùng bản thiết kế: giá trị của `EndStrategy` (01 §1.1)
-và tên một parallel mode của pydantic-ai (03 §3.2).
-
-**Đề xuất.** Giữ tham số (bằng chứng đủ), nhưng: (a) chốt mặc định `"graceful"` và **không
-đưa nó vào ví dụ Mức 3** — nó không phải một trong "bốn chỗ trống của cả ngành"; (b) đổi tên
-giá trị thứ ba để không đụng từ vựng parallel của `03`.
-
-### K-12 — `ServerIdentity.fingerprint` (03 §5.2) · **cân nhắc**
-
-`03` tự khai hai chỗ chưa đủ evidence: rug-pull qua `tools/list` *"không được quan sát trực
-tiếp trong bất kỳ source nào đã đọc"*, và *"Định dạng `fingerprint`… chưa đủ evidence để
-chốt"* (không có tương đương SPKI cho stdio). Một trường không chốt được định dạng là một
-trường chưa nên vào kiểu công khai.
-
-**Đề xuất.** v1 dùng `ServerLabel` (chuỗi) như Microsoft — đó là phần **có** bằng chứng và
-là phòng thủ confused-deputy duy nhất tìm được. Ghi `fingerprint` vào `07-risks` với điều
-kiện kích hoạt: "khi quan sát được một lần label bị trỏ lại". Xoá một `@value` khỏi bề mặt.
-
-### K-13 — 38 mã bất biến, 3 va chạm namespace · **cân nhắc (nhưng sửa sớm)**
-
-Đo được:
-
-| mã | nghĩa 1 | nghĩa 2 |
+| id | tier | finding |
 |---|---|---|
-| `P-3` | plugin chỉ làm yếu đi (01 §4.2) | policy ném lỗi ⇒ fail closed (02 §1.2) |
-| `R-1` / `R-2` / `R-3` | bốn quy tắc kiến trúc (00 §5) | ba luật **đọc memory** (05 §C.1) |
-| `C-1` … `C-4` | bốn luật **cancel** (03 §6.3) | bốn bất biến **cost** (05 §A.1) |
+| **K-1** | cut now | `Quarantine` + `Quarantined[T]` (02 §5) — the file's own *Not Enough Evidence* section admits exactly ONE implementation exists anywhere in the research, `@experimental`, never wired in, not concurrency-safe, no evaluation comparing injection success rates with/without it. The textbook case for §8.4: a mechanism fixing no measured shortcoming. Recommendation: cut to `07-risks` as "an idea with real architecture, waiting on evaluation" — the ordinary `UNTRUSTED` + `danger` => `ASK`/`DENY` path already covers it. |
+| **K-2** | cut now | `deps_type`/`DepsT` (01 §1.1) — `Agent` generic over a dependency-injection type. Two independent reasons, either sufficient: the generic reaches no user (`ToolCtx` in 03 §6.2 has 6 fields, no `deps`); and the only citation for it is "PydanticAI has it," which per §8.4 is an opinion, not a finding. Recommendation: cut `deps_type`/`DepsT`/`deps=` from all four signatures; DI belongs in a tool's closure via `functools.partial`. |
+| **K-3** | cut now | Three name sets for one approval round-trip (01 §1.4 · 02 §2.2 · 04 §4.3) — `ApprovalRequest`/`AskRequest`/`PauseRequest`, `Answer`/`AskOutcome`, `Approver`/`ApprovalProvider`. Not just spelling: they disagree on where `actor` comes from (01: fixed at `Approver` construction, matching D-1; 02: self-declared per answer, exactly agno's mistake), on expiry (`expires_at` an absolute time in 01 vs. a `grant_for` timedelta capped in 02 — 01's shape lets a broken UI grant a 100-year approval), and on what `resume()` carries (01's `Answer` vs. 04's `ResumeToken(decision_id)`, which its own fail-closed rule #1 would reject). Recommendation: keep one set, built on 02's safety-correct shape, renamed to 01's friendlier names; drop `PauseRequest` and `ApprovalProvider` entirely — 4 types and 1 protocol removed. |
+| **K-4** | cut now | `DecisionLog` and `AuditSink` (02 §2.4, §3.1) are one ledger wearing two protocols — both append-only, durable, keyed by `run_id`, both storing `Decision`; 04 §4.3 itself calls the lookup target "the audit store." Recommendation: merge into one `AuditSink` with `commit`/`emit`/`lookup`/`since`. |
+| **K-5** | cut now | `Snapshottable` Protocol (04 §5.2) has **zero** implementers that actually match its signature — `Ledger.snapshot()` returns `LedgerState`, not `Mapping[str, Any]`, and `restore()` takes three parameters, not one; `Label` has no `snapshot`/`restore` at all; the "set of `DecisionId`s" is a plain `list[str]`. A Protocol with 0 correct implementers is pure abstraction — exactly the failure mode 04 §3.2 itself warns about ("a checker that always returns empty also passes"). Recommendation: cut the Protocol, keep rules S-1/S-2/S-3 as property tests on a state dict instead. |
+| **K-6** | should cut | The `Confidentiality` axis has no source (02 §4.1's `label_after` reads `spec.emits`, but `ToolSpec` in 03 §1.1 has no `emits` field, and nothing anywhere produces `Confidentiality.SECRET`) — half the lattice is unreachable decoration, and 02's own *Not Enough Evidence* admits no Python package surveyed has a comparable type either. Recommendation: either cut the axis back to integrity-only, or give it a real source (`emits`/`max_confidentiality` on `ToolSpec`, plus at least one default path that actually produces `SECRET`). Leaving it as-is (present but unreachable) is the one option ruled out — it costs concepts while creating false confidence. |
+| **K-7** | should cut | Four defense layers for one unmeasured error margin (05 §B.3): `Reservation.exact` changes a `bool` nothing reads — when budget is wide, the 1.15-margin estimate already fits, so `exact=True` never changes behavior anywhere. Recommendation: cut `hard_max_input_tokens()`/`Reservation.exact`, keep the other three (margin, calibration, the 20% buffer, one deterministic retry — each with a distinct role). |
+| **K-8** | should cut | `IdempotencyMode` (`NONE`/`KEYED`/`NATIVE`, 03 §1.1) — `NATIVE` differs from `KEYED` in exactly one behavior (whether the key is exposed to `fn`), but the runtime always generates a key anyway; a tool author using it or not is their own business, not an enum value. `NONE` is a separate problem (K-25). Recommendation: `ToolSpec.idempotent: bool`, `ctx.idempotency_key` never `None`. |
+| **K-9** | should cut | `run()`/`try_run()`/`Result.raise_for_status()`/`.ok` — four ways of writing the same program (01 admits `run`/`run_sync` is "a convention, not a finding"). Recommendation: keep `run()` and `try_run()`; cut `raise_for_status()` as a rewrite of `run()`; keep `.ok` (a cheap, readable property). |
+| **K-10** | should cut | A 9-span x ~50-attribute OTel taxonomy (04 §8.2), justified by citing google-adk-java's **code density** (11.4 hits/kLOC) — someone else's density isn't this design's own measured shortcoming, and 04 itself admits the research never measures that density's runtime overhead. `harness.step` carries exactly one attribute — a whole span for an integer. Recommendation: 4 spans (`harness.run`/`.model`/`.policy`/`.tool`); keep the 4 content rules (`effect` on every tool span, `decision_id` not `approved=true`, `actor_kind` not `actor_id`, only `args_sha256`) — those fix a real measured gap and matter more than span count. |
+| **K-11** | consider | `end_strategy` at the Tier 3 constructor — real evidence (PydanticAI changed its own default because the old one was wrong), but it's the one parameter among 13 tied to no failure mode of THIS harness, and its third value's name `"exhaustive"` collides with an unrelated parallel-mode name in 03 §3.2. Recommendation: keep the parameter, drop it from the Tier 3 example (not one of "the four industry-wide gaps" it illustrates), rename the third value. |
+| **K-12** | consider | `ServerIdentity.fingerprint` (03 §5.2) — 03 itself admits the rug-pull scenario was never directly observed in any source read, and no format decision has evidence behind it (no obvious SPKI equivalent for stdio). Recommendation: v1 keys on `ServerLabel` (a string, matching Microsoft) — the part WITH evidence; move `fingerprint` to `07-risks` pending a real re-pointing incident. |
+| **K-13** | consider (but fix soon) | 38 invariant ids, 3 real collisions: `P-3` means both "a plugin can only weaken" (01 §4.2) and "a policy raising fails closed" (02 §1.2); `R-1`/`R-2`/`R-3` mean both the four global architecture rules (00 §5) and three memory-read rules (05 §C.1); `C-1`…`C-4` mean both cancel rules (03 §6.3) and cost invariants (05 §A.1). Also `I-1` exists in 03 §4.4 with no `I-2` anywhere — the numbering pretends to be one shared namespace when it isn't. A concrete DX cost: an error message or comment citing "violates C-2" is undecodable without knowing which file you're in. Recommendation: prefix by file (`POL-`, `COST-`, `CAN-`, `MEM-R`), keep `R-1…R-4`/`D-1`/`D-2` global to `00`; or, more KISS, drop ids for rules cited exactly once (29 of the 38 ids are never cross-referenced from another file). |
+| **K-14** | cut now (fix) | `resume(ruling=…)` survives in **4** places (01 §2 Tier 3 twice, §5.2's table, §6's table) despite 01 §1.2's real signature being `resume(run_id, *, answer: Answer | None)` — and all four contradict 04's `ResumeToken`-only rule anyway. |
+| **K-15** | cut now (fix) | `@tool` has two different signatures (01 vs. 03) that disagree on which parameters exist (`idempotency`, `timeout_s`, `max_confidentiality`) and on whether `ToolSpec` is generic; and `ToolSpec` in 03 §1.1 is missing `max_confidentiality`/`emits`, which 02 §4.1 reads anyway. Root cause of K-6. |
+| **K-16** | cut now (fix) — **the most severe DX bug found** | The Tier 1 example (`def word_count(text: str) -> int:`, synchronous, no `ToolCtx`) doesn't run against 03's own spec, which requires `fn: Callable[[Mapping, ToolCtx], Awaitable[Any]]`. This is exactly where "a 10-year-old can follow it" lives or dies — the example is right; the spec is what must change: `@tool` must GENERATE the adapter from a plain typed function, and `ToolCtx` must be OPTIONAL (injected only when the author declares a `ctx` parameter). Otherwise Tier 1 doesn't run and the whole Zero-to-Agent ladder collapses at its second step. |
+| **K-17** | cut now (fix) | `Budget()` constructs with no arguments and `usd=None` is accepted (05 §A.1), directly contradicting 01's own stated invariant that budget is required and must have a money axis. Recommendation: `usd: Decimal`, no default, never `None`. |
+| **K-18** | cut now (fix) | `StopReason` (01 §5.2, 8 values) is missing `"graph_changed"` (used in 04 §4.5) and `TRUNCATED` (used in 05 §B.3) — a closed enum with values used outside it is a runtime error waiting to happen. |
+| **K-19** | cut now (fix) | `AuditEvent.type` (02 §3.1) is a closed `Literal` missing at least 5 event kinds actually emitted elsewhere (`policy.allowed`, `duplicate_suppressed`, `run.started`, `run.finished`, `taint.raised`) — and the design has no single list of all event kinds anywhere, despite 04 §2.2 referencing "the graph only emits 9/15" as a past bug. Also where the research's §33 "a versioned event envelope" requirement lands (see K-27). |
+| **K-20** | cut now (fix) | `ToolInputInvalid.__init__` (03 §2.2) takes a positional `message` and an optional `fix`, dropping `got`/`doc` — breaking 01 §3.2's own claimed contract that `HarnessError` subclasses always require `what`/`got`/`fix`/`doc`. A contract a subclass can break isn't "structural," it becomes discipline again — exactly what §3.2 claims to avoid. |
+| **K-21** | cut now (fix) | Two name sets for the tool error taxonomy (`Retry`/`ToolFailed` in 01 §5.4 vs. `ToolInputInvalid`/`ToolUnavailable` + `ToolOutcome` in 03 §2.2), and `Retry` in 01 names both an exception (§5.4) AND a plugin (§2 Tier 3) — same name, two different things, same file. The default-outcome tables also disagree between the two files. Recommendation: 03's names are better (they describe *what happened*, not *what to do*); 01 §5.4 should be rewritten to match, and the plugin renamed `Backoff`. |
+| **K-22** | should cut | "The whole surface is 14 names, one import" (01 §1) is contradicted by that very file's own example, which imports 20 names from 4 modules — and among the claimed 14, `Workspace` is never defined anywhere in the 3750 lines (see K-26), nor are `Result.cost`'s `Money` or `Result.usage`'s `Usage`, nor `Event`. Recommendation: either state the honest number (20 names, 1 root import + 3 submodules) or pull the missing names up to top-level and actually deliver on "one import" — either is fine, leaving the false claim in place is not. |
+| **K-23** | should cut | Nine operational tunables (`max_concurrency`, `cancel_grace`, `max_grant_ttl`, `quarantine`, the `depth` cap, the retry budget, `EDIT_AT`/`COMPACT_AT`/`KEEP_RECENT_STEPS`, `INPUT_MARGIN`/`MIN_USEFUL_OUTPUT_TOKENS`) have no path from `Agent(...)` at all — three parallel configuration surfaces (Agent parameters, `RunConfig`, module constants) is exactly what 05 §B.2 itself calls "a wide configuration surface is a configuration surface defaulting to off." Recommendation: one place — operationally meaningful ones (`max_concurrency`, `cancel_grace`, `max_grant_ttl`, `depth`) folded into an `Agent(limits=Limits(...))`, the rest left as clearly-labeled, non-configurable module constants (matching how `EFFECT_PROFILES` is already handled correctly). |
+| **K-24** | should cut | Small, fast fixes: broken code block in 03 §6.2 (an orphaned indented class body); `@value class CancelToken` (04 §6.1) claims immutability but has a mutating `cancel()` method — a type contradiction; `Decision.verdict`'s comment says `# ALLOW \| DENY` while other files correctly use `Literal[Verdict.ALLOW, Verdict.DENY]`; `Scope.args` typed two different ways across files; `Verdict` imported from two different paths. |
+| **K-25** | cut now (fix) | **Shortcoming #5 (idempotency) was not actually fixed by default.** The README claims "nobody has tool-call idempotency... we do," and 01 §3.4 claims it "cannot happen." But 03 §1.1 defaults `idempotency: IdempotencyMode = IdempotencyMode.NONE`, meaning a `write` tool gets no key and no effect log unless its author opts in — exactly the LangChain/Microsoft failure class (`handle_tool_error` per-tool opt-in; a good module nobody wires in) this design elsewhere criticizes. Recommendation: `write`/`danger` always go through the effect log; the runtime always generates a key; combined with K-8, collapse the enum to one `bool` for "does upstream accept the key." This makes the design simultaneously simpler and more honest about its own promise. |
+| **K-26** | cut now (fix) | `Workspace`/`Sandbox` are required at construction (an `UnsafeToolSetError` if missing) with **zero lines specifying what they actually enforce**, anywhere in 3750 lines — a more serious hole than any over-engineering item above, since it's a mandatory mechanism nobody can describe. This is exactly Goose's mistake (§31-8): 4 permission modes, a removed sandbox seatbelt, tools still running with the user's full permissions. Recommendation: a short section answering three questions — how the workspace root is enforced, at what layer `egress` is enforced, and what is explicitly NOT guaranteed (the third matters most). |
+| **K-27** | should add | §33 lists a versioned event envelope as 1 of 8 things required in the minimal core; 01 §1.2 returns `AsyncIterator[Event]` and reads `ev.type`/`ev.sequence`, but `Event` is never defined anywhere — only `AuditEvent` exists (02 §3.1), a different type using `seq` instead of `sequence`. Recommendation: define `Event` once in `00-foundation.md`, make `AuditEvent` the same type plus a durability guarantee — folds into K-19 (one shared event-kind table). |
+| **K-28** | should add | §33 requires session/tenant identity in core; 01 §1.2 claims all "four things" a sample interface is missing are covered, session included — but no `Session` type exists anywhere, only `run_id`, and multi-tenancy is pushed to *Not Enough Evidence* in three separate files with the same sentence. Recommendation: the honest and cheapest fix — state plainly that session belongs to the service layer (see `07-risks`), not invent a type just to match the claim. |
+| **K-29** | should add | `redact()` is referenced from three places (04 §2, §4.3, §8.2) and defined in none of them — the sole mechanism against what 03 §16 calls "no Python package has a dedicated `Secret` type." |
 
-Thêm: `I-1` ở 03 §4.4, `I-3`/`I-3a`/`I-3b` ở 05 §B.1 — **không có `I-2`**, tức hệ đánh số
-giả vờ là một namespace chung nhưng không phải.
-
-Hệ quả DX rất cụ thể: một thông báo lỗi hoặc một comment ghi "vi phạm C-2" là **không giải
-mã được** nếu không biết đang ở tệp nào.
-
-**Đề xuất.** Rẻ nhất: gắn tiền tố tệp — `POL-1…4`, `COST-1…4`, `CAN-1…4`, `MEM-R1…R3`, giữ
-`R-1…R-4` và `D-1/D-2` cho `00` (chúng là luật toàn cục). Hoặc mạnh hơn theo tinh thần KISS:
-**bỏ mã cho những luật chỉ được nhắc đúng một lần** — trong 38 mã, chỉ 9 mã được tham chiếu
-chéo từ tệp khác; 29 mã còn lại là chú thích đánh số cho chính đoạn văn ngay bên cạnh.
+**Estimated effect of applying K-1…K-10 and K-25:** 62 classes -> roughly **48**; the
+Zero-to-Agent-to-production path's 41 names -> roughly **33**; and the design's three
+biggest claims (idempotency by default, "14 names," "one concept per tier") become
+**actually true** instead of approximately true.
 
 ---
 
-## 4. Mâu thuẫn nội bộ còn lại
+## What's already well-balanced — DON'T CUT THESE
 
-(4 mâu thuẫn `Ruling`/`Answer`/`Decision`, cột retry, `Label`, `CancelToken` đã được sửa
-trước. Đây là những cái **còn lại**, tất cả đều kiểm được bằng `grep`.)
+Recorded so a later review round doesn't cut these by mistake. Each row below is
+already the result of a correct cut, with specific evidence for it.
 
-### K-14 — `resume(ruling=…)` còn sót ba chỗ · **cắt ngay (sửa)**
-
-Signature ở [`01`](01-core-api.md) §1.2 là `resume(self, run_id, *, answer: Answer | None)`.
-Nhưng `ruling=` vẫn còn ở:
-
-- `01` §2 Mức 3, dòng 276: `await agent.resume("r-42", ruling=await ask_terminal_for(r.pending))`
-- `01` §2, dòng 285: `approval round-trip qua AWAITING_DECISION → resume(ruling=…)`
-- `01` §5.2 bảng: `✅ resume(ruling=…)`
-- `01` §6 bảng: `resume(run_id, ruling=…)`
-
-Bốn chỗ, không phải ba. Và cả bốn **đều sai theo `04`** — xem K-3: payload duy nhất được
-chấp nhận là `ResumeToken(decision_id)`.
-
-### K-15 — `@tool` có hai signature khác nhau; `ToolSpec` thiếu hai trường đang được dùng · **cắt ngay (sửa)**
-
-| | `01` §1.3 | `03` §1.3 |
+| # | what | why not to cut it |
 |---|---|---|
-| `effect` | ✅ | ✅ |
-| `name` | ✅ | ✅ |
-| `accepts_tainted` | ✅ | ✅ |
-| `max_confidentiality` | ✅ | ❌ **thiếu** |
-| `idempotency` | ❌ **thiếu** | ✅ |
-| `timeout_s` | ❌ **thiếu** | ✅ |
-| trả về | `ToolSpec[DepsT]` (generic) | `ToolSpec` (không generic) |
-| overload `NoReturn` cho `@tool` trần | ✅ | ❌ |
-
-Và `ToolSpec` của `03` §1.1 **không có** `max_confidentiality` lẫn `emits`, trong khi
-[`02`](02-safety-engine.md) §4.1 đọc cả hai (`spec.max_confidentiality`, `spec.emits`). Đây
-là nguyên nhân gốc của K-6.
-
-### K-16 — Ví dụ Mức 1 không hợp lệ theo `03` · **cắt ngay (sửa)** — đây là lỗi DX nặng nhất
-
-```python
-@tool(effect=Effect.READ)
-def word_count(text: str) -> int:      # đồng bộ, tham số là str, không có ToolCtx
-    return len(text.split())
-```
-vs. [`03`](03-tools-and-mcp.md) §1.1 và §6.2:
-```python
-fn: Callable[[Mapping[str, Any], "ToolCtx"], Awaitable[Any]]
-# "ToolCtx là tham số bắt buộc trong signature của fn"
-```
-
-Ba khác biệt: đồng bộ vs `Awaitable`; tham số đặt tên vs một `Mapping`; không `ToolCtx` vs
-`ToolCtx` bắt buộc.
-
-**Đây là chỗ "một học sinh 10 tuổi hiểu được" sống hay chết.** Ví dụ Mức 1 là đúng — nó là
-lý do bản thiết kế này đáng tồn tại. Đặc tả của `03` mới là cái phải sửa: decorator `@tool`
-phải **sinh** ra adapter `(Mapping, ToolCtx) -> Awaitable` từ một hàm thường có type hints,
-và `ToolCtx` phải là **tuỳ chọn** (chỉ tiêm khi tác giả khai một tham số tên `ctx`). Nếu
-không, Mức 1 không chạy và cả thang Zero-to-Agent sụp từ bậc hai.
-
-### K-17 — `Budget` có mặc định và cho phép `usd=None` · **cắt ngay (sửa)**
-
-[`05`](05-cost-and-memory.md) §A.1:
-```python
-@value
-class Budget:
-    usd: Decimal | None = Decimal("0.50")
-    steps: int = 20
-    wall_clock_s: float = 300.0
-```
-`Budget()` dựng được không tham số, và `Budget(usd=None)` dựng được một budget **không có
-trục tiền**. Điều đó phá:
-- `01` §1.1: *"`budget` **bắt buộc**, phải có trục tiền"*;
-- `01` §3.4 bảng Poka-Yoke: *"`budget` thiếu trục tiền → chặn ở **construction**"*;
-- và bất biến thứ hai của `00` §1.
-
-**Đề xuất.** `usd: Decimal` (không `None`, không mặc định). Ba trục còn lại giữ mặc định.
-
-### K-18 — `StopReason` thiếu hai giá trị đang được dùng · **cắt ngay (sửa)**
-
-`01` §5.2 liệt 8 giá trị. Nhưng:
-- `04` §4.5: `stop_reason="graph_changed"`
-- `05` §B.3: `StopReason.TRUNCATED`
-
-Không cái nào trong enum. Enum đóng + hai người dùng ngoài enum = lỗi runtime.
-
-### K-19 — `AuditEvent.type` là `Literal` đóng, thiếu ít nhất 5 loại event đang được phát · **cắt ngay (sửa)**
-
-`02` §3.1: `Literal["decision", "policy.denied", "flow.denied", "budget.denied", "tool.called"]`.
-
-Đang được phát ở nơi khác nhưng không có trong Literal: `policy.allowed` (02 §2.2),
-`duplicate_suppressed` (03 §4.4), `run.started` (04 §5.4), `run.finished` (04 §2.2, §6.3),
-`taint.raised` (05 §C.1). Và `04` §2.2 nhắc "graph chỉ phát 9/15 event kind" như một lỗi đã
-gặp — nhưng bản thiết kế **không có** danh sách 15 event kind ở đâu cả.
-
-**Đề xuất.** Đây cũng là chỗ nghiên cứu §33 đòi *"Event envelope có version"* trong minimal
-core. Một bảng event kind duy nhất, ở `00-foundation.md`, và cả `AuditEvent` lẫn `Event` của
-`stream()` cùng dùng nó. Xem thêm **K-27**.
-
-### K-20 — `ToolInputInvalid.__init__` không tuân hợp đồng `HarnessError` · **cắt ngay (sửa)**
-
-`01` §3.2 tuyên bố: *"`fix` và `doc` là **keyword bắt buộc**. Không có cách nào raise một lỗi
-của harness mà không nói phải làm gì. Tỉ lệ error-context là 100% **theo cấu trúc**."*
-
-`03` §2.2:
-```python
-class ToolInputInvalid(HarnessError):
-    def __init__(self, message: str, *, fix: str | None = None) -> None: ...
-```
-`message` positional, `fix` **tuỳ chọn**, `got` và `doc` biến mất. Một lớp con phá được hợp
-đồng thì hợp đồng không phải "theo cấu trúc" — nó lại thành kỷ luật, đúng thứ §3.2 nói đang
-tránh.
-
-### K-21 — Hai tên cho taxonomy lỗi tool, và `Retry` va chạm với chính nó · **cắt ngay (sửa)**
-
-- `01` §5.4: *"Tác giả tool vẫn raise `Retry`/`ToolFailed` tường minh khi biết rõ hơn."*
-- `03` §2.2: `ToolInputInvalid` / `ToolUnavailable` + enum `ToolOutcome(RETRY/FAILED/FATAL)`.
-
-Ngoài chuyện hai bộ tên, `Retry` trong `01` là **cả một exception** (§5.4) **và một plugin**
-(§2 Mức 3: `plugins=[Retry(on=(…), attempts=3)]`) — cùng một tên, hai thứ, trong cùng một
-tệp.
-
-Bảng mặc định cũng khác nhau: `01` §5.4 nói `write` → `ToolFailed` và `danger` → `ToolFailed`;
-`03` §2.2 nói `write` → `FAILED` **nếu keyed**, `FATAL` nếu không, và `danger` → `FATAL` luôn.
-
-**Đề xuất.** Tên của `03` đúng hơn (tên mô tả *sự việc*, không mô tả *chính sách* — đó là
-lập luận hay nhất của §2.2). `01` §5.4 phải viết lại theo `03`, và plugin đổi tên
-`RetryPlugin` hoặc `Backoff`.
-
-### K-22 — "Toàn bộ bề mặt là 14 tên. Một `import`." · **nên cắt (sửa tuyên bố)**
-
-Ví dụ trong cùng tệp `import` **20 tên** từ **4 module**:
-
-- không nằm trong danh sách 14: `Channel`, `Human`, `Approver`(có), `SqliteCheckpointer`,
-  `Retry`, `CostReport`, `DenyHosts` — và `from harness.checkpoint`, `harness.plugins`,
-  `harness.policy` là ba `import` nữa.
-- và trong 14 tên đó, **`Workspace` không được định nghĩa ở bất kỳ đâu** trong 3750 dòng
-  (xem K-26), `Result.cost: Money` và `Result.usage: Usage` tham chiếu hai kiểu cũng không
-  được định nghĩa, `stream()` trả `AsyncIterator[Event]` với `Event` không được định nghĩa.
-
-**Đề xuất.** Hoặc sửa con số cho đúng (nói "20 tên, 1 import gốc + 3 submodule"), hoặc kéo
-`Human`/`Channel`/`Retry`/`CostReport`/`DenyHosts`/`SqliteCheckpointer` lên `harness` top-level
-và giữ lời hứa một `import`. Cách thứ hai tốt hơn cho DX; cách thứ nhất trung thực hơn. Điều
-không được làm là giữ nguyên — một tuyên bố sai ở dòng 15 của tệp DX là lỗi DX.
-
-### K-23 — Chín tham số vận hành không có đường từ API công khai · **nên cắt (sửa)**
-
-| tunable | ở đâu | tới được từ `Agent(...)`? |
-|---|---|---|
-| `max_concurrency` | 03 §3.2 ("núm duy nhất còn lại") | ❌ |
-| `cancel_grace = 30s` | 04 §6.3 | ❌ |
-| `max_grant_ttl = 1h` | 02 §2.5 (`RunConfig`) | ❌ |
-| `quarantine` | 02 §5.2 (`RunConfig`) | ❌ |
-| `depth` cap = 3 | 04 §7.2 | ❌ |
-| retry budget = 3 | 03 §2.2 điểm 4 | ❌ |
-| `EDIT_AT` / `COMPACT_AT` / `KEEP_RECENT_STEPS` | 05 §B.2 | ❌ (module const) |
-| `INPUT_MARGIN` / `MIN_USEFUL_OUTPUT_TOKENS` | 05 §A.1 | ❌ (module const) |
-| `durability` | 04 §4.2 | suy ra tự động ✅ |
-
-`RunConfig` xuất hiện ở `02` với hai trường, không có constructor, không có đường từ `Agent`.
-Ba mặt cấu hình song song (tham số `Agent`, `RunConfig`, hằng số module) là chính xác thứ
-mà `05` §B.2 gọi là *"một mặt cấu hình rộng là một mặt cấu hình mặc định tắt"*.
-
-**Đề xuất.** Một chỗ duy nhất. Đề nghị: bốn thứ có ý nghĩa vận hành (`max_concurrency`,
-`cancel_grace`, `max_grant_ttl`, `depth`) gộp vào một tham số `Agent(limits=Limits(...))`
-với mặc định đủ tốt; phần còn lại là hằng số module **không cấu hình được** và nói rõ như
-vậy (giống `EFFECT_PROFILES` — `03` §1.2 đã làm đúng cách này).
-
-### K-24 — Vụn vặt nhưng sửa được trong một phút · **nên cắt (sửa)**
-
-- `03` §6.2: block code hỏng — `from harness import CancelToken` rồi ngay sau đó là thân
-  class thụt lề mồ côi (`async def wait(...)`, `@property cancelled`, …). Và `wait()` **không
-  có** trong định nghĩa chuẩn ở `04` §6.1.
-- `04` §6.1: `@value class CancelToken` (bất biến) có method `cancel(self, reason) -> None`
-  làm biến đổi trạng thái. `@value` + mutation là mâu thuẫn kiểu.
-- `00` §4: `Decision.verdict: Verdict` (đủ 3 giá trị) với comment `# ALLOW | DENY`, trong khi
-  `01`/`02` dùng `Literal[Verdict.ALLOW, Verdict.DENY]`. Dùng `Literal` ở cả ba chỗ.
-- `00` §4.1: `Scope.args: Mapping[str, str] | None`, nhưng `02` §2.6 so nó với
-  `canonical_args(call.arguments)` trên `Mapping[str, Any]`, và `04` §4.3
-  `PauseRequest.args: Mapping[str, Any]`. Chốt một kiểu.
-- `Verdict` được `import` hai đường: `from harness import Verdict` (01) và
-  `from harness.policy.base import Verdict` (03).
+| **G-1** | **One `Effect` axis deriving 5 behaviors** (00 §2, 03 §1.2) | The central idea, and it REDUCES concepts rather than adding them: unifies `ToolKind` + `sequential` + `disable_*_tool_approval` + `readOnlyHint`/`destructiveHint` into one question. A tool author declares exactly one thing. Invariant T-1 (no override field) is what keeps it from bloating back up. |
+| **G-2** | **Two around-hooks, not six** (01 §4.1) | The reasoning is already correct and already written down: the other four hooks are just the first/last line of an around-hook. Keep as-is. |
+| **G-3** | **One parallel mode, not three** (03 §3.2) | The reason is safety, not taste: a dial that can be turned to `'parallel'` is a dial that erases the barrier. `max_concurrency` is a resource limit, not a safety limit — the distinction is correct. |
+| **G-4** | **Two compaction strategies, not five** (05 §B.2) | Keeps Microsoft's priority order, cuts the count, and states a reason for each of the three dropped. A model example of correctly applying §8.4. |
+| **G-5** | **Refusing a state machine for business logic** (04 §2.3) | The research notes nobody has first-class state machines — and this design does NOT treat that as an opportunity. Correct: the measured shortcoming is enforcement being bypassed, not a missing state DSL. |
+| **G-6** | **`GUARDED` is data, `unguarded_paths()` reads that exact table** (04 §2.1, §3) | Three lines of data instead of three pages of prose, plus `witness` so an error is fixable in 30 seconds, plus a mutation test for the checker itself. Cheap and correct. |
+| **G-7** | **`max()` used for `Verdict`, `Label.join`, and `DecisionLog.lookup`** | One operation for three things. "One `max()` line for three properties" (02 §2.4) is the single best sentence in the design. Don't add a second priority rule. |
+| **G-8** | **"Forever" has no representable value** (02 §2.5) | Poka-Yoke at the type layer, not the review layer. What can't be constructed doesn't need guarding. |
+| **G-9** | **`Actor` has no `Model` variant** (00 §4.2) | One type definition erasing an entire failure class (agno's `decision_log`). And it's tested (02 §6.2). |
+| **G-10** | **`Ruling` != `Decision`** (02 §0) | NOT a redundant concept: `Ruling` has no actor, doesn't outlive the call, never enters the audit log. Correctly split. (The redundant one is `AskOutcome` — see K-3 — not `Ruling`.) |
+| **G-11** | **`Policy.check` is pure + synchronous** (02 §1.2, P-4) | Two measured reasons, both correct: enumerable => provable with hypothesis; and an `async` policy could call a model => the model influencing its own permissions. |
+| **G-12** | **The effect log: a partial-unique index, never swallowing `IntegrityError`, an `in_flight` row that never self-releases** (03 §4) | Copies agno's three technical details verbatim and is HONEST about what it achieves (§4.5's three-mode table). That honesty is worth more than a false exactly-once promise. |
+| **G-13** | **`count_tokens_approximately` keeps its honest name** (05 §B.3) | One naming decision that blocks an entire class of misunderstanding. Keep. |
+| **G-14** | **Memory-write provenance, `provenance` with no default** (05 §C.1) | Fixes the largest security gap the research found, using the exact lattice already in place (rule: "memory gets no special-case rule"). And rule W-3 parallels D-1 — the same idea, not a second one. |
+| **G-15** | **Every file has a `## Not Enough Evidence` section** | 7 files, ~40 entries. This is rare, and it's the exact tool that surfaced K-1, K-2, K-6, K-7, K-12 in this review. Don't drop it. |
+| **G-16** | **Tier 0 = 5 lines, 8 names, `budget` the only mandatory line** | Genuinely matches "a 10-year-old": `name`, `job`, `model`, `budget`, print `.text`. And the one thing forcing an extra line to be typed is the one thing the whole industry lacks — an excellent DX decision. Protect it by fixing K-16, not by loosening it. |
 
 ---
 
-## 5. Cái đáng lẽ phải có mà thiếu
-
-Đối chiếu bảng "7 khuyết điểm đang sửa" ở [`README.md`](README.md) và Minimal Core §33.
-
-### K-25 — Khuyết điểm #5 (idempotency) **chưa được sửa ở mặc định** · **cắt ngay (sửa)**
-
-`README` hàng 5: *"Không idempotency ở mức tool call — Không ai có"*.
-`01` §3.4: *"tool call thiếu idempotency key → **không thể xảy ra** — gateway sinh key, API
-không nhận."*
-Nghiên cứu §32 điểm 2: *"**Idempotency key là bắt buộc trên mỗi tool call, không phải tuỳ
-chọn.**"*
-
-Nhưng `03` §1.1: `idempotency: IdempotencyMode = IdempotencyMode.NONE`, và §4.5:
-`NONE` → *"harness đảm bảo: **không gì**"*, và `ToolCtx.idempotency_key: IdempotencyKey | None`.
-
-Nghĩa là: một tool `write` viết theo mặc định **không** có key, **không** có effect log, và
-theo §2.2 điểm 2 một exception lạ của nó là `FATAL`. Khuyết điểm số 5 chỉ được sửa cho những
-ai nhớ opt-in — **đúng lớp lỗi mà cả bản thiết kế đang chê LangChain** (`handle_tool_error`
-per-tool opt-in) và Microsoft (module tốt không được wire vào).
-
-**Đề xuất.** `write` và `danger` **luôn** đi qua effect log; runtime luôn sinh key;
-`ToolCtx.idempotency_key` không bao giờ `None`. `read`/`external` không cần. Kết hợp với
-K-8: bỏ enum, còn một `bool` cho "upstream nhận key hay không". Đây là thay đổi làm bản
-thiết kế **đơn giản hơn** và **đúng lời hứa hơn** cùng lúc.
-
-### K-26 — `Workspace` / `Sandbox`: không có đặc tả · **cắt ngay (sửa)**
-
-`Workspace` là 1 trong 14 tên công khai, xuất hiện trong mọi ví dụ từ Mức 2, mang một
-mini-DSL `egress="deny"` / `egress="allowlist:docs.python.org"`, và là chỗ neo cho bài học
-§31-8 *"Approval không phải isolation"* (Goose: 4 mode, sandbox đã gỡ, tool chạy quyền
-user). **Không có một dòng đặc tả nào cho nó trong 3750 dòng.** `Sandbox` được nhắc 2 lần,
-cũng không định nghĩa.
-
-Đây là lỗ nghiêm trọng hơn mọi over-engineering trong danh sách trên: cơ chế bị bắt buộc ở
-constructor (`UnsafeToolSetError` khi thiếu) mà không ai biết nó làm gì.
-
-**Đề xuất.** Một mục ngắn — có thể ở `03` — trả lời ba câu: workspace root cưỡng chế thế
-nào, `egress` cưỡng chế ở tầng nào (process? DNS? HTTP client?), và **cái gì KHÔNG được bảo
-đảm**. Câu thứ ba quan trọng nhất, vì Goose sai chính ở chỗ hứa nhiều hơn cưỡng chế.
-
-### K-27 — `Event` envelope có version: trong Minimal Core, không có trong thiết kế · **nên bổ sung**
-
-§33 liệt "Event envelope có version" là 1 trong 8 thứ **phải** ở core, với lý do *"không có
-version thì không đổi được taxonomy mà không phá exporter"*. `01` §1.2 trả
-`AsyncIterator[Event]` và ví dụ Mức 3 đọc `ev.type`, `ev.sequence`. **`Event` không được
-định nghĩa ở đâu.** Chỉ `AuditEvent` (02 §3.1) có `schema_version` — và nó là kiểu khác, với
-`seq` chứ không `sequence`.
-
-**Đề xuất.** Định nghĩa `Event` một lần ở `00-foundation.md` với `schema_version`,
-`run_id`, `sequence`, `type`, `payload` — và cho `AuditEvent` là **cùng kiểu đó** với thêm
-`at`/durability guarantee. Gộp luôn với K-19 (một bảng event kind duy nhất).
-
-### K-28 — Session / tenant identity: §33 đòi ở core, thiết kế không có · **nên bổ sung hoặc nói rõ là không có**
-
-§33 core item: *"Session/Run identity — tenant/owner/TTL là ranh giới cách ly"*.
-§35–36: interface mẫu thiếu 5 thứ, trong đó có **session**.
-`01` §1.2 khẳng định: *"Bốn cái đầu ở trên"* — tức nhận là đã có streaming, cancellation,
-**session**, approval round-trip.
-
-Nhưng không có `Session` ở đâu. Chỉ có `run_id`. Và multi-tenancy bị đẩy sang *Chưa đủ
-evidence* ở **ba** tệp (`02`, `04`, và gián tiếp `05`) với cùng một câu.
-
-**Đề xuất.** Trung thực là đủ và rẻ nhất: sửa `01` §1.2 thành *"ba cái đầu ở trên; session
-là phạm vi của tầng service, xem 07-risks"*, và thêm một dòng vào `07-risks`. Không cần thêm
-kiểu — chỉ cần đừng tuyên bố có cái không có.
-
-### K-29 — `redact()` được ba nơi dùng, không nơi nào định nghĩa · **nên bổ sung**
-
-`04` §2 (node `tools`: "redaction scope"), §4.3 (`PauseRequest.args # đã qua redact()`),
-§8.2 điểm 4 (*"cùng hàm mà node `tools` dùng, không phải bản sao thứ hai"*). Ba tham chiếu
-tới một hàm không tồn tại. Đây cũng chính là cơ chế duy nhất chống lại điều `03`
-§16 gọi là "không gói Python nào có kiểu `Secret`".
-
----
-
-## 6. Chỗ đã cân bằng tốt — **ĐỪNG CẮT**
-
-Ghi lại để vòng review sau không cắt nhầm. Mỗi mục dưới đây **đã** là kết quả của một lần
-cắt đúng, và bằng chứng cho nó là cụ thể.
-
-| # | cái gì | vì sao đừng cắt |
-|---|---|---|
-| **G-1** | **Một trục `Effect` → 5 hành vi dẫn xuất** (00 §2, 03 §1.2) | Đây là ý tưởng trung tâm và nó **giảm** khái niệm chứ không thêm: hợp nhất `ToolKind` + `sequential` + `disable_*_tool_approval` + `readOnlyHint`/`destructiveHint` thành một câu hỏi. Người viết tool khai **một** thứ. Bất biến T-1 (không có trường ghi đè) là thứ giữ nó không phình lại. |
-| **G-2** | **Hai around-hook, không phải sáu** (01 §4.1) | Lập luận đã đúng và đã viết ra: bốn hook kia là dòng đầu/dòng cuối của một around-hook. "KISS: cắt bốn, giữ hai" — giữ nguyên. |
-| **G-3** | **Một parallel mode, không phải ba** (03 §3.2) | Lý do là an toàn, không phải khẩu vị: một núm chỉnh sang `'parallel'` là một núm xoá barrier. `max_concurrency` là giới hạn tài nguyên, không phải giới hạn an toàn — phân biệt này đúng. |
-| **G-4** | **Hai compaction strategy, không phải năm** (05 §B.2) | Giữ **thứ tự ưu tiên** của Microsoft, cắt số lượng, và nêu lý do cắt từng cái trong ba cái bỏ đi. Đây là mẫu mực của cách áp §8.4. |
-| **G-5** | **Từ chối state machine cho business logic** (04 §2.3) | Nghiên cứu ghi "nobody has state machines" — và bản thiết kế **không** coi đó là cơ hội. Đúng: khuyết điểm đo được là *enforcement bị vòng qua*, không phải *thiếu DSL trạng thái*. |
-| **G-6** | **`GUARDED` là dữ liệu, `unguarded_paths()` đọc chính bảng đó** (04 §2.1, §3) | Ba dòng dữ liệu thay cho ba trang văn xuôi, cộng `witness` để lỗi sửa được trong 30 giây, cộng mutation test cho chính checker. Rẻ và đúng. |
-| **G-7** | **`max()` dùng cho cả `Verdict`, `Label.join`, và `DecisionLog.lookup`** | Một phép toán cho ba thứ. "Một dòng `max()` cho ba tính chất" (02 §2.4) là câu đúng nhất trong bản thiết kế. Đừng thêm luật ưu tiên thứ hai. |
-| **G-8** | **"Vĩnh viễn" không có giá trị biểu diễn được** (02 §2.5) | Poka-Yoke ở tầng kiểu, không tầng review. Cái không dựng được thì không cần canh. |
-| **G-9** | **`Actor` không có biến thể `Model`** (00 §4.2) | Một dòng type định nghĩa xoá cả một lớp lỗi (agno `decision_log`). Và có test cho nó (02 §6.2). |
-| **G-10** | **`Ruling` ≠ `Decision`** (02 §0) | Đây **không** phải khái niệm thừa: `Ruling` không có actor, không sống qua lời gọi, không vào audit. Tách đúng. (Cái thừa là `AskOutcome` — xem K-3 — không phải `Ruling`.) |
-| **G-11** | **`Policy.check` thuần + đồng bộ** (02 §1.2 P-4) | Hai lý do đo được, cả hai đúng: enumerate được ⇒ chứng minh bằng hypothesis; và policy `async` có thể gọi model ⇒ model ảnh hưởng quyền của chính nó. |
-| **G-12** | **effect log: partial-unique index, không nuốt `IntegrityError`, `in_flight` không tự giải phóng** (03 §4) | Chép nguyên ba chi tiết kỹ thuật của agno và nói **thật** về việc đạt được gì (§4.5 bảng ba mode). Sự trung thực đó đáng giá hơn một lời hứa exactly-once. |
-| **G-13** | **`count_tokens_approximately` giữ tên trung thực** (05 §B.3) | Một quyết định đặt tên chống được cả lớp hiểu nhầm. Giữ. |
-| **G-14** | **Provenance cho memory write, `provenance` không có mặc định** (05 §C.1) | Sửa khoảng trống bảo mật lớn nhất nghiên cứu tìm được, bằng đúng lattice đã có (R-2: "memory không được có luật riêng"). Và luật W-3 song song với D-1 — cùng một ý tưởng, không phải ý tưởng thứ hai. |
-| **G-15** | **Mọi tệp có mục `## Chưa đủ evidence`** | 7 tệp, ~40 mục. Đây là thứ hiếm và nó chính là công cụ đã giúp tìm ra K-1, K-2, K-6, K-7, K-12 trong review này. Đừng bỏ. |
-| **G-16** | **Mức 0 = 5 dòng, 8 tên, `budget` là dòng bắt buộc duy nhất** | Đúng "học sinh 10 tuổi": `name`, `job`, `model`, `budget`, in ra `.text`. Và việc thứ duy nhất bắt gõ thêm lại chính là thứ cả ngành không có — đó là một quyết định DX xuất sắc. Bảo vệ nó bằng cách sửa K-16, đừng bảo vệ bằng cách nới nó ra. |
-
----
-
-## 7. Bảng tổng kết
-
-| mã | mức độ | một dòng |
-|---|---|---|
-| **K-1** | cắt ngay | `Quarantine` + `Quarantined[T]` — chính tệp khai không có eval nào; §8.4 nói cắt |
-| **K-2** | cắt ngay | `deps_type`/`DepsT` — generic không tới được tool nào vì `ToolCtx` không có `deps` |
-| **K-3** | cắt ngay | Ba bộ tên cho một vòng approval, mâu thuẫn về `actor` và về hạn dùng — gộp còn một |
-| **K-4** | cắt ngay | `DecisionLog` và `AuditSink` là một sổ mang hai protocol — gộp |
-| **K-5** | cắt ngay | `Snapshottable` Protocol có **0** implementer khớp signature |
-| **K-6** | nên cắt | Trục `Confidentiality` không có nguồn phát — nửa lattice không đạt tới được |
-| **K-7** | nên cắt | `Reservation.exact` + `hard_max_input_tokens` — lớp phòng thủ không ai đọc |
-| **K-8** | nên cắt | `IdempotencyMode` 3 giá trị → 1 `bool`; key luôn được sinh |
-| **K-9** | nên cắt | `run` / `try_run` / `raise_for_status` / `.ok` — bốn cách nói một điều |
-| **K-10** | nên cắt | OTel 9 span × ~50 attribute → 4 span; bốn quy tắc nội dung giữ nguyên |
-| **K-11** | cân nhắc | `end_strategy` — bằng chứng đủ nhưng không thuộc ví dụ Mức 3; `"exhaustive"` đụng từ vựng của `03` |
-| **K-12** | cân nhắc | `ServerIdentity.fingerprint` — định dạng chưa chốt được, rug-pull chưa quan sát |
-| **K-13** | cân nhắc | 38 mã bất biến, va chạm `P-3`, `R-1…R-3`, `C-1…C-4`; 29/38 mã không được tham chiếu chéo |
-| **K-14** | cắt ngay | `resume(ruling=…)` còn sót **4** chỗ, và cả 4 mâu thuẫn với `ResumeToken` của `04` |
-| **K-15** | cắt ngay | `@tool` có hai signature; `ToolSpec` thiếu `max_confidentiality` và `emits` mà `02` đang đọc |
-| **K-16** | cắt ngay | **Ví dụ Mức 1 không chạy được** theo đặc tả `fn` của `03` — lỗi DX nặng nhất |
-| **K-17** | cắt ngay | `Budget()` dựng được rỗng và `usd=None` hợp lệ — phá "budget bắt buộc có trục tiền" |
-| **K-18** | cắt ngay | `StopReason` thiếu `graph_changed` và `TRUNCATED` |
-| **K-19** | cắt ngay | `AuditEvent.type` Literal đóng, thiếu ≥5 loại event đang được phát |
-| **K-20** | cắt ngay | `ToolInputInvalid.__init__` phá hợp đồng `what/got/fix/doc` của `HarnessError` |
-| **K-21** | cắt ngay | Hai bộ tên taxonomy lỗi tool; `Retry` vừa là exception vừa là plugin |
-| **K-22** | nên cắt | "14 tên, một `import`" sai bằng chính ví dụ của tệp (20 tên, 4 module) |
-| **K-23** | nên cắt | 9 tunable không có đường từ API công khai; 3 mặt cấu hình song song |
-| **K-24** | nên cắt | Vụn: block code hỏng ở `03` §6.2, `@value CancelToken` có mutation, `Scope.args` hai kiểu, `Verdict` hai đường import |
-| **K-25** | cắt ngay | **Khuyết điểm #5 chưa được sửa ở mặc định** — `idempotency=NONE` là mặc định, đúng lớp lỗi opt-in đang bị chê |
-| **K-26** | cắt ngay | `Workspace`/`Sandbox` bắt buộc ở constructor nhưng **không có một dòng đặc tả nào** |
-| **K-27** | nên bổ sung | `Event` envelope có version — Minimal Core §33 đòi, thiết kế không định nghĩa |
-| **K-28** | nên bổ sung | Session/tenant identity — §33 đòi ở core; `01` tuyên bố đã có, thực tế không có |
-| **K-29** | nên bổ sung | `redact()` được 3 nơi dùng, 0 nơi định nghĩa |
-
-**Ước lượng nếu áp K-1…K-10 và K-25:** 62 class → khoảng **48**; đường Zero-to-Agent tới
-production 41 tên → khoảng **33**; và ba lời hứa lớn nhất của bản thiết kế (idempotency mặc
-định, "14 tên", "mỗi mức một khái niệm") trở thành **đúng** thay vì gần đúng.
-
----
-
-## Phụ lục — cách kiểm lại từng phát hiện
+## Verification appendix — how to re-check each finding
 
 ```bash
-# K-3, K-14: ba bộ tên approval + resume còn sót
+# K-3, K-14: three approval name sets + leftover ruling=
 grep -n "ApprovalRequest\|AskRequest\|PauseRequest\|AskOutcome\|Answer\|ruling=" design/*.md
 
-# K-13: va chạm mã bất biến
+# K-13: invariant id collisions
 for c in P-3 R-1 R-2 R-3 C-1 C-4; do echo "== $c"; grep -n "\*\*$c" design/*.md; done
 
-# K-15, K-6: trường ToolSpec bị dùng mà không tồn tại
+# K-15, K-6: ToolSpec fields read but never defined
 grep -n "spec.emits\|max_confidentiality" design/*.md
 
-# K-18, K-19: giá trị enum ngoài enum
+# K-18, K-19: enum values used outside their own enum
 grep -n "graph_changed\|TRUNCATED\|taint.raised\|duplicate_suppressed\|run.finished\|policy.allowed" design/*.md
 
-# K-22, K-26, K-27, K-29: tên công khai không có định nghĩa
+# K-22, K-26, K-27, K-29: public names never defined
 for n in Workspace Sandbox Event Money Usage redact Channel Human; do
   echo "== $n"; grep -n "class $n\|^$n *=\|def $n" design/*.md; done
 ```
