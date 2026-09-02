@@ -1,15 +1,16 @@
-"""Quy trình hoàn tiền bằng state machine — cắm vào harness qua seam `Policy`.
+"""A refund workflow as a state machine — plugged into the harness through the `Policy` seam.
 
-Ý chính: **state machine cai quản, LLM điều hướng bên trong nó.**
+Core idea: **the state machine governs, the LLM navigates inside it.**
 
-  - State machine quyết định bước nào HỢP LỆ ở trạng thái hiện tại.
-  - LLM quyết định gọi tool nào, với tham số gì, và diễn giải ý khách hàng.
+  - The state machine decides which step is VALID in the current state.
+  - The LLM decides which tool to call, with what arguments, and interprets what
+    the customer wants.
 
-Không cần sửa core: `Policy` được gọi trước MỌI tool call và chỉ có thể *thắt chặt*
-(verdict compose bằng max), nên một state machine từ chối chuyển trạng thái bất hợp lệ
-là đúng hình dạng của seam này.
+No core changes needed: `Policy` is called before EVERY tool call and can only ever
+*tighten* the verdict (composed with max), so a state machine refusing an invalid
+transition is exactly the right shape for this seam.
 
-Chạy:  python3 examples/refund_workflow.py
+Run:  python3 examples/refund_workflow.py
 """
 from __future__ import annotations
 
@@ -22,188 +23,189 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from harness import Agent, Ruling, Verdict, tool
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. Quy trình nghiệp vụ — khai báo, không phải viết trong prompt
-# ─────────────────────────────────────────────────────────────────────────────
-class Buoc(str, Enum):
-    MOI = "mới"
-    DA_TRA_DON = "đã tra đơn"
-    DA_KIEM_CHINH_SACH = "đã kiểm chính sách"
-    DA_HOAN_TIEN = "đã hoàn tiền"
-    XONG = "xong"
+# -----------------------------------------------------------------------------
+# 1. The business process — declared, not written into a prompt
+# -----------------------------------------------------------------------------
+class Step(str, Enum):
+    NEW = "new"
+    ORDER_LOOKED_UP = "order looked up"
+    POLICY_CHECKED = "policy checked"
+    REFUNDED = "refunded"
+    DONE = "done"
 
 
-#: tool nào được phép ở trạng thái nào, và nó đẩy sang trạng thái gì
-CHUYEN_TRANG_THAI: dict[Buoc, dict[str, Buoc]] = {
-    Buoc.MOI:                {"tim_don_hang": Buoc.DA_TRA_DON},
-    Buoc.DA_TRA_DON:         {"tim_don_hang": Buoc.DA_TRA_DON,
-                              "kiem_chinh_sach": Buoc.DA_KIEM_CHINH_SACH},
-    Buoc.DA_KIEM_CHINH_SACH: {"kiem_chinh_sach": Buoc.DA_KIEM_CHINH_SACH,
-                              "hoan_tien": Buoc.DA_HOAN_TIEN},
-    Buoc.DA_HOAN_TIEN:       {"luu_ghi_chu": Buoc.XONG},
-    Buoc.XONG:               {},
+#: which tool is allowed in which state, and which state it advances to
+TRANSITIONS: dict[Step, dict[str, Step]] = {
+    Step.NEW:              {"find_order": Step.ORDER_LOOKED_UP},
+    Step.ORDER_LOOKED_UP:  {"find_order": Step.ORDER_LOOKED_UP,
+                            "check_policy": Step.POLICY_CHECKED},
+    Step.POLICY_CHECKED:   {"check_policy": Step.POLICY_CHECKED,
+                            "refund": Step.REFUNDED},
+    Step.REFUNDED:         {"save_note": Step.DONE},
+    Step.DONE:             {},
 }
 
-#: tool đọc thuần — cho phép ở mọi trạng thái, không đổi trạng thái
-LUON_CHO_PHEP = {"doc_ghi_chu"}
+#: pure-read tool — allowed in every state, never changes state
+ALWAYS_ALLOWED = {"read_notes"}
 
-GIAI_THICH = {
-    Buoc.MOI:                "phải tra đơn hàng trước",
-    Buoc.DA_TRA_DON:         "phải kiểm tra chính sách đổi trả trước khi hoàn tiền",
-    Buoc.DA_KIEM_CHINH_SACH: "đã đủ điều kiện — có thể hoàn tiền",
-    Buoc.DA_HOAN_TIEN:       "đã hoàn tiền, giờ chỉ còn lưu ghi chú",
-    Buoc.XONG:               "quy trình đã kết thúc",
+EXPLAIN = {
+    Step.NEW:              "the order must be looked up first",
+    Step.ORDER_LOOKED_UP:  "the return policy must be checked before refunding",
+    Step.POLICY_CHECKED:   "eligible now -- the refund can proceed",
+    Step.REFUNDED:         "refunded already, only the note is left to save",
+    Step.DONE:             "the workflow has ended",
 }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. State machine như một Policy
-# ─────────────────────────────────────────────────────────────────────────────
-class QuyTrinhHoanTien:
-    """Từ chối mọi bước không hợp lệ ở trạng thái hiện tại.
+# -----------------------------------------------------------------------------
+# 2. The state machine, as a Policy
+# -----------------------------------------------------------------------------
+class RefundWorkflow:
+    """Denies any step that isn't valid in the current state.
 
-    `check` phải thuần và nhanh (§04.3) — một phép tra bảng chuyển trạng thái đúng
-    là như vậy. Policy chỉ có thể thắt chặt, nên state machine không bao giờ nới lỏng
-    được các kiểm tra effect/taint/egress đứng trước nó.
+    `check` must be pure and fast (S04.3) -- a correct state-transition lookup is exactly
+    that. A Policy can only ever tighten, so this state machine can never loosen the
+    effect/taint/egress checks that run ahead of it.
     """
 
-    name = "quy_trinh_hoan_tien"
+    name = "refund_workflow"
 
-    def __init__(self, bat_dau: Buoc = Buoc.MOI) -> None:
-        self.buoc = bat_dau
-        self.lich_su: list[tuple[str, Buoc]] = []
+    def __init__(self, start: Step = Step.NEW) -> None:
+        self.step = start
+        self.history: list[tuple[str, Step]] = []
 
     def check(self, call, ctx) -> Ruling:
-        if call.name in LUON_CHO_PHEP:
-            return Ruling(Verdict.ALLOW, "tool đọc, không đổi trạng thái", self.name)
+        if call.name in ALWAYS_ALLOWED:
+            return Ruling(Verdict.ALLOW, "read-only tool, doesn't change state", self.name)
 
-        cho_phep = CHUYEN_TRANG_THAI[self.buoc]
-        if call.name not in cho_phep:
+        allowed = TRANSITIONS[self.step]
+        if call.name not in allowed:
             return Ruling(
                 Verdict.DENY,
-                f"đang ở bước '{self.buoc.value}' — {GIAI_THICH[self.buoc]}. "
-                f"Bước hợp lệ tiếp theo: {', '.join(cho_phep) or 'không còn bước nào'}",
+                f"currently at step '{self.step.value}' -- {EXPLAIN[self.step]}. "
+                f"Valid next step(s): {', '.join(allowed) or 'none left'}",
                 self.name,
             )
-        # hợp lệ → ghi nhận chuyển trạng thái
-        moi = cho_phep[call.name]
-        self.lich_su.append((call.name, moi))
-        self.buoc = moi
-        return Ruling(Verdict.ALLOW, f"→ {moi.value}", self.name)
+        # valid -> record the transition
+        new_step = allowed[call.name]
+        self.history.append((call.name, new_step))
+        self.step = new_step
+        return Ruling(Verdict.ALLOW, f"-> {new_step.value}", self.name)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 3. Công cụ
-# ─────────────────────────────────────────────────────────────────────────────
-DON = {"A-4471": {"mon": "Bàn phím cơ", "gia": 1_290_000, "ngay_giao": "2026-08-20"}}
-DA_HOAN: list[tuple[str, int]] = []
-
-
-@tool(effect="read")
-def tim_don_hang(ma_don: str) -> dict:
-    """Tra cứu đơn hàng."""
-    return DON.get(ma_don, {"loi": "không tìm thấy"})
+# -----------------------------------------------------------------------------
+# 3. Tools
+# -----------------------------------------------------------------------------
+ORDERS = {"A-4471": {"item": "Mechanical keyboard", "price": 1_290_000, "shipped": "2026-08-20"}}
+REFUNDS_ISSUED: list[tuple[str, int]] = []
 
 
 @tool(effect="read")
-def kiem_chinh_sach(ma_don: str) -> str:
-    """Kiểm tra đơn có đủ điều kiện đổi trả không."""
-    return "Đủ điều kiện: còn trong hạn 7 ngày, hoàn tối đa 100%."
+def find_order(order_id: str) -> dict:
+    """Look up an order."""
+    return ORDERS.get(order_id, {"error": "not found"})
 
 
 @tool(effect="read")
-def doc_ghi_chu(tu_khoa: str) -> str:
-    """Đọc ghi chú cũ."""
-    return "chưa có ghi chú"
+def check_policy(order_id: str) -> str:
+    """Check whether the order is eligible for a return."""
+    return "Eligible: still within the 7-day window, refundable up to 100%."
+
+
+@tool(effect="read")
+def read_notes(keyword: str) -> str:
+    """Read prior notes."""
+    return "no notes yet"
 
 
 @tool(effect="danger")
-def hoan_tien(ma_don: str, so_tien: int) -> str:
-    """Hoàn tiền cho khách. Không thể huỷ."""
-    DA_HOAN.append((ma_don, so_tien))
-    return f"đã hoàn {so_tien:,}đ"
+def refund(order_id: str, amount: int) -> str:
+    """Refund the customer. Cannot be undone."""
+    REFUNDS_ISSUED.append((order_id, amount))
+    return f"refunded {amount:,}"
 
 
 @tool(effect="write")
-def luu_ghi_chu(ma_don: str, noi_dung: str) -> str:
-    """Lưu ghi chú kết thúc hồ sơ."""
-    return "đã lưu"
+def save_note(order_id: str, note: str) -> str:
+    """Save a closing note on the record."""
+    return "saved"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4. Chạy
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# 4. Run
+# -----------------------------------------------------------------------------
 def main() -> None:
     from harness.models.fake import FakeModel
 
     import tempfile
-    from harness.observe.transcript import read as doc_nhat_ky
+    from harness.observe.transcript import read as read_log
     ts = Path(tempfile.mkdtemp()) / "run.jsonl"
 
-    def tao(script, quy_trinh=QuyTrinhHoanTien):
+    def make_agent(script, workflow=RefundWorkflow):
         return Agent(
-            name="CSKH",
-            job="Xử lý yêu cầu hoàn tiền theo đúng quy trình công ty.",
-            tools=[tim_don_hang, kiem_chinh_sach, doc_ghi_chu, hoan_tien, luu_ghi_chu],
-            policies=[quy_trinh],          # ← factory: mỗi run một instance mới
+            name="Support",
+            job="Process refund requests following the company's exact workflow.",
+            tools=[find_order, check_policy, read_notes, refund, save_note],
+            policies=[workflow],           # <- factory: a fresh instance per run
             approve=lambda c, x: True,
             budget="$5",
             provider=FakeModel(script),
             transcript=ts,
         )
 
-    print("═" * 74)
-    print("A. MODEL CỐ NHẢY CÓC — hoàn tiền ngay, chưa tra đơn, chưa kiểm chính sách")
-    print("═" * 74)
-    a = tao([
-        FakeModel.tool_call("hoan_tien", {"ma_don": "A-4471", "so_tien": 1290000}, call_id="1"),
-        FakeModel.tool_call("tim_don_hang", {"ma_don": "A-4471"}, call_id="2"),
-        FakeModel.tool_call("hoan_tien", {"ma_don": "A-4471", "so_tien": 1290000}, call_id="3"),
-        FakeModel.tool_call("kiem_chinh_sach", {"ma_don": "A-4471"}, call_id="4"),
-        FakeModel.tool_call("hoan_tien", {"ma_don": "A-4471", "so_tien": 1290000}, call_id="5"),
-        FakeModel.tool_call("luu_ghi_chu", {"ma_don": "A-4471", "noi_dung": "xong"}, call_id="6"),
-        FakeModel.text("Đã hoàn tiền theo đúng quy trình."),
+    print("=" * 74)
+    print("A. THE MODEL TRIES TO JUMP AHEAD -- refund right away, before looking up "
+          "the order or checking policy")
+    print("=" * 74)
+    a = make_agent([
+        FakeModel.tool_call("refund", {"order_id": "A-4471", "amount": 1290000}, call_id="1"),
+        FakeModel.tool_call("find_order", {"order_id": "A-4471"}, call_id="2"),
+        FakeModel.tool_call("refund", {"order_id": "A-4471", "amount": 1290000}, call_id="3"),
+        FakeModel.tool_call("check_policy", {"order_id": "A-4471"}, call_id="4"),
+        FakeModel.tool_call("refund", {"order_id": "A-4471", "amount": 1290000}, call_id="5"),
+        FakeModel.tool_call("save_note", {"order_id": "A-4471", "note": "done"}, call_id="6"),
+        FakeModel.text("Refund issued, following the correct workflow."),
     ])
-    r = a.try_run("Hoàn tiền đơn A-4471 ngay cho tôi")
+    a.try_run("Refund order A-4471 for me right now")
     transitions = [(e["data"]["tool"], e["data"]["verdict"], e["data"]["reason"])
-                   for e in doc_nhat_ky(ts) if e["kind"] == "policy.decided"
-                   and e["data"]["policy"] == "quy_trinh_hoan_tien"]
+                   for e in read_log(ts) if e["kind"] == "policy.decided"
+                   and e["data"]["policy"] == "refund_workflow"]
 
-    # Mọi quyết định của state machine đều nằm trong luồng sự kiện — không cần
-    # giữ tham chiếu tới policy để dựng lại lịch sử.
-    print(f"\n{'tool được gọi':<18} {'phán quyết':<12} {'lý do'}")
-    print("─" * 74)
-    for ev in r.events if hasattr(r, "events") else []:
-        pass
+    # Every state-machine decision lives in the event stream -- no need to hold a
+    # reference to the policy to reconstruct the history.
+    print(f"\n{'tool called':<18} {'verdict':<12} {'reason'}")
+    print("-" * 74)
     for tool_name, verdict, reason in transitions:
-        dau = "✓" if verdict == "ALLOW" else "✗"
-        print(f"{tool_name:<18} {dau} {verdict:<10} {reason[:44]}")
+        mark = "OK" if verdict == "ALLOW" else "XX"
+        print(f"{tool_name:<18} {mark} {verdict:<10} {reason[:44]}")
 
-    print(f"\nĐã hoàn tiền     : {DA_HOAN}")
-    print(f"Số lần hoàn tiền : {len(DA_HOAN)}  ← model gọi hoan_tien 3 lần, chỉ 1 lần lọt")
+    print(f"\nRefunds issued : {REFUNDS_ISSUED}")
+    print(f"Refund count   : {len(REFUNDS_ISSUED)}  <- the model called refund 3 times, "
+          "only 1 got through")
 
     print()
-    print("═" * 74)
-    print("B. STATE MACHINE KHÔNG THỂ NỚI LỎNG KIỂM TRA AN TOÀN")
-    print("═" * 74)
-    # factory bắt đầu ở trạng thái "đã kiểm chính sách" — state machine nói: hoàn được
+    print("=" * 74)
+    print("B. THE STATE MACHINE CANNOT LOOSEN A SAFETY CHECK")
+    print("=" * 74)
+    # the factory starts in "policy checked" -- the state machine says: refund is allowed
     a2 = Agent(
-        name="CSKH", job="j",
-        tools=[tim_don_hang, kiem_chinh_sach, hoan_tien],
-        policies=[lambda: QuyTrinhHoanTien(Buoc.DA_KIEM_CHINH_SACH)],
-        approve=lambda c, x: False,           # nhưng người duyệt từ chối
+        name="Support", job="j",
+        tools=[find_order, check_policy, refund],
+        policies=[lambda: RefundWorkflow(Step.POLICY_CHECKED)],
+        approve=lambda c, x: False,           # but the approver says no
         budget="$5",
         provider=FakeModel([
-            FakeModel.tool_call("hoan_tien", {"ma_don": "A-4471", "so_tien": 999}, call_id="1"),
-            FakeModel.text("Không hoàn được."),
+            FakeModel.tool_call("refund", {"order_id": "A-4471", "amount": 999}, call_id="1"),
+            FakeModel.text("Could not issue the refund."),
         ]),
     )
-    truoc = len(DA_HOAN)
-    a2.try_run("hoàn tiền")
-    print(f"  state machine cho phép : có (đang ở '{Buoc.DA_KIEM_CHINH_SACH.value}')")
-    print("  người duyệt            : từ chối")
-    print(f"  thực tế có chạy không  : {'CÓ — LỖI' if len(DA_HOAN) > truoc else 'KHÔNG'}")
-    print("  → verdict compose bằng max: policy chỉ THẮT CHẶT, không bao giờ nới lỏng")
+    before = len(REFUNDS_ISSUED)
+    a2.try_run("issue the refund")
+    print(f"  state machine allows it : yes (currently at '{Step.POLICY_CHECKED.value}')")
+    print("  approver                : declined")
+    print(f"  did it actually run     : "
+          f"{'YES -- BUG' if len(REFUNDS_ISSUED) > before else 'no'}")
+    print("  -> verdicts compose with max: a policy can only TIGHTEN, never loosen")
 
 
 if __name__ == "__main__":

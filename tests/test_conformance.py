@@ -284,14 +284,14 @@ class TheProofRuns(unittest.TestCase):
         r = subprocess.run([sys.executable, "examples/full_agent.py"],
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout[-2500:] + r.stderr[-1500:])
-        self.assertIn("KHẢ NĂNG NÀO Ở BACKEND NÀO", r.stdout)
+        self.assertIn("WHICH CAPABILITY ON WHICH BACKEND", r.stdout)
 
     def test_the_proof_passes(self):
         import subprocess
         r = subprocess.run([sys.executable, "examples/proof.py"],
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout[-3000:] + r.stderr[-2000:])
-        self.assertIn("Chứng minh được bằng code chạy thật", r.stdout)
+        self.assertIn("Proven with real running code", r.stdout)
 
 
 if __name__ == "__main__":

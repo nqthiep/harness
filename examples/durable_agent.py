@@ -1,15 +1,16 @@
-"""Agent(durable=True) — một Agent, một API, engine LangGraph giấu ở dưới.
+"""Agent(durable=True) — one Agent, one API, the LangGraph engine hidden underneath.
 
-Chạy:  python3 examples/durable_agent.py
+Run:  python3 examples/durable_agent.py
 
-Không cần API key: mặc định dùng model giả. Có key thì tự dùng model thật — CÙNG một
-Agent, không đổi dòng code nào (dùng `harness.models.anthropic.AnthropicProvider`, y hệt
-backend cổ điển — xem docs/02-architecture.md §3.1: `durable=True` gọi model qua ĐÚNG MỘT
-seam, không phải một thư viện LangChain riêng).
+No API key needed: defaults to a fake model. With a key it uses a real one — the SAME
+Agent, no line of code changed (uses `harness.models.anthropic.AnthropicProvider`, exactly
+like the classic backend — see docs/02-architecture.md §3.1: `durable=True` calls the model
+through the SAME ONE seam, not a separate LangChain library).
 
-So với `examples/graph_agent.py`/`langgraph_quickstart.py` (LangGraph lộ ra: `HumanMessage`,
-`graph.invoke()`, `thread_id` trong config) — ở đây không có gì thuộc LangGraph lọt ra
-ngoài: `run()`/`try_run()` nhận `str`, trả `Result`, giống hệt agent không durable.
+Compared to `examples/graph_agent.py`/`langgraph_quickstart.py` (LangGraph shows through:
+`HumanMessage`, `graph.invoke()`, `thread_id` in the config) — here nothing LangGraph-shaped
+leaks out: `run()`/`try_run()` takes a `str`, returns a `Result`, exactly like a non-durable
+agent.
 """
 import os
 import sys
@@ -19,65 +20,66 @@ sys.path.insert(0, "src")
 
 from harness import Agent, tool
 
-DON = {"A-4471": {"mon": "Bàn phím cơ", "trang_thai": "đã giao"}}
+ORDERS = {"A-4471": {"item": "Mechanical keyboard", "status": "delivered"}}
 
 
 @tool(effect="read")
-def tim_don(ma: str) -> dict:
-    """Tra cứu một đơn hàng theo mã."""
-    return DON.get(ma, {"loi": "không tìm thấy"})
+def find_order(order_id: str) -> dict:
+    """Look up an order by id."""
+    return ORDERS.get(order_id, {"error": "not found"})
 
 
-def lay_provider(kich_ban):
+def get_provider(script):
     if os.environ.get("ANTHROPIC_API_KEY"):
-        return None                      # None -> Agent tự dựng AnthropicProvider() thật
+        return None                      # None -> Agent builds a real AnthropicProvider() itself
     from harness.models.fake import FakeModel
-    return FakeModel(kich_ban)
+    return FakeModel(script)
 
 
-# `checkpoint=` trỏ vào một thư mục tạm ở đây chỉ để ví dụ này không để lại file sau khi
-# chạy xong — bỏ hẳn tham số này (mặc định `None`) là cách dùng thật: harness tự tạo
-# `.harness/checkpoints/<ten-agent>.sqlite3`, không cần cấu hình gì thêm.
-tmp_db = os.path.join(tempfile.mkdtemp(), "cskh.sqlite3")
+# `checkpoint=` points at a temp directory here only so this example leaves no file behind
+# after it runs — dropping this argument entirely (default `None`) is the real usage:
+# the harness creates `.harness/checkpoints/<agent-name>.sqlite3` on its own, no extra
+# configuration needed.
+tmp_db = os.path.join(tempfile.mkdtemp(), "support.sqlite3")
 
-print("═" * 68)
-print("LƯỢT 1 — quy trình bình thường")
-print("═" * 68)
+print("=" * 68)
+print("TURN 1 -- normal flow")
+print("=" * 68)
 
 from harness.models.fake import FakeModel  # noqa: E402
 
 agent = Agent(
-    name="CSKH", job="trả lời về đơn hàng", tools=[tim_don],
-    provider=lay_provider([FakeModel.tool_call("tim_don", {"ma": "A-4471"}),
-                           FakeModel.text("Đơn A-4471: Bàn phím cơ, đã giao.")]),
+    name="Support", job="answer questions about orders", tools=[find_order],
+    provider=get_provider([FakeModel.tool_call("find_order", {"order_id": "A-4471"}),
+                           FakeModel.text("Order A-4471: mechanical keyboard, delivered.")]),
     durable=True, checkpoint=tmp_db,
-    session_id="khach-42",               # cuộc hội thoại để kết nối lại sau này
+    session_id="customer-42",            # the conversation to reconnect to later
     allowed_hosts=None,
 )
-r1 = agent.run("đơn A-4471 sao rồi")
+r1 = agent.run("how's order A-4471 doing")
 print(f"  {r1.text}")
-print(f"  đã chạy: {r1.tools_run}, tốn {r1.cost}")
+print(f"  ran: {r1.tools_run}, cost {r1.cost}")
 
 print()
-print("═" * 68)
-print("« TIẾN TRÌNH DỪNG Ở ĐÂY » — coi như tiến trình Python đã khởi động lại")
-print("═" * 68)
-print("  Không có gì trong Python sống sót — Agent bên dưới là một OBJECT MỚI,")
-print("  chỉ trỏ lại đúng file checkpoint và đúng session_id cũ.")
+print("=" * 68)
+print("<< THE PROCESS STOPS HERE >> -- pretend the Python process just restarted")
+print("=" * 68)
+print("  Nothing in Python survives -- the Agent below is a NEW OBJECT, pointing")
+print("  back at the same checkpoint file and the same session_id.")
 print()
 
-agent_moi = Agent(
-    name="CSKH", job="trả lời về đơn hàng", tools=[tim_don],
-    provider=lay_provider([FakeModel.text("vâng, đã giao hôm qua rồi ạ.")]),
+new_agent = Agent(
+    name="Support", job="answer questions about orders", tools=[find_order],
+    provider=get_provider([FakeModel.text("yes, it was delivered yesterday.")]),
     durable=True, checkpoint=tmp_db,
-    session_id="khach-42",               # CÙNG session_id -> nối lại đúng hội thoại
+    session_id="customer-42",            # SAME session_id -> reconnects to the same conversation
     allowed_hosts=None,
 )
-r2 = agent_moi.run("chắc chắn chưa vậy?")
+r2 = new_agent.run("are you sure?")
 print(f"  {r2.text}")
-print(f"  cuộc hội thoại có {len(r2.messages)} message — gồm cả lượt 1")
+print(f"  the conversation has {len(r2.messages)} messages -- including turn 1")
 
 print()
-print("Những gì durable=True CHƯA hỗ trợ (docs/03-public-api.md §3.5, các N- đã ghi lại):")
-print("  returns=, .chat(), .resume(transcript), on_delta=, timeout riêng từng tool.")
-print("  Mỗi cái từ chối RÕ RÀNG lúc gọi — không âm thầm bỏ qua.")
+print("What durable=True still refuses outright (docs/03-public-api.md §3.5):")
+print("  .chat(), .resume(transcript), on_delta=, principal=, decisions=.")
+print("  Each one refuses LOUDLY at the call site -- never silently ignored.")
