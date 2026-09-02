@@ -1,14 +1,14 @@
-"""Tạo agent với harness + LangGraph — từ nhỏ nhất đến đầy đủ.
+"""Building an agent with harness + LangGraph — from smallest to full-featured.
 
-Chạy:  python3 examples/langgraph_quickstart.py
+Run:  python3 examples/langgraph_quickstart.py
 
-Không cần API key: mặc định dùng model giả.  Có key thì nó tự dùng model thật:
+No API key needed: defaults to a fake model. With a key it uses a real one:
 
     export ANTHROPIC_API_KEY=sk-ant-...
     pip install 'harness[graph]' langchain-anthropic
 
-Năm bậc, mỗi bậc thêm ĐÚNG MỘT khái niệm.  Bậc 1 chạy được rồi; bốn bậc sau
-là thứ bạn thêm khi cần, không phải thứ phải học trước.
+Five tiers, each adding EXACTLY ONE concept. Tier 1 already runs; the next four
+are things you add when you need them, not things you have to learn first.
 """
 import os
 import sys
@@ -21,141 +21,142 @@ from harness import tool
 from harness.lg import build_agent, unguarded_paths
 
 
-def lay_model(kich_ban):
-    """Có key thì model thật, không thì model giả — code agent y hệt nhau."""
+def get_model(script):
+    """With a key, a real model; without one, a fake model -- the agent code is identical."""
     if os.environ.get("ANTHROPIC_API_KEY"):
         from langchain_anthropic import ChatAnthropic
         return ChatAnthropic(model="claude-opus-5")
     from fake_chat import FakeChat
-    return FakeChat(script=kich_ban)
+    return FakeChat(script=script)
 
 
-def tieu_de(n, chu):
-    print(f"\n{'═' * 68}\nBẬC {n} — {chu}\n{'═' * 68}")
+def heading(n, title):
+    print(f"\n{'=' * 68}\nTIER {n} -- {title}\n{'=' * 68}")
 
 
-# ══════════════════════════════════════════════════════════════════════════
-tieu_de(1, "Agent nhỏ nhất chạy được")
-# Chỉ cần model và ngân sách.  `budget=` không phải tuỳ chọn nâng cao —
-# nó ở đây từ dòng đầu tiên, vì một agent không có trần chi tiêu là một
-# agent có thể tiêu hết thẻ của bạn.
+# =============================================================================
+heading(1, "The smallest agent that runs")
+# Just a model and a budget. `budget=` is not an advanced option -- it's here
+# from the very first line, because an agent with no spending ceiling is an
+# agent that can drain your card.
 from fake_chat import FakeChat  # noqa: E402
 
-graph, _ = build_agent(model=lay_model([FakeChat.text("Chào bạn!")]), budget="$0.10")
-ket_qua = graph.invoke({"messages": [HumanMessage("chào")]})
-print(f"  {ket_qua['messages'][-1].content}")
-print(f"  đã tiêu ${ket_qua['spent_usd']} — trần là $0.10")
+graph, _ = build_agent(model=get_model([FakeChat.text("Hi there!")]), budget="$0.10")
+result = graph.invoke({"messages": [HumanMessage("hi")]})
+print(f"  {result['messages'][-1].content}")
+print(f"  spent ${result['spent_usd']} -- ceiling was $0.10")
 
 
-# ══════════════════════════════════════════════════════════════════════════
-tieu_de(2, "Thêm tool — mỗi tool phải khai `effect`")
-# `effect` là thứ DUY NHẤT bạn phải quyết định về một tool.  Từ nó harness
-# suy ra 5 hành vi: chạy song song được không, retry được không, có làm bẩn
-# run không, mặc định cho phép hay hỏi, ghi log mức nào.
-DON = {"A-4471": {"mon": "Bàn phím cơ", "gia": 890_000, "trang_thai": "đã giao"}}
+# =============================================================================
+heading(2, "Adding a tool -- every tool must declare `effect`")
+# `effect` is the ONE thing you have to decide about a tool. From it the
+# harness derives 5 behaviors: whether it's safe to run in parallel, whether
+# it can retry, whether it taints the run, its default verdict, and its
+# logging level.
+ORDERS = {"A-4471": {"item": "Mechanical keyboard", "price": 890_000, "status": "delivered"}}
 
 
-@tool(effect="read")           # chỉ nhìn, không đổi gì
-def tim_don(ma: str) -> dict:
-    """Tra cứu một đơn hàng theo mã."""
-    return DON.get(ma, {"loi": "không tìm thấy"})
+@tool(effect="read")           # only looks, changes nothing
+def find_order(order_id: str) -> dict:
+    """Look up an order by id."""
+    return ORDERS.get(order_id, {"error": "not found"})
 
 
-@tool(effect="write")          # đổi thứ gì đó, nhưng hoàn tác được
-def luu_ghi_chu(ma: str, noi_dung: str) -> str:
-    """Lưu ghi chú vào hồ sơ đơn."""
-    return f"đã lưu ghi chú cho {ma}"
+@tool(effect="write")          # changes something, but it's reversible
+def save_note(order_id: str, note: str) -> str:
+    """Save a note on the order record."""
+    return f"note saved for {order_id}"
 
 
 graph, _ = build_agent(
-    model=lay_model([FakeChat.call("tim_don", {"ma": "A-4471"}, "c1"),
-                     FakeChat.text("Đơn A-4471: Bàn phím cơ, đã giao.")]),
-    tools=[tim_don, luu_ghi_chu],
+    model=get_model([FakeChat.call("find_order", {"order_id": "A-4471"}, "c1"),
+                     FakeChat.text("Order A-4471: mechanical keyboard, delivered.")]),
+    tools=[find_order, save_note],
     budget="$0.10",
 )
-ket_qua = graph.invoke({"messages": [HumanMessage("đơn A-4471 sao rồi")]})
-print(f"  {ket_qua['messages'][-1].content}")
+result = graph.invoke({"messages": [HumanMessage("how's order A-4471 doing")]})
+print(f"  {result['messages'][-1].content}")
 
 
-# ══════════════════════════════════════════════════════════════════════════
-tieu_de(3, "Tool nguy hiểm — mặc định là TỪ CHỐI")
-@tool(effect="danger")         # không hoàn tác được
-def hoan_tien(ma: str, so_tien: int) -> str:
-    """Hoàn tiền cho khách. KHÔNG hoàn tác được."""
-    print(f"     >>> đã hoàn {so_tien:,}đ")
-    return f"đã hoàn {so_tien}đ"
+# =============================================================================
+heading(3, "A dangerous tool -- DENIED by default")
+@tool(effect="danger")         # not reversible
+def refund(order_id: str, amount: int) -> str:
+    """Refund the customer. NOT reversible."""
+    print(f"     >>> refunded {amount:,}")
+    return f"refunded {amount}"
 
 
-KICH_BAN_HOAN = [FakeChat.call("hoan_tien", {"ma": "A-4471", "so_tien": 890_000}, "c1"),
-                 FakeChat.text("Xong.")]
+REFUND_SCRIPT = [FakeChat.call("refund", {"order_id": "A-4471", "amount": 890_000}, "c1"),
+                 FakeChat.text("Done.")]
 
-# 3a. không có người duyệt → bị chặn
-graph, _ = build_agent(model=lay_model(KICH_BAN_HOAN), tools=[hoan_tien], budget="$0.10")
-kq = graph.invoke({"messages": [HumanMessage("hoàn tiền đơn A-4471")]})
-print(f"  không có approve= : {kq['messages'][-2].content}")
+# 3a. no approver -> blocked
+graph, _ = build_agent(model=get_model(REFUND_SCRIPT), tools=[refund], budget="$0.10")
+r = graph.invoke({"messages": [HumanMessage("refund order A-4471")]})
+print(f"  no approve=       : {r['messages'][-2].content}")
 
-# 3b. có người duyệt → hỏi rồi mới làm
-def duyet(call, ctx) -> bool:
-    print(f"  [hỏi người]       : {call.name}({call.arguments}) → đồng ý")
+# 3b. an approver -> asks first, then acts
+def approve(call, ctx) -> bool:
+    print(f"  [asking a human]  : {call.name}({call.arguments}) -> approved")
     return True
 
 
-graph, _ = build_agent(model=lay_model(KICH_BAN_HOAN), tools=[hoan_tien],
-                       budget="$0.10", approve=duyet)
-graph.invoke({"messages": [HumanMessage("hoàn tiền đơn A-4471")]})
+graph, _ = build_agent(model=get_model(REFUND_SCRIPT), tools=[refund],
+                       budget="$0.10", approve=approve)
+graph.invoke({"messages": [HumanMessage("refund order A-4471")]})
 
 
-# ══════════════════════════════════════════════════════════════════════════
-tieu_de(4, "Bền vững — tắt máy giữa chừng vẫn chạy tiếp")
-# Đây là thứ LangGraph cho mà vòng lặp tự viết không cho: checkpointer.
+# =============================================================================
+heading(4, "Durable -- a crash mid-run still resumes")
+# This is what LangGraph gives you that the hand-written loop doesn't: a checkpointer.
 graph, _ = build_agent(
-    model=lay_model([FakeChat.call("tim_don", {"ma": "A-4471"}, "c1"),
-                     FakeChat.text("Đã giao rồi bạn nhé.")]),
-    tools=[tim_don],
+    model=get_model([FakeChat.call("find_order", {"order_id": "A-4471"}, "c1"),
+                     FakeChat.text("It's been delivered.")]),
+    tools=[find_order],
     budget="$0.10",
-    checkpointer=MemorySaver(),          # thật thì dùng SqliteSaver/PostgresSaver
+    checkpointer=MemorySaver(),          # in production use SqliteSaver/PostgresSaver
 )
-cau_hinh = {"configurable": {"thread_id": "khach-01"}}
-graph.invoke({"messages": [HumanMessage("đơn A-4471 sao rồi")]}, cau_hinh)
+cfg = {"configurable": {"thread_id": "customer-01"}}
+graph.invoke({"messages": [HumanMessage("how's order A-4471 doing")]}, cfg)
 
-luu = graph.get_state(cau_hinh).values
-print(f"  checkpoint giữ    : {len(luu['messages'])} tin nhắn, ${luu['spent_usd']}, "
-      f"bước {luu['step']}")
+saved = graph.get_state(cfg).values
+print(f"  checkpoint holds  : {len(saved['messages'])} messages, ${saved['spent_usd']}, "
+      f"step {saved['step']}")
 
-# cùng thread_id → agent nhớ lượt trước, ngân sách vẫn cộng dồn
-graph.invoke({"messages": [HumanMessage("thế còn ghi chú thì sao")]}, cau_hinh)
-luu = graph.get_state(cau_hinh).values
-print(f"  sau lượt thứ hai  : {len(luu['messages'])} tin nhắn, ${luu['spent_usd']}")
+# same thread_id -> the agent remembers the last turn, budget keeps accumulating
+graph.invoke({"messages": [HumanMessage("and what about the note")]}, cfg)
+saved = graph.get_state(cfg).values
+print(f"  after turn two    : {len(saved['messages'])} messages, ${saved['spent_usd']}")
 
 
-# ══════════════════════════════════════════════════════════════════════════
-tieu_de(5, "Vì sao tin được — đọc thẳng từ đồ thị")
-# Các cổng an toàn không phải là quy ước, mà là HÌNH DẠNG của đồ thị.
-# Không có cạnh nào vào `model` mà không qua `budget`, vào `tools` mà không
-# qua `policy`.  Đây là chứng minh bằng khả năng tới được, đúng cho cả những
-# đường đi mà không test nào đi qua.
-canh = {(e.source, e.target) for e in graph.get_graph().edges}
-print(f"  node              : {[n for n in graph.get_graph().nodes if not n.startswith('__')]}")
-print(f"  vào 'model' từ    : {sorted(s for s, t in canh if t == 'model')}")
-print(f"  vào 'tools' từ    : {sorted(s for s, t in canh if t == 'tools')}")
-print(f"  cổng bị đi vòng   : {unguarded_paths(graph) or 'KHÔNG'}")
+# =============================================================================
+heading(5, "Why you can trust it -- read straight off the graph")
+# The safety gates aren't a convention, they're the SHAPE of the graph. No
+# edge reaches `model` without going through `budget`, none reaches `tools`
+# without going through `policy`. This is a reachability proof, true for
+# every path even the ones no test happens to walk.
+edges = {(e.source, e.target) for e in graph.get_graph().edges}
+print(f"  nodes             : {[n for n in graph.get_graph().nodes if not n.startswith('__')]}")
+print(f"  into 'model' from : {sorted(s for s, t in edges if t == 'model')}")
+print(f"  into 'tools' from : {sorted(s for s, t in edges if t == 'tools')}")
+print(f"  unguarded paths   : {unguarded_paths(graph) or 'NONE'}")
 
 print(f"""
-{'─' * 68}
-Tóm lại, một agent đầy đủ là chừng này:
+{'-' * 68}
+In summary, a full-featured agent is about this much:
 
     from harness import tool
     from harness.lg import build_agent
 
     @tool(effect="read")
-    def tim_don(ma: str) -> dict:
-        \"\"\"Tra cứu đơn hàng.\"\"\"
-        return DON.get(ma)
+    def find_order(order_id: str) -> dict:
+        \"\"\"Look up an order.\"\"\"
+        return ORDERS.get(order_id)
 
     graph, _ = build_agent(model=ChatAnthropic(model="claude-opus-5"),
-                           tools=[tim_don], budget="$0.20, 15 steps",
-                           approve=duyet, checkpointer=MemorySaver())
+                           tools=[find_order], budget="$0.20, 15 steps",
+                           approve=approve, checkpointer=MemorySaver())
 
-    graph.invoke({{"messages": [HumanMessage("đơn A-4471 sao rồi")]}})
+    graph.invoke({{"messages": [HumanMessage("how's order A-4471 doing")]}})
 
-Model đang dùng: {'THẬT (ANTHROPIC_API_KEY)' if os.environ.get('ANTHROPIC_API_KEY') else 'GIẢ — đặt ANTHROPIC_API_KEY để chạy thật'}""")
+Model in use: {'REAL (ANTHROPIC_API_KEY)' if os.environ.get('ANTHROPIC_API_KEY') else 'FAKE -- set ANTHROPIC_API_KEY to run for real'}""")

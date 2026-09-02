@@ -1,30 +1,31 @@
 # 01 — Core API
 
-**Tệp này tuân theo [`00-foundation.md`](00-foundation.md).** Từ vựng (`Effect`, `Verdict`,
-`Decision`, `Actor`, `Ledger`, `Label`, `Run`, `ToolSpec`), hai lattice, và bốn quy tắc
-kiến trúc R-1…R-4 được lấy nguyên từ đó, không định nghĩa lại ở đây.
+**This file follows [`00-foundation.md`](00-foundation.md).** The vocabulary (`Effect`,
+`Verdict`, `Decision`, `Actor`, `Ledger`, `Label`, `Run`, `ToolSpec`), the two lattices,
+and the four architecture rules R-1…R-4 are taken as-is from there, not redefined here.
 
-Phạm vi: **bề mặt công khai** — cái mà 90% người dùng chạm vào. Policy engine ở
-[`02`](02-safety-engine.md), tool/MCP ở [`03`](03-tools-and-mcp.md), graph runtime ở
-[`04`](04-runtime-durability.md), `Ledger` ở [`05`](05-cost-and-memory.md).
+Scope: the **public surface** — what 90% of users touch. The policy engine is in
+[`02`](02-safety-engine.md), tools/MCP in [`03`](03-tools-and-mcp.md), the graph runtime
+in [`04`](04-runtime-durability.md), `Ledger` in [`05`](05-cost-and-memory.md).
 
 ---
 
-## 1. API công khai tối thiểu
+## 1. The minimal public API
 
-Bề mặt **tối thiểu** (đủ cho Mức 0–2, xem §2) là **14 tên**, một `import`. Đây KHÔNG phải
-toàn bộ bề mặt — Mức 3 (§2, production) cần thêm — một bản nháp trước của mục này tuyên bố
-"toàn bộ" rồi chính ví dụ Mức 3 trong CÙNG tệp `import` 20 tên từ 4 module, tự mâu thuẫn
-([review-kiss.md](review-kiss.md) K-22). Con số trung thực hơn: **14 tên tối thiểu + tới
-20 tên khi dùng hết production** (checkpoint, plugin, policy MCP), qua **1 import gốc +
-tối đa 3 submodule** khi thật sự cần chúng.
+The **minimal** surface (enough for Tiers 0-2, see §2) is **14 names**, one `import`.
+This is NOT the whole surface — Tier 3 (§2, production) needs more — an earlier draft of
+this section claimed "the whole surface" and then its own Tier-3 example, in the SAME
+file, imported 20 names from 4 modules, contradicting itself
+([review-kiss.md](review-kiss.md) K-22). The more honest number: **14 names minimum, up
+to 20 when using the full production surface** (checkpointing, plugins, MCP policy),
+through **1 root import + at most 3 submodules** when they're actually needed.
 
 ```python
 from harness import (
-    Agent, tool, Effect, ToolSpec,          # định nghĩa
-    Budget, Workspace,                       # trần chi tiêu, cách ly
-    Approver, Answer, Verdict, Decision,     # phê duyệt
-    Plugin, Result, StopReason, Label,       # mở rộng, kết quả
+    Agent, tool, Effect, ToolSpec,          # defining things
+    Budget, Workspace,                       # spend ceiling, isolation
+    Approver, Answer, Verdict, Decision,     # approval
+    Plugin, Result, StopReason, Label,       # extension, results
 )
 ```
 
@@ -40,7 +41,7 @@ EndStrategy = Literal["early", "graceful", "complete"]
 class Agent(Generic[OutT]):
     def __init__(
         self,
-        *,                                                  # keyword-only, không ngoại lệ
+        *,                                                  # keyword-only, no exceptions
         name: str,
         job: str,
         model: ModelProvider | ModelName,
@@ -56,29 +57,29 @@ class Agent(Generic[OutT]):
     ) -> None: ...
 ```
 
-Mười ba tham số, **và mỗi cái tồn tại vì một phát hiện đo được**:
+Thirteen parameters, **and each one exists because of a measured finding**:
 
-| tham số | vì sao có mặt | nguồn |
+| parameter | why it's there | source |
 |---|---|---|
-| `model` là tham số bắt buộc, không có mặc định | Google ADK để `DEFAULT_MODEL: ClassVar[str] = 'gemini-3.5-flash'` — affinity nhà cung cấp giấu trong class variable. MS Agent Framework làm đúng: `client` bắt buộc, dependency inversion cưỡng chế | ([§02](../research/02-api-comparison.md) §6) |
-| `budget` **bắt buộc**, phải có trục tiền | Cả ngành có loop limit mà gần như không có spend ceiling: pydantic-ai 3,6 budget/kLOC là cao nhất, LangGraph 0,0; `max_turns` chặn số vòng, còn một vòng 200k token đắt gấp trăm lần | ([§03](../research/03-safety-reliability.md) §20) |
-| `sandbox` không có mặc định "local" | smolagents đưa `executor_type` vào constructor — thiết kế cách ly tốt nhất trong nghiên cứu — rồi để mặc định `"local"`, làm giảm giá trị của chính cơ chế đó | ([§05](../research/05-ideal-harness.md) §31 bài học 2 và 10) |
-| `output_type` | PydanticAI typed end-to-end là Agent API duy nhất đạt "Type safety cao nhất bảng" | ([§02](../research/02-api-comparison.md) §6) |
-| `end_strategy` | Model trả **vừa** kết quả cuối **vừa** tool call là ngữ nghĩa khó. PydanticAI đặt tên cho nó, cho ba lựa chọn, và đổi mặc định từ `early` sang `graceful` vì mặc định cũ sai. Giá trị thứ ba đổi tên từ `"exhaustive"` gốc của PydanticAI thành `"complete"` — `"exhaustive"` đã là tên một trong ba **parallel mode** khác hẳn của chính pydantic-ai ([03 §3.2](03-tools-and-mcp.md)), và dùng lại nó ở đây cho một trục không liên quan là tự tạo va chạm từ vựng trong cùng một bản thiết kế ([review-kiss.md](review-kiss.md) K-11) | ([§02](../research/02-api-comparison.md) §6) |
-| `approve` nhận `Approver`, trả `Answer` — không bao giờ `bool` | Approval ở đâu cũng là trạng thái quyền chứ không phải sự kiện audit được; Java `ToolConfirmation` đúng một `boolean` | ([§09](../research/09-memory-context-multiagent-hitl.md) §14.1, [§10](../research/10-governance-health-languages.md) §28) |
-| `checkpointer` | Durability là kiến trúc hoặc không tồn tại: LangGraph 51,6 recover/kLOC so với phần còn lại < 2. Và nó chỉ cài được vì có topology | ([§11](../research/11-workflow-and-dx.md) §12) |
-| `plugins` | around-hook — xem §4 | ([§08](../research/08-tool-mcp-plugin.md) §24) |
-| `policies` | verdict lattice hợp bằng `max()`, chỉ thắt chặt | [`00`](00-foundation.md) §3.1 |
-| `*` keyword-only | `extra='forbid'` của Google ADK biến typo thành lỗi lúc dựng, rẻ và hiệu quả. Keyword-only là phiên bản Python thuần của cùng ý tưởng | ([§02](../research/02-api-comparison.md) §6, [§05](../research/05-ideal-harness.md) §31 bài học 6) |
+| `model` is required, no default | Google ADK has `DEFAULT_MODEL: ClassVar[str] = 'gemini-3.5-flash'` — a vendor affinity hidden in a class variable. MS Agent Framework gets it right: `client` is required, dependency inversion enforced | ([§02](../research/02-api-comparison.md) §6) |
+| `budget` is **required**, must have a money axis | The whole industry has loop limits and almost no spend ceiling: pydantic-ai's 3.6 budget/kLOC is the highest, LangGraph's is 0.0; `max_turns` caps round count, and a 200k-token round costs a hundred times more | ([§03](../research/03-safety-reliability.md) §20) |
+| `sandbox` has no `"local"` default | smolagents puts `executor_type` in the constructor — the best isolation design in the research — then defaults it to `"local"`, undercutting the value of the mechanism itself | ([§05](../research/05-ideal-harness.md) §31 lesson 2 and 10) |
+| `output_type` | PydanticAI's end-to-end typing is the only Agent API to score "highest type safety" | ([§02](../research/02-api-comparison.md) §6) |
+| `end_strategy` | A model returning **both** a final answer **and** a tool call at once is a tricky semantic. PydanticAI named it, gave it three options, and changed the default from `early` to `graceful` because the old default was wrong. The third value was renamed from PydanticAI's original `"exhaustive"` to `"complete"` — `"exhaustive"` is already the name of one of pydantic-ai's own three, completely different **parallel modes** ([03 §3.2](03-tools-and-mcp.md)), and reusing it here for an unrelated axis would create a vocabulary collision within this very design ([review-kiss.md](review-kiss.md) K-11) | ([§02](../research/02-api-comparison.md) §6) |
+| `approve` takes an `Approver`, returns an `Answer` — never a `bool` | Approval everywhere is a permission state, not an auditable event; Java's `ToolConfirmation` is exactly one `boolean` | ([§09](../research/09-memory-context-multiagent-hitl.md) §14.1, [§10](../research/10-governance-health-languages.md) §28) |
+| `checkpointer` | Durability is architectural or it doesn't exist: LangGraph at 51.6 recover/kLOC vs. everything else under 2. And it's only installable because of the topology | ([§11](../research/11-workflow-and-dx.md) §12) |
+| `plugins` | an around-hook — see §4 | ([§08](../research/08-tool-mcp-plugin.md) §24) |
+| `policies` | the verdict lattice composed with `max()`, tighten-only | [`00`](00-foundation.md) §3.1 |
+| `*` keyword-only | Google ADK's `extra='forbid'` turns a typo into a construction-time error, cheap and effective. Keyword-only is the pure-Python version of the same idea | ([§02](../research/02-api-comparison.md) §6, [§05](../research/05-ideal-harness.md) §31 lesson 6) |
 
-**`sandbox` bắt buộc khi nào.** Không phải lúc nào cũng bắt buộc — bắt buộc *khi liên quan*.
-Nếu `tools` chứa bất kỳ tool nào có `Effect.WRITE`, `Effect.EXTERNAL` hoặc `Effect.DANGER`
-mà `sandbox=None`, đó là **lỗi lúc construction**. Một agent không tool, hoặc chỉ có tool
-`read`, không chạm vào thế giới nên không cần chọn. Điều này giữ hello-world ở 5 dòng mà
-không nới lỏng Poka-Yoke: cái gì nguy hiểm khi thiếu thì không được có mặc định
+**When `sandbox` is required.** Not always — required *when it's relevant*. If `tools`
+contains any tool with `Effect.WRITE`, `Effect.EXTERNAL`, or `Effect.DANGER` and
+`sandbox=None`, that is a **construction-time error**. An agent with no tools, or only
+`read` tools, never touches the world so it needs no choice. This keeps hello-world at 5
+lines without loosening Poka-Yoke: whatever is dangerous when missing gets no default
 ([§05](../research/05-ideal-harness.md) §35–36).
 
-### 1.2 Bốn cách chạy
+### 1.2 Four ways to run
 
 ```python
 class Agent(Generic[OutT]):
@@ -91,65 +92,70 @@ class Agent(Generic[OutT]):
     def run_sync(self, prompt: str, *, run_id: RunId | None = None) -> Result[OutT]: ...
 ```
 
-`run()` **raise** khi run không hoàn tất; `try_run()` **luôn** trả `Result`. Cả hai trả
-cùng một kiểu, nên đổi giữa chúng không phải viết lại code xử lý kết quả.
+`run()` **raises** when a run doesn't complete; `try_run()` **always** returns a
+`Result`. Both return the same type, so switching between them doesn't require rewriting
+result-handling code.
 
-Interface mẫu `interface Agent { AgentResult run(AgentRequest) }` thiếu **năm** thứ mà
-bằng chứng nói là bắt buộc: streaming, cancellation, session, approval round-trip, và
-idempotency ([§05](../research/05-ideal-harness.md) §35–36). **Ba cái đầu ở trên** —
-streaming, cancellation, approval round-trip. `session` KHÔNG có ở đây: không có kiểu
-`Session` nào trong tệp này hay `02`/`04`/`05`, chỉ có `run_id`; tenant/owner/TTL — ranh
-giới cách ly mà `session` phải cung cấp — nằm ở *Chưa đủ evidence* của ba tệp
-(`02`, `04`, `05`). Trung thực hơn là nói rõ: session là phạm vi của **tầng service** bọc
-quanh harness, không phải của chính harness ([review-kiss.md](review-kiss.md) K-28, xem
-`07-risks`). idempotency không nằm trên bề mặt vì gateway **sinh** key chứ không nhận
-— người dùng không thể quên cái mà họ không được phép cung cấp.
+The sample interface `interface Agent { AgentResult run(AgentRequest) }` is missing
+**five** things the evidence says are required: streaming, cancellation, sessions,
+approval round-trip, and idempotency ([§05](../research/05-ideal-harness.md) §35–36).
+**The first three above** cover streaming, cancellation, and approval round-trip.
+`session` is NOT here on purpose: there is no `Session` type anywhere in this file or in
+`02`/`04`/`05`, only `run_id`; tenant/owner/TTL — the isolation boundary a `session`
+would have to provide — sits under *Not Enough Evidence* in three files (`02`, `04`,
+`05`). The more honest statement: a session is the scope of the **service layer**
+wrapping the harness, not of the harness itself ([review-kiss.md](review-kiss.md) K-28,
+see `07-risks`). Idempotency isn't on this surface because the gateway **generates** the
+key rather than accepting one — a caller can't forget what they're never allowed to
+supply.
 
-`cancel()` là **tín hiệu**, không phải một stop reason mà model tự chọn — smolagents có
-Security 9 nhưng Runtime 4 vì `cancel` 0,0/kLOC ([§05](../research/05-ideal-harness.md) §30).
+`cancel()` is a **signal**, not a stop reason the model chooses for itself — smolagents
+scores 9 on Security but 4 on Runtime because `cancel` sits at 0.0/kLOC
+([§05](../research/05-ideal-harness.md) §30).
 
 ### 1.3 `@tool`
 
 ```python
 @overload
-def tool(fn: Callable[..., Any], /) -> NoReturn: ...          # thiếu effect -> lỗi ngay
+def tool(fn: Callable[..., Any], /) -> NoReturn: ...          # missing effect -> error immediately
 @overload
 def tool(*, effect: Effect, name: str | None = None,
          ) -> Callable[[Callable[..., OutT]], ToolSpec]: ...
 ```
 
-Người viết tool khai **đúng một thứ**: `effect`. Năm hành vi — song song, retry, taint,
-verdict mặc định, mức audit — là *dẫn xuất* ([`00`](00-foundation.md) §2). Không có cờ
-`sequential=`, không có `handle_tool_error=`, không có `retries=` trên từng tool — và
-**không có `accepts_tainted=` lẫn `max_confidentiality=`**, xem [03 §1.1](03-tools-and-mcp.md).
+A tool author declares **exactly one thing**: `effect`. The five behaviors — parallelism,
+retry, taint, default verdict, audit level — are *derived* ([`00`](00-foundation.md) §2).
+No `sequential=` flag, no `handle_tool_error=`, no per-tool `retries=` — and **no
+`accepts_tainted=` or `max_confidentiality=`**, see [03 §1.1](03-tools-and-mcp.md).
 
-`@tool` không có dạng gọi trần (`@tool` không tham số): overload đầu tiên trả `NoReturn`
-nên **type checker báo lỗi trước cả khi chạy**, và runtime raise `MissingEffectError` lúc
-import. Đây là hàng đầu tiên trong bảng Poka-Yoke: tool không khai `effect` bị chặn ở
-*import time* ([§05](../research/05-ideal-harness.md) §35–36).
+`@tool` has no bare-call form (`@tool` with no arguments): the first overload returns
+`NoReturn` so the **type checker reports an error before it even runs**, and the runtime
+raises `MissingEffectError` at import time. This is the first row in the Poka-Yoke table:
+a tool with no `effect` is blocked at *import time*
+([§05](../research/05-ideal-harness.md) §35–36).
 
-`ToolSpec` giữ lại `__call__` uỷ nhiệm cho hàm gốc, nên tool vẫn unit-test được trực tiếp
-mà không cần dựng `Agent`.
+`ToolSpec` keeps a `__call__` that delegates to the original function, so a tool remains
+directly unit-testable without building an `Agent`.
 
-### 1.4 `Approver` và `Answer` — sửa phát hiện số một
+### 1.4 `Approver` and `Answer` — fixing finding number one
 
-> **Ba tên, ba vai, đừng lẫn.** `Ruling` là điều **policy** phán
-> ([02 §1](02-safety-engine.md)); `Answer` là điều **con người** trả lời; `Decision` là
-> bản ghi bất biến mà **runtime** niêm phong từ `Answer` + `Actor` + `Scope`
-> ([00 §4](00-foundation.md)). Chỉ `Decision` đi vào audit log.
+> **Three names, three roles, don't conflate them.** A `Ruling` is what a **policy**
+> decides ([02 §1](02-safety-engine.md)); an `Answer` is what a **human** replies with; a
+> `Decision` is the immutable record the **runtime** seals from an `Answer` + `Actor` +
+> `Scope` ([00 §4](00-foundation.md)). Only `Decision` ever enters the audit log.
 
 ```python
 @value
 class Answer:
-    verdict: Literal[Verdict.ALLOW, Verdict.DENY]   # ASK không bao giờ là kết quả cuối
-    reason: str                                      # bắt buộc, cả khi ALLOW
+    verdict: Literal[Verdict.ALLOW, Verdict.DENY]   # ASK is never a final outcome
+    reason: str                                      # required, even for ALLOW
     expires_at: datetime | None = None
 
 @value
 class ApprovalRequest:
-    scope: Scope                 # tool + giá trị tham số + server — 00 §4.1
-    reason: str                  # policy nào yêu cầu hỏi
-    label: Label                 # context đang ở nhãn nào
+    scope: Scope                 # tool + parameter values + server — 00 §4.1
+    reason: str                  # which policy asked
+    label: Label                 # the context's current label
     estimated_cost: Money
 
 class Approver:
@@ -157,61 +163,66 @@ class Approver:
                  *, actor: Actor) -> None: ...
 ```
 
-**`Approver` trả `Answer`, không trả `Decision`.** Đây là cách bất biến D-1 được thực thi
-*bằng kiểu*, không bằng review: người duyệt chỉ điền `verdict`, `reason`, `expires_at`;
-runtime niêm phong thành `Decision` với `id`, `decided_at`, `run_id`, và `actor` — mà
-`actor` được gắn **lúc dựng `Approver`**, không phải mỗi lần gọi. Không có đường nào để
-một `Decision` mang actor do bên được duyệt tự khai. Đây chính là chỗ agno sai: nhật ký
-audit dày nhất trong 23 gói Python là `decision_log` — một tool mà chính model gọi để tự
-ghi về mình ([§09](../research/09-memory-context-multiagent-hitl.md) §14.1).
+**`Approver` returns an `Answer`, never a `Decision`.** This is how invariant D-1 is
+enforced *by the type system*, not by review: the approver only fills in `verdict`,
+`reason`, `expires_at`; the runtime seals it into a `Decision` with `id`, `decided_at`,
+`run_id`, and `actor` — where `actor` is attached **when the `Approver` is constructed**,
+not on every call. There is no path for a `Decision` to carry an actor the approved
+party declared itself. This is exactly where agno gets it wrong: the thickest audit
+signal across 23 Python packages is `decision_log` — a tool the model itself calls to
+log about itself ([§09](../research/09-memory-context-multiagent-hitl.md) §14.1).
 
-`reason` bắt buộc cả khi `ALLOW`: một grant không có lý do không audit được sáu tháng sau.
+`reason` is required even for `ALLOW`: a grant with no reason can't be audited six months
+later.
 
 ---
 
 ## 2. Zero-to-Agent — progressive disclosure
 
-Nghiên cứu trả lời rất thẳng câu "bao lâu để có agent production": **dưới một giờ tới một
-demo ở bất kỳ framework nào — đó là bài toán đã giải và không phải điểm phân biệt; phần
-production thì framework không đưa bạn tới, và khoảng cách đó không phải tài liệu**
-([§11](../research/11-workflow-and-dx.md) §22). Bốn mức dưới đây được thiết kế để **mỗi
-mức mới lộ ra đúng một khái niệm**, và mức 4 là chỗ nghiên cứu nói cả ngành bỏ trống.
+The research answers "how long to a production agent" very plainly: **under an hour to a
+demo, in any framework — that problem is solved and isn't a differentiator; the
+production part is where frameworks don't get you, and that gap isn't documentation**
+([§11](../research/11-workflow-and-dx.md) §22). The four tiers below are designed so
+**each new tier reveals exactly one concept**, and tier 4 is where the research says the
+whole industry leaves a gap.
 
-### Mức 0 — chạy được: 5 dòng
+### Tier 0 — it runs: 5 lines
 
 ```python
 from harness import Agent
 
-agent = Agent(name="Helper", job="Trả lời ngắn gọn bằng tiếng Việt.",
+agent = Agent(name="Helper", job="Answer briefly.",
               model="claude-opus-5", budget="$0.05")
-print(agent.run_sync("Thủ đô của Việt Nam là gì?").text)
+print(agent.run_sync("What is the capital of Vietnam?").text)
 ```
 
-Bốn tham số. `budget` là tham số thứ tư vì nó bắt buộc — và đó là **chủ ý**: thứ duy nhất
-buộc người mới gõ thêm một dòng chính là thứ cả ngành không có
-([§03](../research/03-safety-reliability.md) §20). `"$0.05"` parse thành `Budget`; sai cú
-pháp là `InvalidBudgetError` lúc construction.
+Four parameters. `budget` is the fourth parameter because it's required — and that's
+**deliberate**: the one thing that forces a newcomer to type an extra line is the one
+thing the whole industry is missing ([§03](../research/03-safety-reliability.md) §20).
+`"$0.05"` parses into a `Budget`; a syntax error is an `InvalidBudgetError` at
+construction.
 
-### Mức 1 — thêm tool: +5 dòng
+### Tier 1 — add a tool: +5 lines
 
 ```python
 from harness import Agent, Effect, tool
 
 @tool(effect=Effect.READ)
 def word_count(text: str) -> int:
-    """Đếm số từ trong một đoạn văn bản."""
+    """Count the words in a piece of text."""
     return len(text.split())
 
-agent = Agent(name="Helper", job="Đếm từ khi được hỏi.",
+agent = Agent(name="Helper", job="Count words when asked.",
               model="claude-opus-5", budget="$0.05",
               tools=[word_count])
-print(agent.run_sync("Câu 'xin chào các bạn' có mấy từ?").text)
+print(agent.run_sync("How many words in 'hello there everyone'?").text)
 ```
 
-Khái niệm mới: **đúng một** — `effect`. Không `sandbox` vì bộ tool toàn `read`. Schema
-sinh từ type hints; docstring thành mô tả tool.
+New concept: **exactly one** — `effect`. No `sandbox` because the tool set is all
+`read`. The schema is generated from type hints; the docstring becomes the tool
+description.
 
-### Mức 2 — thêm tác dụng phụ: sandbox và approval xuất hiện *vì bộ tool đổi*
+### Tier 2 — add a side effect: sandbox and approval appear *because the tool set changed*
 
 ```python
 from harness import (Agent, Approver, Channel, Effect, Human, Answer,
@@ -219,18 +230,18 @@ from harness import (Agent, Approver, Channel, Effect, Human, Answer,
 
 @tool(effect=Effect.WRITE)
 def save_note(path: str, body: str) -> str:
-    """Ghi một ghi chú vào workspace và trả về đường dẫn đã ghi."""
+    """Write a note into the workspace and return the path written."""
     ...
 
 async def ask_terminal(req):
     print(f"  {req.scope.tool}({dict(req.scope.args or {})})")
-    print(f"  vì: {req.reason} · ước tính {req.estimated_cost}")
-    ok = input("  duyệt? [y/N] ") == "y"
+    print(f"  because: {req.reason} . estimated {req.estimated_cost}")
+    ok = input("  approve? [y/N] ") == "y"
     return Answer(verdict=Verdict.ALLOW if ok else Verdict.DENY,
-                  reason="người dùng trả lời ở terminal")
+                  reason="user answered at the terminal")
 
 agent = Agent(
-    name="Notetaker", job="Ghi chú theo yêu cầu của người dùng.",
+    name="Notetaker", job="Take notes as the user requests.",
     model="claude-opus-5",
     budget="$0.20, 15 steps, 60s",
     tools=[save_note],
@@ -239,15 +250,17 @@ agent = Agent(
 )
 ```
 
-Bỏ `sandbox=` ra khỏi đoạn này thì **không chạy được** — `UnsafeToolSetError` lúc
-construction, kèm tên tool và effect của nó. Bỏ `approve=` cũng vậy, vì `write` có verdict
-mặc định `ASK` ([`00`](00-foundation.md) §2) và một `ASK` không có người trả lời là bế tắc
-biết trước. Cả hai lỗi xảy ra **trước khi tiêu một xu**.
+Remove `sandbox=` from this snippet and it **doesn't run** — `UnsafeToolSetError` at
+construction, naming the tool and its effect. Same for removing `approve=`, since
+`write`'s default verdict is `ASK` ([`00`](00-foundation.md) §2) and an `ASK` with no
+one to answer it is a foreseeable deadlock. Both errors happen **before a single cent is
+spent**.
 
-Đây là chỗ khác builder pattern `.withTimeout().withBudget().run()`: builder cho phép gọi
-`.run()` mà không đặt gì cả ([§05](../research/05-ideal-harness.md) §35–36).
+This is where it differs from the `.withTimeout().withBudget().run()` builder pattern: a
+builder lets you call `.run()` having set nothing at all
+([§05](../research/05-ideal-harness.md) §35–36).
 
-### Mức 3 — production: 4 khái niệm còn lại
+### Tier 3 — production: the four remaining concepts
 
 ```python
 import asyncio
@@ -257,7 +270,7 @@ from harness.plugins import Retry, CostReport
 from harness.policy import DenyHosts
 
 agent = Agent(
-    name="Notetaker", job="Ghi chú theo yêu cầu của người dùng.",
+    name="Notetaker", job="Take notes as the user requests.",
     model="claude-opus-5",
     budget="$0.20, 15 steps, 60s",
     tools=[save_note, fetch_page],
@@ -266,17 +279,17 @@ agent = Agent(
     policies=[DenyHosts("*.internal")],
     plugins=[Backoff(on=("rate_limited", "unavailable"), attempts=3), CostReport()],
     checkpointer=SqliteCheckpointer("./runs.db"),
-    # `end_strategy` KHÔNG lên ở đây có chủ ý (review-kiss.md K-11): mặc định đã là
-    # "graceful", và nó không phải một trong bốn khái niệm còn thiếu của cả ngành mà
-    # mục này minh hoạ (retry, cost report, durable checkpoint, deny-hosts) — chỉ khai
-    # nó khi thật sự cần đổi khỏi mặc định.
+    # `end_strategy` deliberately does NOT appear here (review-kiss.md K-11): the
+    # default is already "graceful", and it isn't one of the four industry-wide gaps
+    # this section illustrates (retry, cost report, durable checkpoint, deny-hosts) —
+    # only declare it when you actually need to change it from the default.
 )
 
 async def main() -> None:
-    async for ev in agent.stream("Tóm tắt trang X rồi ghi vào note.md", run_id="r-42"):
+    async for ev in agent.stream("Summarize page X then save it to note.md", run_id="r-42"):
         print(ev.type, ev.sequence)
 
-    r = await agent.try_run("Tiếp tục", run_id="r-42")
+    r = await agent.try_run("Continue", run_id="r-42")
     if r.stop_reason is StopReason.AWAITING_DECISION:
         r = await agent.resume("r-42", answer=await ask_terminal_for(r.pending))
     print(r.output, r.cost, r.label, len(r.decisions))
@@ -284,48 +297,50 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Bốn khái niệm mới, và chúng là **bốn chỗ trống của cả ngành**, không phải bốn tính năng
-thêm cho vui: durability (`checkpointer` — có được vì runtime là graph,
-[§11](../research/11-workflow-and-dx.md) §12), policy chỉ-thắt-chặt, plugin cho retry/cost,
-và approval round-trip qua `AWAITING_DECISION` → `resume(answer=…)`.
+Four new concepts, and they are **four industry-wide gaps**, not four features added for
+show: durability (`checkpointer` — available because the runtime is a graph,
+[§11](../research/11-workflow-and-dx.md) §12), a tighten-only policy, plugins for
+retry/cost, and an approval round-trip through `AWAITING_DECISION` -> `resume(answer=…)`.
 
-**Tổng cộng: 5 → 10 → 22 → 30 dòng.** Không mức nào phải viết lại mức trước; mỗi mức chỉ
-thêm tham số vào cùng một constructor.
+**Total: 5 -> 10 -> 22 -> 30 lines.** No tier requires rewriting the previous one; each
+tier only adds parameters to the same constructor.
 
 ---
 
-## 3. Extreme DX — đứng ở đâu, và vì sao
+## 3. Extreme DX — where this stands, and why
 
-Nghiên cứu đo DX chứ không nhận xét DX ([§11](../research/11-workflow-and-dx.md) §22).
-Ba con số, ba lập trường:
+The research measures DX rather than commenting on it
+([§11](../research/11-workflow-and-dx.md) §22). Three numbers, three positions:
 
-### 3.1 Type hints — `py.typed` không còn là điểm khác biệt
+### 3.1 Type hints — `py.typed` is no longer a differentiator
 
-**11/12 gói ship `py.typed`** ([§11](../research/11-workflow-and-dx.md) §22); hai năm
-trước bảng đó chủ yếu là "no". Ship `py.typed` bây giờ là **điều kiện tối thiểu**, không
-phải điểm mạnh — nên nói "chúng tôi có type hints" là nói không có gì.
+**11/12 packages ship `py.typed`** ([§11](../research/11-workflow-and-dx.md) §22); two
+years ago that table would have mostly said "no." Shipping `py.typed` today is a
+**minimum bar**, not a strength — so saying "we have type hints" says nothing.
 
-Lập trường cụ thể hơn, đo được:
+A more specific, measurable position:
 
 - ship `py.typed`;
-- **không có `Any` trong signature công khai** — 14 tên ở §1 phải kiểm được bằng
-  `mypy --strict` từ phía *người dùng*, không chỉ từ phía source;
-- `Agent` generic trên `OutT` để `result.output` có kiểu thật, học PydanticAI
-  ([§02](../research/02-api-comparison.md) §6);
-- **0 tệp `.pyi`.** Microsoft là dự án duy nhất ship stub (23 tệp), và đó là việc đúng
-  *khi runtime type động* ([§11](../research/11-workflow-and-dx.md) §22). Kiểu của harness
-  này tĩnh, nên stub là bảo trì thêm mà không mua được gì — KISS, cắt.
-- **≤ 3 required dependency trong core.** Bảng deps trải từ 1 (autogen-agentchat) tới 31
-  (crewai) ([§11](../research/11-workflow-and-dx.md) §22); provider và store đi bằng extras.
+- **no `Any` in a public signature** — the 14 names in §1 must type-check under
+  `mypy --strict` from the *caller's* side, not just from inside the source;
+- `Agent` is generic over `OutT` so `result.output` has a real type, learned from
+  PydanticAI ([§02](../research/02-api-comparison.md) §6);
+- **0 `.pyi` files.** Microsoft is the only project shipping stubs (23 files), and that's
+  the right call *when the runtime type is dynamic*
+  ([§11](../research/11-workflow-and-dx.md) §22). This harness's types are static, so a
+  stub is extra maintenance buying nothing — KISS, cut.
+- **≤ 3 required dependencies in core.** The dependency table spans from 1
+  (autogen-agentchat) to 31 (crewai) ([§11](../research/11-workflow-and-dx.md) §22);
+  providers and stores travel as extras.
 
-### 3.2 Thông báo lỗi — 100% có ngữ cảnh, bằng cấu trúc chứ không bằng kỷ luật
+### 3.2 Error messages — 100% with context, by construction, not by discipline
 
-Tỉ lệ "errors with context" trải **27%–61%**: smolagents 61% (cao nhất), haystack 48%,
-openai-agents 30%, llama-index 27% ([§11](../research/11-workflow-and-dx.md) §22). Và
-nghiên cứu tự cảnh báo: chỉ số này **đo hình thức, không đo chất lượng** — một f-string
-vẫn có thể vô dụng ([§11](../research/11-workflow-and-dx.md) §45).
+The "errors with context" rate spans **27%-61%**: smolagents 61% (highest), haystack
+48%, openai-agents 30%, llama-index 27% ([§11](../research/11-workflow-and-dx.md) §22).
+And the research warns about itself: this metric **measures form, not quality** — an
+f-string can still be useless ([§11](../research/11-workflow-and-dx.md) §45).
 
-Nên harness này nhắm cả hai, và làm cho *không thể vi phạm*:
+So this harness targets both, and makes it *impossible to violate*:
 
 ```python
 class HarnessError(Exception):
@@ -333,66 +348,72 @@ class HarnessError(Exception):
                  fix: str, doc: str) -> None: ...
 ```
 
-`fix` và `doc` là **keyword bắt buộc**. Không có cách nào raise một lỗi của harness mà
-không nói phải làm gì. Tỉ lệ error-context là 100% *theo cấu trúc*, và một test CI dùng
-lại chính probe của `research/harvest.py` để chứng minh nó không tụt.
+`fix` and `doc` are **required keywords**. There is no way to raise a harness error
+without saying what to do about it. The error-context rate is 100% *by construction*,
+and a CI test reuses the exact probe from `research/harvest.py` to prove it never
+regresses.
 
-Ba yêu cầu về nội dung, mỗi cái sửa một kiểu thông báo vô dụng:
+Three content requirements, each fixing one kind of useless message:
 
-1. **Nội suy giá trị gây lỗi** — `got=` bắt buộc render vào message, không phải "invalid
-   budget" mà là giá trị người dùng đã gõ.
-2. **Nói phải làm gì** — `fix` là câu mệnh lệnh, không phải mô tả điều kiện.
-3. **Một neo tài liệu** — `doc` trỏ tới đúng mục, không trỏ trang chủ.
+1. **Interpolate the offending value** — `got=` must render into the message, not
+   "invalid budget" but the actual value the caller typed.
+2. **Say what to do** — `fix` is an imperative sentence, not a description of the
+   condition.
+3. **One documentation anchor** — `doc` points to the exact section, never the home
+   page.
 
 ```
-InvalidBudgetError: budget cần một trục tiền.
+InvalidBudgetError: a budget needs a money axis.
 
-  Bạn viết:  budget="15 steps, 60s"
-  Viết:      budget="$0.20, 15 steps, 60s"
+  You wrote:  budget="15 steps, 60s"
+  Write:      budget="$0.20, 15 steps, 60s"
 
-  Giới hạn số bước không phải giới hạn chi tiêu: một vòng 200k token
-  đắt gấp trăm lần một vòng ngắn, nên đếm vòng không kiểm soát được tiền.
+  A step limit is not a spending limit: a 200k-token round costs a
+  hundred times more than a short one, so counting rounds doesn't cap money.
 
   -> design/01-core-api.md §1.1
 ```
 
-### 3.3 Docstring — nhắm bề mặt, không nhắm mật độ
+### 3.3 Docstrings — target the surface, not the density
 
-Mật độ docstring trải **21,3–38,0/kLOC**, và biến thiên 2–3× **không tương quan với quy
-mô, hậu thuẫn, hay độ phổ biến** của dự án ([§11](../research/11-workflow-and-dx.md) §22).
-Mật độ cũng là proxy: docstring của module và của class được đếm ngang docstring hàm
-([§11](../research/11-workflow-and-dx.md) §45).
+Docstring density spans **21.3-38.0/kLOC**, and the 2-3x spread **doesn't correlate with
+a project's size, backing, or popularity** ([§11](../research/11-workflow-and-dx.md)
+§22). Density is also a proxy metric: module and class docstrings are counted the same
+as function docstrings ([§11](../research/11-workflow-and-dx.md) §45).
 
-Nên mục tiêu không phải một con số/kLOC mà là: **100% ký hiệu công khai có docstring**, và
-mật độ rơi vào đâu thì rơi. Nhắm vào chỉ số proxy là tối ưu hoá cái thước.
+So the target isn't a number/kLOC but: **100% of public symbols have a docstring**, and
+density lands wherever it lands. Targeting the proxy metric would just be optimizing the
+ruler.
 
-### 3.4 Lỗi xảy ra sớm nhất có thể
+### 3.4 Errors happen as early as possible
 
-| sai lầm | bị chặn ở | cơ chế |
+| mistake | blocked at | mechanism |
 |---|---|---|
-| tool không khai `effect` | **import time** | `@tool` không có dạng gọi trần; overload trả `NoReturn` |
-| `sandbox=` thiếu khi bộ tool có write/external/danger | **construction** | kiểm bộ tool trong `__init__` |
-| `budget` thiếu trục tiền | **construction** | parser của `Budget` |
-| gõ sai tên tham số | **construction** | keyword-only + `TypeError` của Python |
-| `approve` trả `bool` | **type error** | `Approver` yêu cầu `Awaitable[Answer]` |
-| tool call thiếu idempotency key | **không thể xảy ra** | gateway sinh key, API không nhận |
+| a tool declares no `effect` | **import time** | `@tool` has no bare-call form; the overload returns `NoReturn` |
+| `sandbox=` missing while the tool set has write/external/danger | **construction** | the tool set is checked in `__init__` |
+| `budget` missing a money axis | **construction** | `Budget`'s parser |
+| a mistyped parameter name | **construction** | keyword-only + Python's own `TypeError` |
+| `approve` returns a `bool` | **type error** | `Approver` requires `Awaitable[Answer]` |
+| a tool call missing an idempotency key | **cannot happen** | the gateway generates the key, the API doesn't accept one |
 
-Bảng này là bản rút gọn của Poka-Yoke matrix ([§05](../research/05-ideal-harness.md)
-§35–36); bản đầy đủ ở [`06-poka-yoke-matrix.md`](06-poka-yoke-matrix.md).
+This table is a condensed version of the Poka-Yoke matrix
+([§05](../research/05-ideal-harness.md) §35–36); the full one is in
+[`06-poka-yoke-matrix.md`](06-poka-yoke-matrix.md).
 
 ---
 
-## 4. Plugin API — hai around-hook, và ranh giới không được vượt
+## 4. The plugin API — two around-hooks, and a boundary that must not be crossed
 
-### 4.1 Học ai
+### 4.1 Whose design this borrows
 
-`AgentMiddleware` của LangChain 1.x là **thiết kế mở rộng mạnh nhất tìm được trong toàn
-nghiên cứu** ([§08](../research/08-tool-mcp-plugin.md) §24). Lý do không phải mật độ
-(24,3 middleware/kLOC) mà là *hình dạng*: trong sáu extension point, cặp `wrap_model_call`
-/ `wrap_tool_call` là **around-hook nhận `handler`**, nên nó quyết định gọi hay không gọi,
-gọi khác đi, hay gọi hai lần. Hệ quả: retry, cache, approval gate, fallback model và cost
-accounting đều biểu diễn được **mà framework không cần ship tính năng riêng nào**. Đó là
-Open/Closed đạt được thật.
+LangChain 1.x's `AgentMiddleware` is the **strongest extension design found in the whole
+research effort** ([§08](../research/08-tool-mcp-plugin.md) §24). Not because of density
+(24.3 middleware/kLOC) but because of *shape*: among six extension points, the
+`wrap_model_call` / `wrap_tool_call` pair is an **around-hook that receives a
+`handler`**, so it decides whether to call it, call it differently, or call it twice. The
+consequence: retry, cache, an approval gate, model fallback, and cost accounting can all
+be expressed **without the framework shipping a dedicated feature for any of them**.
+That's Open/Closed, actually achieved.
 
 ```python
 ModelHandler = Callable[[ModelRequest], Awaitable[ModelResponse]]
@@ -410,83 +431,91 @@ class Plugin:
         return await handler(req)
 ```
 
-**Hai hook, không phải sáu.** LangChain có thêm `before_agent` / `before_model` /
-`after_model` / `after_agent`, nhưng bốn cái đó là dòng đầu và dòng cuối của một around-hook.
-Cặp `wrap_*` là phần không thay thế được ([§08](../research/08-tool-mcp-plugin.md) §24);
-bốn cái kia là đường tắt. KISS: cắt bốn, giữ hai.
+**Two hooks, not six.** LangChain also has `before_agent` / `before_model` /
+`after_model` / `after_agent`, but those four are just the first and last line of an
+around-hook. The `wrap_*` pair is the irreplaceable part
+([§08](../research/08-tool-mcp-plugin.md) §24); the other four are a shortcut. KISS: cut
+four, keep two.
 
-`plugins=[a, b, c]` lồng theo thứ tự khai báo: `a` ngoài cùng, tool/model call trong cùng.
+`plugins=[a, b, c]` nests in declaration order: `a` outermost, the model/tool call
+innermost.
 
-**Plugin phải stateless.** State theo run đi trong `req.scratch: MutableMapping[str, Any]`,
-sống trong state đã checkpoint. Đây là R-4 được thực thi bởi chính hình dạng API: nếu
-plugin giữ state trong `self`, hai run đồng thời đọc nhầm của nhau — đúng lỗi Microsoft
-mắc với `threading.local()` ([`00`](00-foundation.md) §3.2, [§09](../research/09-memory-context-multiagent-hitl.md) §16bis).
+**A plugin must be stateless.** Per-run state travels in `req.scratch:
+MutableMapping[str, Any]`, living in checkpointed state. This is R-4 enforced by the API
+shape itself: if a plugin kept state on `self`, two concurrent runs would read each
+other's — exactly Microsoft's mistake with `threading.local()`
+([`00`](00-foundation.md) §3.2, [§09](../research/09-memory-context-multiagent-hitl.md)
+§16bis).
 
-### 4.2 Sửa khuyết điểm nào — R-1 là ranh giới
+### 4.2 Which shortcoming this fixes — R-1 is the boundary
 
-Extension point cũng là **attack surface và đường bypass**. Bằng chứng cụ thể: lattice
-information-flow của Microsoft — cài đặt an toàn tinh vi nhất trong nghiên cứu — là
-middleware, và vì là middleware nên *không cài* là mặc định: chính `_harness/` của họ
-không import nó ([§08](../research/08-tool-mcp-plugin.md) §24,
-[§09](../research/09-memory-context-multiagent-hitl.md) §16bis). Một approval gate viết
-dưới dạng plugin chỉ bảo vệ những agent mà ai đó nhớ bọc.
+An extension point is also **attack surface and a bypass path**. Concrete evidence:
+Microsoft's information-flow lattice — the most sophisticated safety implementation in
+the research — is middleware, and being middleware means *not installed* is the default:
+their own `_harness/` doesn't import it
+([§08](../research/08-tool-mcp-plugin.md) §24,
+[§09](../research/09-memory-context-multiagent-hitl.md) §16bis). An approval gate
+written as a plugin only protects the agents someone remembered to wrap.
 
-Cách giải không phải chọn một bên, mà là **đặt hai loại kiểm tra ở hai vị trí khác nhau so
-với chuỗi plugin**:
+The solution isn't picking one side, but **placing two kinds of checks at two different
+positions relative to the plugin chain**:
 
-| kiểm tra | vị trí so với chuỗi plugin | plugin bỏ qua được? |
+| check | position relative to the plugin chain | can a plugin skip it? |
 |---|---|---|
-| policy verdict (`max()` lattice) | **trước** chuỗi | không — không qua thì chuỗi không được vào |
-| taint check (`Label`) | **trước** chuỗi | không |
-| yêu cầu `Decision` khi verdict là `ASK` | **trước** chuỗi | không |
-| budget `reserve` / `settle` | **trong** handler | không — mỗi lần gọi handler đều bị tính tiền |
-| idempotency key | **trong** handler | không — gateway sinh |
-| audit event | **trong** handler | không |
-| retry · cache · fallback · cost report · log | **là** chuỗi | đó chính là việc của plugin |
+| policy verdict (the `max()` lattice) | **before** the chain | no — the chain isn't entered unless this passes |
+| taint check (`Label`) | **before** the chain | no |
+| requiring a `Decision` when the verdict is `ASK` | **before** the chain | no |
+| budget `reserve` / `settle` | **inside** the handler | no — every handler call is charged |
+| the idempotency key | **inside** the handler | no — the gateway generates it |
+| the audit event | **inside** the handler | no |
+| retry, cache, fallback, cost report, log | **is** the chain | that's exactly what a plugin is for |
 
-Hai quy tắc, phát biểu gọn:
+Two rules, stated concisely:
 
-- **Gate-before** — cái mà bỏ qua là *lỗi bảo mật* (permission, taint, `Decision`) nằm
-  **trước** chuỗi. Plugin không bao giờ nhận được `handler` nếu gate chưa cho qua.
-- **Gate-inside** — cái mà một plugin có thể *lặp lại* (model call, tool call) có gate nằm
-  **bên trong** handler. Một `Retry` gọi handler ba lần thì reserve ba lần, ghi audit ba
-  lần. Retry không dodge được ngân sách.
+- **Gate-before** — what skipping would make a *security bug* (permission, taint, a
+  `Decision`) sits **before** the chain. A plugin never receives a `handler` until the
+  gate has let the call through.
+- **Gate-inside** — what a plugin might *repeat* (a model call, a tool call) has its gate
+  **inside** the handler. A `Retry` that calls the handler three times reserves three
+  times, logs three audit events. Retry cannot dodge the budget.
 
-**Tính chất PLUG-1 (plugin chỉ làm yếu đi)** — đổi tên từ `P-3` gốc (K-13,
-`07-risks-and-open-issues.md` §2, K-13): số `P-3` va chạm với `design/02 §1.2`'s P-3 riêng
-("fail closed khi policy ném lỗi", nay `POL-3`) và `docs/09-testing.md`'s P-3 riêng
-(property-test ID, "mỗi `tool_use` đúng một `tool_result`") — ba nghĩa khác nhau, cùng
-một số. `PLUG-1`: với mọi danh sách plugin `P`, tập tác dụng phụ
-mà một run thực hiện được khi cài `P` là **tập con** của tập khi không cài gì. Plugin có
-thể bỏ qua, không thể nới rộng. Chứng minh được bằng property-based test, cùng cách P-2
-được chứng minh ([`00`](00-foundation.md) §3.1) — vì lý do ở R-2: 23 vòng review tìm ra
-0 lỗi bảo mật, 16 vòng *chạy* tìm ra 4 ([`00`](00-foundation.md) §5).
+**Property PLUG-1 (a plugin can only weaken)** — renamed from the original `P-3`
+(K-13, `07-risks-and-open-issues.md` §2, K-13): the number `P-3` collided with
+`design/02 §1.2`'s own P-3 ("fail closed when a policy raises," now `POL-3`) and
+`docs/09-testing.md`'s own P-3 (a property-test ID, "every `tool_use` gets exactly one
+`tool_result`") — three different meanings, one number. `PLUG-1`: for any list of
+plugins `P`, the set of side effects a run can produce with `P` installed is a **subset**
+of the set with nothing installed. A plugin can narrow, never widen. Provable with a
+property-based test, the same way P-2 is proven ([`00`](00-foundation.md) §3.1) — for the
+reason stated in R-2: 23 review rounds found 0 security bugs, 16 *runtime* rounds found 4
+([`00`](00-foundation.md) §5).
 
-Ba thứ plugin **không có API để chạm tới**, và đó là danh sách đóng: `Ledger` (chỉ đọc
-qua `req.remaining`), `Decision` (không có constructor công khai — chỉ runtime niêm phong
-từ `Answer`), và `Verdict` (không nằm trong `ToolRequest`). Cùng lý do R-3: model không
-cầm công tắc an toàn nào, và plugin do model gián tiếp điều khiển thì cũng không.
+Three things a plugin **has no API to touch**, and this is a closed list: the `Ledger`
+(read-only, through `req.remaining`), a `Decision` (no public constructor — only the
+runtime seals one from an `Answer`), and `Verdict` (not present on `ToolRequest`). Same
+reasoning as R-3: the model holds no safety switch, and a plugin the model can indirectly
+steer doesn't get one either.
 
 ---
 
-## 5. Lỗi trả về gì
+## 5. What errors return
 
-### 5.1 `Result` — một kiểu cho mọi kết cục
+### 5.1 `Result` — one type for every outcome
 
 ```python
 @value
 class Result(Generic[OutT]):
-    output: OutT                       # kiểu do output_type quyết định
+    output: OutT                       # typed by output_type
     text: str
     stop_reason: StopReason
     run_id: RunId
     steps: int
-    cost: Money                        # Decimal-backed, không bao giờ float
+    cost: Money                        # Decimal-backed, never a float
     usage: Usage
-    label: Label                       # nhãn hai chiều lúc kết thúc
-    decisions: tuple[Decision, ...]    # dấu vết audit, append-only (D-2)
-    pending: Scope | None              # có giá trị khi AWAITING_DECISION
-    tools_run: tuple[CallId, ...]      # tool đã CHẠY, không phải tool model đã xin
+    label: Label                       # the two-axis label at the end
+    decisions: tuple[Decision, ...]    # the audit trail, append-only (D-2)
+    pending: Scope | None              # set when AWAITING_DECISION
+    tools_run: tuple[CallId, ...]      # tools that RAN, not tools the model asked for
     detail: str
 
     @property
@@ -494,16 +523,16 @@ class Result(Generic[OutT]):
     def raise_for_status(self) -> None: ...
 ```
 
-`decisions` nằm ngay trên `Result` là chỗ bất biến D-1/D-2 trở nên *dùng được*: người gọi
-trả lời được "ai duyệt cái này, lúc nào, grant còn hiệu lực không" mà không phải đọc log
-riêng. Không framework nào khảo sát trả lời được câu đó
-([§09](../research/09-memory-context-multiagent-hitl.md) §14.1 kết luận).
+`decisions` sitting right on `Result` is what makes invariants D-1/D-2 *usable*: a caller
+can answer "who approved this, when, is the grant still valid" without reading a
+separate log. No framework surveyed can answer that question
+([§09](../research/09-memory-context-multiagent-hitl.md) §14.1 conclusion).
 
-`tools_run` ghi tool đã **thực thi**, không phải tool model đã **yêu cầu**. Trong một thư
-viện mà câu chuyện an toàn là "tool nguy hiểm bị chặn", một helper không phân biệt được
-tool bị chặn với tool đã chạy thì vô dụng cho chính việc kiểm tra đó.
+`tools_run` records tools that **actually executed**, not tools the model **asked for**.
+In a library whose safety story is "dangerous tools get blocked," a helper that can't
+tell a blocked tool from one that ran is useless for the very check it exists to make.
 
-### 5.2 Trạng thái kết thúc
+### 5.2 Terminal states
 
 ```python
 class StopReason(str, Enum):
@@ -514,135 +543,142 @@ class StopReason(str, Enum):
     TIMEOUT           = "timeout"
     DENIED            = "denied"
     CANCELLED         = "cancelled"
-    TRUNCATED         = "truncated"        # context không nén thêm được — 05 §B.3
-    GRAPH_CHANGED     = "graph_changed"    # graph đổi giữa hai lần resume — 04 §4.5
+    TRUNCATED         = "truncated"        # context can't compact any further — 05 §B.3
+    GRAPH_CHANGED     = "graph_changed"    # the graph changed between two resumes — 04 §4.5
     ERROR             = "error"
 ```
 
-| stop reason | `ok` | resume được? | tiền đã tính | `output` |
+| stop reason | `ok` | resumable? | money charged | `output` |
 |---|---|---|---|---|
-| `COMPLETED` | ✅ | — | có | đầy đủ |
-| `AWAITING_DECISION` | ❌ | ✅ `resume(answer=…)` | tới thời điểm dừng | một phần |
-| `BUDGET_EXHAUSTED` | ❌ | ✅ sau khi nâng trần | có, tới trần | một phần |
-| `STEP_LIMIT` | ❌ | ✅ | có | một phần |
-| `TIMEOUT` | ❌ | ✅ | có | một phần |
-| `DENIED` | ❌ | ❌ — cần `Decision` mới | có | một phần |
-| `CANCELLED` | ❌ | ✅ | tới lúc nhận tín hiệu | một phần |
-| `ERROR` | ❌ | ✅ nếu có checkpointer | có | một phần |
+| `COMPLETED` | yes | — | yes | full |
+| `AWAITING_DECISION` | no | yes, `resume(answer=…)` | up to the stop point | partial |
+| `BUDGET_EXHAUSTED` | no | yes, after raising the ceiling | yes, to the ceiling | partial |
+| `STEP_LIMIT` | no | yes | yes | partial |
+| `TIMEOUT` | no | yes | yes | partial |
+| `DENIED` | no | no — needs a new `Decision` | yes | partial |
+| `CANCELLED` | no | yes | up to the signal | partial |
+| `ERROR` | no | yes, if a checkpointer is set | yes | partial |
 
-**`AWAITING_DECISION` không phải thất bại — nó là một điểm dừng.** Đây là approval
-round-trip mà interface mẫu bỏ sót ([§05](../research/05-ideal-harness.md) §35–36).
-Cột "resume được" chỉ có nghĩa khi có `checkpointer`: durability là kiến trúc, không phải
-tuỳ chọn thêm sau ([§11](../research/11-workflow-and-dx.md) §12).
+**`AWAITING_DECISION` is not a failure — it's a pause point.** This is the approval
+round-trip the sample interface omits ([§05](../research/05-ideal-harness.md) §35–36).
+The "resumable" column only means something with a `checkpointer` set: durability is
+architectural, not a bolt-on option ([§11](../research/11-workflow-and-dx.md) §12).
 
-### 5.3 Ngoại lệ — ba nhóm, ba thời điểm
+### 5.3 Exceptions — three groups, three moments
 
 ```python
-class HarnessError(Exception): ...                 # gốc, yêu cầu what/got/fix/doc
+class HarnessError(Exception): ...                 # the root, requires what/got/fix/doc
 
-class ConfigError(HarnessError): ...               # LUÔN ở import/construction time
+class ConfigError(HarnessError): ...               # ALWAYS at import/construction time
 class MissingEffectError(ConfigError): ...
 class UnsafeToolSetError(ConfigError): ...
 class InvalidBudgetError(ConfigError): ...
 class DuplicateToolError(ConfigError): ...
 class UnknownModelError(ConfigError): ...
 
-class RunFailed(HarnessError):                     # từ run(), không từ try_run()
+class RunFailed(HarnessError):                     # from run(), never from try_run()
     result: Result[Any]
 class RunPaused(RunFailed):                        # AWAITING_DECISION
     pending: Scope
 ```
 
-Ba thời điểm, và ranh giới là bất biến kiểm được bằng test: **không có `ConfigError` nào
-được raise từ bên trong một run.** Cái gì sai về cấu hình phải nổ trước khi tiêu tiền.
+Three moments, and the boundary is a testable invariant: **no `ConfigError` is ever
+raised from inside a run.** Whatever is wrong about configuration must blow up before any
+money is spent.
 
-`ProviderError` và các con của nó (`ProviderRateLimited`, `ProviderUnavailable`,
-`ProviderTimeout`, `ProviderAuthError`) **không rò ra bề mặt công khai**: chúng là đầu vào
-của plugin `Retry` (`req` mang mã lỗi đã chuẩn hoá) và biến thành `StopReason.ERROR` ở
-biên. Người dùng không phải học taxonomy lỗi của từng nhà cung cấp.
+`ProviderError` and its subclasses (`ProviderRateLimited`, `ProviderUnavailable`,
+`ProviderTimeout`, `ProviderAuthError`) **never leak onto the public surface**: they are
+the input to the `Retry` plugin (`req` carries a normalized error code) and become
+`StopReason.ERROR` at the boundary. A caller never has to learn each provider's own error
+taxonomy.
 
-### 5.4 Lỗi tool — ba kết cục, suy ra từ `Effect`
+### 5.4 Tool errors — three outcomes, derived from `Effect`
 
-pydantic-ai có **taxonomy ba nhánh duy nhất trong nghiên cứu**
+pydantic-ai has the **only three-branch taxonomy found in the research**
 ([§08](../research/08-tool-mcp-plugin.md) §8.2):
 
-| raise | model thấy | có prompt sửa lỗi | tiêu retry budget | run tiếp |
+| raise | model sees it | a corrective prompt | spends retry budget | run continues |
 |---|---|---|---|---|
-| `Retry` | ✅ | ✅ | ✅ | ✅ |
-| `ToolFailed` | ✅ | ❌ | ❌ | ✅ |
-| ngoại lệ khác | ❌ | — | — | ❌ |
+| `Retry` | yes | yes | yes | yes |
+| `ToolFailed` | yes | no | no | yes |
+| any other exception | no | — | — | no |
 
-Phân biệt "tiêu retry budget hay không" là phần tinh tế và nó đúng: một tham số sai định
-dạng *phải* tiêu quota — model đang đoán và cần bị chặn lại; một 404 dứt khoát thì *không*
-— retry không giúp được, model cần **thích nghi**.
+Distinguishing "spends retry budget or not" is the subtle part, and it's correct: a
+malformed parameter *must* spend quota — the model is guessing and needs to be reined
+in; a definitive 404 *must not* — retrying doesn't help, the model needs to **adapt**.
 
-Harness này giữ ba kết cục đó nhưng **không bắt người viết tool chọn**. LangChain để mặc
-định `handle_tool_error=False`, nghĩa là một tool raise sẽ **kết thúc cả run** — nên một
-lời gọi HTTP chập chờn giết một run 50 bước vốn đang chạy tốt, và muốn khác thì tác giả
-từng tool phải opt-in ([§08](../research/08-tool-mcp-plugin.md) §8.2). Bài học nghiên cứu
-rút ra rất rõ: **không mặc định nào đúng cho mọi tool, nên lựa chọn thuộc về *phân loại*
-của tool, không thuộc về một cờ trên từng tool.**
+This harness keeps those three outcomes but **doesn't make the tool author choose**.
+LangChain defaults to `handle_tool_error=False`, meaning a tool that raises **ends the
+whole run** — so one flaky HTTP call kills a 50-step run that was otherwise going fine,
+and getting different behavior means every tool author has to opt in
+([§08](../research/08-tool-mcp-plugin.md) §8.2). The research's lesson here is clear:
+**no single default is right for every tool, so the choice belongs to the tool's
+*classification*, not to a per-tool flag.**
 
-Quy tắc mặc định, suy ra từ `Effect` ([`00`](00-foundation.md) §2):
+The default rule, derived from `Effect` ([`00`](00-foundation.md) §2):
 
-| effect | ngoại lệ lạ được diễn giải thành | vì sao |
+| effect | an unrecognized exception is interpreted as | why |
 |---|---|---|
-| `read` | `Retry` | retryable, và thất bại của nó là thông tin |
-| `external` | `Retry` | retryable theo bảng effect |
-| `write` | `ToolFailed` | không retry được nếu thiếu idempotency key |
-| `danger` | `ToolFailed` | không retry được, và mức audit là `audit` |
+| `read` | `Retry` | retryable, and its failure is information |
+| `external` | `Retry` | retryable per the effect table |
+| `write` | `ToolFailed` | not retryable without an idempotency key |
+| `danger` | `ToolFailed` | not retryable, and its audit level is `audit` |
 
-Tác giả tool vẫn raise `ToolInputInvalid`/`ToolUnavailable` tường minh khi biết rõ hơn. Nhưng **không có
-đường nào để một tool giết cả run**: mặc định của chúng ta ngược với LangChain. Đổi lại,
-để tránh "degrade âm thầm" mà mặc định của LangChain phòng chống, mọi lỗi tool đều phát
-một event ở mức `info` trở lên và ghi vào `Result.detail` — ồn ào mà không gây tử vong.
+A tool author can still explicitly raise `ToolInputInvalid`/`ToolUnavailable` when they
+know better. But **there is no path for a tool to kill the whole run**: our default is
+the opposite of LangChain's. In exchange, to avoid the "silent degradation" LangChain's
+default guards against, every tool error emits an event at `info` level or higher and is
+recorded in `Result.detail` — loud, but never fatal.
 
 ---
 
-## 6. Học của ai, sửa cho ai
+## 6. Whose design this borrows, and what it fixes for whom
 
-| lấy từ | cái gì | ở đây sửa gì |
+| borrowed from | what | fixed here |
 |---|---|---|
-| PydanticAI ([§02](../research/02-api-comparison.md) §6) | `output_type`, `end_strategy`, taxonomy lỗi 3 nhánh | ba nhánh lỗi **suy ra từ `Effect`** thay vì bắt mỗi tool tự chọn |
-| MS Agent Framework ([§02](../research/02-api-comparison.md) §6) | `client` bắt buộc — DI cưỡng chế | không có model mặc định, cũng không có class var thiên hướng |
-| smolagents ([§05](../research/05-ideal-harness.md) §31) | cách ly ở constructor | **bỏ mặc định `"local"`** — không chọn thì không chạy |
-| Google ADK ([§02](../research/02-api-comparison.md) §6) | `extra='forbid'` | keyword-only + reject positional |
-| LangChain 1.x ([§08](../research/08-tool-mcp-plugin.md) §24) | around-hook `wrap_model_call`/`wrap_tool_call` | 6 hook → 2; và **R-1**: invariant ra khỏi chuỗi plugin |
-| LangGraph ([§11](../research/11-workflow-and-dx.md) §12) | checkpoint là kiến trúc | `resume(run_id, answer=…)` là approval round-trip, không chỉ resume kỹ thuật |
-| Microsoft `ToolApprovalRule` ([§09](../research/09-memory-context-multiagent-hitl.md) §14) | `Scope` khoá theo giá trị tham số + `server_label` | `Answer` → `Decision` niêm phong bởi runtime, actor gắn ở `Approver` |
-| — (không ai có) | trần chi tiêu thật ([§03](../research/03-safety-reliability.md) §20) | `budget` bắt buộc, phải có trục tiền |
+| PydanticAI ([§02](../research/02-api-comparison.md) §6) | `output_type`, `end_strategy`, the 3-branch error taxonomy | the 3 error branches are **derived from `Effect`** instead of making every tool choose |
+| MS Agent Framework ([§02](../research/02-api-comparison.md) §6) | `client` required — enforced DI | no default model, and no vendor-biased class variable |
+| smolagents ([§05](../research/05-ideal-harness.md) §31) | isolation in the constructor | **dropped the `"local"` default** — not choosing means not running |
+| Google ADK ([§02](../research/02-api-comparison.md) §6) | `extra='forbid'` | keyword-only + rejecting positional args |
+| LangChain 1.x ([§08](../research/08-tool-mcp-plugin.md) §24) | the around-hook `wrap_model_call`/`wrap_tool_call` | 6 hooks -> 2; and **R-1**: invariants pulled out of the plugin chain |
+| LangGraph ([§11](../research/11-workflow-and-dx.md) §12) | checkpointing as architecture | `resume(run_id, answer=…)` is an approval round-trip, not just a technical resume |
+| Microsoft's `ToolApprovalRule` ([§09](../research/09-memory-context-multiagent-hitl.md) §14) | `Scope` keyed on parameter values + `server_label` | `Answer` -> `Decision`, sealed by the runtime, actor attached at the `Approver` |
+| — (nobody has it) | a real spend ceiling ([§03](../research/03-safety-reliability.md) §20) | `budget` is required, must have a money axis |
 
 ---
 
-## Chưa đủ evidence
+## Not Enough Evidence
 
-1. **`external` retryable — có mâu thuẫn nội bộ chưa giải.** [`00`](00-foundation.md) §2
-   xếp `external` là retryable ✅, còn [§08](../research/08-tool-mcp-plugin.md) §8.2 cảnh
-   báo "một tool `external` thất bại có thể đã gây tác dụng rồi và không được retry mù".
-   Tệp này theo foundation vì foundation là luật, nhưng mâu thuẫn là thật và có lẽ phải
-   giải bằng idempotency key chứ không bằng cờ retry. Thuộc [`03`](03-tools-and-mcp.md).
-2. **`run` async + `run_sync` là quy ước, không phải phát hiện.** Nghiên cứu không đo tác
-   động của lựa chọn này lên DX; nó chỉ ghi rằng hai Agent API điểm cao nhất đều làm vậy.
-3. **`deps_type` đã bị CẮT.** Bản nháp đầu có `Agent` generic trên `DepsT`. Reviewer chỉ ra
-   hai lý do độc lập, mỗi lý do đủ: generic đó **không tới được người dùng nào** (`ToolCtx`
-   của [03](03-tools-and-mcp.md) §6.2 không có trường `deps`), và trích dẫn duy nhất cho nó
-   là "PydanticAI có nó" — theo [00 §8.4](00-foundation.md) đó là ý kiến, không phải phát
-   hiện ([review-kiss.md](review-kiss.md) K-2). Ai cần DI thì đóng gói vào closure của tool;
-   `functools.partial` đã có sẵn. Nếu sau này có nhu cầu **đo được**, thêm lại bằng một
-   trường `deps: Any` trên `ToolCtx` — một dòng, không cần generic trên `Agent`.
-
-
-4. **Thứ tự lồng plugin.** Nghiên cứu đọc `AgentMiddleware` ở mức signature; ngữ nghĩa
-   thứ tự khi nhiều middleware cùng cài **không được đo**. "Khai trước thì ngoài hơn" là
-   lựa chọn của tệp này, không phải điều học được.
-5. **Vercel AI SDK middleware chưa đo** ([§08](../research/08-tool-mcp-plugin.md) §45) —
-   có thể tồn tại một hình dạng hook tốt hơn cặp `wrap_*` mà nghiên cứu chưa chạm tới.
-6. **`≤ 3 required dependency` là mục tiêu, chưa phải phép đo.** Nó chỉ kiểm được khi có
-   implementation; cho tới lúc đó nó là ràng buộc tự đặt.
-7. **`Answer` → `Decision` chưa có tiền lệ.** Không framework nào tách phần người duyệt
-   điền khỏi phần runtime niêm phong ([§09](../research/09-memory-context-multiagent-hitl.md)
-   §14.1), nên không có bằng chứng nào cho biết nó chịu được một UI phê duyệt thật (nhiều
-   người duyệt, uỷ quyền, thu hồi).
-8. **Chi phí của `output_type`.** Vòng lặp validate–retry khi model trả sai schema tốn bao
-   nhiêu token không được đo ở bất kỳ dự án nào trong nghiên cứu — nên tương tác giữa
-   `output_type` và trần chi tiêu là chưa biết.
+1. **`external` retryable — an unresolved internal contradiction.** [`00`](00-foundation.md)
+   §2 marks `external` as retryable, while [§08](../research/08-tool-mcp-plugin.md) §8.2
+   warns "a failed `external` tool may already have had an effect and must not be retried
+   blindly." This file follows the foundation since the foundation is the rule, but the
+   contradiction is real and probably needs to be resolved with an idempotency key rather
+   than a retry flag. Belongs to [`03`](03-tools-and-mcp.md).
+2. **`run` async + `run_sync` is a convention, not a finding.** The research doesn't
+   measure this choice's effect on DX; it only records that the two highest-scoring Agent
+   APIs both do it.
+3. **`deps_type` was CUT.** An early draft had `Agent` generic over `DepsT`. A reviewer
+   pointed out two independent reasons, either one sufficient: that generic **reaches no
+   user anywhere** (`03`'s `ToolCtx` in §6.2 has no `deps` field), and its only citation
+   was "PydanticAI has it" — per [00 §8.4](00-foundation.md) that's an opinion, not a
+   finding ([review-kiss.md](review-kiss.md) K-2). Whoever needs DI can capture it in a
+   tool's closure; `functools.partial` already exists. If a **measured** need shows up
+   later, add it back with a `deps: Any` field on `ToolCtx` — one line, no generic needed
+   on `Agent`.
+4. **Plugin nesting order.** The research reads `AgentMiddleware` at the signature level;
+   the semantics of ordering when several middlewares are installed together **were not
+   measured**. "Declared first means outermost" is this file's choice, not a learned fact.
+5. **Vercel AI SDK middleware was not measured**
+   ([§08](../research/08-tool-mcp-plugin.md) §45) — a better hook shape than the
+   `wrap_*` pair might exist that the research never reached.
+6. **`≤ 3 required dependencies` is a target, not yet a measurement.** It can only be
+   checked once there's an implementation; until then it's a self-imposed constraint.
+7. **`Answer` -> `Decision` has no precedent.** No framework separates what the approver
+   fills in from what the runtime seals
+   ([§09](../research/09-memory-context-multiagent-hitl.md) §14.1), so there's no
+   evidence it holds up under a real approval UI (multiple approvers, delegation,
+   revocation).
+8. **The cost of `output_type`.** How many tokens the validate-retry loop costs when a
+   model returns the wrong schema is not measured by any project in the research — so the
+   interaction between `output_type` and the spend ceiling is unknown.

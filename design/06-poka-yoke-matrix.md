@@ -1,84 +1,88 @@
-# Ma trận Poka-Yoke
+# Poka-Yoke Matrix
 
-Mỗi hàng: **một lớp lỗi có thật** → **bằng chứng nó có thật** → **cơ chế chặn** → **mức
-Poka-Yoke** → **kiểm bằng cách nào**.
+Every row: **a real failure class** -> **evidence it's real** -> **the blocking
+mechanism** -> **its Poka-Yoke tier** -> **how it's checked**.
 
-Ba mức, theo nghĩa chặt:
+Three tiers, strictly defined:
 
-| mức | nghĩa | ví dụ đời thường |
+| tier | meaning | everyday example |
 |---|---|---|
-| **1 — Cảnh báo** | tài liệu nói đừng làm; không có gì chặn | biển "cẩn thận bậc thang" |
-| **2 — Phát hiện** | làm sai được, nhưng hệ thống báo ngay | máy giặt kêu khi cửa chưa đóng |
-| **3 — Chặn** | **không biểu diễn được** cái sai | phích cắm ba chấu không cắm ngược được |
+| **1 — Warning** | documentation says don't; nothing stops it | a "mind the step" sign |
+| **2 — Detect** | the mistake is possible, but the system reports it immediately | a washing machine beeping when the door isn't shut |
+| **3 — Block** | the mistake **cannot be represented** | a three-prong plug that can't be inserted backward |
 
-Luật của bản thiết kế: **một invariant chỉ được tính là đã sửa nếu đạt mức 3, hoặc mức 2
-với lý do ghi rõ vì sao mức 3 bất khả thi.** Lý do có bằng chứng: 23 vòng review tìm ra
-**0** lỗi bảo mật; 16 vòng *chạy* tìm ra **4** ([§00](../research/00-executive-summary.md)).
-Mức 1 là review đội lốt cơ chế.
+This design's rule: **an invariant only counts as fixed once it reaches tier 3, or tier
+2 with a written reason tier 3 is infeasible.** The reason has evidence: 23 review
+rounds found **0** security bugs; 16 *runtime* rounds found **4**
+([§00](../research/00-executive-summary.md)). Tier 1 is a review wearing a mechanism's
+clothes.
 
 ---
 
-## A. Bảy khuyết điểm của cả ngành
+## A. Seven industry-wide shortcomings
 
-| # | lớp lỗi | bằng chứng | cơ chế | mức | kiểm bằng |
+| # | failure class | evidence | mechanism | tier | checked by |
 |---|---|---|---|---|---|
-| 1 | Approval là trạng thái quyền, không phải quyết định audit được | 30 gói, 3 ngôn ngữ, không ngoại lệ ([§09](../research/09-memory-context-multiagent-hitl.md) §14) | `Decision` append-only; `Actor` **không có** biến thể `Model`; `decided_at`/`run_id` do runtime điền | **3** | model không dựng được `Decision` — không có constructor nào nhận `Actor` từ tool |
-| 1b | Grant "vĩnh viễn" (`always_approve` của openai-agents) | ([§09](../research/09-memory-context-multiagent-hitl.md) §14) | "vĩnh viễn" **không biểu diễn được**: `expires_at=None` nghĩa là *chỉ lần này*; cộng trần `max_grant_ttl` | **3** | không có giá trị nào của `expires_at` nghĩa là bất tận |
-| 2 | Cơ chế an toàn tồn tại nhưng không được bật | `agent_framework.security` không được `_harness/` import ([§09](../research/09-memory-context-multiagent-hitl.md) §16bis) | R-1: budget/taint/permission nằm trên đường đi bắt buộc; plugin chỉ cho policy. PLUG-1 (K-13, đổi tên từ `P-3` gốc): tập tác dụng phụ khi có plugin ⊆ khi không có | **3** | property test PLUG-1 |
-| 3 | Trạng thái chia sẻ rò rỉ giữa run đồng thời | `threading.local()` set xuyên `await`, fail-open ([§09](../research/09-memory-context-multiagent-hitl.md) §16bis) | R-4: state đã checkpoint là bộ nhớ **duy nhất**; không singleton, không `ContextVar` (nó không đi xuyên node LangGraph) | **2** | test hai run xen kẽ; mức 3 cần kiểu linear mà Python không có |
-| 4 | Chặn số bước chứ không chặn tiền | không dự án nào `reserve()` trước ([§03](../research/03-safety-reliability.md) §20) | `Budget.usd` **bắt buộc, không mặc định, không `None`**; I-2: không lời gọi model nào chạy không có `Reservation` mở | **3** ở construction, **2** ở runtime | `Budget()` là `TypeError`; wrapper raise |
-| 5 | Không idempotency ở mức tool call | không gói nào có; agno chỉ ở run submission ([§07](../research/07-remaining-python.md)) | effect log **luôn bật** cho `write`/`danger`; không có mức "tắt" | **3** | không có giá trị enum nào tắt được |
-| 6 | Memory write không ghi provenance | không hệ thống nào ghi ([§09](../research/09-memory-context-multiagent-hitl.md) §10.2) | `provenance` là keyword **bắt buộc không mặc định** trên `Store.put`; M-1/M-2/M-3 | **3** | không gọi được `put` mà thiếu `provenance` |
-| 7 | Model cầm công tắc an toàn của chính nó | `mode_set(approval_mode="never_require")` ([§09](../research/09-memory-context-multiagent-hitl.md) §14.2) | R-3; `effect` **không có default** nên công tắc không trốn trong một tham số có mặc định | **3** | quên `effect` là `TypeError` lúc định nghĩa tool |
+| 1 | Approval is a permission state, not an auditable decision | 30 packages, 3 languages, no exception ([§09](../research/09-memory-context-multiagent-hitl.md) §14) | An append-only `Decision`; `Actor` has **no** `Model` variant; `decided_at`/`run_id` filled by the runtime | **3** | the model cannot construct a `Decision` — no constructor accepts an `Actor` from a tool |
+| 1b | A "permanent" grant (openai-agents's `always_approve`) | ([§09](../research/09-memory-context-multiagent-hitl.md) §14) | "Permanent" **isn't representable**: `expires_at=None` means *this call only*; plus a `max_grant_ttl` ceiling | **3** | no value of `expires_at` means forever |
+| 2 | A safety mechanism exists but isn't turned on | `agent_framework.security` never imported by `_harness/` ([§09](../research/09-memory-context-multiagent-hitl.md) §16bis) | R-1: budget/taint/permission on the mandatory path; plugins only for policy. PLUG-1 (K-13, renamed from the original `P-3`): the side-effect set with a plugin installed is a subset of without | **3** | a PLUG-1 property test |
+| 3 | Shared state leaks between concurrent runs | `threading.local()` set across an `await`, fail-open ([§09](../research/09-memory-context-multiagent-hitl.md) §16bis) | R-4: checkpointed state is the **only** memory; no singleton, no `ContextVar` (it doesn't cross a LangGraph node) | **2** | a test with two interleaved runs; tier 3 would need a linear type Python doesn't have |
+| 4 | Caps step count, not money | no project `reserve()`s in advance ([§03](../research/03-safety-reliability.md) §20) | `Budget.usd` **required, no default, never `None`**; I-2: no model call runs without an open `Reservation` | **3** at construction, **2** at runtime | `Budget()` is a `TypeError`; the wrapper raises |
+| 5 | No idempotency at the tool-call level | nobody has it; agno only at run-submission level ([§07](../research/07-remaining-python.md)) | the effect log is **always on** for `write`/`danger`; no "off" tier | **3** | no enum value turns it off |
+| 6 | A memory write records no provenance | no system records it ([§09](../research/09-memory-context-multiagent-hitl.md) §10.2) | `provenance` is a **required keyword, no default** on `Store.put`; M-1/M-2/M-3 | **3** | `put` cannot be called without `provenance` |
+| 7 | The model holds its own safety switch | `mode_set(approval_mode="never_require")` ([§09](../research/09-memory-context-multiagent-hitl.md) §14.2) | R-3; `effect` **has no default**, so the switch has no defaulted parameter to hide in | **3** | forgetting `effect` is a `TypeError` at tool-definition time |
 
 ---
 
-## B. Lỗi tự tìm ra trong chính bản thiết kế này
+## B. Bugs this design found in itself
 
-Đây là phần đáng tin nhất của tài liệu, vì nó không phải lời tự khen. Hai vòng review đối
-kháng tìm ra **58 phát hiện**; bảng dưới là những cái đã sửa và cơ chế thay thế.
+This is the most trustworthy part of the document, because it isn't self-praise. Two
+adversarial review rounds found **58 findings**; the table below is the ones fixed and
+the mechanism that replaced them.
 
-| mã | lỗi trong bản nháp | cơ chế thay thế | mức |
+| id | the bug in the draft | the replacement mechanism | tier |
 |---|---|---|---|
-| S-2 | `unguarded_paths()` DFS từ `START`, mà resume vào **giữa** graph ⇒ TTL và thu hồi mất im lặng | **I-1**: gate là *tiền điều kiện tại chỗ tiêu thụ*, không phải một cạnh — node `tools` tra lại `DecisionLog` ngay trước từng call | **2** (kiểm lúc chạy) |
-| S-1 | `GUARDED` canh **tên node**, nên model call của compaction đi ngoài trần | **I-2**: cưỡng chế ở **seam** — `ModelProvider` bọc một lần, raise nếu không có `Reservation` | **3** |
-| S-3 | Trục confidentiality **không có nguồn phát** — nửa lattice là trang trí | Hai nguồn trên đường đi bắt buộc: `Secret[T]`, và `emits` chỉ **operator** đặt được | **3** |
-| S-5 | `recall` tin `provenance` **đọc từ chính store** ⇒ dữ liệu untrusted tự khai nhãn | M-1 `recall` luôn `join(UNTRUSTED)`; M-2 provenance chỉ **nâng**; M-3 ngoại lệ cần operator opt-in **và** MAC do harness ký | **3** |
-| K-25 | `idempotency=NONE` mặc định ⇒ khuyết điểm #5 chỉ sửa cho ai nhớ opt-in | effect log luôn bật; enum 3 giá trị → 1 `bool` | **3** |
-| K-26 | `Workspace` bắt buộc mà **0 dòng đặc tả** | §4bis, và mục *"KHÔNG được bảo đảm"* quan trọng hơn phần bảo đảm | **2** + trung thực |
-| K-16 | Ví dụ Mức 1 không chạy được theo đặc tả `fn` | `@tool` **sinh** adapter từ type hints; `ctx` là **tuỳ chọn** | **3** |
-| K-20 | `ToolInputInvalid` phá được hợp đồng `HarnessError` | lớp con nhận đúng `what/got/fix/doc` bắt buộc | **3** |
-| K-2 / K-5 / K-1 | ba trừu tượng **không có chỗ đáp** | cắt hẳn | — |
+| S-2 | `unguarded_paths()` DFS starts at `START`, but a resume enters **mid-graph** => TTL and revocation are silently lost | **I-1**: a gate is a *precondition at the point of consumption*, not an edge — the `tools` node re-checks the `DecisionLog` right before each call | **2** (checked at runtime) |
+| S-1 | `GUARDED` guards a **node name**, so compaction's model call sits outside the ceiling | **I-2**: enforced at the **seam** — `ModelProvider` is wrapped once, raises with no `Reservation` | **3** |
+| S-3 | The confidentiality axis had **no source at all** — half the lattice was decoration | Two sources on the mandatory path: `Secret[T]`, and `emits` settable only by the **operator** | **3** |
+| S-5 | `recall` trusted `provenance` **read back from the store itself** => untrusted data self-declaring its label | M-1 `recall` always `join(UNTRUSTED)`; M-2 provenance only **raises**; M-3 the exception needs operator opt-in **and** a harness-signed MAC | **3** |
+| K-25 | `idempotency=NONE` as the default => shortcoming #5 only fixed for whoever remembers to opt in | The effect log is always on; a 3-value enum -> 1 `bool` | **3** |
+| K-26 | `Workspace` required with **0 lines** specifying what it does | §4bis, and the *"NOT guaranteed"* section given equal weight to the guarantee itself | **2** + honest |
+| K-16 | The Tier 1 example doesn't run against the actual `fn` spec | `@tool` **generates** the adapter from type hints; `ctx` is **optional** | **3** |
+| K-20 | `ToolInputInvalid` could break the `HarnessError` contract | The subclass requires exactly `what/got/fix/doc` | **3** |
+| K-2 / K-5 / K-1 | three abstractions with **no user reaching them** | cut outright | — |
 
 ---
 
-## C. Cái KHÔNG đạt mức 3, và vì sao
+## C. What does NOT reach tier 3, and why
 
-Mục này quan trọng hơn hai mục trên. Goose sai chính ở chỗ **hứa nhiều hơn cưỡng chế được**
-([§05](../research/05-ideal-harness.md) §31-8), nên một bảo đảm mà người vận hành *tưởng*
-mình có nguy hiểm hơn một bảo đảm họ biết là không có.
+This section matters more than the two above. Goose's mistake was exactly **promising
+more than it could enforce** ([§05](../research/05-ideal-harness.md) §31-8), so a
+guarantee an operator *thinks* they have is more dangerous than one they know they
+don't.
 
-| cái gì | mức thật | vì sao không lên mức 3 |
+| what | actual tier | why it doesn't reach tier 3 |
 |---|---|---|
-| `Workspace` cách ly tool | **2** | biên **trong tiến trình**. Tool cố ý độc hại gọi thẳng `open()`/`socket()` thì không chặn được. Chống tool viết ẩu và model bị injection, **không** chống tác giả tool thù địch — muốn thế phải cắm `Sandbox` có biên tiến trình |
-| `egress` allowlist | **2** | không chặn exfiltration **qua host được phép**. Việc đó thuộc trục confidentiality, không thuộc `egress` |
-| Cách ly giữa tenant | **2** | R-4 là *điều kiện cần*, không phải bằng chứng đủ. Store bên ngoài chưa xác minh |
-| Đếm token trước khi gửi | **2** | không ai có ngân sách token chính xác; nén theo ước lượng rồi bị provider từ chối là kịch bản thật |
-| `unguarded_paths()` | **2**, miền hẹp | chỉ chứng minh về **đường đi từ `START` trong graph tĩnh**. I-1 và I-2 phủ phần còn lại, và cả hai kiểm **lúc chạy** |
-| Exactly-once cho tool `write` | **2** | at-most-once là trần thật của harness một mình. Nếu tiến trình chết đúng lúc HTTP request đang bay, không bản ghi cục bộ nào phân biệt được "đã tới" với "chưa tới". Exactly-once chỉ đạt khi upstream nhận key |
+| `Workspace` isolating a tool | **2** | an **in-process** boundary. A deliberately malicious tool calling `open()`/`socket()` directly can't be blocked. It defends against a carelessly written tool and a model under injection, **not** against a hostile tool author — that needs a `Sandbox` with a process boundary plugged in |
+| The `egress` allowlist | **2** | doesn't block exfiltration **through an allowed host**. That belongs to the confidentiality axis, not to `egress` |
+| Isolation between tenants | **2** | R-4 is a *necessary condition*, not sufficient evidence. The external store is unverified |
+| Counting tokens before sending | **2** | nobody has a token-exact budget; compacting against an estimate and then getting refused by the provider is a real scenario |
+| `unguarded_paths()` | **2**, narrow domain | only proves something about **paths from `START` in the static graph**. I-1 and I-2 cover the rest, and both are checked **at runtime** |
+| Exactly-once for a `write` tool | **2** | at-most-once is the harness's real ceiling on its own. If the process dies right while an HTTP request is in flight, no local record can distinguish "it arrived" from "it didn't." Exactly-once only happens when upstream accepts the key |
 
 ---
 
-## D. Đọc bảng này thế nào
+## D. How to read this table
 
-Ba câu.
+Three sentences.
 
-**Một cơ chế mức 3 không cần kỷ luật con người.** Đó là toàn bộ khác biệt giữa bản thiết
-kế này và những gì nghiên cứu tìm thấy: `handle_tool_error` của LangChain, `approval_mode`
-của Microsoft, `input_filter` của openai-agents, `start_on` của LangChain đều là **mức 1
-hoặc 2 mặc định tắt** — chúng bảo vệ ai nhớ bật.
+**A tier-3 mechanism needs no human discipline.** That's the entire difference between
+this design and what the research found: LangChain's `handle_tool_error`, Microsoft's
+`approval_mode`, openai-agents's `input_filter`, LangChain's `start_on` are all **tier 1
+or 2, defaulting to off** — they protect whoever remembers to turn them on.
 
-**Một cơ chế mức 2 phải nói rõ nó là mức 2.** Mục C tồn tại vì thế.
+**A tier-2 mechanism must say plainly that it's tier 2.** That's why section C exists.
 
-**Một cơ chế mức 1 không phải cơ chế.** Nếu chỉ có tài liệu nói đừng làm, hàng đó thuộc
-[`07-risks-and-open-issues.md`](07-risks-and-open-issues.md), không thuộc đây.
+**A tier-1 mechanism is not a mechanism.** If all that exists is documentation saying
+don't, that row belongs in
+[`07-risks-and-open-issues.md`](07-risks-and-open-issues.md), not here.

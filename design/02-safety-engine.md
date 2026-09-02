@@ -1,42 +1,44 @@
 # Harness Design — Safety Engine
 
-**Phạm vi:** policy engine, vòng đời `Decision`, audit sink, thực thi taint hai chiều,
-quarantine, và cơ chế giữ cho model không cầm công tắc nào.
+**Scope:** the policy engine, the `Decision` lifecycle, the audit sink, two-directional
+taint enforcement, quarantine, and the mechanism that keeps the model from holding any
+switch.
 
-Tệp này **mở rộng** [`00-foundation.md`](./00-foundation.md). Từ vựng, `Effect`, hai
-lattice, `Decision`/`Scope`/`Actor` lấy nguyên ở đó — không đổi tên, không đổi mô hình.
+This file **extends** [`00-foundation.md`](./00-foundation.md). The vocabulary, `Effect`,
+the two lattices, `Decision`/`Scope`/`Actor` are taken as-is from there — no renaming, no
+remodeling.
 
-Đây là phần sửa **phát hiện số một của toàn bộ nghiên cứu**:
+This is the part that fixes **finding number one of the entire research effort**:
 
-> Qua Python, TypeScript và Java — 30 gói, 3 hệ sinh thái, mọi vendor lớn — **không gói
-> nào mô hình hoá approval như một quyết định audit được.** Ở đâu nó cũng là *trạng thái
-> quyền*. ([§10](../research/10-governance-health-languages.md) §28, tổng kết
-> [§09](../research/09-memory-context-multiagent-hitl.md) §14,
-> [§06](../research/06-typescript.md) Phát hiện 2)
+> Across Python, TypeScript, and Java — 30 packages, 3 ecosystems, every major vendor —
+> **no package models approval as an auditable decision.** Everywhere, it's a
+> *permission state*. ([§10](../research/10-governance-health-languages.md) §28,
+> summarizing [§09](../research/09-memory-context-multiagent-hitl.md) §14,
+> [§06](../research/06-typescript.md) Finding 2)
 
 ---
 
-## 0. Một lưu ý từ vựng bắt buộc
+## 0. A required vocabulary note
 
-`00-foundation.md` §6 gán tên `Decision` cho **bản ghi phê duyệt**. Cài đặt hiện tại
-trong `src/harness/policy/base.py` đang dùng cái tên đó cho *kết quả của policy*. Hai
-khái niệm khác nhau và phải mang hai tên khác nhau:
+`00-foundation.md` §6 assigns the name `Decision` to **the approval record**. The current
+implementation in `src/harness/policy/base.py` uses that name for *a policy's result*.
+These are two different concepts and must carry two different names:
 
-| khái niệm | tên | ai tạo ra |
+| concept | name | created by |
 |---|---|---|
-| phần tử lattice | `Verdict` | — |
-| kết quả hợp thành của policy engine | **`Ruling`** | runtime, thuần tính toán |
-| bản ghi phê duyệt bất biến | **`Decision`** | runtime + con người |
+| a lattice element | `Verdict` | — |
+| the policy engine's composed result | **`Ruling`** | the runtime, pure computation |
+| the immutable approval record | **`Decision`** | the runtime + a human |
 
-`Ruling` **không** là từ đồng nghĩa của `Decision`: nó không có `actor`, không tồn tại
-sau lời gọi, không đi vào audit log như một quyền. Đây là đổi tên có chủ đích trong cài
-đặt hiện tại, không phải thêm khái niệm mới.
+`Ruling` is **not** a synonym for `Decision`: it has no `actor`, doesn't outlive the
+call, and never enters the audit log as a grant. This is a deliberate rename in the
+current implementation, not a new concept being introduced.
 
 ---
 
 ## 1. PolicyEngine
 
-### 1.1 Kiểu
+### 1.1 Types
 
 ```python
 from __future__ import annotations
@@ -47,7 +49,7 @@ from typing import Any, Literal, Mapping, Protocol, Sequence, runtime_checkable
 
 
 class Verdict(IntEnum):
-    """Hợp thành bằng max(): một policy chỉ có thể thắt chặt (tính chất P-2)."""
+    """Composed with max(): a policy can only ever tighten (property P-2)."""
     ALLOW = 0
     ASK = 1
     DENY = 2
@@ -56,9 +58,9 @@ class Verdict(IntEnum):
 @value
 class Ruling:
     verdict: Verdict
-    reason: str            # luôn có chữ; rỗng chỉ khi verdict is ALLOW mặc định
-    policy: str            # policy nào phát ra — truy vết được về một dòng code
-    scope: Scope | None    # policy đề xuất phạm vi grant nếu verdict is ASK
+    reason: str            # always has text; empty only when the verdict is the default ALLOW
+    policy: str             # which policy emitted it — traceable back to one line of code
+    scope: Scope | None    # a policy may propose a grant scope when the verdict is ASK
 
 
 @value
@@ -67,7 +69,7 @@ class ToolCall:
     name: ToolName
     arguments: Mapping[str, Any]
     spec: ToolSpec
-    __hash__ = None        # giữ một Mapping — không hashable, cố ý
+    __hash__ = None        # holds a Mapping — not hashable, deliberately
 
 
 @runtime_checkable
@@ -75,14 +77,14 @@ class Policy(Protocol):
     name: str
 
     def check(self, call: ToolCall, ctx: PolicyContext) -> Ruling:
-        """Thuần, đồng bộ, không I/O. Xem POL-4."""
+        """Pure, synchronous, no I/O. See POL-4."""
 ```
 
-`PolicyContext` là **view chỉ đọc** trên state đã checkpoint của run: `label`, `ledger`
-(số dư, không phải object có `spend()`), `run_id`, `step`, `actor_of_run`. Nó không cầm
-tham chiếu tới `PolicyEngine`, `DecisionLog`, hay `AuditSink` — xem §6.
+`PolicyContext` is a **read-only view** over the run's checkpointed state: `label`, the
+`ledger` (a balance, not an object with `spend()`), `run_id`, `step`, `actor_of_run`. It
+holds no reference to the `PolicyEngine`, the `DecisionLog`, or the `AuditSink` — see §6.
 
-### 1.2 Engine
+### 1.2 The engine
 
 ```python
 EFFECT_FLOOR: Mapping[Effect, Verdict] = {
@@ -94,58 +96,62 @@ EFFECT_FLOOR: Mapping[Effect, Verdict] = {
 
 
 class PolicyEngine:
-    """Nằm trên đường đi bắt buộc (R-1). Không phải middleware, không cài được thì thôi."""
+    """Sits on the mandatory path (R-1). Not middleware — if it isn't installed, nothing runs."""
 
     def __init__(self, builtins: Sequence[Policy], user: Sequence[Policy] = ()) -> None:
         self._policies: tuple[Policy, ...] = tuple(builtins) + tuple(user)
-        # builtins đứng trước và không có API nào gỡ được — không có remove_policy().
+        # Builtins come first, and no API removes them — there is no remove_policy().
 
     def decide(self, call: ToolCall, ctx: PolicyContext) -> Ruling:
         worst = Ruling(EFFECT_FLOOR[call.spec.effect], "effect floor", "core.effect", None)
         for p in self._policies:
             try:
                 r = p.check(call, ctx)
-            except Exception as exc:                       # fail closed, luôn luôn
+            except Exception as exc:                       # fail closed, always
                 r = Ruling(Verdict.DENY, f"policy {p.name!r} raised: {exc}", p.name, None)
             if r.verdict > worst.verdict:
                 worst = r
             if worst.verdict is Verdict.DENY:
-                break                                      # DENY là đỉnh lattice
+                break                                      # DENY is the top of the lattice
         return worst
 ```
 
-Bốn quyết định, mỗi cái sửa một khuyết điểm đo được. Đánh số lại `POL-1…4` (K-13,
-`07-risks-and-open-issues.md` §2, K-13) — `P-1`/`P-3`/`P-4` gốc va chạm với `design/01`'s
-plugin invariant (nay `PLUG-1`) và `docs/09-testing.md`'s property-test-ID catalog
-(P-1..P-10, không đổi — namespace đó sống nhất, được 7+ tệp `docs/*.md` tham chiếu).
-`P-2` giữ nguyên tên cũ có chủ đích: nó là bất biến GỐC định nghĩa ở
-[`00`](00-foundation.md) §3.1, không va chạm gì (docs/09's P-2 test-ID mô tả đúng CÙNG
-bất biến này, không phải một bất biến khác trùng số).
+Four decisions, each fixing a measured shortcoming. Renumbered `POL-1…4` (K-13,
+`07-risks-and-open-issues.md` §2, K-13) — the original `P-1`/`P-3`/`P-4` collided with
+`design/01`'s plugin invariant (now `PLUG-1`) and `docs/09-testing.md`'s
+property-test-ID catalog (P-1..P-10, unchanged — that namespace is the longest-lived,
+referenced by 7+ `docs/*.md` files). `P-2` deliberately keeps its old name: it's the
+ORIGINAL invariant defined in [`00`](00-foundation.md) §3.1, with no collision (docs/09's
+P-2 test-ID describes this exact SAME invariant, not a different one that happens to
+share a number).
 
-**POL-1 — sàn theo `Effect`, không phải `ALLOW`.** Engine khởi tạo từ `EFFECT_FLOOR`, nên
-một run **không có policy nào** vẫn hỏi trước khi `write`/`danger`.
-*Sửa khuyết điểm:* ở Microsoft, gate là per-tool và phải suy lại đúng cho từng tool —
-`_file_access.py` làm đúng, `mode_set` làm sai trong **cùng một module**
-([§09](../research/09-memory-context-multiagent-hitl.md) §14.2). Phân loại một lần rồi
-suy ra gate thì không thể có mâu thuẫn đó.
+**POL-1 — a floor derived from `Effect`, not `ALLOW`.** The engine is seeded from
+`EFFECT_FLOOR`, so a run **with no policies at all** still asks before `write`/`danger`.
+*Shortcoming fixed:* at Microsoft, the gate is per-tool and has to be re-derived
+correctly for each tool — `_file_access.py` gets it right, `mode_set` gets it wrong, in
+**the same module**
+([§09](../research/09-memory-context-multiagent-hitl.md) §14.2). Classify once and
+derive the gate, and that contradiction can't happen.
 
-**P-2 — hợp thành bằng `max()`, thêm policy không bao giờ nới.** §1.3 chứng minh.
+**P-2 — composed with `max()`, adding a policy never loosens.** Proven in §1.3.
 
-**POL-3 — fail closed khi policy ném lỗi.** Đối lập với `threading.local()` của Microsoft:
-lỗi ở đó **fail open và im lặng** ([§09](../research/09-memory-context-multiagent-hitl.md)
-§16bis). Một policy hỏng ở đây thành `DENY` kèm tên policy trong `reason`.
+**POL-3 — fail closed when a policy raises.** The opposite of Microsoft's
+`threading.local()`: an error there **fails open, silently**
+([§09](../research/09-memory-context-multiagent-hitl.md) §16bis). A broken policy here
+becomes a `DENY` with the policy's name in the `reason`.
 
-**POL-4 — `Policy.check` là hàm thuần, đồng bộ.** Không `async`, không I/O, không gọi
-model. Lý do có thể đo: (a) một hàm thuần enumerate được nên P-2 chứng minh được bằng
-test tính chất chứ không bằng review — và nghiên cứu đã cho thấy 23 vòng *đọc* tìm ra
-**0 lỗi bảo mật** còn 16 vòng *chạy* tìm ra **4** (foundation §5, R-2); (b) một policy
-`async` có thể gọi model, và policy gọi model là model tự ảnh hưởng lên quyền của mình.
-Phần cần `await` (hỏi người) không phải policy — nó ở §2.
+**POL-4 — `Policy.check` is a pure, synchronous function.** No `async`, no I/O, no model
+calls. Measurable reasons: (a) a pure function is enumerable, so P-2 is provable with a
+property-based test instead of a review — and the research already showed 23 *reading*
+rounds found **0 security bugs** while 16 *runtime* rounds found **4** (foundation §5,
+R-2); (b) an `async` policy could call a model, and a policy that calls a model is the
+model influencing its own permissions. The part that needs `await` (asking a human) isn't
+a policy — it's in §2.
 
-### 1.3 Chứng minh P-2 bằng test, không bằng review
+### 1.3 Proving P-2 with a test, not a review
 
-`Ruling` là dữ liệu và `check` là hàm thuần, nên toàn bộ `PolicyEngine` là một hàm
-enumerate được. Bốn tính chất, viết bằng `hypothesis`:
+`Ruling` is data and `check` is a pure function, so the whole `PolicyEngine` is an
+enumerable function. Four properties, written with `hypothesis`:
 
 ```python
 from hypothesis import given, strategies as st
@@ -166,7 +172,7 @@ def test_verdict_is_order_independent(base, call, seed):
     shuffled = random.Random(seed).sample(base, len(base))
     assert (PolicyEngine((), base).decide(call, CTX).verdict
             == PolicyEngine((), shuffled).decide(call, CTX).verdict)
-    # `reason` CÓ THỂ khác nhau: short-circuit ở DENY đầu tiên. Chỉ verdict là bất biến.
+    # `reason` CAN differ: short-circuits at the first DENY. Only the verdict is invariant.
 
 
 @given(base=st.lists(policies, max_size=6), call=tool_calls())
@@ -181,119 +187,124 @@ def test_p3_a_raising_policy_denies(base, call, idx):
     assert PolicyEngine((), poisoned).decide(call, CTX).verdict is Verdict.DENY
 ```
 
-Đây là điều foundation §3.1 đòi: *"Chứng minh được bằng test tính chất, không phải bằng
-review."* Ba tính chất đầu là bất biến đại số của lattice; cái thứ tư là bất biến vận
-hành. Cả bốn chạy trong CI, không phụ thuộc vào ai đọc diff.
+This is exactly what foundation §3.1 requires: *"Provable with a property-based test,
+not a review."* The first three properties are algebraic invariants of the lattice; the
+fourth is an operational invariant. All four run in CI, independent of anyone reading a
+diff.
 
-Bổ sung ở tầng graph (thuộc [`04-runtime-durability.md`](./04-runtime-durability.md)):
-`unguarded_paths()` chứng minh không đường nào tới node `tools` mà không qua node
-`policy`. **Lý do cơ chế này phải tồn tại là một quan sát, không phải giả định**: "ship
-middleware nhưng harness không install" đã xảy ra ở một vendor lớn
-([§08](../research/08-tool-mcp-plugin.md) §24, [§09](../research/09-memory-context-multiagent-hitl.md) §16bis).
+Complemented at the graph layer (belonging to
+[`04-runtime-durability.md`](./04-runtime-durability.md)): `unguarded_paths()` proves no
+path reaches the `tools` node without going through the `policy` node. **The reason this
+mechanism has to exist is an observation, not an assumption**: "middleware shipped but
+the harness doesn't install it" already happened at a major vendor
+([§08](../research/08-tool-mcp-plugin.md) §24,
+[§09](../research/09-memory-context-multiagent-hitl.md) §16bis).
 
 ---
 
-## 2. Vòng đời `Decision`
+## 2. The `Decision` lifecycle
 
-### 2.1 Đường đi, từ `ASK` tới bản ghi
+### 2.1 The path, from `ASK` to a record
 
 ```
-tool_call do model đề xuất
-   │
-   ├─(1) PolicyEngine.decide          → Ruling(ASK, scope=…)
-   │
-   ├─(2) DecisionLog.lookup(scope, now)
-   │        ├─ tìm thấy grant còn hạn → dùng lại, KHÔNG hỏi lại, KHÔNG ghi Decision mới
-   │        └─ không thấy             → tiếp
-   │
-   ├─(3) ApprovalProvider.ask(AskRequest) — chỗ DUY NHẤT được await một con người
-   │
-   ├─(4) runtime dựng Decision (bất biến D-1) — model không chạm vào bước này
-   │
-   ├─(5) AuditSink.commit(decision)  ← DURABLE TRƯỚC KHI TOOL CHẠY (§3)
-   │
-   └─(6) verdict ALLOW → tools node ; DENY → tool_result kiểu error, run tiếp
+a tool_call the model proposed
+   |
+   +-(1) PolicyEngine.decide          -> Ruling(ASK, scope=…)
+   |
+   +-(2) DecisionLog.lookup(scope, now)
+   |        +- finds a live grant -> reuse it, do NOT ask again, do NOT write a new Decision
+   |        +- finds nothing      -> continue
+   |
+   +-(3) ApprovalProvider.ask(AskRequest) — the ONLY place a human is ever awaited
+   |
+   +-(4) the runtime builds a Decision (invariant D-1) — the model never touches this step
+   |
+   +-(5) AuditSink.commit(decision)  <- DURABLE BEFORE THE TOOL RUNS (§3)
+   |
+   +-(6) verdict ALLOW -> the tools node ; DENY -> an error tool_result, the run continues
 ```
 
-Bước (2) tồn tại trước (3) là điểm học của Microsoft: `ToolApprovalState` serialise được
-và session-backed, nên grant sống qua resume thay vì bị *hỏi lại im lặng* hoặc *cấp lại
-im lặng* ([§09](../research/09-memory-context-multiagent-hitl.md) §14).
+Step (2) existing before (3) is a point learned from Microsoft: `ToolApprovalState` is
+serializable and session-backed, so a grant survives a resume instead of being *silently
+asked again* or *silently re-granted*
+([§09](../research/09-memory-context-multiagent-hitl.md) §14).
 
-### 2.2 Kiểu ở biên người-máy — học Vercel
+### 2.2 The type at the human/machine boundary — learned from Vercel
 
 ```python
 @value
 class AskRequest:
     call: ToolCall
     ruling: Ruling
-    reason: str                  # CHIỀU REQUEST: vì sao đang hỏi, hiển thị cho người duyệt
-    proposed_scope: Scope        # policy đề xuất; người duyệt có thể thu hẹp, không nới
-    max_grant: timedelta         # trần TTL của run này — xem §2.5
+    reason: str                  # REQUEST direction: why it's asking, shown to the approver
+    proposed_scope: Scope        # what the policy proposes; the approver may narrow it, never widen it
+    max_grant: timedelta         # this run's TTL ceiling — see §2.5
 
 
 @value
 class AskOutcome:
-    verdict: Literal[Verdict.ALLOW, Verdict.DENY]   # ASK không bao giờ là kết quả
-    actor: Actor                                     # provider phải nêu tên người
-    reason: str | None                               # CHIỀU RESPONSE
-    scope: Scope                                     # ⊆ proposed_scope, kiểm tra ở (4)
-    grant_for: timedelta | None                      # None = chỉ lời gọi này
+    verdict: Literal[Verdict.ALLOW, Verdict.DENY]   # ASK is never an outcome
+    actor: Actor                                     # the provider must name a person
+    reason: str | None                               # RESPONSE direction
+    scope: Scope                                     # subset of proposed_scope, checked at (4)
+    grant_for: timedelta | None                      # None = this call only
 
 
 class ApprovalProvider(Protocol):
     async def ask(self, req: AskRequest) -> AskOutcome: ...
 ```
 
-**Học điểm mạnh của ai:** `ToolApprovalStatus` của Vercel AI SDK là *hình dạng* approval
-tốt nhất tìm được trong cả ba hệ sinh thái — union bốn trạng thái, có `approvalId`, và
-`reason` chảy **hai chiều**: trên request để hiển thị cho người duyệt, trên response để
-ghi lại ([§06](../research/06-typescript.md) Phát hiện 2). Hai trường `reason` ở trên là
-đúng chi tiết đó.
+**Whose strength this borrows:** Vercel AI SDK's `ToolApprovalStatus` is the best
+approval *shape* found across all three ecosystems — a four-state union, with an
+`approvalId`, and `reason` flowing **both ways**: on the request to show the approver, on
+the response to record it ([§06](../research/06-typescript.md) Finding 2). The two
+`reason` fields above are exactly that detail.
 
-**Khuyết điểm đang sửa:** Vercel dừng ở *status*. `AskOutcome` không phải kết quả cuối —
-nó là **đầu vào** để runtime dựng `Decision`. Và `not-applicable` của Vercel ở đây được
-biểu diễn bằng **sự vắng mặt của `Decision`**: không hỏi thì không có bản ghi phê duyệt,
-chỉ có một event `policy.allowed` ở mức audit của `Effect`. Phân biệt "không cần hỏi" với
-"đã hỏi và được đồng ý" giữ nguyên, nhưng bằng kiểu chứ không bằng một nhánh enum.
+**The shortcoming being fixed:** Vercel stops at *status*. `AskOutcome` is not the final
+outcome — it is the **input** the runtime uses to build a `Decision`. And Vercel's
+`not-applicable` is represented here by **the absence of a `Decision`**: if nothing was
+asked, there is no approval record, only a `policy.allowed` event at `Effect`'s own audit
+level. The distinction between "didn't need to ask" and "asked and was approved" is kept,
+but by the type system, not by an enum branch.
 
-### 2.3 Ai ghi trường nào — bất biến D-1
+### 2.3 Who fills which field — invariant D-1
 
 ```python
 def _record(req: AskRequest, out: AskOutcome, *, clock: Clock, run_id: RunId) -> Decision:
     if not _scope_narrower_or_equal(out.scope, req.proposed_scope):
-        raise PolicyViolation("approver widened the scope")     # người duyệt cũng không nới được
+        raise PolicyViolation("approver widened the scope")     # not even an approver can widen
     ttl = _cap(out.grant_for, req.max_grant)
     return Decision(
         id=DecisionId(ulid_from(clock.now())),   # runtime
-        verdict=out.verdict,                     # con người
-        scope=out.scope,                         # policy đề xuất, người thu hẹp
-        actor=out.actor,                         # provider — không có biến thể Model
-        decided_at=clock.now(),                  # runtime, KHÔNG phải model
+        verdict=out.verdict,                     # a human
+        scope=out.scope,                         # policy proposes, human narrows
+        actor=out.actor,                         # the provider — no Model variant exists
+        decided_at=clock.now(),                  # runtime, NOT the model
         expires_at=None if ttl is None else clock.now() + ttl,   # runtime
-        reason=out.reason,                       # con người
+        reason=out.reason,                       # a human
         run_id=run_id,                           # runtime
     )
 ```
 
-| trường | ai điền | model chạm được không |
+| field | who fills it | can the model touch it |
 |---|---|---|
-| `id`, `decided_at`, `run_id` | runtime (`Clock` tiêm vào) | không |
-| `verdict`, `reason` | con người / `Operator` | không |
-| `scope` | policy đề xuất, người duyệt chỉ được **thu hẹp** | không |
-| `actor` | `ApprovalProvider` | không — `Actor` không có biến thể `Model` |
-| `expires_at` | runtime tính từ `grant_for` đã cap | không |
+| `id`, `decided_at`, `run_id` | the runtime (an injected `Clock`) | no |
+| `verdict`, `reason` | a human / `Operator` | no |
+| `scope` | proposed by the policy, the approver may only **narrow** it | no |
+| `actor` | the `ApprovalProvider` | no — `Actor` has no `Model` variant |
+| `expires_at` | the runtime, computed from a capped `grant_for` | no |
 
-`_record` là hàm module-private, không nằm trong `harness.__init__`, và không tool nào
-gọi được nó — xem §6.
+`_record` is a module-private function, not exported from `harness.__init__`, and no
+tool can call it — see §6.
 
-**Khuyết điểm đang sửa (rất cụ thể):** `decision_log` của agno là tín hiệu "audit" dày
-nhất trong 23 gói Python, và **mọi trường của nó do model viết**: `decision`,
-`reasoning`, `decision_type`, `context`, `alternatives`, `confidence` — "there is no
-field the runtime fills in and the model cannot"
-([§09](../research/09-memory-context-multiagent-hitl.md) §14.1). Bảng trên là phủ định
-trực tiếp của câu đó.
+**The shortcoming being fixed (very specifically):** agno's `decision_log` is the
+thickest "audit" signal across 23 Python packages, and **every one of its fields is
+written by the model**: `decision`, `reasoning`, `decision_type`, `context`,
+`alternatives`, `confidence` — "there is no field the runtime fills in and the model
+cannot" ([§09](../research/09-memory-context-multiagent-hitl.md) §14.1). The table above
+is the direct negation of that sentence.
 
-### 2.4 Append-only — bất biến D-2
+### 2.4 Append-only — invariant D-2
 
 ```python
 class DecisionLog(Protocol):
@@ -302,45 +313,48 @@ class DecisionLog(Protocol):
     def since(self, run_id: RunId) -> Sequence[Decision]: ...
 ```
 
-Không có `update`, không có `delete`, không có `revoke`. **Thu hồi = `append` một
-`Decision` mới có `verdict=DENY` trên cùng `Scope`.** Điều đó đúng vì tra cứu hợp thành
-bằng chính lattice:
+No `update`, no `delete`, no `revoke`. **Revocation = `append`ing a new `Decision` with
+`verdict=DENY`, on the same `Scope`.** That works because the lookup composes using the
+very same lattice:
 
 ```python
 def lookup(self, call, *, run_id, now):
     hits = [d for d in self.since(run_id)
             if scope_matches(d.scope, call) and (d.expires_at is None or d.expires_at > now)]
-    return max((d.verdict for d in hits), default=None)   # DENY thắng, theo max()
+    return max((d.verdict for d in hits), default=None)   # DENY wins, per max()
 ```
 
-Một dòng `max()` cho ba tính chất: thu hồi luôn thắng grant, thứ tự append không ảnh
-hưởng kết quả, và cùng một lattice của §1 — không có luật ưu tiên thứ hai để hiểu sai.
+One `max()` line gives three properties: revocation always wins over a grant, append
+order doesn't affect the outcome, and it's the same lattice as §1 — no second priority
+rule to misread.
 
-### 2.5 `expires_at`, và vì sao `always_approve` là sai
+### 2.5 `expires_at`, and why `always_approve` is wrong
 
-`_ApprovalRecord` của openai-agents lưu `approved: bool | list[str]`. Phần *scoped* là
-đúng và đáng học: "yes to **this** call" khác "yes to this tool forever", và kiểu phân
-biệt được hai cái đó. Phần sai là `approve_tool(item, always_approve=True)` ghi
-`approved = True` và **grant đó không bao giờ hết hạn trong đời context**; không ghi ai
-bấm, không ghi lúc nào ([§09](../research/09-memory-context-multiagent-hitl.md) §14.1).
+openai-agents's `_ApprovalRecord` stores `approved: bool | list[str]`. The *scoped* part
+is right, and worth learning from: "yes to **this** call" is different from "yes to this
+tool forever," and the type distinguishes them. The wrong part is
+`approve_tool(item, always_approve=True)` writing `approved = True`, and **that grant
+never expires for the life of the context**; it records no who, no when
+([§09](../research/09-memory-context-multiagent-hitl.md) §14.1).
 
-Ba chỗ sai, ba cách sửa:
+Three mistakes, three fixes:
 
-1. **Vĩnh viễn không biểu diễn được.** Foundation quy ước `expires_at: None` nghĩa là
-   *chỉ lời gọi này*, không phải *mãi mãi*. Muốn có standing rule thì phải nêu TTL rõ
-   ràng. "Mãi mãi" **không có giá trị nào biểu diễn được** — đây là Poka-Yoke ở tầng
-   kiểu, không phải ở tầng review.
-2. **Trần TTL do vận hành đặt, không do UI approval đặt.** `RunConfig.max_grant_ttl`
-   (mặc định 1 giờ, `danger` bị ép về `None` = chỉ lần này). `_cap()` ở §2.3 áp trần.
-   Một UI phê duyệt bị lỗi hoặc bị điều khiển cũng không cấp được grant 100 năm.
-3. **Grant không sống quá `run_id`.** `lookup` lọc theo `run_id`. Muốn grant xuyên run
-   thì đó là `Operator` policy — một `Actor` khác, một đường khác, không phải một cú bấm
-   Approve bị tái sử dụng.
+1. **"Forever" isn't representable.** The foundation's convention is `expires_at: None`
+   means *this call only*, never *forever*. Wanting a standing rule means stating an
+   explicit TTL. "Forever" **has no value that can represent it** — this is
+   type-level Poka-Yoke, not review-level.
+2. **The TTL ceiling is set by operations, not by the approval UI.**
+   `RunConfig.max_grant_ttl` (default 1 hour, `danger` is forced to `None` = this call
+   only). `_cap()` in §2.3 enforces the ceiling. A broken or manipulated approval UI
+   still can't issue a 100-year grant.
+3. **A grant never outlives its `run_id`.** `lookup` filters by `run_id`. A grant that
+   spans runs is an `Operator` policy — a different `Actor`, a different path, not one
+   Approve click getting reused.
 
-Đồng hồ là `Clock` tiêm vào, không phải `datetime.now()` rải rác — nên hết hạn test được
-xác định, và không có đường nào để một tool đẩy thời gian.
+The clock is an injected `Clock`, not `datetime.now()` scattered around — so expiry is
+deterministically testable, and no tool has a path to push the clock forward.
 
-### 2.6 Khớp `Scope`
+### 2.6 Matching a `Scope`
 
 ```python
 def scope_matches(scope: Scope, call: ToolCall) -> bool:
@@ -355,39 +369,42 @@ def scope_matches(scope: Scope, call: ToolCall) -> bool:
     return True
 ```
 
-Bốn trục, theo đúng thứ tự rẻ-đến-đắt:
+Four axes, in cheapest-to-priciest order:
 
-- **`tool`** — mọi framework đều có. Không đủ.
-- **`args`** — so sánh **bằng nhau toàn bộ mapping**, nên `args=None` khớp mọi lời gọi
-  còn `args={}` khớp **chỉ** lời gọi không tham số. Đây là ternary của Microsoft giữ
-  nguyên, kể cả phần tài liệu hoá: duyệt `delete_file(path="/tmp/x")` **không** duyệt
-  `delete_file(path="/etc/passwd")`. Mọi dự án khác trong nghiên cứu duyệt *động từ* và
-  bỏ qua *tân ngữ* ([§09](../research/09-memory-context-multiagent-hitl.md) §14.1).
-- **`server`** — biên tin cậy của MCP server. Grant cho một server không chuyển sang
-  server khác có cùng tên tool. Đây là **phòng thủ confused-deputy duy nhất tìm thấy
-  trong cả nghiên cứu**, và nó đáng được chép lại nguyên vẹn.
-- **`call_id`** — có giá trị thì grant chết ngay sau lời gọi đó. Đây là phần đúng của
-  openai-agents (`list[str]` các call id), giữ lại.
+- **`tool`** — every framework has this. Not enough.
+- **`args`** — compared as **the whole mapping being equal**, so `args=None` matches any
+  call while `args={}` matches **only** a call with no arguments. This keeps Microsoft's
+  ternary exactly as designed, including the documented reasoning: approving
+  `delete_file(path="/tmp/x")` does **not** approve `delete_file(path="/etc/passwd")`.
+  Every other project in the research approves the *verb* and ignores the *object*
+  ([§09](../research/09-memory-context-multiagent-hitl.md) §14.1).
+- **`server`** — an MCP server's trust boundary. A grant for one server doesn't carry
+  over to a different server with the same tool name. This is the **only
+  confused-deputy defense found in the entire research effort**, and it deserves to be
+  copied verbatim.
+- **`call_id`** — when set, the grant dies right after that call. This is the correct
+  part of openai-agents (its `list[str]` of call ids), kept.
 
-`canonical_args` là chuẩn hoá **cú pháp** (sắp khoá, JSON canonical, số về chuỗi), không
-phải chuẩn hoá **ngữ nghĩa**. Chuẩn hoá ngữ nghĩa (`/tmp/../etc/passwd`) thuộc validator
-của chính tool — đúng chỗ Microsoft làm tốt: `.`/`..` bị từ chối thẳng trong
-`_file_access.py:183`, và `is_link_or_reparse_point` chặn symlink
-([§09](../research/09-memory-context-multiagent-hitl.md) §14.2). Hai lớp này bù nhau; xem
-`## Chưa đủ evidence`.
+`canonical_args` is **syntactic** normalization (sorted keys, canonical JSON, numbers
+turned to strings), not **semantic** normalization. Semantic normalization
+(`/tmp/../etc/passwd`) belongs to the tool's own validator — exactly where Microsoft does
+it right: `.`/`..` are flatly rejected in `_file_access.py:183`, and
+`is_link_or_reparse_point` blocks symlinks
+([§09](../research/09-memory-context-multiagent-hitl.md) §14.2). The two layers
+complement each other; see `## Not Enough Evidence`.
 
 ---
 
-## 3. Audit sink
+## 3. The audit sink
 
-### 3.1 Giao diện và bảo đảm
+### 3.1 Interface and guarantees
 
 ```python
 @value
 class AuditEvent:
-    schema_version: int          # có version, nếu không thì không đổi taxonomy được
+    schema_version: int          # versioned, otherwise the taxonomy can never change
     run_id: RunId
-    seq: int                     # đơn điệu TRONG một run
+    seq: int                     # monotonic WITHIN one run
     at: datetime
     type: Literal["decision", "policy.denied", "flow.denied", "budget.denied", "tool.called"]
     payload: Mapping[str, Any]
@@ -395,57 +412,58 @@ class AuditEvent:
 
 class AuditSink(Protocol):
     def commit(self, event: AuditEvent) -> None:
-        """Trở về khi đã DURABLE. Ném lỗi thì gọi bên coi là chưa ghi."""
+        """Returns once DURABLE. If it raises, the caller must treat it as not written."""
 
     def emit(self, event: AuditEvent) -> None:
-        """Best-effort, không chặn. Chỉ cho event mức debug/info."""
+        """Best-effort, non-blocking. Only for debug/info level events."""
 ```
 
-Hai phương thức chứ không một, vì hai bảo đảm khác nhau và gộp chúng lại là cách để mất
-bảo đảm mạnh hơn một cách im lặng.
+Two methods rather than one, because they are two different guarantees, and merging them
+is a way to silently lose the stronger one.
 
-| câu hỏi | trả lời | vì sao |
+| question | answer | why |
 |---|---|---|
-| **Durable trước khi tool chạy?** | **Có, với mọi `Decision`.** `commit()` phải trả về trước khi runtime chuyển sang node `tools`. | Một phê duyệt chỉ có giá trị nếu nó tồn tại *trước* hệ quả. Bản ghi ghi sau khi email đã gửi trả lời được "đã xảy ra gì" nhưng không trả lời được "ai cho phép". |
-| **Thứ tự?** | Đơn điệu **theo `run_id`** qua `seq`; toàn cục chỉ sắp xếp theo ULID trong `Decision.id` (thời gian). | Thứ tự toàn cục nghiêm ngặt đòi một điểm đồng bộ trong quá trình chạy — cái giá đó không sửa một khuyết điểm đo được nào. KISS. |
-| **Mất mát?** | `commit()` lỗi ⇒ **`DENY`, tool không chạy.** Fail-closed, không có cờ tắt. | Bất biến đang bảo vệ là *mọi hành động cần phê duyệt đều có bản ghi*. Chạy tool khi không ghi được bản ghi là phá đúng bất biến đó. |
-| **`emit()` lỗi?** | Nuốt, đếm vào một counter, không chặn run. | Nó chỉ mang `read`-level event; mất một dòng log không phải lỗi bảo mật. |
+| **Durable before the tool runs?** | **Yes, for every `Decision`.** `commit()` must return before the runtime moves to the `tools` node. | An approval only has value if it exists *before* its consequence. A record written after the email is already sent answers "what happened" but not "who allowed it." |
+| **Ordering?** | Monotonic **per `run_id`** via `seq`; globally, ordered only by the ULID inside `Decision.id` (time). | Strict global ordering requires a synchronization point in a distributed run — that cost doesn't fix any measured shortcoming. KISS. |
+| **On loss?** | `commit()` fails => **`DENY`, the tool doesn't run.** Fail-closed, no off switch. | The invariant being protected is *every action requiring approval has a record*. Running the tool when the record couldn't be written breaks exactly that invariant. |
+| **If `emit()` fails?** | Swallowed, counted, doesn't block the run. | It only carries `read`-level events; losing a log line isn't a security bug. |
 
-`AuditSink` là **plugin seam** (OTel, file, DB — theo `05-ideal-harness` §33), nhưng
-*việc gọi `commit` trước khi chạy tool* là code trên đường đi bắt buộc, không phải
-middleware. Đúng ranh giới R-1: **plugin cho policy, đường đi bắt buộc cho invariant**
+`AuditSink` is a **plugin seam** (OTel, a file, a DB — per `05-ideal-harness` §33), but
+*calling `commit` before the tool runs* is code on the mandatory path, not middleware.
+Exactly the R-1 boundary: **plugins for policy, the mandatory path for invariants**
 ([§08](../research/08-tool-mcp-plugin.md) §24).
 
-### 3.2 Vì sao `decision_log` của agno sai kiến trúc
+### 3.2 Why agno's `decision_log` is architecturally wrong
 
-Không phải vì nó dở — nó làm tốt việc `agno.learn` cần. Sai ở chỗ **nó bị đặt tên và
-được đọc như một audit log**, trong khi:
+Not because it's poorly built — it does what `agno.learn` needs well. It's wrong because
+**it's named and read as an audit log**, while:
 
-1. **Đường ghi là một tool mà model gọi.** `_build_log_decision_tool` trao cho model một
-   `log_decision(...)`. Model bỏ qua lời gọi ⇒ **không có dấu vết nào cả**. Một audit log
-   mà bên bị audit chọn được có ghi hay không thì không phải audit log.
-2. **Mọi trường là văn xuôi do model viết.** Không trường nào runtime điền mà model không
-   sửa được ([§09](../research/09-memory-context-multiagent-hitl.md) §14.1).
-3. **`AGENTIC` là mode duy nhất**, cưỡng chế trong `__post_init__`: đặt mode khác thì nó
-   log warning rồi vẫn chạy AGENTIC.
+1. **The write path is a tool the model calls.** `_build_log_decision_tool` hands the
+   model a `log_decision(...)`. The model skips the call => **no trace at all.** An
+   audit log the audited party can choose not to write to is not an audit log.
+2. **Every field is model-written prose.** No field is filled by the runtime in a way
+   the model cannot edit ([§09](../research/09-memory-context-multiagent-hitl.md) §14.1).
+3. **`AGENTIC` is the only mode**, enforced in `__post_init__`: setting another mode logs
+   a warning and runs AGENTIC anyway.
 
-Ở đây: `AuditSink` không có tool nào bind vào nó (§6), `commit` được gọi bởi runtime tại
-một chỗ trên graph, và mọi trường định danh do runtime điền. Bên bị audit không có bút.
+Here: `AuditSink` has no tool bound to it (§6), `commit` is called by the runtime at one
+specific point in the graph, and every identifying field is filled by the runtime. The
+audited party holds no pen.
 
 ---
 
-## 4. Thực thi taint hai chiều
+## 4. Two-directional taint enforcement
 
-### 4.1 Nhãn và luật
+### 4.1 Labels and rules
 
 ```python
-# Integrity / Confidentiality / Label: định nghĩa chuẩn ở 00-foundation.md §3.2.
-# Ở đây chỉ dùng, không định nghĩa lại.
+# Integrity / Confidentiality / Label: the canonical definition is in 00-foundation.md §3.2.
+# Used here only, never redefined.
 from harness import Integrity, Confidentiality, Label
 ```
 
-`join` là `max()` từng trục — **cùng một phép hợp thành với `Verdict` ở §1**. Đơn điệu,
-không bao giờ giảm trong một run. Một phép toán để hiểu, không phải hai.
+`join` is `max()` per axis — **the same composition operator as `Verdict` in §1**.
+Monotonic, never decreasing within a run. One operation to understand, not two.
 
 ```python
 def check_flow(label: Label, spec: ToolSpec) -> Ruling:
@@ -462,107 +480,116 @@ def check_flow(label: Label, spec: ToolSpec) -> Ruling:
 
 
 def label_after(spec: ToolSpec, current: Label) -> Label:
-    return current.join(spec.emits)   # external ⇒ Label(UNTRUSTED, …) theo foundation §2
+    return current.join(spec.emits)   # external => Label(UNTRUSTED, …) per foundation §2
 ```
 
-`read` không bị luật confidentiality chạm tới vì nó không phải sink — đây là nhận định
-đúng của Microsoft, chép lại có ghi công: read-only tool "safe to call even when the agent
-context is tainted — it cannot exfiltrate" (`security.py:3033`,
+`read` is untouched by the confidentiality rule because it isn't a sink — this is a
+correct observation from Microsoft, copied with credit: a read-only tool is "safe to
+call even when the agent context is tainted — it cannot exfiltrate" (`security.py:3033`,
 [§09](../research/09-memory-context-multiagent-hitl.md) §16bis).
 
-Tool đến từ MCP mà **không khai `effect`** nhận lớp untrusted nhất, không phải lớp an
-toàn nhất: `Effect.EXTERNAL` + `max_confidentiality=PUBLIC` + `accepts_tainted=False`.
-Protocol không phải security boundary ([§05](../research/05-ideal-harness.md) §33).
+A tool arriving from MCP with **no declared `effect`** gets the LEAST trusted class, not
+the safest one: `Effect.EXTERNAL` + `max_confidentiality=PUBLIC` + `accepts_tainted=False`.
+The protocol is not a security boundary
+([§05](../research/05-ideal-harness.md) §33).
 
-### 4.2 Cài ở đâu trên đường đi
+### 4.2 Where this installs on the path
 
-Đúng **hai** điểm, cả hai là node của graph đã compile:
+Exactly **two** points, both nodes of the compiled graph:
 
 ```
 model ──► policy ──► tools ──► label ──► model
-           │  ▲                  │
-           │  └── check_flow()   └── label_after()   (ghi vào state đã checkpoint)
-           └───── PolicyEngine.decide() ∨ check_flow()  ⇒ max()
+           |  ^                  |
+           |  +── check_flow()   +── label_after()   (written into checkpointed state)
+           +───── PolicyEngine.decide() v check_flow()  => max()
 ```
 
-1. **Trước khi chạy** — trong node `policy`, `check_flow(label, spec)` hợp thành với
-   `PolicyEngine.decide(...)` bằng đúng `max()`. Không có đường vòng: một `DENY` từ flow
-   không phân biệt được với một `DENY` từ policy, và cả hai đều là đỉnh lattice.
-2. **Sau khi chạy** — node `label` gọi `label_after` và ghi nhãn mới vào state **trước
-   khi** kết quả tool được merge vào `messages`. Nếu ghi nhãn nằm sau merge thì có một
-   cửa sổ trong đó context đã bẩn mà nhãn còn sạch.
+1. **Before running** — inside the `policy` node, `check_flow(label, spec)` composes
+   with `PolicyEngine.decide(...)` through the exact same `max()`. No detour: a `DENY`
+   from flow is indistinguishable from a `DENY` from policy, and both sit at the top of
+   the lattice.
+2. **After running** — the `label` node calls `label_after` and writes the new label
+   into state **before** the tool's result is merged into `messages`. If label-writing
+   happened after the merge, there would be a window where context is already dirty but
+   the label is still clean.
 
-**Vì sao không tắt được bằng cách không cài plugin:** cả hai là node bắt buộc trong graph,
-và `unguarded_paths()` từ chối compile nếu có đường tới `tools` không qua `policy` hoặc
-đường từ `tools` về `model` không qua `label` (R-2, foundation §5). Không có cờ
-`enable_taint=`. Không có `install_middleware()`. Cách duy nhất để bỏ nó là sửa graph
-builder trong core và làm hỏng một test biết đếm.
+**Why this can't be disabled just by not installing a plugin:** both are mandatory nodes
+in the graph, and `unguarded_paths()` refuses to compile if there's a path to `tools`
+that skips `policy`, or a path from `tools` back to `model` that skips `label` (R-2,
+foundation §5). There is no `enable_taint=` flag. No `install_middleware()`. The only way
+to remove it is to edit the graph builder in core and break a test that knows how to
+count.
 
-### 4.3 Ba chỗ phải khác Microsoft
+### 4.3 Three places this must differ from Microsoft
 
-`agent_framework/security.py` là kiến trúc an toàn tinh vi nhất trong toàn nghiên cứu —
-IFC hai chiều thật, `combine_labels` đơn điệu, MCP annotation → nhãn. Nó cũng là ví dụ rõ
-nhất cho khoảng cách giữa *làm được gì* và *mặc định làm gì*
+`agent_framework/security.py` is the most sophisticated safety architecture in the whole
+research effort — real two-directional IFC, a monotonic `combine_labels`, MCP annotations
+turned into labels. It's also the clearest example of the gap between *what's possible*
+and *what's on by default*
 ([§09](../research/09-memory-context-multiagent-hitl.md) §16bis).
 
-| # | Microsoft | ở đây | bằng chứng |
+| # | Microsoft | here | evidence |
 |---|---|---|---|
-| **1. Bật mặc định** | submodule opt-in; `grep` import từ `_harness/` trả về **rỗng**; không có trong `agent_framework/__init__.py`; `create_harness_agent` không cài lattice | node bắt buộc trong graph; `unguarded_paths()` chứng minh; không có công tắc bật/tắt | §16bis "the good module is not wired in" |
-| **2. Không `threading.local()`** | `_current_middleware = threading.local()` set/clear xuyên `await`; hai tool call đồng thời đọc nhầm slot của nhau, hoặc đọc `None` — **im lặng, fail-open** | nhãn sống trong **state đã checkpoint của thread**, gắn **theo từng message** (`msg.label_integrity`, `msg.label_confidentiality` — chuỗi, JSON-checkpointable); nhãn hiệu dụng là `join` tính lại theo L-3 ([00 §3.2](00-foundation.md)), không phải một biến tích luỹ | §16bis, và Round 34/37/41 của chính repo này |
-| **3. Không singleton toàn tiến trình** | `_global_variable_store` và `_quarantine_chat_client` ở mức module, đổi qua setter `global`; đa tenant thì một tenant đổi là mọi tenant đổi | mọi trạng thái an toàn khoá theo `run_id` trong state; không có biến module nào ghi được sau import | §16bis |
+| **1. On by default** | an opt-in submodule; `grep`ing imports from `_harness/` returns **nothing**; absent from `agent_framework/__init__.py`; `create_harness_agent` doesn't install the lattice | a mandatory node in the graph; `unguarded_paths()` proves it; no on/off switch | §16bis "the good module is not wired in" |
+| **2. No `threading.local()`** | `_current_middleware = threading.local()` set/cleared across an `await`; two concurrent tool calls read each other's slot, or read `None` — **silent, fail-open** | the label lives in the thread's **checkpointed state**, attached **per message** (`msg.label_integrity`, `msg.label_confidentiality` — strings, JSON-checkpointable); the effective label is a `join` recomputed per L-3 ([00 §3.2](00-foundation.md)), not an accumulating variable | §16bis, and Rounds 34/37/41 of this very repo |
+| **3. No process-wide singleton** | `_global_variable_store` and `_quarantine_chat_client` at module scope, changed through a `global` setter; in multi-tenant, one tenant's change becomes every tenant's | every safety-relevant state is keyed by `run_id` in state; no module variable is writable after import | §16bis |
 
-Về (2), một điểm quan trọng dễ bị hiểu nhầm: `contextvars.ContextVar` — primitive đúng mà
-§16bis đề xuất — **vẫn không đủ ở đây**, vì mỗi node LangGraph chạy trong một context được
-copy nên `ContextVar` không đi xuyên node. Đây không phải suy đoán: repo này đã mắc đúng
-lỗi đó ở Round 34, **sửa sai** ở Round 37, và chỉ đúng ở Round 41 khi trạng thái được đưa
-vào state đã checkpoint (foundation §5, R-4). `threading.local()` yếu hơn hẳn primitive
-mà chính chúng ta đã chứng minh là chưa đủ.
+On (2), an important point that's easy to get wrong:
+`contextvars.ContextVar` — the correct primitive §16bis suggests — **still isn't enough
+here**, because every LangGraph node runs in a copied context, so a `ContextVar` doesn't
+cross a node either. This isn't speculation: this repo made exactly that mistake in
+Round 34, **fixed it wrong** in Round 37, and only got it right in Round 41 once the
+state moved into checkpointed state (foundation §5, R-4). `threading.local()` is
+strictly weaker than a primitive we've already proven insufficient ourselves.
 
 ---
 
-## 5. Quarantine model — ĐÃ CẮT, chuyển sang mục rủi ro
+## 5. Quarantine model — CUT, moved to the risk register
 
-Mục này từng đặc tả một model phụ rẻ hơn để suy luận trên nội dung `UNTRUSTED`
-(mẫu dual-LLM/CaMeL), cùng `Quarantined[T]` và một nhánh fail-closed riêng.
+This section used to specify a cheaper secondary model for reasoning over `UNTRUSTED`
+content (the dual-LLM/CaMeL pattern), along with `Quarantined[T]` and a separate
+fail-closed branch.
 
-**Đã cắt theo chính luật biên tập của bản thiết kế** ([00 §8.4](00-foundation.md)): mẫu này
-có đúng **một** cài đặt trong toàn nghiên cứu, và cài đặt đó `@experimental`, không được wire
-vào harness của chính nó, và không concurrency-safe. **Không có eval nào** so sánh tỉ lệ
-prompt-injection thành công có và không có quarantine
-([review-kiss.md](review-kiss.md) K-1).
+**Cut per this design's own editorial rule** ([00 §8.4](00-foundation.md)): this pattern
+has exactly **one** implementation in the entire research effort, and that
+implementation is `@experimental`, not wired into its own harness, and not
+concurrency-safe. **No evaluation** compares the prompt-injection success rate with and
+without quarantine ([review-kiss.md](review-kiss.md) K-1).
 
-Đường đi bình thường đã đủ và đã có bằng chứng: `UNTRUSTED` + `danger` ⇒ `ASK` (có người
-duyệt) hoặc `DENY`. Đặc tả đầy đủ được giữ ở
-[`07-risks-and-open-issues.md`](07-risks-and-open-issues.md) dưới mục *"ý tưởng có kiến
-trúc, chờ eval"* — cắt khỏi đường đi bắt buộc, không vứt đi.
+The ordinary path is already sufficient and already has evidence:
+`UNTRUSTED` + `danger` => `ASK` (a human approves) or `DENY`. The full specification is
+kept in [`07-risks-and-open-issues.md`](07-risks-and-open-issues.md) under *"an idea with
+real architecture, waiting on evaluation"* — cut from the mandatory path, not thrown
+away.
 
 
-## 6. Model không cầm công tắc nào (R-3)
+## 6. The model holds no switch (R-3)
 
-### 6.1 Danh sách cụ thể
+### 6.1 The specific list
 
-| model **không bao giờ** làm được | cơ chế đảm bảo (không phải prompt) |
+| the model can **never** do | the mechanism guaranteeing it (not a prompt) |
 |---|---|
-| Ghi hoặc sửa một `Decision` | `Actor` không có biến thể `Model` — bản ghi do model tạo **không dựng được về mặt kiểu**. `_record()` là module-private, không export. |
-| Đổi `Verdict` hoặc thêm/bớt `Policy` | `PolicyEngine._policies` là `tuple` chốt lúc dựng `Runtime`; không có `add_policy`/`remove_policy`. `PolicyContext` mà tool nhận không cầm tham chiếu tới engine. |
-| Đổi chế độ an toàn (kiểu `mode_set`) | Chế độ an toàn không phải tool. Nó là trường của `RunConfig` bất biến, chốt trước lượt đầu tiên. Không có hàm nào đổi nó sau khi `Run` bắt đầu. |
-| Tự nới `expires_at` hoặc kéo dài grant | `expires_at` do runtime tính từ `Clock` tiêm vào, cap bằng `RunConfig.max_grant_ttl`. |
-| Ghi vào `AuditSink` | Không có tool nào bind tới sink. Sink chỉ được gọi từ node của graph. |
-| Hạ nhãn taint | `Label.join` chỉ có `max()`; không tồn tại hàm giảm nhãn. |
-| Đổi hoặc nâng budget | `Ledger` sống trong state đã checkpoint; `PolicyContext` chỉ phơi **số dư dạng số**, không phơi object có `spend()`. |
-| Gọi một tool ngoài registry | Tên tool tra trong registry đóng; tên lạ ⇒ lỗi cứng, không phải lookup động. |
+| Write or edit a `Decision` | `Actor` has no `Model` variant — a model-generated record **cannot be constructed** at the type level. `_record()` is module-private, never exported. |
+| Change a `Verdict`, or add/remove a `Policy` | `PolicyEngine._policies` is a `tuple` fixed when the `Runtime` is built; there's no `add_policy`/`remove_policy`. The `PolicyContext` a tool receives holds no reference to the engine. |
+| Change the safety mode (à la `mode_set`) | The safety mode isn't a tool. It's a field of the immutable `RunConfig`, fixed before the first turn. No function changes it once a `Run` has started. |
+| Widen `expires_at` or extend a grant | `expires_at` is computed by the runtime from an injected `Clock`, capped by `RunConfig.max_grant_ttl`. |
+| Write to the `AuditSink` | No tool is bound to the sink. The sink is only ever called from a graph node. |
+| Lower a taint label | `Label.join` only has `max()`; no function to lower a label exists. |
+| Change or raise the budget | The `Ledger` lives in checkpointed state; `PolicyContext` only exposes a **numeric balance**, never an object with `spend()`. |
+| Call a tool outside the registry | Tool names are looked up in a closed registry; an unknown name is a hard error, not a dynamic lookup. |
 
-### 6.2 Vì sao đây là cơ chế chứ không phải lời hứa
+### 6.2 Why this is a mechanism, not a promise
 
-Bốn lớp, xếp từ mạnh xuống:
+Four layers, strongest to weakest:
 
-1. **Không biểu diễn được.** `Actor` không có `Model`; "grant vĩnh viễn" không có giá trị
-   biểu diễn. Cái không dựng được thì không cần canh.
-2. **Không tới được.** Control plane không nằm trong `ToolContext` mà tool nhận. Không có
-   tham chiếu thì không có lời gọi.
-3. **Không kê khai.** Danh sách schema gửi cho model **bằng đúng** allowlist của registry.
-   Hàm của control plane không phải tool nên không có schema nào để model nêu tên.
-4. **Chứng minh bằng test.**
+1. **Not representable.** `Actor` has no `Model`; "grant forever" has no representable
+   value. What can't be constructed doesn't need guarding.
+2. **Not reachable.** The control plane isn't part of the `ToolContext` a tool receives.
+   No reference, no call.
+3. **Not declared.** The schema list sent to the model **exactly equals** the registry's
+   allowlist. The control plane's functions aren't tools, so there's no schema for the
+   model to even name.
+4. **Proven by test.**
 
 ```python
 def test_no_agent_visible_tool_reaches_the_control_plane():
@@ -580,9 +607,9 @@ def test_actor_has_no_model_variant():
     assert "Model" not in {t.__name__ for t in typing.get_args(Actor)}
 ```
 
-### 6.3 Khuyết điểm đang sửa, nêu đích danh
+### 6.3 The shortcoming being fixed, named directly
 
-`_mode.py:289` của Microsoft:
+Microsoft's `_mode.py:289`:
 
 ```python
 @tool(name="mode_set", approval_mode="never_require")
@@ -590,79 +617,85 @@ def mode_set(mode: str) -> str:
     """Switch the agent's operating mode."""
 ```
 
-`plan` là chế độ chỉ-đọc, hỏi-trước — tức một **tư thế an toàn**. Model cầm công tắc, và
-`approval_mode="never_require"` làm công tắc đó **không gate được về mặt cấu trúc**. Thứ
-duy nhất đứng giữa model và việc rời chế độ plan là một câu tiếng Anh trong system prompt:
-*"Only use mode_set if the user explicitly instructs/allows you to change modes."*
+`plan` is a read-only, ask-first mode — i.e. a **safety posture**. The model holds the
+switch, and `approval_mode="never_require"` makes that switch **structurally
+un-gateable**. The only thing standing between the model and leaving plan mode is one
+English sentence in the system prompt: *"Only use mode_set if the user explicitly
+instructs/allows you to change modes."*
 ([§09](../research/09-memory-context-multiagent-hitl.md) §14.2)
 
-Đây đúng là định nghĩa **safety by prompt**, mà nghiên cứu xếp là anti-pattern quan sát
-được của cả ngành ([§04](../research/04-weaknesses-antipatterns.md) §28).
+This is the textbook definition of **safety by prompt**, which the research ranks as an
+observed anti-pattern across the industry
+([§04](../research/04-weaknesses-antipatterns.md) §28).
 
-Và bài học không phải "Microsoft cẩu thả" — cùng module ấy còn có `_file_access.py` bật
-approval mặc định và tách read/write, tức thiết kế đúng. Bài học là: **enforcement
-per-tool phải được suy lại đúng cho từng tool, và tool thứ hai mươi là chỗ nó trượt.** Ở
-đây tư thế an toàn không phải tool, nên không có tool thứ hai mươi để trượt.
+And the lesson isn't "Microsoft was careless" — that same module also has
+`_file_access.py`, which turns on approval by default and separates read/write, i.e. the
+correct design. The lesson is: **per-tool enforcement has to be re-derived correctly for
+every tool, and the twentieth tool is where it slips.** Here, the safety posture isn't a
+tool, so there is no twentieth tool for it to slip on.
 
 ---
 
-## 7. Bảng đối chiếu: khuyết điểm đo được ↔ cơ chế
+## 7. Cross-reference: measured shortcoming <-> mechanism
 
-| khuyết điểm quan sát được | ở đâu | cơ chế ở tệp này |
+| observed shortcoming | where | mechanism in this file |
 |---|---|---|
-| Approval là boolean, không có actor/thời điểm/hạn dùng | 30 gói, 3 hệ sinh thái ([§10](../research/10-governance-health-languages.md) §28) | `Decision` bất biến, D-1 phân vai ghi trường (§2.3) |
-| `always_approve` không bao giờ hết hạn | openai-agents ([§09](../research/09-memory-context-multiagent-hitl.md) §14.1) | "vĩnh viễn" không biểu diễn được + `max_grant_ttl` (§2.5) |
-| Audit log do bên bị audit viết bằng tool | agno `decision_log` (§14.1) | sink không có tool bind; runtime điền trường định danh (§3.2) |
-| Approval khoá theo *động từ*, bỏ qua *tân ngữ* | toàn bộ trừ Microsoft (§14.1) | `Scope.args` so khớp bằng nhau toàn mapping (§2.6) |
-| Grant chuyển nhầm giữa hai MCP server cùng tên tool | chỉ Microsoft phòng thủ (§14.1) | `Scope.server` (§2.6) |
-| Module an toàn tốt nhưng **không được wire vào** | Microsoft `security.py` (§16bis) | node bắt buộc + `unguarded_paths()` (§4.2) |
-| `threading.local()` xuyên `await` ⇒ fail-open im lặng | Microsoft (§16bis) | nhãn trong state đã checkpoint (§4.3) |
-| Singleton mức module trong server đa tenant | Microsoft (§16bis) | quarantine + nhãn thuộc `Run` (§5.2) |
-| Model cầm công tắc chế độ an toàn | Microsoft `mode_set` (§14.2) | R-3: không biểu diễn / không tới được / không kê khai / có test (§6) |
-| `ToolConfirmation` là một `boolean` | google-adk-java ([§10](../research/10-governance-health-languages.md) §28) | như hàng 1 — cùng một cách sửa cho cả ba ngôn ngữ |
-| Approval nhầm là isolation | Goose ([§03](../research/03-safety-reliability.md) §17) | tệp này **không** tuyên bố isolation; sandbox là seam riêng ([§05](../research/05-ideal-harness.md) §33) |
+| Approval is a boolean, no actor/timestamp/expiry | 30 packages, 3 ecosystems ([§10](../research/10-governance-health-languages.md) §28) | an immutable `Decision`, D-1 assigns who writes which field (§2.3) |
+| `always_approve` never expires | openai-agents ([§09](../research/09-memory-context-multiagent-hitl.md) §14.1) | "forever" isn't representable + `max_grant_ttl` (§2.5) |
+| An audit log written by the audited party, via a tool | agno's `decision_log` (§14.1) | the sink has no tool bound to it; the runtime fills identifying fields (§3.2) |
+| Approval locks onto the *verb*, ignoring the *object* | everyone except Microsoft (§14.1) | `Scope.args`, matched as a whole-mapping equality (§2.6) |
+| A grant transferring wrongly between two MCP servers sharing a tool name | only Microsoft defends against this (§14.1) | `Scope.server` (§2.6) |
+| A good safety module that's **never wired in** | Microsoft's `security.py` (§16bis) | a mandatory node + `unguarded_paths()` (§4.2) |
+| `threading.local()` across an `await` => silent fail-open | Microsoft (§16bis) | the label lives in checkpointed state (§4.3) |
+| A module-level singleton in a multi-tenant server | Microsoft (§16bis) | quarantine + the label belongs to the `Run` (§5.2) |
+| The model holds the safety-mode switch | Microsoft's `mode_set` (§14.2) | R-3: not representable / not reachable / not declared / tested (§6) |
+| `ToolConfirmation` is a single `boolean` | google-adk-java ([§10](../research/10-governance-health-languages.md) §28) | same fix as row 1 — the same solution across all three languages |
+| Approval mistaken for isolation | Goose ([§03](../research/03-safety-reliability.md) §17) | this file makes **no** isolation claim; the sandbox is a separate seam ([§05](../research/05-ideal-harness.md) §33) |
 
-Học điểm mạnh của ai, tóm tắt: **Microsoft** cho `Scope` (args + server_label + serialise
-qua resume) và cho IFC hai chiều; **Vercel AI SDK** cho hình dạng approval bốn trạng thái
-và `reason` hai chiều; **openai-agents** cho grant theo `call_id`; **google-adk-java** cho
-mặc định `confirmed(false)` — fail-closed lúc dựng; **LangGraph** cho id định vị chỗ dừng,
-được dùng ở [`04-runtime-durability.md`](./04-runtime-durability.md).
+Whose strength is borrowed, summarized: **Microsoft** for `Scope` (args + server_label +
+serializing across a resume) and for two-directional IFC; **Vercel AI SDK** for the
+four-state approval shape and two-directional `reason`; **openai-agents** for a grant
+keyed to `call_id`; **google-adk-java** for a `confirmed(false)` default — fail-closed at
+construction; **LangGraph** for an id that locates a pause point, used in
+[`04-runtime-durability.md`](./04-runtime-durability.md).
 
 ---
 
-## Chưa đủ evidence
+## Not Enough Evidence
 
-- **Chuẩn hoá tham số cho `Scope.args`.** So khớp bằng chuỗi canonical chặn được
-  `delete_file(path="/etc/passwd")` sau khi duyệt `/tmp/x`, nhưng **không** chặn được hai
-  chuỗi khác nhau trỏ cùng một tài nguyên (`/tmp/../etc/passwd`, symlink, tên host có
-  Unicode đồng hình). Thiết kế hiện tại đẩy việc đó cho validator của từng tool — cùng chỗ
-  Microsoft làm đúng — nhưng nghiên cứu **không đo** được lớp lỗi này còn sót bao nhiêu
-  trong thực tế. Cần một vòng chạy thật để biết.
-- **Chi phí của `commit()` đồng bộ.** Yêu cầu "durable trước khi tool chạy" thêm một
-  round-trip lưu trữ vào mỗi tool cần phê duyệt. Nghiên cứu không có số đo độ trễ audit
-  sink của bất kỳ gói nào (`langgraph` OTel 0,1; MS AF 7,7 là *mật độ mã*, không phải
-  hiệu năng — [§03](../research/03-safety-reliability.md) §18). Chưa biết ngưỡng nào là
-  không chấp nhận được.
-- **`ApprovalProvider` thực tế trông thế nào.** Vercel là bằng chứng duy nhất có ai đó
-  thật sự dựng UI phê duyệt (`reason` hai chiều là dấu vết của việc đó —
-  [§06](../research/06-typescript.md)). Không có dữ liệu về việc con người dùng một hàng
-  đợi phê duyệt ra sao ở quy mô: tỉ lệ bấm Approve theo phản xạ, thời gian chờ, hành vi
-  khi hết hạn. `max_grant_ttl` mặc định 1 giờ là **phỏng đoán có lý, không phải số đo**.
-- **Quarantine có giảm rủi ro thật không.** Mẫu dual-LLM/CaMeL chỉ có **một** cài đặt
-  trong toàn nghiên cứu, và nó `@experimental`, không được wire vào, và không
-  concurrency-safe (§16bis). Không có eval nào so sánh tỉ lệ prompt-injection thành công
-  có và không có quarantine. Thiết kế ở §5 là **sửa chỗ đặt sai của một ý tưởng chưa được
-  chứng minh** — nên nó fail-closed và tuỳ chọn, không phải mặc định.
-- **Multi-tenancy.** Nghiên cứu ghi rõ "Chưa đủ evidence cho phần lớn thư viện"
-  ([§03](../research/03-safety-reliability.md) §16). §4.3 và §5.2 khoá trạng thái theo
-  `run_id`, đủ để tránh lỗi cụ thể đã quan sát ở Microsoft, nhưng **không** phải một mô
-  hình tenancy đầy đủ (quota, cách ly lưu trữ, ranh giới định danh). Đó là việc của tầng
-  service.
-- **`Confidentiality` chỉ có hai bậc.** Foundation dùng `PUBLIC < SECRET`. Không gói Python
-  nào trong nghiên cứu có kiểu `Secret` chuyên dụng chống rò rỉ qua log/prompt
-  ([§03](../research/03-safety-reliability.md) §16), nên **không có bằng chứng** về việc
-  hai bậc là đủ hay thiếu. Thêm bậc thứ ba khi và chỉ khi có một lớp lỗi đo được mà hai
-  bậc không diễn đạt nổi.
-- **Trần TTL cho `danger` ép về `None`** (chỉ lần này) là quyết định thận trọng, không
-  phải kết luận từ dữ liệu. Không nguồn nào trong nghiên cứu đo tần suất phê duyệt lại
-  làm người vận hành mệt tới mức bỏ đọc.
+- **Parameter normalization for `Scope.args`.** Matching by a canonical string blocks
+  `delete_file(path="/etc/passwd")` after approving `/tmp/x`, but does **not** block two
+  different strings pointing at the same resource (`/tmp/../etc/passwd`, a symlink, a
+  hostname with Unicode homoglyphs). The current design pushes that onto each tool's own
+  validator — the same place Microsoft gets it right — but the research **doesn't
+  measure** how much of this failure class remains in practice. That needs a real
+  runtime round to find out.
+- **The cost of a synchronous `commit()`.** The "durable before the tool runs"
+  requirement adds one storage round-trip to every tool needing approval. The research
+  has no latency measurement for any package's audit sink (`langgraph` OTel at 0.1; MS
+  AF at 7.7 is *code density*, not performance —
+  [§03](../research/03-safety-reliability.md) §18). What threshold would be
+  unacceptable is unknown.
+- **What a real `ApprovalProvider` actually looks like.** Vercel is the only evidence
+  that anyone has actually built an approval UI (its two-directional `reason` is a trace
+  of that — [§06](../research/06-typescript.md)). There's no data on how humans use an
+  approval queue at scale: reflex-approval rates, wait times, behavior on expiry. The
+  `max_grant_ttl` default of 1 hour is an **educated guess, not a measurement**.
+- **Whether quarantine actually reduces risk.** The dual-LLM/CaMeL pattern has exactly
+  **one** implementation in the entire research effort, and it's `@experimental`, not
+  wired in, and not concurrency-safe (§16bis). No evaluation compares the
+  prompt-injection success rate with and without quarantine. §5's design **fixes the
+  placement of an unproven idea** — so it's fail-closed and optional, not a default.
+- **Multi-tenancy.** The research states plainly "Not Enough Evidence for most of the
+  library set" ([§03](../research/03-safety-reliability.md) §16). §4.3 and §5.2 key
+  state by `run_id`, enough to avoid the specific bug observed at Microsoft, but that is
+  **not** a complete tenancy model (quotas, storage isolation, identity boundaries).
+  That's the service layer's job.
+- **`Confidentiality` has only two tiers.** The foundation uses `PUBLIC < SECRET`. No
+  Python package in the research has a dedicated `Secret` type guarding against leaking
+  through logs/prompts ([§03](../research/03-safety-reliability.md) §16), so there is
+  **no evidence** whether two tiers are enough or too few. Add a third tier only when a
+  measured failure class shows up that two tiers can't express.
+- **Forcing the `danger` TTL ceiling to `None`** (this call only) is a cautious
+  decision, not a conclusion drawn from data. No source in the research measures how
+  often re-approval fatigue makes an operator stop reading.

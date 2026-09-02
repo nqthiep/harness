@@ -526,6 +526,14 @@ class Runtime:
         # định (00-foundation §3.2 — nhãn hiệu dụng luôn tính lại, không tích luỹ).
         label = self._effective_label(state)
         msgs: list = []
+        # Compaction-immune companion to `msgs`: one name per call that gets ANY
+        # `ToolMessage` below (declined, gone, errored, or succeeded) — the exact same
+        # criterion `_tools_called()` used to re-derive by scanning `state["messages"]`
+        # for a `ToolMessage` with a matching id (see that method's docstring). Appended
+        # to `state["tools_called_ever"]` at the end of this node instead of replacing
+        # it, so it accumulates across the whole thread the same way
+        # `dispatch.py::Dispatcher.ran` accumulates for the life of a classic-backend run.
+        called_now: list[str] = []
         for p in state.get("_pending", []):
             gate = self._regate(p, state, label)
             if gate.verdict is not Verdict.ALLOW:
@@ -535,12 +543,14 @@ class Runtime:
                            policy=gate.policy)
                 msgs.append(ToolMessage(content=f"declined: {gate.reason}",
                                         tool_call_id=p["call"]["id"], status="error"))
+                called_now.append(p["tool"])
                 continue
             call = p["call"]
             spec = self._tools.get(p["tool"])
             if spec is None:                    # tool set changed under a resumed run
                 msgs.append(ToolMessage(content=f"tool {p['tool']!r} is no longer available",
                                         tool_call_id=call["id"], status="error"))
+                called_now.append(p["tool"])
                 continue
             # T-6.3, parity with dispatch.py::_invoke — read/external retry on failure
             # up to MAX_ATTEMPTS, backed off; write/danger get exactly one attempt, ever
@@ -657,6 +667,7 @@ class Runtime:
                            retryable=retryable)
                 msgs.append(ToolMessage(content=redact(reason),
                                         tool_call_id=call["id"], status="error"))
+                called_now.append(spec.name)
                 continue
             limit = spec.max_result_tokens * 4
             if len(payload) > limit:
@@ -674,6 +685,7 @@ class Runtime:
             result_msg = ToolMessage(content=redact(payload), tool_call_id=call["id"])
             _stamp_label(result_msg, emitted)
             msgs.append(result_msg)
+            called_now.append(spec.name)
             self._emit(state, EventKind.TOOL_FINISHED, step=state.get("step", 0),
                        tool=spec.name, call_id=call["id"], is_error=False, replayed=replayed)
         self._emit(state, EventKind.STEP_FINISHED, step=state.get("step", 0),
@@ -686,6 +698,7 @@ class Runtime:
         prog.observe(_last_tool_calls(state["messages"]))
         return {"messages": msgs + self._manage(state["messages"] + msgs, state),
                 "seen_calls": prog.seen, "stalled_steps": prog.stalled_steps,
+                "tools_called_ever": list(state.get("tools_called_ever") or []) + called_now,
                 "_pending": [], "tainted": label.integrity is Integrity.UNTRUSTED,
                 # A subagent settles into THIS ledger, so its spend has to reach state or
                 # the parent's ceiling leaks exactly as it did in Round 28.
@@ -817,11 +830,26 @@ class Runtime:
         `RequireBeforePolicy` (policy/builtin.py) — "the model must have consulted X
         before Y is even offered to an approver" — but general enough for any policy
         that only needs "was tool T already run this run", not its content.
+
+        Union of two sources, not just one:
+
+        * `state["tools_called_ever"]` — appended to by `_run_tools`, never pruned. This
+          is the source of truth going forward: it survives real compaction
+          (`_compact`), which drops old `AIMessage`/`ToolMessage` pairs for a
+          taint-preserving tombstone that carries no tool names. Confirmed by direct
+          repro that the message-scan below, alone, forgets an early `consult_advisor`
+          call once its step ages past `_KEEP_RECENT_MESSAGES` and the thread compacts —
+          `RequireBeforePolicy` would then DENY a tool it had genuinely already cleared.
+        * The message scan itself — kept as a harmless, redundant safety net so a
+          checkpoint written before this field existed (`tools_called_ever` absent or
+          incomplete on it) still answers correctly for whatever hasn't been compacted
+          away yet.
         """
         msgs = state.get("messages") or []
         done_ids = {m.tool_call_id for m in msgs if isinstance(m, ToolMessage)}
-        return frozenset(tc.get("name") for m in msgs if isinstance(m, AIMessage)
-                         for tc in (m.tool_calls or []) if tc.get("id") in done_ids)
+        from_messages = frozenset(tc.get("name") for m in msgs if isinstance(m, AIMessage)
+                                  for tc in (m.tool_calls or []) if tc.get("id") in done_ids)
+        return from_messages | frozenset(state.get("tools_called_ever") or ())
 
     def _bus_for(self, run_id: str) -> EventBus:
         if run_id not in self._bus_cache:

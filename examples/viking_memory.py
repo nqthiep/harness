@@ -1,15 +1,20 @@
-"""Agent có trí nhớ dài hạn — LangGraph + OpenViking, vòng 36.
+"""An agent with long-term memory — LangGraph + OpenViking, Round 36.
 
-Chạy:  python3 examples/viking_memory.py
+Run:  python3 examples/viking_memory.py
 
-Cả ba nền tảng bắt buộc trong một file: LangChain (model), LangGraph (vòng lặp),
-OpenViking (trí nhớ).  Không cần server thật — request đi qua một transport giả,
-nhưng đi qua **đúng code của openviking-sdk**.
+All three platforms required in one file: LangChain (model), LangGraph (loop),
+OpenViking (memory). No real server needed — the request goes through a fake
+transport, but through **the real openviking-sdk code**.
 
-Điều đáng chú ý nhất không phải là nó chạy, mà là **`recall` được phân loại
-`external`**.  Một context database có nuốt trang web vào (`ov add-resource https://…`),
-nên thứ nó trả ra có thể do kẻ tấn công viết.  Nếu `recall` là `read`, một ký ức bị đầu
-độc sẽ mua được quyền dùng tool `danger` — lỗ hổng to bằng cả hệ thống trí nhớ.
+The most notable thing here isn't that it runs, but that **`recall` is classified
+`external`**. A context database that ingests web pages (`ov add-resource https://...`)
+can return content an attacker wrote. If `recall` were `read`, a poisoned memory would
+buy its way into using a `danger` tool — a hole the size of the whole memory system.
+
+Note: `recall`/`remember` below are tools the library itself builds
+(`VikingStore.tools()`, in `src/harness/memory/viking.py`) — their argument names
+(`cau_hoi`, `ten`, `noi_dung`) are that library's own, out of scope for this example to
+rename; everything else here is this file's own code.
 """
 import asyncio
 import sys
@@ -25,84 +30,86 @@ from harness.errors import UnsafeToolSetError
 from harness.lg import build_agent
 from harness.memory.viking import VikingStore
 
-# ── một "server" OpenViking giả, trả đúng envelope thật ──────────────────────
-NHO = {"status": "ok", "result": {"results": [
-    {"uri": "viking://memories/cskh/khach-01", "score": 0.94,
-     "content": "Khách A-4471 thích trả lời ngắn gọn, đã từng khiếu nại giao chậm."},
+# -- a fake OpenViking "server", returning the real envelope shape -----------
+MEMORY = {"status": "ok", "result": {"results": [
+    {"uri": "viking://memories/support/customer-01", "score": 0.94,
+     "content": "Customer A-4471 prefers short answers, has complained about slow delivery."},
 ]}}
 
 
-async def noi_toi_server_gia() -> AsyncHTTPClient:
+async def talk_to_fake_server() -> AsyncHTTPClient:
     c = AsyncHTTPClient(url="http://localhost:8080", api_key="demo")
     await c.initialize()
     c._http = httpx.AsyncClient(base_url="http://localhost:8080",
                                 transport=httpx.MockTransport(
-                                    lambda r: httpx.Response(200, json=NHO)))
+                                    lambda r: httpx.Response(200, json=MEMORY)))
     return c
 
 
-store = VikingStore(client=asyncio.run(noi_toi_server_gia()), namespace="cskh")
+store = VikingStore(client=asyncio.run(talk_to_fake_server()), namespace="support")
 store._ready = True
 
 
 @tool(effect="danger")
-def hoan_tien(ma: str, so_tien: int) -> str:
-    """Hoàn tiền cho khách. KHÔNG hoàn tác được.
+def refund(order_id: str, amount: int) -> str:
+    """Refund the customer. NOT reversible.
 
-    KHÔNG có accepts_tainted=True ở đây — S-16: đó là chỗ lỗ hổng của bản nháp đầu, vì
-    một đối số decorator có mặc định trông giống mọi tham số khác trong review. Quyền
-    này giờ chỉ đến từ operator, ở chỗ build_agent() dựng agent — xem bên dưới.
+    NO accepts_tainted=True here — S-16: that was the hole in the first draft, since a
+    decorator argument with a default looks just like every other parameter under review.
+    This grant now only ever comes from the operator, at the point build_agent() builds
+    the agent — see below.
     """
-    return f"đã hoàn {so_tien}đ cho {ma}"
+    return f"refunded {amount} for {order_id}"
 
 
-print("Tool mà store cấp cho model")
-print("─" * 66)
+print("Tools the store hands the model")
+print("-" * 66)
 for t in store.tools():
     print(f"  {t.name:<10} effect={t.effect.value:<9} "
-          f"{'→ LÀM BẨN run' if t.effect.value == 'external' else ''}")
+          f"{'-> TAINTS the run' if t.effect.value == 'external' else ''}")
 
-# ── phần quan trọng nhất: harness từ chối tổ hợp không an toàn ───────────────
+# -- the important part: the harness refuses an unsafe combination -----------
 @tool(effect="danger")
-def xoa_tai_khoan(ma: str) -> str:
-    """Xoá tài khoản. KHÔNG hoàn tác."""
-    return "đã xoá"
+def delete_account(account_id: str) -> str:
+    """Delete an account. NOT reversible."""
+    return "deleted"
 
 
-print("\nGhép recall với một tool không hoàn tác được, không khai accepts_tainted")
-print("─" * 66)
+print("\nPairing recall with an irreversible tool, without declaring accepts_tainted")
+print("-" * 66)
 try:
-    build_agent(model=FakeChat(script=[]), tools=store.tools() + [xoa_tai_khoan],
+    build_agent(model=FakeChat(script=[]), tools=store.tools() + [delete_account],
                 budget="$1")
-    print("  !! đã dựng được — ĐÂY LÀ LỖI")
+    print("  !! this built successfully -- THIS IS A BUG")
 except UnsafeToolSetError:
-    print("  → bị từ chối ngay lúc dựng, trước khi chạy một bước nào")
+    print("  -> refused at construction time, before a single step ran")
 
-# ── chạy thật trên LangGraph ────────────────────────────────────────────────
+# -- a real run on LangGraph ---------------------------------------------------
 graph, runtime = build_agent(
     model=FakeChat(script=[
-        FakeChat.call("recall", {"cau_hoi": "khách A-4471 thế nào"}, "c1"),
-        FakeChat.call("hoan_tien", {"ma": "A-4471", "so_tien": 890_000}, "c2"),
-        FakeChat.text("Đã hoàn tiền, trả lời ngắn gọn như khách thích."),
+        FakeChat.call("recall", {"cau_hoi": "how is customer A-4471"}, "c1"),
+        FakeChat.call("refund", {"order_id": "A-4471", "amount": 890_000}, "c2"),
+        FakeChat.text("Refund issued, kept it short as this customer prefers."),
     ]),
-    tools=store.tools() + [hoan_tien],
+    tools=store.tools() + [refund],
     budget="$0.20, 10 steps",
     approve=lambda call, ctx: True,
-    accepts_tainted=["hoan_tien"],       # OPERATOR cấp — không phải tác giả tool
+    accepts_tainted=["refund"],          # granted by the OPERATOR -- not the tool's author
 )
 
-ket_qua = graph.invoke({"messages": [HumanMessage("xử lý đơn A-4471")]})
+result = graph.invoke({"messages": [HumanMessage("handle order A-4471")]})
 
-print("\nHội thoại")
-print("─" * 66)
-for m in ket_qua["messages"]:
-    ten = type(m).__name__.replace("Message", "")
-    goi = [c["name"] for c in getattr(m, "tool_calls", []) or []]
-    print(f"  {ten:<9} {str(m.content)[:56] or '→ ' + ', '.join(goi)}")
+print("\nConversation")
+print("-" * 66)
+for m in result["messages"]:
+    kind = type(m).__name__.replace("Message", "")
+    calls = [c["name"] for c in getattr(m, "tool_calls", []) or []]
+    print(f"  {kind:<9} {str(m.content)[:56] or '-> ' + ', '.join(calls)}")
 
-print(f"\nrun bị làm bẩn : {ket_qua['tainted']}  ← đúng: đã đọc từ trí nhớ")
-print(f"đã tiêu        : ${ket_qua['spent_usd']}")
-print(f"dừng vì        : {ket_qua['stop_reason']}")
-print("\nhoan_tien chạy được vì OPERATOR cấp accepts_tainted=[\"hoan_tien\"] lúc dựng")
-print("agent — không phải vì tác giả tool tự khai nó trong @tool(). Một dòng trong")
-print("decorator trông giống mọi tham số khác khi review; ở build_agent() thì không.")
+print(f"\nrun tainted : {result['tainted']}  <- correct: memory was read from")
+print(f"spent       : ${result['spent_usd']}")
+print(f"stopped for : {result['stop_reason']}")
+print("\nrefund could run because the OPERATOR granted accepts_tainted=[\"refund\"] when")
+print("building the agent -- not because the tool's author declared it in @tool(). A")
+print("line in the decorator looks like every other parameter under review; in")
+print("build_agent() it does not.")

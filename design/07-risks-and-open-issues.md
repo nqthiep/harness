@@ -1,457 +1,501 @@
-# Rủi ro, đánh đổi, và vấn đề còn mở
+# Risks, trade-offs, and open issues
 
-Tệp này tồn tại vì luật §45 của nghiên cứu: **thà nói "Chưa đủ evidence" còn hơn đoán.**
-Mọi phát hiện từ hai vòng review đối kháng ([review-kiss.md](review-kiss.md),
-[review-security.md](review-security.md) — 58 phát hiện, `S-`/`K-`) và mọi lỗi tự bắt được
-trong lúc xây roadmap M6-M10 (`N-`) đều được xét ở đây, kiểm lại trên **code thật hôm nay**
-trước khi ghi "đã sửa" hay "lỗi thời" — không đoán từ văn bản review gốc.
+This file exists because of the research's own rule §45: **better to say "Not Enough
+Evidence" than to guess.** Every finding from the two adversarial review rounds
+([review-kiss.md](review-kiss.md), [review-security.md](review-security.md) — 58
+findings, `S-`/`K-`) and every bug caught while building the M6-M10 roadmap (`N-`) is
+reviewed here, re-checked against **today's real code** before being marked "fixed" or
+"stale" — never guessed from the original review text.
 
-**Kỷ luật chung:** mỗi mục dưới đây trả lời — còn đúng không? sửa được ở đâu? cái gì
-KHÔNG sửa và vì sao? Chi tiết kỹ thuật sâu (code, ADR, test) nằm ở `docs/12-decision-logs.md`;
-tệp này chỉ giữ đủ để hiểu quyết định, không lặp lại toàn bộ lý luận.
+**Shared discipline:** every entry below answers — is it still true? where is it fixed?
+what is NOT fixed, and why? Deep technical detail (code, ADRs, tests) lives in
+`docs/12-decision-logs.md`; this file keeps only enough to understand the decision, not
+the full reasoning restated.
 
 ---
 
-## 0. Trạng thái tóm tắt
+## 0. Status summary
 
-**Tất cả 58 phát hiện gốc đã được xét. 10 phát hiện mới (N-1…N-10): N-1…N-9 tự bắt được
-trong lúc xây M6-M10, N-10 đóng phản hồi trực tiếp của người dùng ("2 API interfaces gây
-khó dùng") sau đó.** Còn mở thật sự, hôm nay: **1 mục** (hoãn có chủ ý, không phải thiếu
-thời gian) — xem `## 7`.
+**All 58 original findings have been reviewed. 10 new findings (N-1…N-10): N-1…N-9
+self-caught while building M6-M10, N-10 closes direct user feedback ("2 API interfaces
+is confusing") that came afterward.** Genuinely still open, today: **1 item**
+(deliberately deferred, not a time shortage) — see `## 7`.
 
-### Bảo mật (S-1…S-29)
+### Security (S-1…S-29)
 
-| Mã | Tóm tắt | Trạng thái |
+| Id | Summary | Status |
 |---|---|---|
-| S-1 | Nén ngữ cảnh gọi model thiếu `reserve()` | Lỗi thời — cơ chế review mô tả không tồn tại |
-| S-3 | `Secret[T]` lộ qua tool result | **Đã sửa**, cả hai nguồn (`Grants.sensitive` + `.reveal()`) |
-| S-4 | Idempotency ở mức MỘT lời gọi tool | **Một phần đã sửa** (N-8) — retry-mid-run cùng một call đã dedupe cả hai backend; crash-across-process vẫn là ranh giới đã biết (`docs/05 §3`'s luật resume), không tuyên bố đóng |
-| S-5 | Memory provenance giả mạo được | Lỗi thời — cơ chế thật đơn giản hơn, không có lỗ hổng đó |
-| S-6 | Grant cũ thắng một DENY taint mới | Đã đúng sẵn, chỉ thiếu test khoá lại |
-| S-7, S-8, S-10 | `ServerIdentity`/hint hạ effect/`proposed_scope` cho MCP | **Đã sửa** — `harness.mcp` (T-9.1) |
-| S-9 | Grant MCP rò giữa hai server | **Đã sửa một phần** — khác nhãn thì chặn được; MỘT nhãn bị trỏ lại endpoint khác thì chưa |
-| S-11 | `Actor` là lời tự khai, không xác thực | **Đã sửa** — `AuthEvidence` + `Agent(require_approval_evidence=True)` DENY một actor `human` không kèm bằng chứng |
-| S-12 | Ba chữ ký resume mâu thuẫn | Lỗi thời — không tồn tại trong code |
-| S-13 | Sub-agent không bị cap step/wall-clock cha | **Đã sửa** |
-| S-14 | Reservation chồng nhau không bị chặn | **Đã sửa một phần** — race đã chặn; `Ledger.void()` chưa cần (0 caller) |
-| S-15 | Policy có state bị dùng chung xuyên request | **Đã sửa** (LangGraph); backend cổ điển đã đúng sẵn, khác cơ chế có chủ ý |
-| S-16 | `accepts_tainted` khai được trong `@tool` | **Đã sửa** — chỉ operator đặt được |
-| S-17 | Injection qua `description` tool MCP | **Đã sửa** — cùng lúc T-9.1, đóng bằng tài liệu + fail-closed default |
-| S-18 | `EgressPolicy` không chặn DNS rebinding | **Đã sửa bằng tài liệu** — không có cách sửa ở tầng policy đồng bộ |
-| S-19 | Taint sticky-per-run rửa được | **Đã sửa** — nhãn per-message (LangGraph); sticky có chủ ý (backend cổ điển) |
-| S-20 | `Budget(usd=None)` bỏ qua cảnh báo đã hứa | **Đã sửa** |
-| S-21 | `Ledger.snapshot()` mất cờ `blocked` | **Đã sửa** |
-| S-22 | Định giá thấp hơn thực tế khi có cache write | **Đã sửa** |
-| S-23 | `call_key` thiếu domain separator | Lỗi thời — cơ chế review mô tả không tồn tại |
-| S-24 | `EventBus`/`seq` dùng chung xuyên thread | **Đã sửa** — rộng hơn mô tả gốc |
-| S-25 | Argument không escape tới approver + không trần số ASK | **Đã sửa** |
-| S-26 | `Scope.args` ép kiểu về chuỗi | Lỗi thời — đã là `Any`, so khớp giữ kiểu |
-| S-27 | Taint/confidentiality cũ trong cùng batch | **Đã sửa** — nhánh confidentiality có thật |
-| S-28 | Sub-agent ASK không có đường tới `approve` cha | Đã đúng sẵn, chỉ thiếu tài liệu |
-| S-29 | Tái dùng grant không ghi audit | **Đã sửa** — chỉ áp cho backend LangGraph |
+| S-1 | Context compaction calling the model without `reserve()` | Stale — the mechanism the review describes doesn't exist |
+| S-3 | `Secret[T]` leaking through a tool result | **Fixed**, both sources (`Grants.sensitive` + `.reveal()`) |
+| S-4 | Idempotency at the SINGLE tool-call level | **Partially fixed** (N-8) — retry-mid-run for the same call is deduped on both backends; a crash-across-process is still a known boundary (`docs/05 §3`'s resume rule), not claimed closed |
+| S-5 | Memory provenance forgeable | Stale — the real mechanism is simpler, no such hole |
+| S-6 | An old grant beating a new taint DENY | Already correct, just missing a test |
+| S-7, S-8, S-10 | `ServerIdentity`/hints lowering effect/`proposed_scope` for MCP | **Fixed** — `harness.mcp` (T-9.1) |
+| S-9 | An MCP grant leaking between two servers | **Partially fixed** — different labels are blocked; ONE label re-pointed to a different endpoint is not yet |
+| S-11 | `Actor` a self-declaration, unauthenticated | **Fixed** — `AuthEvidence` + `Agent(require_approval_evidence=True)` DENYs a `human` actor without evidence |
+| S-12 | Three conflicting resume signatures | Stale — doesn't exist in the code |
+| S-13 | A sub-agent not capped to the parent's step/wall-clock | **Fixed** |
+| S-14 | Overlapping reservations not blocked | **Partially fixed** — the race is blocked; `Ledger.void()` not yet needed (0 callers) |
+| S-15 | A stateful policy shared across requests | **Fixed** (LangGraph); the classic backend was already correct, by a deliberately different mechanism |
+| S-16 | `accepts_tainted` settable inside `@tool` | **Fixed** — only the operator can set it |
+| S-17 | Injection through an MCP tool's `description` | **Fixed** — alongside T-9.1, closed with documentation + a fail-closed default |
+| S-18 | `EgressPolicy` not blocking DNS rebinding | **Fixed with documentation** — no fix available at the synchronous policy layer |
+| S-19 | Sticky-per-run taint launderable | **Fixed** — a per-message label (LangGraph); sticky is deliberate (classic backend) |
+| S-20 | `Budget(usd=None)` skipping a promised warning | **Fixed** |
+| S-21 | `Ledger.snapshot()` losing the `blocked` flag | **Fixed** |
+| S-22 | Underpricing when a cache write happens | **Fixed** |
+| S-23 | `call_key` missing a domain separator | Stale — the mechanism the review describes doesn't exist |
+| S-24 | `EventBus`/`seq` shared across threads | **Fixed** — broader than the original description |
+| S-25 | An argument not escaped to the approver + no ASK ceiling | **Fixed** |
+| S-26 | `Scope.args` coerced to strings | Stale — already `Any`, matching preserves type |
+| S-27 | Stale taint/confidentiality within the same batch | **Fixed** — the confidentiality branch was real |
+| S-28 | A sub-agent ASK with no path to the parent's `approve` | Already correct, just missing documentation |
+| S-29 | Grant reuse not logged to audit | **Fixed** — applies only to the LangGraph backend |
 
 ### KISS (K-series)
 
-| Mã | Tóm tắt | Trạng thái |
+| Id | Summary | Status |
 |---|---|---|
-| K-6 | `Confidentiality` không có nguồn dữ liệu | Hết hiệu lực — S-3 đã cho nó nguồn |
-| K-7 | `Reservation.exact` không ai đọc | Lỗi thời — **không cắt**, có consumer thật |
-| K-9 | `Result.raise_for_status()` thừa | **Đã cắt** |
-| K-10 | Taxonomy OTel 9 span quá nhiều | Rút gọn kế hoạch xuống 4 span — chưa có code OTel lúc đó để cắt |
-| K-11 | `end_strategy` đặt tên va chạm | **Đã sửa** (đổi tên) |
-| K-12 | `ServerIdentity{label,fingerprint}` chưa chốt được `fingerprint` | **Đã sửa** — hạ xuống `ServerLabel` cho v1 |
-| K-13 | Va chạm số hiệu bất biến giữa các tệp `design/*.md` | **Đã sửa**, hai lượt |
-| K-22 | "14 tên, một import" tự mâu thuẫn với ví dụ Mức 3 | **Đã sửa** |
-| K-23 | Chín tunable quá nhiều | **Không cắt** — bảy trong chín đã lỗi thời hoặc chưa từng tồn tại |
-| K-28 | Interface mẫu thiếu "năm thứ" | **Đã sửa** — sửa lại thành đúng ba, nói rõ `session` là tầng service |
+| K-6 | `Confidentiality` with no data source | Moot — S-3 gave it a source |
+| K-7 | `Reservation.exact` read by nobody | Stale — **not cut**, has a real consumer |
+| K-9 | `Result.raise_for_status()` redundant | **Cut** |
+| K-10 | A 9-span OTel taxonomy was too much | Trimmed the plan to 4 spans — no OTel code existed yet to cut |
+| K-11 | An `end_strategy` naming collision | **Fixed** (renamed) |
+| K-12 | `ServerIdentity{label,fingerprint}`'s `fingerprint` format unsettled | **Fixed** — lowered to `ServerLabel` for v1 |
+| K-13 | Invariant numbers colliding across `design/*.md` files | **Fixed**, in two passes |
+| K-22 | "14 names, one import" contradicted by its own Tier-3 example | **Fixed** |
+| K-23 | Nine tunables was too many | **Not cut** — seven of the nine were already stale or never existed |
+| K-28 | The sample interface missing "five things" | **Fixed** — corrected to exactly three, stating that `session` belongs to the service layer |
 
-### Phát hiện mới, bắt được khi xây M6-M10 (N-series)
+### New findings, caught while building M6-M10 (N-series)
 
-| Mã | Tóm tắt | Trạng thái |
+| Id | Summary | Status |
 |---|---|---|
-| N-1 | LangGraph không timeout per-tool | **Đã sửa** — `Ledger.tool_timeout()` + `_with_timeout()`, cùng logic hai thông điệp với `dispatch.py` |
-| N-2 | `try_run()` raise thẳng khi `returns=` sai kiểu | **Đã sửa** |
-| N-3 | LangGraph không hỗ trợ `returns=` | **Đã sửa** — `Runtime.finish()` giờ gọi `run.py::parse_returns()` trước khi phát `run.finished`, cùng implementation với backend cổ điển |
-| N-4 | Lỗi provider crash thẳng ra ngoài, cả hai backend | **Đã sửa** |
-| N-5 | Retry cấp provider đã công bố nhưng chưa cài | **Đã sửa** — `retry.py::with_provider_retry()`, một implementation cho cả hai backend |
-| N-6 | `model.response` VÀ `run.finished` thiếu trường tài liệu đã hứa | **Đã sửa** — `usage`/`latency_ms`/`duration_s` giờ emit đầy đủ trên cả hai backend |
-| N-7 | `Agent.with_()` làm mất bốn trường, mọi lần gọi | **Đã sửa** |
-| N-8 | `execute_once` có caller thật nhưng chưa gắn vào tool dispatch | **Đã sửa** — gắn vào `Dispatcher._invoke`/`_run_tools`, cả hai backend; đóng đúng nửa "retry mid-run" của S-4, không phải toàn bộ |
-| N-9 | `tenant_id` chưa bao giờ tới được `Policy.check()` | **Đã sửa** |
-| N-10 | "2 API interfaces" (backend cổ điển vs LangGraph) | **Đã sửa** — `Agent(durable=True)` |
+| N-1 | LangGraph had no per-tool timeout | **Fixed** — `Ledger.tool_timeout()` + `_with_timeout()`, the same two-message logic as `dispatch.py` |
+| N-2 | `try_run()` raised outright when `returns=` didn't match | **Fixed** |
+| N-3 | LangGraph didn't support `returns=` | **Fixed** — `Runtime.finish()` now calls `run.py::parse_returns()` before emitting `run.finished`, the same implementation as the classic backend |
+| N-4 | A provider error crashed straight out, on both backends | **Fixed** |
+| N-5 | Provider-level retry was documented but never built | **Fixed** — `retry.py::with_provider_retry()`, one implementation for both backends |
+| N-6 | `model.response` AND `run.finished` missing documented fields | **Fixed** — `usage`/`latency_ms`/`duration_s` now emitted fully on both backends |
+| N-7 | `Agent.with_()` losing four fields, on every call | **Fixed** |
+| N-8 | `execute_once` had a real caller but was never wired into tool dispatch | **Fixed** — wired into `Dispatcher._invoke`/`_run_tools`, both backends; closes exactly half of S-4's "retry mid-run," not all of it |
+| N-9 | `tenant_id` never reached `Policy.check()` | **Fixed** |
+| N-10 | "2 API interfaces" (classic backend vs. LangGraph) | **Fixed** — `Agent(durable=True)` |
 
 ---
 
-## 1. Chi tiết — bảo mật (S-series)
+## 1. Detail — security (S-series)
 
-### Đã sửa bằng code
+### Fixed with code
 
-**S-3 — `Secret[T]` lộ qua tool result, cả hai nguồn.** `Grants.sensitive` (operator đánh
-dấu tool) đi cùng `policy/label.py`'s `Label` hai trục — landing chung với S-16/S-19 (bên
-dưới). Nguồn thứ nhất, `.reveal()` một `Secret` rồi giá trị xuất hiện nguyên văn trong
-payload trả về: `secrets.contains_live_secret()` dò đúng phép so khớp `redact()` dùng
-(không tự `.reveal()`); `emits_of()` nâng nhãn message đó lên `SECRET` khi phát hiện, dù
-`redact()` đã xoá token khỏi bytes model thấy — phần còn lại của message vẫn cần nhãn để
-chặn nó rời qua sink `PUBLIC`. `tests/test_attack_s3.py`, mutation-tested, cả hai backend.
+**S-3 — `Secret[T]` leaking through a tool result, both sources.** `Grants.sensitive`
+(the operator flagging a tool) pairs with `policy/label.py`'s two-axis `Label` — landing
+together with S-16/S-19 (below). The first source, calling `.reveal()` on a `Secret` and
+the value showing up verbatim in the returned payload:
+`secrets.contains_live_secret()` detects it using the exact matching `redact()` uses (it
+never calls `.reveal()` itself); `emits_of()` raises that message's label to `SECRET`
+when detected, even though `redact()` already stripped the token from the bytes the
+model sees — the rest of the message still needs the label to keep it from leaving
+through a `PUBLIC` sink. `tests/test_attack_s3.py`, mutation-tested, both backends.
 
-**S-11 (đã sửa) — `Actor` là lời tự khai, không có xác thực.** Đóng theo hai bước, hai
-lượt cách nhau: `Approval(ok, actor=...)` (lượt trước) mở kênh TUỲ CHỌN cho `approve=`
-báo danh tính thật thay vì placeholder chung, nhưng không chặn được một callback CỐ TÌNH
-khai gian — `Decision.actor` ghi lại nguyên văn bất cứ gì callback nói. `AuthEvidence`
-(lượt này) đóng nốt: `policy/decision.py::AuthEvidence` (bắt buộc `channel`,
-`channel_message_id`, `principal` — đúng sàn review-security.md's "sửa tối thiểu" tự đặt
-ra: bằng chứng do CHÍNH KÊNH trả về, không phải callback tự gõ tay), `Approval`/`Decision`
-mang thêm `evidence=`, và `Agent(require_approval_evidence=True)` /
-`build_agent(require_approval_evidence=True)` là nơi một deployment BẬT bắt buộc —
-`PolicyEngine.resolve(..., require_evidence=True)` DENY một actor `human` không kèm
-`evidence`, fail-closed, thay vì âm thầm tin. Mặc định TẮT, không đổi hành vi của bất kỳ
-`approve=` nào chưa từng biết tới `evidence=`.
+**S-11 (fixed) — `Actor` a self-declaration, no authentication.** Closed in two steps,
+two passes apart: `Approval(ok, actor=...)` (the earlier pass) opened an OPTIONAL
+channel for `approve=` to report a real identity instead of a generic placeholder, but
+couldn't stop a callback DELIBERATELY lying — `Decision.actor` recorded verbatim
+whatever the callback said. `AuthEvidence` (this pass) closes the rest:
+`policy/decision.py::AuthEvidence` (requiring `channel`, `channel_message_id`,
+`principal` — exactly review-security.md's self-stated "minimal fix" bar: evidence
+returned by the CHANNEL ITSELF, not typed by the callback), `Approval`/`Decision` now
+carry `evidence=`, and `Agent(require_approval_evidence=True)` /
+`build_agent(require_approval_evidence=True)` is where a deployment turns enforcement
+ON — `PolicyEngine.resolve(..., require_evidence=True)` DENYs a `human` actor with no
+`evidence`, fail-closed, instead of silently trusting it. Off by default, changes no
+behavior for any `approve=` that never knew about `evidence=`.
 
-Ranh giới nói thẳng, không giấu: harness không xác thực CHỮ KÝ nào — verify một chữ ký
-kênh cụ thể (Slack khác Twilio khác một OAuth session) là việc của CHÍNH `approve=`
-callback, bên duy nhất giữ secret của kênh đó, cùng triết lý provider-seam `Policy`/
-`approve=` chính nó đã theo xuyên suốt. `AuthEvidence` đóng được đúng phần: một callback
-KHÔNG THỂ báo `human` bằng một chuỗi trần trụi nữa khi `require_approval_evidence=True`
-— nó phải chủ động dựng một bản ghi bằng chứng đầy đủ. Một callback tự BỊA cả bản ghi
-`AuthEvidence` vẫn là một threat không mục này tuyên bố đóng.
+The boundary, stated plainly rather than hidden: the harness verifies no SIGNATURE at
+all — verifying one specific channel's signature (Slack differs from Twilio differs from
+an OAuth session) is the job of the `approve=` callback ITSELF, the only party holding
+that channel's secret, the same provider-seam philosophy `Policy`/`approve=` already
+follow throughout. `AuthEvidence` closes exactly its part: a callback can NO LONGER
+report `human` with a bare string once `require_approval_evidence=True` — it must
+actively build a full evidence record. A callback that FABRICATES the whole
+`AuthEvidence` record is still a threat this section does not claim to close.
 
-Khe hở phụ tìm thấy khi sửa: backend cổ điển từng BỎ HẲN actor mà `resolve()` trả về
-(`dispatch.py`'s comment cũ: "the classic loop has no DecisionLog to record into") —
-`policy.decided` không hề mang actor/evidence dù backend LangGraph đã ghi vào
-`DecisionLog` từ trước. Sửa cùng lượt: `policy.decided` giờ mang `actor`/`evidence` trên
-CẢ HAI backend (classic qua chính event, vì backend đó không có `DecisionLog` để ghi
-persistent — transcript LÀ sổ audit ở đó).
+A side gap found while fixing this: the classic backend used to DROP the actor
+`resolve()` returned entirely (`dispatch.py`'s old comment: "the classic loop has no
+DecisionLog to record into") — `policy.decided` carried no actor/evidence at all even
+though the LangGraph backend had been writing to a `DecisionLog` all along. Fixed in the
+same pass: `policy.decided` now carries `actor`/`evidence` on BOTH backends (classic
+through the event itself, since that backend has no persistent `DecisionLog` to write to
+— the transcript IS the audit log there).
 
-Service API (T-9.2, `harness[server]`) là caller thật thứ hai của `AuthEvidence`:
-`POST .../approvals/{call_id}` nhận thêm `evidence=` tuỳ chọn trong body, cho một
-operator đặt một tầng channel thật (Slack signature đã verify, OAuth session, ...) trước
-endpoint này viết bằng chứng vào — chính module này KHÔNG xác thực gì (docstring của nó
-đã nói thẳng "No authentication" từ trước, không đổi).
+The Service API (T-9.2, `harness[server]`) is the second real caller of `AuthEvidence`:
+`POST .../approvals/{call_id}` accepts an optional `evidence=` in the body, letting an
+operator put a real channel layer (a verified Slack signature, an OAuth session, …) in
+front of this endpoint before it writes evidence — this module itself authenticates
+NOTHING (its docstring already said "No authentication" before this, unchanged).
 
-`tests/test_attack_s11.py` (24 test, mở rộng từ 4 test lượt trước): `resolve()` mang
-evidence đi cùng actor; `require_evidence=True` DENY human không evidence, ALLOW khi có,
-không ảnh hưởng `bool` trần/actor không phải human; chạy thật qua `Agent` VÀ
-`build_agent()` (`policy.decided`/`Decision.evidence` đúng cả hai backend);
-`_evidence_from_body` (Service API) parse đúng/từ chối đúng; một mutation test khoá lại
-enforcement thật sự load-bearing.
+`tests/test_attack_s11.py` (24 tests, expanded from 4 in the earlier pass): `resolve()`
+carrying evidence alongside the actor; `require_evidence=True` DENYing a human with no
+evidence, ALLOWing with it, unaffected for a bare `bool`/a non-human actor; real runs
+through both `Agent` AND `build_agent()` (`policy.decided`/`Decision.evidence` correct on
+both backends); `_evidence_from_body` (Service API) parsing/rejecting correctly; one
+mutation test locking in that the enforcement is actually load-bearing.
 
-**S-13 — sub-agent không bị cap `steps`/`wall_clock_s` của cha.** `Ledger.hold_steps()`/
-`release_steps()` áp đúng lý luận TOCTOU của `hold()` (trục tiền) sang trục step;
-`child_wall_clock()` cắt trần thời gian con xuống đúng số cha còn lại lúc spawn.
+**S-13 — a sub-agent not capped to the parent's `steps`/`wall_clock_s`.**
+`Ledger.hold_steps()`/`release_steps()` apply the exact same TOCTOU reasoning as
+`hold()` (the money axis) to the step axis; `child_wall_clock()` clamps the child's time
+ceiling to exactly what the parent has left at spawn time.
 `tests/test_attack_s13.py`.
 
-**S-14 (một phần) — reservation chồng nhau đọc cùng ngân sách "còn trống".**
-`Ledger._committed()` cộng mọi reservation đang mở vào `remaining_usd()` và cả hai nhánh
-kiểm ngân sách của `reserve()`. `Ledger.void()` — kiểm kỹ, không có `try/except` nào ở cả
-hai backend nằm giữa `reserve()` và `settle()` mà cần huỷ một reservation giữa chừng; 0
-caller hôm nay, để dành cho khi có plugin `Retry` cấp model-call thật.
-`tests/test_attack_s14.py`.
+**S-14 (partial) — overlapping reservations reading the same "available" budget.**
+`Ledger._committed()` adds every open reservation into `remaining_usd()`, and both
+branches of `reserve()`'s budget check use it. `Ledger.void()` — checked carefully, no
+`try/except` on either backend sits between `reserve()` and `settle()` needing to cancel
+a reservation mid-flight; 0 callers today, reserved for when a real model-call `Retry`
+plugin exists. `tests/test_attack_s14.py`.
 
-**S-15 — policy có state bị mọi thread dùng chung (backend LangGraph).**
-`build_agent()` giờ từ chối construction bất kỳ policy nào không phải factory
-(`ConfigError`); `Runtime._engine_for(run_id)` dựng một `PolicyEngine` riêng mỗi thread.
-Backend cổ điển đã có cơ chế ĐÚNG kiểu khác từ trước (`_check_shared_policy_state`, dò
-sau khi chạy — vì có ranh giới run() rõ, graph thì không) — không áp luật "chỉ nhận
-factory" sang đó, sẽ phá một ca dùng hợp lệ (policy cấu hình thuần, không state).
+**S-15 — a stateful policy shared by every thread (LangGraph backend).**
+`build_agent()` now refuses construction for any non-factory policy (`ConfigError`);
+`Runtime._engine_for(run_id)` builds a separate `PolicyEngine` per thread. The classic
+backend already had a CORRECT mechanism of a different shape
+(`_check_shared_policy_state`, detected after running — because it has a clear `run()`
+boundary that a graph doesn't) — the "factory only" rule isn't applied there, since doing
+so would break a legitimate use case (a purely configuration-based, stateless policy).
 `tests/test_attack_s15.py`.
 
-**S-16/S-19/S-3 nguồn hai — mô hình taint hai trục.** `policy/label.py` (canonical
-`Integrity` × `Confidentiality` × `Label`, `Grants`), `policy/builtin.py` (`check_flow`,
-`emits_of`), nhãn PER-MESSAGE trên backend LangGraph (chống taint bị "rửa" khi compaction
-xoá nội dung nhưng không xoá nhãn). Backend cổ điển giữ sticky-per-run có chủ ý — nó không
-tính lại theo message nên miễn nhiễm với đúng kiểu rửa taint per-message phải phòng.
-`tests/test_attack_s19.py`, 11 test.
+**S-16/S-19/S-3's second source — the two-axis taint model.** `policy/label.py`
+(canonical `Integrity` x `Confidentiality` x `Label`, `Grants`), `policy/builtin.py`
+(`check_flow`, `emits_of`), a PER-MESSAGE label on the LangGraph backend (against taint
+being "laundered" when compaction clears content but not the label). The classic backend
+deliberately keeps sticky-per-run — it never recomputes per message, so it's immune to
+exactly the per-message laundering it would otherwise need to guard against.
+`tests/test_attack_s19.py`, 11 tests.
 
-**S-20 — `Budget(usd=None)` bỏ qua cảnh báo đã hứa.** `usd=None` VẪN được phép (escape
-hatch có chủ đích, provider miễn phí) — cái thiếu là phần hai của lời hứa tài liệu:
-`EventKind.BUDGET_UNLIMITED` phát đúng một lần mỗi run/thread ngay sau `RUN_STARTED`.
-Phát hiện "chặn phát hành" duy nhất còn sống trong 58 phát hiện. `tests/test_attack_s20.py`.
+**S-20 — `Budget(usd=None)` skipping a promised warning.** `usd=None` is STILL allowed
+(a deliberate escape hatch, a free provider) — what was missing was the second half of
+the documented promise: `EventKind.BUDGET_UNLIMITED` fires exactly once per run/thread,
+right after `RUN_STARTED`. The only "release-blocking" finding still alive among the 58.
+`tests/test_attack_s20.py`.
 
-**S-21 — `Ledger.snapshot()` mất cờ `blocked`.** Thêm vào cả `snapshot()`/`restore()`.
+**S-21 — `Ledger.snapshot()` losing the `blocked` flag.** Added to both `snapshot()`/
+`restore()`.
 
-**S-22 — định giá thấp hơn thực tế khi ghi cache thật.** `size_call()`/`reserve()` định
-giá lại theo mức TỆ NHẤT (`cache_write_per_mtok`), không phải `input_per_mtok`.
+**S-22 — underpricing when a real cache write happens.** `size_call()`/`reserve()`
+now price against the WORST case (`cache_write_per_mtok`), not `input_per_mtok`.
 
-**S-24 — `EventBus`/`seq` dùng chung xuyên thread, rộng hơn mô tả gốc.** Lỗi Round 37 đã
-sửa cho `Ledger`/`TaintTracker`, S-15 sửa cho `PolicyEngine`, lần thứ tư: `Runtime._bus_cache`
-giữ một `EventBus` riêng mỗi thread, dựng lười.
+**S-24 — `EventBus`/`seq` shared across threads, broader than originally described.** The
+same bug Round 37 fixed for `Ledger`/`TaintTracker`, S-15 fixed for `PolicyEngine`, a
+fourth time: `Runtime._bus_cache` now holds a separate `EventBus` per thread, built
+lazily.
 
-**S-25 — argument không escape tới approver + không trần số `ASK`.**
-`secrets.safe_for_display()` escape ký tự không in được + digest giá trị dài; trần
-`max_asks_per_run` (mặc định 20) — approval fatigue là một kênh model điều khiển được.
+**S-25 — an argument not escaped to the approver + no `ASK` ceiling.**
+`secrets.safe_for_display()` escapes unprintable characters + digests long values; a
+`max_asks_per_run` ceiling (default 20) — approval fatigue is a channel the model can
+steer.
 
-**S-27 — taint/confidentiality cũ trong cùng batch tool call.** Kịch bản gốc
-(external+danger cùng lượt) đã bị `_check_tool_set` chặn lúc dựng; nhánh CÒN SỐNG là
-confidentiality (SECRET vào sink PUBLIC). Cả hai backend recheck `check_flow` ngay trước
-mỗi lời gọi serial, dùng nhãn SỐNG thay vì nhãn đầu-batch.
+**S-27 — stale taint/confidentiality within the same tool-call batch.** The original
+scenario (external+danger in the same turn) was already blocked at construction by
+`_check_tool_set`; the branch STILL ALIVE was confidentiality (SECRET reaching a PUBLIC
+sink). Both backends now re-check `check_flow` right before each serial call, using the
+LIVE label instead of the batch-start label.
 
-**S-29 — tái dùng grant không ghi audit (backend LangGraph).** `_regate` giờ ghi một
-`Decision` thứ hai (`id`-`reuse`) mỗi lần một grant còn sống được tái dùng — chỉ áp cho
-LangGraph, vì backend cổ điển không có `DecisionLog`.
+**S-29 — grant reuse not logged to audit (LangGraph backend).** `_regate` now writes a
+second `Decision` (id-suffixed `reuse`) every time a live grant is reused — applies only
+to LangGraph, since the classic backend has no `DecisionLog`.
 
-### Sửa được một phần, phần còn lại cần thiết kế riêng
+### Partially fixed, the rest needs its own design
 
-**S-9 — grant MCP rò giữa hai server.** `Scope.server` (T-9.1) chặn được va chạm giữa
-HAI NHÃN khác nhau. Chưa chặn được: một nhãn bị trỏ lại sang endpoint khác trong khi giữ
-nguyên tên — cần `ServerIdentity`+`fingerprint` (K-12's lý do hoãn: định dạng
-`fingerprint` chưa chốt cho MCP stdio), chờ tới khi quan sát được một lần re-pointing thật.
+**S-9 — an MCP grant leaking between two servers.** `Scope.server` (T-9.1) blocks a
+collision between TWO DIFFERENT LABELS. Not yet blocked: a label re-pointed to a
+different endpoint while keeping the same name — needs `ServerIdentity`+`fingerprint`
+(K-12's reason for deferring: the `fingerprint` format is unsettled for MCP stdio),
+waiting until a real re-pointing incident is observed.
 
-### Đã sửa bằng tài liệu (không có cách sửa ở tầng code)
+### Fixed with documentation (no fix available at the code layer)
 
-**S-18 — `EgressPolicy` không chặn DNS rebinding.** `Policy.check` bắt buộc thuần/đồng bộ
-(POL-4) khiến nó chỉ so khớp CHUỖI hostname, không resolve DNS. Không có cách sửa ở tầng
-`Policy` — cần một tầng mạng thật (egress proxy). Sửa bằng cách nói thẳng giới hạn trong
-docstring + `docs/06-safety.md`.
+**S-18 — `EgressPolicy` not blocking DNS rebinding.** `Policy.check` is required to be
+pure/synchronous (POL-4), which means it can only match the hostname STRING, never
+resolve DNS. No fix available at the `Policy` layer — needs a real network layer (an
+egress proxy). Fixed by stating the limit plainly in the docstring + `docs/06-safety.md`.
 
-**S-17 — injection qua `description` tool MCP.** Đóng cùng lúc T-9.1: description tới
-model trước lời gọi tool đầu tiên là bản chất giao thức tool-calling, không chặn được mà
-không phá giao thức — `default_effect=DANGER` cho server chưa duyệt là hàng rào thật.
+**S-17 — injection through an MCP tool's `description`.** Closed alongside T-9.1: a
+description reaching the model before the first tool call is inherent to the
+tool-calling protocol, unblockable without breaking the protocol —
+`default_effect=DANGER` for an unapproved server is the real fence.
 
-### Đã kiểm — lỗi thời hoặc đã đúng sẵn, không cần sửa
+### Checked — stale or already correct, nothing to fix
 
-S-1 (cơ chế nén review mô tả không tồn tại), S-5 (provenance giả mạo — cơ chế thật đơn
-giản hơn, không có lỗ hổng), S-6 (composition đã đúng, chỉ thiếu test), S-12 (ba chữ ký
-resume không tồn tại trong code), S-23 (idempotency `call_key` review mô tả không tồn
-tại), S-26 (`Scope.args` đã là `Any`, không ép kiểu), S-28 (sub-agent ASK đã có đường
-đóng qua luật "không có `approve=`" sẵn có, chỉ thiếu tài liệu). Mỗi mã có test khoá lại
-hành vi thật trong `tests/test_attack_*.py`.
-
----
-
-## 2. Chi tiết — KISS (K-series)
-
-**Đã cắt:** K-9 (`Result.raise_for_status()` — không consumer nào khác `run()`).
-
-**Đã sửa (đổi tên/nói rõ hơn):** K-11 (`end_strategy`'s giá trị thứ ba đổi tên tránh va
-chạm), K-12 (`ServerIdentity` hạ xuống `ServerLabel` cho v1), K-13 (namespace bất biến —
-xem `08-poka-yoke-matrix.md`), K-22 ("14 tên" sửa thành đúng phạm vi Mức 0-2), K-28
-(interface mẫu sửa lại đúng ba thứ, `session` là tầng service).
-
-**Không cắt — lý do đã lỗi thời:** K-7 (`Reservation.exact` CÓ consumer thật —
-`run.py` đọc nó cho sự kiện `BUDGET_RESERVED`); K-23 (bảy trong chín tunable review liệt
-kê hoặc đã lỗi thời hoặc chưa từng được xây — không có gì để cắt).
-
-**Không có code để cắt lúc review viết:** K-10 (taxonomy OTel — chưa có tích hợp OTel nào
-tồn tại khi đó). Rút gọn kế hoạch thẳng trong `design/04-runtime-durability.md §8.2`
-xuống bốn span, để lúc OTel thật được xây (T-8.3), xây đúng bốn ngay từ đầu — và đúng như
-vậy.
+S-1 (the compaction mechanism the review describes doesn't exist), S-5 (forgeable
+provenance — the real mechanism is simpler, no such hole), S-6 (composition was already
+correct, just missing a test), S-12 (three conflicting resume signatures don't exist in
+the code), S-23 (the `call_key` idempotency mechanism the review describes doesn't
+exist), S-26 (`Scope.args` is already `Any`, no coercion), S-28 (a sub-agent ASK already
+has a closed path through the existing "no `approve=`" rule, just missing
+documentation). Every id has a test locking in real behavior in
+`tests/test_attack_*.py`.
 
 ---
 
-## 3. Phát hiện mới, bắt được khi xây roadmap M6-M10
+## 2. Detail — KISS (K-series)
 
-Không thuộc hai vòng review gốc — đánh số riêng `N-` để không va chạm với `S-`/`K-` đã có
-(đúng bài học K-13).
+**Cut:** K-9 (`Result.raise_for_status()` — no consumer besides `run()`).
 
-**N-1 (đã sửa) — LangGraph không timeout per-tool.** `lg/runtime.py::_run_tools` không có
-`async with asyncio.timeout(...)` nào bọc quanh lời gọi tool — khác `dispatch.py::_invoke`
-(Round 23). Một tool `read` treo mãi mãi (HTTP call không timeout riêng) treo cả node
-graph vô thời hạn; chỉ wall-clock CẤP RUN chặn được, và chỉ kiểm đầu mỗi bước. **Từ N-10
-(`Agent(durable=True)`): gap này tới được từ mặt API chính, không chỉ từ `build_agent()`
-— cùng một `Runtime`, không phải hai bản** — nên bản vá này đóng gap trên cả hai đường
-vào cùng lúc.
+**Fixed (renamed/clarified):** K-11 (`end_strategy`'s third value renamed to avoid a
+collision), K-12 (`ServerIdentity` lowered to `ServerLabel` for v1), K-13 (the invariant
+namespace — see `08-poka-yoke-matrix.md`), K-22 ("14 names" corrected to the actual
+Tier 0-2 scope), K-28 (the sample interface corrected to exactly three things, `session`
+stated as belonging to the service layer).
 
-Sửa: `Ledger.tool_timeout(spec.timeout_s)` — helper clamp-về-wall-clock-còn-lại,
-`dispatch.py::_invoke` đã dùng sẵn cho backend cổ điển — tính LẠI mỗi lần thử (mỗi
-`attempt`, không phải một lần đầu batch), rồi bọc lời gọi tool bằng nó. Vướng một chỗ:
-`_run_tools` gọi tool qua `asyncio.run(spec.fn(**args))` trần — `asyncio.timeout()` cần
-`async with` bên trong một coroutine, không có chỗ nào để đưa nó vào một lệnh gọi
-`asyncio.run()` trực tiếp. Giải: một coroutine wrapper nhỏ,
-`_with_timeout(coro, timeout)`, làm đúng một việc — `async with asyncio.timeout(timeout):
-return await coro` — rồi `asyncio.run(_with_timeout(spec.fn(**args), timeout))` thay
-chỗ gọi trần. `except TimeoutError:` tách khỏi `except Exception as exc:` chung, với
-đúng logic hai thông điệp `dispatch.py` đã có: `"timed out: run wall-clock budget
-reached"` khi timeout bị clamp bởi ngân sách CẤP RUN (`timeout < spec.timeout_s`), hay
-`f"timed out after {spec.timeout_s}s"` khi chính trần của tool là cái chạm trước —
-retry (`read`/`external`) vẫn áp dụng như một lỗi tool bình thường. `asyncio.CancelledError`
-vẫn `raise` thẳng, không bao giờ thành lỗi tool — không đổi so với trước bản vá.
-`tests/test_n1_graph_tool_timeout.py`: một tool treo 5s với `timeout_s=0.05` bị cắt
-trong dưới 2s (không phải 5s) và run vẫn kết thúc `ok=True`; một tool khác, `timeout_s`
-riêng rộng (30s) nhưng ngân sách CẤP RUN hẹp hơn (`wall_clock_s=0.05`), tạo đúng thông
-điệp thứ hai — xác nhận nhánh clamp-bởi-run, không chỉ nhánh clamp-bởi-tool.
+**Not cut — the stated reason is stale:** K-7 (`Reservation.exact` DOES have a real
+consumer — `run.py` reads it for the `BUDGET_RESERVED` event); K-23 (seven of the
+review's nine listed tunables are either already stale or were never built — nothing
+left to cut).
 
-**N-2 (đã sửa) — `try_run()` raise thẳng khi model trả rác khớp sai `returns=`.**
-`_parse_returns()` giờ chạy TRƯỚC khi `RUN_FINISHED` phát, bắt `ToolContractError` và hạ
-xuống `Result(stop_reason=ERROR)` — model trả rác là một OUTCOME, không phải crash.
+**No code existed to cut when the review was written:** K-10 (the OTel taxonomy — no
+OTel integration existed at all at that point). The plan itself, in
+`design/04-runtime-durability.md §8.2`, is trimmed straight to four spans, so when real
+OTel gets built (T-8.3), it's built as exactly four from the start — and it was.
 
-**N-3 (đã sửa) — LangGraph không hỗ trợ `returns=`.** `build_agent()` không có tham số
-này; `Result.value` luôn `None` trên backend đó. N-10 (`Agent(durable=True)`) đã đóng
-phần "âm thầm" trước — `Agent(durable=True, returns=...)` raise `ConfigError` ngay lúc
-dựng thay vì để `Result.value` lặng lẽ luôn `None` — bản vá này đóng nốt bản thân khoảng
-trống, gỡ luôn `ConfigError` đó.
+---
 
-Hoá ra MỘT nửa đã có sẵn, không cần sửa: `_output_format(returns)` (yêu cầu model trả
-đúng hình dạng) đi qua `Agent._asm` — CÙNG `ContextAssembler` cả hai backend dùng chung
-(`lg/adapter.py::ProviderChatModel._generate()` build request từ `self.asm`, không dựng
-request riêng) — nên phía GỬI ĐI đã đúng từ trước, không có gì để sửa ở đó. Nửa thiếu
-thật là phía ĐỌC VỀ: không nơi nào trên backend durable từng gọi
-`run.py::_parse_returns()` để parse câu trả lời cuối.
+## 3. New findings, caught while building the M6-M10 roadmap
 
-Sửa: chuyển `_parse_returns` từ method riêng của `RunEngine` thành hàm module-level
-`run.py::parse_returns(want, text)` (không đổi logic, chỉ đổi chỗ ở — `agent.py` VÀ
-`lg/runtime.py` đều đã import từ `run.py`, không có import vòng); `build_agent()` nhận
-thêm `returns=`, thread xuống `Runtime._returns`; `Runtime.finish()` gọi `parse_returns`
-NGAY TRƯỚC khi phát `run.finished` — parity đúng với T-6.4's bản vá cho backend cổ điển
-(nếu parse SAU khi graph đã trả về, `run.finished` sẽ báo `completed` cho một câu trả
-lời `returns=` từ chối, đúng lỗi T-6.4 đã sửa). `agent.py::_state_to_result()` parse LẠI
-(cùng `text`, cùng `returns`, xác định) để dựng `Result.value` thật — giá trị đó không
-bao giờ đi qua state đã checkpoint, vì state phải giữ JSON-checkpointable còn một
-dataclass instance thì không. `test_durable_agent.py` (2 test thay chỗ test cũ khẳng
-định `ConfigError`), `tests/test_n3_durable_returns.py` (3: `run.finished` báo đúng
-`error` cho câu trả lời hỏng thay vì `completed` cũ rồi mới sửa; báo đúng `completed`
-cho câu trả lời tốt; escape hatch `build_agent()` thô cũng parse đúng).
+Not from the two original review rounds — given their own `N-` prefix to avoid
+colliding with the existing `S-`/`K-` numbers (per K-13's own lesson).
 
-**N-4 (đã sửa) — lỗi provider crash thẳng ra ngoài, cả hai backend.** MỌI lần gọi
-provider thật gặp rate limit/timeout tạm thời crash chương trình gọi nó — không có
-`except` nào cho `ProviderError`/`ProviderTimeout`/`ProviderRateLimited` ở bất kỳ đâu
-trong `src/harness/` trước bản vá. Nghiêm trọng hơn N-2: đây là đường đi PHỔ BIẾN nhất
-khi chạy với provider thật. Cả hai backend giờ bắt và hạ xuống `Result(ERROR)`.
+**N-1 (fixed) — LangGraph had no per-tool timeout.** `lg/runtime.py::_run_tools` had no
+`async with asyncio.timeout(...)` around a tool call at all — unlike
+`dispatch.py::_invoke` (Round 23). A hanging `read` tool (an HTTP call with no timeout
+of its own) hung the whole graph node indefinitely; only the RUN-level wall clock could
+catch it, and only checked at the start of each step. **From N-10
+(`Agent(durable=True)`): this gap is reachable from the main API surface, not only
+`build_agent()` — the same `Runtime`, not two copies** — so this fix closes the gap on
+both entry points at once.
 
-**N-5 (đã sửa) — retry cấp provider đã công bố nhưng chưa cài.**
-`docs/10-observability-ops.md §3` hứa `ProviderRateLimited`/`ProviderUnavailable`/
-`ProviderTimeout` đều tự động retry — N-4 chỉ biến lỗi thành `Result(ERROR)`, không tự
-retry gì. `src/harness/retry.py::with_provider_retry()` — MỘT implementation cho cả hai
-backend (`run.py`'s `self._p.complete(...)`, `lg/adapter.py::ProviderChatModel.
-_generate()`'s `self.provider.complete(...)`), y hệt lý do `dispatch.py` là nơi DUY NHẤT
-tool retry (T-6.3) sống, không phải hai bản tay viết có thể lệch (R-17).
-`ProviderError` giờ mang `retry_after_s` (`errors.py`); `models/anthropic.py::_map()`
-đọc header `Retry-After` thật từ `httpx.Response` khi vendor gửi (`_retry_after()`).
-Backoff mũ + jitter khi vendor không gửi header. Bị chặn bởi `deadline_s` — ngân sách
-wall-clock CÒN LẠI của run (`Ledger.remaining_wall_clock()`) — không phải chỉ đếm số
-lần thử: retry không bao giờ sống lâu hơn ngân sách, đúng lời hứa của docs/10 §3.
+Fix: `Ledger.tool_timeout(spec.timeout_s)` — the clamp-to-remaining-wall-clock helper
+already used by `dispatch.py::_invoke` on the classic backend — recomputed on EVERY
+attempt (not once per batch), wrapping the tool call. One snag: `_run_tools` calls a
+tool through a bare `asyncio.run(spec.fn(**args))` — `asyncio.timeout()` needs an
+`async with` inside a coroutine, with nowhere to put it around a direct
+`asyncio.run()` call. Solved with a small coroutine wrapper,
+`_with_timeout(coro, timeout)`, doing exactly one thing — `async with
+asyncio.timeout(timeout): return await coro` — then
+`asyncio.run(_with_timeout(spec.fn(**args), timeout))` replacing the bare call.
+`except TimeoutError:` split from the general `except Exception as exc:`, with the same
+two-message logic `dispatch.py` already has: `"timed out: run wall-clock budget
+reached"` when the timeout was clamped by the RUN-level budget (`timeout <
+spec.timeout_s`), or `f"timed out after {spec.timeout_s}s"` when the tool's own ceiling
+hit first — retry (`read`/`external`) still applies as an ordinary tool error.
+`asyncio.CancelledError` still `raise`s straight through, never becomes a tool error —
+unchanged from before this fix. `tests/test_n1_graph_tool_timeout.py`: a tool hanging
+for 5s with `timeout_s=0.05` is cut off in under 2s (not 5s) and the run still ends
+`ok=True`; a second tool with a wide own `timeout_s` (30s) but a tighter RUN-level
+budget (`wall_clock_s=0.05`) produces exactly the second message — confirming the
+clamped-by-run branch, not just the clamped-by-tool one.
 
-Một cạm bẫy suýt gây lỗi thật: bản đầu định truyền `deadline_s`/`on_retry` qua
-`.invoke()`'s `**kwargs` — giống hệt cách `max_tokens` đã truyền an toàn. Kiểm trực tiếp
-`langchain_anthropic.ChatAnthropic._get_request_payload` (đã cài trong sandbox) mới lộ
-ra: nó merge MỌI kwarg không nhận diện được thẳng vào payload gửi API
-(`{**self.model_kwargs, **kwargs}`) — `max_tokens` là trường Anthropic thật nên an toàn,
-`deadline_s`/`on_retry` thì không, sẽ làm API 400 ngay khi ai dùng escape hatch với model
-thật. Sửa bằng `retry.retry_scope()` — một `contextvars.ContextVar` riêng, `call_model`
-đặt quanh đúng lời gọi `.invoke()`, `_generate()` đọc lại trong CÙNG call stack (không
-qua thread nào, nên không cần cơ chế copy-context của `middleware.py`) — không kwarg lạ
-nào chạm tới `.invoke()` nữa ngoài `max_tokens`.
+**N-2 (fixed) — `try_run()` raised outright when the model returned garbage that didn't
+match `returns=`.** `_parse_returns()` now runs BEFORE `RUN_FINISHED` fires, catches
+`ToolContractError`, and lowers it into `Result(stop_reason=ERROR)` — a model returning
+garbage is an OUTCOME, not a crash.
 
-**N-6 (đã sửa) — `model.response` VÀ `run.finished` thiếu trường tài liệu đã hứa.**
-`docs/05-data-and-state.md §1` hứa `model.response` mang `usage{in,out,cache_read,
-cache_write}`/`latency_ms`, `run.finished` mang `usage`/`duration_s` — cả hai backend chỉ
-emit `stop_reason`/`cost_usd`/`steps`/`tainted`. Đã emit đủ trên cả hai: `run.py` đo
-`latency_ms` quanh `with_provider_retry(...)`, cộng dồn `usage_total`, đo `duration_s` từ
-`run_t0`. `lg/runtime.py` cần state MỚI (`lg/state.py`): `turn_started_at` (đồng hồ
-`duration_s`, reset đúng điểm `asks` đã reset — một turn, không phải một thread, vì
-`RUN_FINISHED` ở backend này vốn đã bắn mỗi turn, không phải mỗi thread) và `turn_usage`
-(cộng dồn bởi `call_model`, `dataclasses.asdict(Usage(...))` — JSON-checkpointable, cùng
-quy ước với `ledger`). `latency_ms` đo trong `lg/adapter.py::_generate()` (tổng thời gian
-CẢ retry, không chỉ lần thử cuối) rồi gửi qua `AIMessage.response_metadata` cho
-`call_model` đọc lại.
+**N-3 (fixed) — LangGraph didn't support `returns=`.** `build_agent()` had no such
+parameter; `Result.value` was always `None` on that backend. N-10
+(`Agent(durable=True)`) had already closed the "silent" half —
+`Agent(durable=True, returns=...)` raised `ConfigError` right at construction instead of
+letting `Result.value` quietly stay `None` forever — this fix closes the gap itself,
+removing that `ConfigError`.
 
-Phần `step=` (bất đối xứng backend, phát hiện lúc review `middleware.py`, N-10): 11 điểm
-`_emit` trong `lg/runtime.py` thiếu `step=`, `Event.step` luôn `None` ở đó dù backend cổ
-điển luôn có. Đã thêm `step=state.get("step", 0)` vào cả 11; verify bằng in trực tiếp
-`event.step` qua một run `durable=True` thật — không còn `None` nào ngoài `run.started`/
-`run.finished` (đúng như backend cổ điển).
+Turns out HALF of it already existed, nothing to fix: `_output_format(returns)`
+(requiring the model to return the right shape) goes through `Agent._asm` — the SAME
+`ContextAssembler` both backends share (`lg/adapter.py::ProviderChatModel._generate()`
+builds its request from `self.asm`, no separate request-building) — so the SENDING side
+was already correct, nothing to fix there. The real missing half was the READING side:
+nothing on the durable backend ever called `run.py::_parse_returns()` to parse the final
+answer.
 
-Verify cả hai phần: `tests/test_n5_n6_retry_and_usage.py` (8 test — retry thành công sau
-N lần lỗi tạm thời trên cả hai backend, lỗi KHÔNG tạm thời không bao giờ retry, hết
-`MAX_ATTEMPTS` vẫn hạ cánh mềm thành `Result(ERROR)` chứ không crash, retry không sống
-lâu hơn ngân sách wall-clock, cả hai event mang đủ trường, `turn_usage` reset đúng theo
-turn chứ không cộng dồn qua các lượt `try_run()` khác nhau trên cùng một thread).
+Fix: `_parse_returns` moved from a private `RunEngine` method to a module-level function
+`run.py::parse_returns(want, text)` (logic unchanged, only relocated — both `agent.py`
+AND `lg/runtime.py` already import from `run.py`, no circular import); `build_agent()`
+gained `returns=`, threaded down to `Runtime._returns`; `Runtime.finish()` calls
+`parse_returns` RIGHT BEFORE emitting `run.finished` — exact parity with T-6.4's fix for
+the classic backend (parsing AFTER the graph has already returned would make
+`run.finished` report `completed` for an answer `returns=` rejects, the exact bug T-6.4
+fixed). `agent.py::_state_to_result()` parses AGAIN (same `text`, same `returns`,
+deterministic) to build the real `Result.value` — that value never travels through
+checkpointed state, since state must stay JSON-checkpointable and a dataclass instance
+isn't. `test_durable_agent.py` (2 tests replacing the old ones asserting `ConfigError`),
+`tests/test_n3_durable_returns.py` (3: `run.finished` correctly reports `error` for a
+broken answer instead of the old `completed`-then-fixed; correctly reports `completed`
+for a good answer; the raw `build_agent()` escape hatch also parses correctly).
 
-**N-7 (đã sửa) — `Agent.with_()` làm mất bốn trường, MỌI lần gọi.**
-`transcript`/`exporters`/`accepts_tainted`/`sensitive` biến mất khỏi agent phái sinh —
-không phải lỗi riêng của tính năng nào đang xây, ảnh hưởng mọi caller của `with_()`.
+**N-4 (fixed) — a provider error crashing straight out, on both backends.** EVERY real
+provider call hitting a rate limit/transient timeout crashed the calling program — no
+`except` anywhere in `src/harness/` for `ProviderError`/`ProviderTimeout`/
+`ProviderRateLimited` before this fix. More severe than N-2: this is the MOST COMMON
+path when running against a real provider. Both backends now catch it and lower it into
+`Result(ERROR)`.
+
+**N-5 (fixed) — provider-level retry was documented but never built.**
+`docs/10-observability-ops.md §3` promised `ProviderRateLimited`/`ProviderUnavailable`/
+`ProviderTimeout` all auto-retry — N-4 only turned the error into `Result(ERROR)`,
+retrying nothing. `src/harness/retry.py::with_provider_retry()` — ONE implementation for
+both backends (`run.py`'s `self._p.complete(...)`, `lg/adapter.py::ProviderChatModel.
+_generate()`'s `self.provider.complete(...)`), the exact reason `dispatch.py` is the
+SOLE place tool retry (T-6.3) lives, not two hand-written copies that could drift
+(R-17). `ProviderError` now carries `retry_after_s` (`errors.py`);
+`models/anthropic.py::_map()` reads the real `Retry-After` header from the
+`httpx.Response` when the vendor sends one (`_retry_after()`). Exponential backoff +
+jitter when the vendor doesn't. Bounded by `deadline_s` — the run's REMAINING
+wall-clock budget (`Ledger.remaining_wall_clock()`) — not just an attempt count: a retry
+can never outlive the budget, exactly the promise in docs/10 §3.
+
+A near-miss caught before shipping: the first draft planned to pass
+`deadline_s`/`on_retry` through `.invoke()`'s `**kwargs` — the same way `max_tokens`
+already passes safely. Checking `langchain_anthropic.ChatAnthropic._get_request_payload`
+directly (already installed in the sandbox) revealed: it merges EVERY unrecognized
+kwarg straight into the payload sent to the real API (`{**self.model_kwargs, **kwargs}`)
+— `max_tokens` is a real Anthropic field so it's safe, `deadline_s`/`on_retry` are not
+and would 400 the API the moment anyone used the escape hatch with a real model. Fixed
+with `retry.retry_scope()` — a dedicated `contextvars.ContextVar`, set by `call_model`
+around exactly the `.invoke()` call, read back by `_generate()` in the SAME call stack
+(no thread crossing, so no need for `middleware.py`'s context-copying mechanism) — no
+stray kwarg reaches `.invoke()` beyond `max_tokens` anymore.
+
+**N-6 (fixed) — `model.response` AND `run.finished` missing documented fields.**
+`docs/05-data-and-state.md §1` promised `model.response` carries
+`usage{in,out,cache_read,cache_write}`/`latency_ms`, `run.finished` carries
+`usage`/`duration_s` — both backends only emitted `stop_reason`/`cost_usd`/`steps`/
+`tainted`. Now emitted fully on both: `run.py` measures `latency_ms` around
+`with_provider_retry(...)`, accumulates `usage_total`, measures `duration_s` from
+`run_t0`. `lg/runtime.py` needed NEW state (`lg/state.py`): `turn_started_at` (the
+`duration_s` clock, reset at the same point `asks` already resets — per turn, not per
+thread, since `RUN_FINISHED` on this backend already fires per turn, not per thread) and
+`turn_usage` (accumulated by `call_model`, `dataclasses.asdict(Usage(...))` —
+JSON-checkpointable, the same convention as `ledger`). `latency_ms` measured inside
+`lg/adapter.py::_generate()` (total time INCLUDING retries, not just the last attempt)
+then sent through `AIMessage.response_metadata` for `call_model` to read back.
+
+The `step=` part (a backend asymmetry, found while reviewing `middleware.py`, N-10): 11
+`_emit` call sites in `lg/runtime.py` were missing `step=`, so `Event.step` was always
+`None` there even though the classic backend always has it. Added
+`step=state.get("step", 0)` to all 11; verified by printing `event.step` directly
+through a real `durable=True` run — no more `None`s except `run.started`/`run.finished`
+(matching the classic backend exactly).
+
+Both halves verified: `tests/test_n5_n6_retry_and_usage.py` (8 tests — retry succeeding
+after N transient failures on both backends, a non-transient error never retrying,
+exhausting `MAX_ATTEMPTS` still landing softly as `Result(ERROR)` rather than crashing,
+a retry never outliving the wall-clock budget, both events carrying every field,
+`turn_usage` resetting correctly per turn rather than accumulating across different
+`try_run()` calls on the same thread).
+
+**N-7 (fixed) — `Agent.with_()` losing four fields, on EVERY call.**
+`transcript`/`exporters`/`accepts_tainted`/`sensitive` vanished from a derived agent —
+not a bug specific to any one feature being built, affecting every caller of `with_()`.
 `tests/test_n7_with_preserves_fields.py`.
 
-**N-8 (đã sửa, một phần rõ ràng) — `execute_once` giờ có caller ở CẢ hai mức.** `POST
-/v1/runs`'s `Idempotency-Key` (T-9.2) dedupe một REQUEST KHỞI ĐỘNG RUN — "caller thật đầu
-tiên" `idempotency.py` tự đặt điều kiện. `Dispatcher._invoke` (backend cổ điển) và
-`lg/runtime.py::_run_tools` (backend durable) giờ là caller thứ hai, ở MỨC TOOL CALL:
-`execute_once` bọc quanh chính lời gọi `spec.fn()`, khoá bằng
-`idempotency_key(f"{run_id}:{step}", call_id)` — gộp thêm `step` vào nửa run_id của khoá
-(không đổi chữ ký hàm `idempotency_key` chính nó, `tests/test_m6_t61_idempotency.py` khoá
-sẵn hình dạng `f"{run_id}:{call_id}"`) vì `FakeModel.tool_call()`'s mặc định tiện dụng
-(`call_id="c1"`) không duy nhất qua các bước, và hàng chục test có sẵn dựa vào việc đó vô
-hại.
+**N-8 (fixed, one clearly-defined half) — `execute_once` now has a caller at BOTH
+levels.** `POST /v1/runs`'s `Idempotency-Key` (T-9.2) dedupes a REQUEST STARTING A RUN —
+`idempotency.py`'s own stated condition for "the first real caller." `Dispatcher._invoke`
+(classic backend) and `lg/runtime.py::_run_tools` (durable backend) are now the second
+caller, at the TOOL-CALL LEVEL: `execute_once` wraps the actual `spec.fn()` call, keyed
+by `idempotency_key(f"{run_id}:{step}", call_id)` — folding `step` into the run_id half
+of the key (the `idempotency_key` function's own signature is unchanged,
+`tests/test_m6_t61_idempotency.py` already locks in the shape
+`f"{run_id}:{call_id}"`) because `FakeModel.tool_call()`'s convenient default
+(`call_id="c1"`) isn't unique across steps, and dozens of existing tests harmlessly rely
+on that.
 
-Đóng đúng nửa nào: một call `retryable=True` mà `spec.fn()` THÀNH CÔNG nhưng bước
-NGAY SAU nó (json.dumps/`truncate`/kiểm taint) mới raise — trước bản vá, dispatch loop
-coi cả lượt thử là lỗi và gọi lại TOÀN BỘ, kể cả `spec.fn()` đã chạy xong — giờ lượt thử
-thứ hai là cache hit, `spec.fn()` không chạy lại; `tool.finished`'s `replayed=True` xác
-nhận. `tests/test_n8_idempotent_tool_calls.py`: backend cổ điển ép lỗi thật (monkeypatch
-`truncate` raise ở lần đầu) rồi kiểm side-effect chỉ ghi nhận đúng một lần; backend
-durable là test white-box — gọi thẳng `Runtime._run_tools(state)` hai lần với CÙNG
-`run_id`/`step`/`call_id` (hình dạng một node bị gọi lại đúng ở checkpoint TRƯỚC nó,
-với `_pending` đã checkpoint không đổi) và kiểm side-effect cũng chỉ một lần.
+What exactly this closes: a `retryable=True` call where `spec.fn()` SUCCEEDED but the
+step RIGHT AFTER it (json.dumps/`truncate`/the taint check) is what raised — before this
+fix, the dispatch loop treated the whole attempt as failed and retried the ENTIRE thing,
+including a `spec.fn()` that had already succeeded — now the second attempt is a cache
+hit, `spec.fn()` doesn't run again; `tool.finished`'s `replayed=True` confirms it.
+`tests/test_n8_idempotent_tool_calls.py`: the classic backend forces a real error
+(monkeypatching `truncate` to raise on the first call) and checks the side effect is
+recorded exactly once; the durable backend is a white-box test — calling
+`Runtime._run_tools(state)` directly twice with the SAME `run_id`/`step`/`call_id`
+(matching the shape of a node retried right at the checkpoint BEFORE it, with the
+checkpointed `_pending` unchanged) and checking the side effect also happens only once.
 
-Nửa KHÔNG đóng, và không tuyên bố đóng: một crash NGANG QUÁ TRÌNH (upstream đã nhận
-side-effect, tiến trình chết trước khi `execute_once`'s `store.put()` kịp ghi) — cả hai
-store đều in-memory (`Dispatcher.__init__`'s `InMemoryStore` mới mỗi run;
-`Runtime._idem_for()`'s cache theo `run_id`, cùng dạng `_bus_cache`/`_policy_cache`,
-R-4-an toàn vì không phải nguồn sự thật) nên chết cùng tiến trình. Nửa đó vẫn đứng nguyên
-chỗ nó đã đứng: `docs/05-data-and-state.md §3`'s luật resume (`write`/`danger` không bao
-giờ chạy lại khi resume) — S-4's mô tả gốc chính xác là kịch bản crash-across-process
-này, và nó KHÔNG đóng bằng bản vá này, cũng không được tuyên bố đóng.
+The half NOT closed, and not claimed closed: a crash ACROSS PROCESSES (upstream already
+received the side effect, the process dies before `execute_once`'s `store.put()` can
+write) — both stores are in-memory (`Dispatcher.__init__`'s fresh `InMemoryStore` per
+run; `Runtime._idem_for()`'s cache keyed by `run_id`, the same shape as
+`_bus_cache`/`_policy_cache`, R-4-safe since it isn't a source of truth), so they die
+with the process. That half stands exactly where it stood before:
+`docs/05-data-and-state.md §3`'s resume rule (`write`/`danger` never re-runs on resume)
+— S-4's original description is exactly this cross-process crash scenario, and it is
+NOT closed by this fix, nor claimed to be.
 
-**N-9 (đã sửa) — `tenant_id` chưa bao giờ tới được `Policy.check()`.** `Agent.tenant_id`
-chỉ từng chảy tới `EventBus` (telemetry), không bao giờ tới `RunContext`/`_Ctx` — một
-`Policy` không đọc được nó. Nối `tenant_id` vào cả hai kiểu context, cả hai backend.
-`tests/test_n9_tenant_in_context.py`. Bắt được khi chạy lại `tests/test_roadmap.py`
-(bộ test tự đăng ký "định nghĩa xong" của M6-M10, viết trước khi các milestone tồn tại)
-ngay trước lượt dọn tài liệu này — hai check ĐỎ khác của cùng file hoá ra chỉ đoán sai
-TÊN (`ApprovalRecord`→`Decision`, `harness.testing`→`harness.eval`), sửa test chứ không
-sửa code; `tenant_id` là gap chức năng thật duy nhất trong năm check ban đầu đỏ.
+**N-9 (fixed) — `tenant_id` never reached `Policy.check()`.** `Agent.tenant_id` only
+ever flowed to the `EventBus` (telemetry), never to `RunContext`/`_Ctx` — a `Policy`
+couldn't read it. Threaded into both context types, both backends.
+`tests/test_n9_tenant_in_context.py`. Found while re-running
+`tests/test_roadmap.py` (the self-registered "definition done" test suite for M6-M10,
+written before the milestones existed) right before this documentation pass — two other
+RED checks in the same file turned out to just be guessing the wrong NAME
+(`ApprovalRecord`->`Decision`, `harness.testing`->`harness.eval`), a test fix, not a code
+fix; `tenant_id` was the only real functional gap among the five originally-red checks.
 
-**N-10 (đã sửa) — "2 API interfaces" (backend cổ điển vs LangGraph) gây khó cho người
-dùng.** Phản hồi trực tiếp từ người dùng, không phải phát hiện tự động: có hai backend
-nghĩa là ai muốn durability phải học từ vựng LangChain (`HumanMessage`, `.invoke()`,
-`thread_id` trong config) bên cạnh `Agent`. Đóng bằng `Agent(durable=True)`
-(`docs/03-public-api.md §3.5`, `agent.py::_atry_run_durable`): CÙNG một `run`/`try_run`/
-`arun`/`atry_run`/`with_`, chạy trên `harness.lg.build_agent()` ở dưới, không có gì thuộc
-LangChain/LangGraph lọt ra ngoài. `ProviderChatModel` (`lg/adapter.py`) là seam làm được
-điều đó mà không cần một thư viện gọi model thứ hai: nó bọc `provider=` CỦA CHÍNH Agent
-đó (cùng `AnthropicProvider`/`FakeModel` backend cổ điển gọi) thành một LangChain chat
-model, nên `durable=True` gọi model qua đúng một đường error-mapping/pricing, và qua
-CÙNG `ContextAssembler` — đóng luôn một khoảng trống riêng của `build_agent()` (nó chưa
-bao giờ tự gửi system prompt/`job=` tới model). `checkpoint=` mặc định là file SQLite cục
-bộ, tự tạo, không cần hạ tầng ngoài (`_build_checkpointer`) — theo đúng trải nghiệm
-`SqliteStore` đã có sẵn cho memory.
+**N-10 (fixed) — "2 API interfaces" (classic backend vs. LangGraph) confusing users.**
+Direct user feedback, not an automated finding: having two backends meant anyone wanting
+durability had to learn LangChain vocabulary (`HumanMessage`, `.invoke()`, `thread_id`
+in config) on top of `Agent`. Closed with `Agent(durable=True)`
+(`docs/03-public-api.md §3.5`, `agent.py::_atry_run_durable`): the SAME
+`run`/`try_run`/`arun`/`atry_run`/`with_`, running on `harness.lg.build_agent()`
+underneath, with nothing LangChain/LangGraph-shaped leaking out. `ProviderChatModel`
+(`lg/adapter.py`) is the seam that makes this possible without a second model-calling
+library: it wraps THAT SAME Agent's `provider=` (the same `AnthropicProvider`/
+`FakeModel` the classic backend calls) into a LangChain chat model, so `durable=True`
+calls the model through exactly one error-mapping/pricing path, and through the SAME
+`ContextAssembler` — closing a gap that belonged to `build_agent()` alone (it never sent
+a system prompt/`job=` to the model on its own). `checkpoint=` defaults to a local
+SQLite file, created automatically, no external infrastructure needed
+(`_build_checkpointer`) — matching the experience `SqliteStore` already provides for
+memory.
 
-Ba khoảng trống MỚI, không âm thầm — mỗi cái raise `ConfigError` rõ ràng thay vì bỏ qua
-lặng lẽ: `durable=True` + `.chat()`, + `.resume(transcript)`, + `on_delta=` đều bị từ
-chối (checkpointer đã giữ lịch sử hội thoại, nên `.chat()`/`.resume()` là cơ chế trùng
-việc; model call trong `_generate` chưa stream). `Session`/Service API (T-8.6/T-9.2) vẫn
-CHỈ backend cổ điển — quyết định có mở rộng cho `durable=True` hay không CHƯA đưa ra,
-ghi ở §7 dưới.
+Three NEW gaps, none silent — each raises a clear `ConfigError` rather than quietly
+skipping: `durable=True` + `.chat()`, + `.resume(transcript)`, + `on_delta=` are all
+refused (the checkpointer already holds conversation history, so `.chat()`/`.resume()`
+would duplicate its job; the model call inside `_generate` doesn't stream yet).
+`Session`/the Service API (T-8.6/T-9.2) remain classic-backend ONLY — whether to extend
+them to `durable=True` hasn't been decided, recorded in §7 below.
 
-Một đánh đổi kiến trúc có chủ đích, không phải sơ suất: đồ thị được BIÊN DỊCH LẠI mỗi lần
-gọi (`_build_durable_graph`), không cache trên `Agent` như `_asm`/`_watch`. Lý do:
-`AsyncSqliteSaver` giữ một connection `aiosqlite` sở hữu một thread nền KHÔNG phải daemon
-— một `Agent` durable cache đồ thị (và connection) suốt vòng đời sẽ khiến một script gọi
-xong `run()` rồi thoát bình thường TREO LUÔN, thay vì return — bug thật, bắt được bằng
-tay lúc build tính năng này (không phải lý thuyết: `tests/test_durable_agent.py::
-DurableProcessExits` là regression test cho đúng bug đó, chạy script con qua
-`subprocess` với timeout cứng). Mở/đóng connection quanh đúng một lần gọi — cùng hình
-dạng `atry_run()` đã dùng cho `TranscriptWriter` của riêng nó — đổi lấy việc Agent này cư
-xử giống mọi Agent khác trong thư viện: nó return. `tests/test_durable_agent.py` (14
-test) và `tests/test_parity.py` (mở rộng thành BA call shape — loop, graph thô,
-`durable=True`) phủ tính năng.
+A deliberate architectural trade-off, not an oversight: the graph is RECOMPILED on every
+call (`_build_durable_graph`), not cached on the `Agent` like `_asm`/`_watch`. Why:
+`AsyncSqliteSaver` holds an `aiosqlite` connection that owns a background thread that is
+NOT a daemon — a durable `Agent` caching the graph (and connection) for its whole
+lifetime would make a script that calls `run()` and then exits normally HANG instead of
+returning — a real bug, caught by hand while building this feature (not theoretical:
+`tests/test_durable_agent.py::DurableProcessExits` is a regression test for exactly that
+bug, running a child script via `subprocess` with a hard timeout). Opening/closing the
+connection around exactly one call — the same shape `atry_run()` already uses for its
+own `TranscriptWriter` — trades that for this Agent behaving like every other Agent in
+the library: it returns. `tests/test_durable_agent.py` (14 tests) and
+`tests/test_parity.py` (expanded to THREE call shapes — the loop, the raw graph,
+`durable=True`) cover this feature.
 
 ---
 
-## 4. Ý tưởng có kiến trúc, chờ eval
+## 4. Ideas with real architecture, waiting on evaluation
 
-Cắt khỏi đường đi bắt buộc theo luật §8.4, **không vứt đi**. Nếu có ngày đo được, đây là
-chỗ lấy lại.
+Cut from the mandatory path per rule §8.4, **not thrown away.** If a day comes with
+measurement, this is where to pick it back up.
 
 ### Quarantine model (dual-LLM / CaMeL)
 
-**Cái Microsoft làm đúng, và chỗ đặt sai.** `set_quarantine_client` cung cấp một model
-riêng, rẻ hơn, để suy luận trên nội dung không tin cậy — mẫu dual-LLM / CaMeL, thứ
-**không gói nào khác trong 28 gói Python + TypeScript có**
-([§09](../research/09-memory-context-multiagent-hitl.md) §16bis). Ý tưởng đúng; chỗ đặt
-sai: `_quarantine_chat_client` là biến **mức module**, gán qua `global`.
+**What Microsoft gets right, and where it's placed wrong.**
+`set_quarantine_client` provides a separate, cheaper model to reason over untrusted
+content — the dual-LLM / CaMeL pattern, something **no other package among 28 Python +
+TypeScript packages has**
+([§09](../research/09-memory-context-multiagent-hitl.md) §16bis). The idea is right; the
+placement is wrong: `_quarantine_chat_client` is a **module-level** variable, assigned
+through `global`.
 
-**Nó thuộc về đâu trong đời một `Run`.** Quarantine không phải cấu hình tiến trình — nó
-là một seam của `Run`:
+**Where it belongs in a `Run`'s lifetime.** Quarantine isn't process configuration —
+it's a `Run` seam:
 
 ```python
 @value
@@ -461,74 +505,81 @@ class RunConfig:
 
 @value
 class Quarantined[T]:
-    """Kết quả rút trích từ nội dung UNTRUSTED. Chỉ dữ liệu có schema, không văn xuôi."""
+    """A result extracted from UNTRUSTED content. Schema-typed data only, never free prose."""
     value: T
-    label: Label                # luôn Integrity.UNTRUSTED — không hạ được
+    label: Label                # always Integrity.UNTRUSTED — cannot be lowered
     source_call_id: CallId
 ```
 
-Bốn luật: (1) vòng đời = vòng đời `Run`, chốt lúc khởi tạo, không setter/`global`;
-(2) chỉ dữ liệu có schema quay lại context chính — văn xuôi tự do không bao giờ merge
-vào `messages` của run chính; (3) `Quarantined.label` không có API nào hạ được xuống
-`TRUSTED`; (4) không cấu hình ⇒ `DENY`, không phải im lặng đi tiếp (đối lập Microsoft).
-Chi phí model quarantine tính vào cùng `Ledger` của run — một cơ chế an toàn có ngân sách
-riêng là một cơ chế an toàn không đếm được.
+Four rules: (1) lifetime = the `Run`'s lifetime, fixed at construction, no setter/
+`global`; (2) only schema-typed data returns to the main context — free-form prose never
+merges into the main run's `messages`; (3) `Quarantined.label` has no API that lowers it
+to `TRUSTED`; (4) no configuration => `DENY`, never silently proceeding (the opposite of
+Microsoft). The quarantine model's cost is charged to the same run `Ledger` — a safety
+mechanism with its own untracked budget is a safety mechanism nobody can account for.
 
-**Vì sao cắt.** Đúng MỘT cài đặt trong toàn nghiên cứu, `@experimental`, không wire vào
-harness của chính nó, không concurrency-safe. Không có eval nào so sánh tỉ lệ
-prompt-injection thành công có/không có nó ([review-kiss.md](review-kiss.md) K-1).
+**Why it's cut.** Exactly ONE implementation in the entire research effort,
+`@experimental`, not wired into its own harness, not concurrency-safe. No evaluation
+compares the prompt-injection success rate with and without it
+([review-kiss.md](review-kiss.md) K-1).
 
-**Điều kiện lấy lại.** Một eval trên tập prompt-injection thật, đo tỉ lệ thành công có và
-không có quarantine, trên cùng bộ tool. Chênh lệch không có ý nghĩa thống kê → giữ cắt.
+**Condition for picking it back up.** An evaluation against a real prompt-injection
+dataset, measuring success rate with and without quarantine, on the same tool set. No
+statistically significant difference -> keep it cut.
 
 ---
 
-## 5. Đánh đổi đã chọn, và cái giá của từng cái
+## 5. Trade-offs made, and each one's price
 
-| chọn | được | mất |
+| chose | gained | cost |
 |---|---|---|
-| Graph thay vì loop | durability, chứng minh được, vẽ được | phụ thuộc LangGraph; người dùng phải hiểu khái niệm node |
-| Effect class suy ra 5 hành vi | tác giả tool khai **một** thứ; không guard viết tay per-tool | 4 lớp là thô — tool vừa đọc nhạy cảm vừa ghi không xếp gọn |
-| Invariant trên đường bắt buộc, plugin cho policy | "không cài" không còn là mặc định không an toàn | plugin không chặn được permission check |
-| `Decision` append-only | audit thật, thu hồi bằng `max()` | sổ chỉ lớn lên; chính sách lưu trữ chưa viết |
-| Effect log luôn bật cho `write` | khuyết điểm #5 (`design/README.md`) sửa theo mặc định | một round-trip DB thêm mỗi `write` call — chưa benchmark |
-| At-most-once thay vì exactly-once | trung thực về cái harness một mình làm được | người dùng muốn exactly-once phải có upstream nhận key |
+| A graph instead of a loop | durability, provability, drawability | dependency on LangGraph; users must understand the concept of a node |
+| Effect class deriving 5 behaviors | a tool author declares **one** thing; no hand-written per-tool guard | 4 tiers is coarse — a tool that's both reading sensitive data and writing doesn't fit neatly |
+| Invariants on the mandatory path, plugins for policy | "not installed" stops being an unsafe default | a plugin can't block a permission check |
+| An append-only `Decision` | real audit, revocation via `max()` | the log only ever grows; a retention policy isn't written yet |
+| The effect log always on for `write` | shortcoming #5 (`design/README.md`) fixed by default | one extra DB round-trip per `write` call — not yet benchmarked |
+| At-most-once instead of exactly-once | honest about what the harness alone can do | a user wanting exactly-once needs an upstream that accepts a key |
 
 ---
 
-## 6. Chưa đủ evidence — hợp nhất
+## 6. Not Enough Evidence — consolidated
 
-- **Chi phí effect log** trên mỗi `write`. Không đo được từ source người khác.
-- **`fingerprint` cho MCP stdio.** TLS SPKI pin đúng cho HTTP; không có tương đương hiển
-  nhiên cho tiến trình con.
-- **Biên checkpoint chính xác của LangGraph** giữa chừng một node.
-- **Isolation đa tenant ở tầng store.**
-- **Số bậc của trục confidentiality.** Hai bậc là suy luận, không phải kết quả đo.
-- **TTL mặc định cho grant `danger`.** Không có bằng chứng về con số đúng.
-- **Chính sách hết hạn memory.** Một memo `UNTRUSTED` sống mãi là rủi ro thật, nhưng
-  không có bằng chứng về chính sách đúng.
-- **Learning curve.** Không được đo trong nghiên cứu gốc; mọi tuyên bố DX ở đây dựa trên
-  thứ đếm được, không dựa trên người dùng thật — SC-1b (`HARNESS.md`) vẫn mở vì lý do này.
+- **The effect log's cost** per `write` call. Not measurable from anyone else's source.
+- **A `fingerprint` for MCP stdio.** TLS SPKI pinning fits HTTP; no obvious equivalent
+  for a child process.
+- **LangGraph's exact checkpoint boundary** mid-node.
+- **Multi-tenant isolation at the store layer.**
+- **How many tiers the confidentiality axis needs.** Two tiers is a design choice, not
+  a measured result.
+- **The default TTL for a `danger` grant.** No evidence for the right number.
+- **A memory expiry policy.** An `UNTRUSTED` memo that lives forever is a real risk, but
+  there's no evidence for what the right policy is.
+- **The learning curve.** Never measured in the original research; every DX claim here
+  rests on something countable, not on real users — SC-1b (`HARNESS.md`) stays open for
+  exactly this reason.
 
 ---
 
-## 7. Còn mở hôm nay — nói thẳng, không giấu
+## 7. Still open today — stated plainly, not hidden
 
-Một mục, không hơn không kém (N-1/N-3/N-5/N-6/N-8/S-11 vừa đóng — xem `## 1`, `## 3`):
+One item, no more, no less (N-1/N-3/N-5/N-6/N-8/S-11 just closed — see `## 1`, `## 3`):
 
-1. **S-9 phần re-pointing-nhãn** — cần `ServerIdentity`+`fingerprint`, hoãn CÓ CHỦ Ý tới
-   khi quan sát được một lần re-pointing MCP thật (cùng lý do K-12) — không phải việc còn
-   thiếu thời gian để làm, mà là kỷ luật §45 "thà nói chưa đủ evidence còn hơn đoán": xây
-   một mô hình fingerprinting cho một threat chưa từng quan sát được nghĩa là tự bịa ra
-   threat model đó, đúng thứ luật này cấm.
+1. **S-9's label-re-pointing half** — needs `ServerIdentity`+`fingerprint`, DELIBERATELY
+   deferred until a real MCP re-pointing incident is observed (the same reason as K-12)
+   — not a matter of running out of time, but the §45 discipline "better to say not
+   enough evidence than to guess": building a fingerprinting model for a threat that's
+   never been observed would mean inventing that threat model, exactly what this rule
+   forbids.
 
-**S-4 không còn nằm trong danh sách này** — không vì đóng hoàn toàn, mà vì phần còn lại
-của nó không phải một việc CÒN PHẢI LÀM: N-8 (xem `## 3`) đóng đúng nửa engineering thật
-sự mở (một call retry giữa lúc run đang chạy); nửa còn lại (crash NGANG QUÁ TRÌNH, giữa
-lúc upstream nhận side-effect và checkpoint kịp ghi) là ranh giới đã CHẤP NHẬN, đã tài
-liệu hoá từ trước (`docs/05-data-and-state.md §3`'s luật resume, chính là "ranh giới
-trung thực của một giải pháp cấp thư viện" — exactly-once qua một lần crash cần một
-durable execution engine, một stated non-goal), không phải một gap đang chờ code.
+**S-4 no longer appears in this list** — not because it's fully closed, but because its
+remaining half isn't a REMAINING TASK: N-8 (see `## 3`) closes exactly the real
+engineering gap that was open (a call retried while a run is in flight); the rest
+(a crash ACROSS PROCESSES, between upstream receiving the side effect and the checkpoint
+managing to write) is an ACCEPTED boundary, already documented before this
+(`docs/05-data-and-state.md §3`'s resume rule, which is exactly "the honest limit of a
+library-level solution" — exactly-once across a crash needs a durable execution engine,
+a stated non-goal), not a gap waiting on code.
 
-Không mục nào ở trên chặn v1.0 (xem `design/08-roadmap-and-release-plan.md §3` cho điều
-kiện release) — mỗi mục đã có lý do hoãn cụ thể, không phải bị bỏ quên.
+Nothing above blocks v1.0 (see `design/08-roadmap-and-release-plan.md §3` for release
+conditions) — every item has a specific, stated reason for being deferred, not something
+simply forgotten.

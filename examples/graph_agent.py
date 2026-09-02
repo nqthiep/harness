@@ -1,88 +1,88 @@
-"""Cùng một agent, chạy trên LangGraph — vòng 35.
+"""The same agent, running on LangGraph — Round 35.
 
-Chạy:  python3 examples/graph_agent.py
+Run:  python3 examples/graph_agent.py
 
-Điểm khác biệt duy nhất so với `support_agent.py` là *ai giữ vòng lặp*:
-ở đây LangGraph giữ, còn luật thì vẫn y nguyên.  Điều đó không phải lời hứa
-suông — cuối file in ra bằng chứng đọc thẳng từ đồ thị đã biên dịch.
+The only difference from `support_agent.py` is *who holds the loop*: here
+LangGraph does, and the rules stay identical. That is not just a claim — the
+end of this file prints proof read straight off the compiled graph.
 """
 import sys
 sys.path.insert(0, "src"); sys.path.insert(0, "tests")
 
-from fake_chat import FakeChat                     # thay cho model thật, không cần key
+from fake_chat import FakeChat                     # stands in for a real model, no key needed
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 
 from harness import tool
 from harness.lg import build_agent, unguarded_paths
 
-DON = {"A-4471": {"mon": "Bàn phím cơ", "gia": 890_000, "trang_thai": "đã giao"}}
+ORDERS = {"A-4471": {"item": "Mechanical keyboard", "price": 890_000, "status": "delivered"}}
 
 
 @tool(effect="read")
-def tim_don(ma: str) -> dict:
-    """Tra cứu một đơn hàng theo mã."""
-    return DON.get(ma, {"loi": "không tìm thấy"})
+def find_order(order_id: str) -> dict:
+    """Look up an order by id."""
+    return ORDERS.get(order_id, {"error": "not found"})
 
 
 @tool(effect="write")
-def luu_ghi_chu(ma: str, noi_dung: str) -> str:
-    """Lưu ghi chú vào hồ sơ đơn hàng."""
-    return f"đã lưu ghi chú cho {ma}"
+def save_note(order_id: str, note: str) -> str:
+    """Save a note on the order record."""
+    return f"note saved for {order_id}"
 
 
 @tool(effect="danger")
-def hoan_tien(ma: str, so_tien: int) -> str:
-    """Hoàn tiền cho khách. KHÔNG hoàn tác được."""
-    return f"đã hoàn {so_tien}đ cho đơn {ma}"
+def refund(order_id: str, amount: int) -> str:
+    """Refund the customer. NOT reversible."""
+    return f"refunded {amount} for order {order_id}"
 
 
-def duyet(call, ctx) -> bool:
-    """Cùng một chữ ký với backend vòng lặp: approve(ToolCall, RunContext) -> bool."""
-    print(f"  [người duyệt]  {call.name}({call.arguments}) → đồng ý")
+def approve(call, ctx) -> bool:
+    """Same signature as the classic backend: approve(ToolCall, RunContext) -> bool."""
+    print(f"  [approver]  {call.name}({call.arguments}) -> approved")
     return True
 
 
-KICH_BAN = [
-    FakeChat.call("tim_don", {"ma": "A-4471"}, "c1"),
-    FakeChat.call("hoan_tien", {"ma": "A-4471", "so_tien": 890_000}, "c2"),
-    FakeChat.call("luu_ghi_chu", {"ma": "A-4471", "noi_dung": "đã hoàn tiền"}, "c3"),
-    FakeChat.text("Đã hoàn tiền đơn A-4471 và ghi chú lại."),
+SCRIPT = [
+    FakeChat.call("find_order", {"order_id": "A-4471"}, "c1"),
+    FakeChat.call("refund", {"order_id": "A-4471", "amount": 890_000}, "c2"),
+    FakeChat.call("save_note", {"order_id": "A-4471", "note": "refund issued"}, "c3"),
+    FakeChat.text("Refunded order A-4471 and saved a note."),
 ]
 
 graph, runtime = build_agent(
-    model=FakeChat(script=KICH_BAN),
-    tools=[tim_don, luu_ghi_chu, hoan_tien],
+    model=FakeChat(script=SCRIPT),
+    tools=[find_order, save_note, refund],
     budget="$0.20, 15 steps",
-    approve=duyet,
-    checkpointer=MemorySaver(),          # chạy dở giữa chừng vẫn khôi phục được
+    approve=approve,
+    checkpointer=MemorySaver(),          # a run interrupted mid-way still resumes
 )
 
-cfg = {"configurable": {"thread_id": "khach-01"}}
-ket_qua = graph.invoke({"messages": [HumanMessage("hoàn tiền đơn A-4471")]}, cfg)
+cfg = {"configurable": {"thread_id": "customer-01"}}
+result = graph.invoke({"messages": [HumanMessage("refund order A-4471")]}, cfg)
 
-print("\nHội thoại")
-print("─" * 62)
-for m in ket_qua["messages"]:
-    ten = type(m).__name__.replace("Message", "")
-    goi = [c["name"] for c in getattr(m, "tool_calls", []) or []]
-    print(f"  {ten:<9} {str(m.content)[:52] or '→ ' + ', '.join(goi)}")
+print("\nConversation")
+print("-" * 62)
+for m in result["messages"]:
+    kind = type(m).__name__.replace("Message", "")
+    calls = [c["name"] for c in getattr(m, "tool_calls", []) or []]
+    print(f"  {kind:<9} {str(m.content)[:52] or '-> ' + ', '.join(calls)}")
 
-print(f"\nĐã tiêu     : ${ket_qua['spent_usd']}")
-print(f"Số bước     : {ket_qua['step']}")
-print(f"Dừng vì     : {ket_qua['stop_reason']}")
+print(f"\nSpent       : ${result['spent_usd']}")
+print(f"Steps       : {result['step']}")
+print(f"Stopped for : {result['stop_reason']}")
 
-print("\nBằng chứng đọc từ đồ thị đã biên dịch")
-print("─" * 62)
-canh = {(e.source, e.target) for e in graph.get_graph().edges}
-print(f"  node             : {[n for n in graph.get_graph().nodes if not n.startswith('__')]}")
-print(f"  vào 'model' từ   : {sorted(s for s, t in canh if t == 'model')}")
-print(f"  vào 'tools' từ   : {sorted(s for s, t in canh if t == 'tools')}")
-print(f"  cổng bị đi vòng  : {unguarded_paths(graph) or 'KHÔNG'}")
+print("\nProof read from the compiled graph")
+print("-" * 62)
+edges = {(e.source, e.target) for e in graph.get_graph().edges}
+print(f"  nodes            : {[n for n in graph.get_graph().nodes if not n.startswith('__')]}")
+print(f"  into 'model' from: {sorted(s for s, t in edges if t == 'model')}")
+print(f"  into 'tools' from: {sorted(s for s, t in edges if t == 'tools')}")
+print(f"  unguarded paths  : {unguarded_paths(graph) or 'NONE'}")
 
-print("\nKhôi phục sau khi tắt máy")
-print("─" * 62)
-luu = graph.get_state(cfg)
-print(f"  checkpoint giữ   : {len(luu.values['messages'])} tin nhắn, "
-      f"${luu.values['spent_usd']}, bước {luu.values['step']}")
-print("  → tiến trình chết giữa chừng vẫn chạy tiếp được từ đúng chỗ đó")
+print("\nRecovery after a simulated crash")
+print("-" * 62)
+saved = graph.get_state(cfg)
+print(f"  checkpoint holds : {len(saved.values['messages'])} messages, "
+      f"${saved.values['spent_usd']}, step {saved.values['step']}")
+print("  -> a process that died mid-run can resume from exactly that point")

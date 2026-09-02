@@ -1,106 +1,122 @@
-# 08 — Roadmap và release plan
+# 08 — Roadmap and release plan
 
-Tệp này gộp hai backlog từng sống song song trong repo này — `07-risks-and-open-issues.md`
-(phát hiện từ hai vòng review đối kháng, S-/K-/N-series) và `docs/17-research-alignment.md`
-(khoảng trống so với nghiên cứu hợp nhất, M6-M10) — thành một roadmap, và ghi lại việc đã
-làm theo đúng thứ tự nó chạy.
+This file merges two backlogs that used to live side by side in this repo —
+`07-risks-and-open-issues.md` (findings from two adversarial review rounds, the
+S-/K-/N-series) and `docs/17-research-alignment.md` (the gap against the unified
+research, M6-M10) — into one roadmap, and records what was done in the order it ran.
 
-**Trạng thái: TOÀN BỘ ROADMAP ĐÃ XONG.** `S-20 → M6 → M7 → M8 → K-13 → M9 → M10` — sáu
-milestone, tất cả 20 sub-task, mỗi cái có test + ADR. 599 test xanh, ruff/mypy sạch, mọi
-`examples/*.py` chạy được. Việc còn lại trước v1.0 không còn là code — xem `## 3`.
+**Status: THE ENTIRE ROADMAP IS DONE.** `S-20 -> M6 -> M7 -> M8 -> K-13 -> M9 -> M10` —
+six milestones, all 20 sub-tasks, each with a test + an ADR. The full suite is green,
+ruff/mypy are clean, every `examples/*.py` runs. What's left before v1.0 is no longer
+code — see `## 3`.
 
 ---
 
-## 1. Cái gì đã xong, theo thứ tự nó chạy
+## 1. What's done, in the order it ran
 
 ```
-S-20 → M6 (Reliability) → M7 (Isolation) → M8 (Observability) → K-13 → M9 (Integration) → M10 (Evaluation)
- 1/1        4/4                 4/4                 6/6           dọn nợ       3/3               3/3
+S-20 -> M6 (Reliability) -> M7 (Isolation) -> M8 (Observability) -> K-13 -> M9 (Integration) -> M10 (Evaluation)
+ 1/1        4/4                 4/4                 6/6          cleanup       3/3               3/3
 ```
 
-**Vì thứ tự này.** M6 trước M7 vì idempotency là điều kiện tiên quyết cho retry và cho
-Service API. M7 trước M9 vì mở MCP ra (hệ sinh thái tool bên thứ ba không đáng tin) trước
-khi có Isolation là mở rộng bề mặt tấn công trước khi dựng tường. K-13's phần namespace
-chen vào trước M9 vì MCP cần đặt tên invariant mới của riêng nó, dọn trước tránh chồng
-thêm một namespace va chạm. M10 sau cùng vì trajectory contract cần một bề mặt đã ổn định
-(MCP, idempotency, sandbox) để `must_call`/`must_not_call` có ý nghĩa. Đầy đủ lập luận
-gốc: xem lịch sử git của tệp này.
+**Why this order.** M6 before M7 because idempotency is a prerequisite for both retry
+and the Service API. M7 before M9 because opening up MCP (an untrusted third-party tool
+ecosystem) before Isolation exists would widen the attack surface before the wall is
+built. K-13's namespace cleanup slots in before M9 because MCP needs to name its own new
+invariants, and cleaning up first avoids stacking another colliding namespace on top.
+M10 last because the trajectory contract needs an already-stable surface (MCP,
+idempotency, sandbox) for `must_call`/`must_not_call` to mean anything. Full original
+reasoning: see this file's git history.
 
-| Milestone | Sub-task | Cơ chế chính | ADR | Test |
+| Milestone | Sub-task | Core mechanism | ADR | Test |
 |---|---|---|---|---|
-| **S-20** | Budget cảnh báo unlimited | `EventKind.BUDGET_UNLIMITED`, phát mỗi run khi `usd is None` | ADR-041 | `test_attack_s20.py` |
-| **M6 — Reliability** | T-6.1 Idempotency | `idempotency.py::execute_once` — contract đầy đủ, CHỦ Ý chưa gắn vào `Dispatcher` (chưa có caller thật lúc đó — xem M9) | ADR-043 | `test_m6_t61_idempotency.py` |
-| | T-6.2 Cancellation | `CancelledError` propagate đúng chuẩn, không bị nuốt, cả hai backend | — | `test_m6_t62_cancellation.py` |
-| | T-6.3 Retry theo effect class | `read`/`external` tự retry có backoff; `write`/`danger` đúng một lần | ADR-042 | `test_m6_t63_retry.py` |
-| | T-6.4 Chaos testing | `harness.testing.chaos` — 5 kịch bản; lộ ra N-2, N-4 (sửa ngay) | ADR-044 | `test_m6_t64_chaos.py` |
+| **S-20** | An unlimited-budget warning | `EventKind.BUDGET_UNLIMITED`, fired once per run when `usd is None` | ADR-041 | `test_attack_s20.py` |
+| **M6 — Reliability** | T-6.1 Idempotency | `idempotency.py::execute_once` — a full contract, DELIBERATELY not yet wired into `Dispatcher` (no real caller existed yet — see M9) | ADR-043 | `test_m6_t61_idempotency.py` |
+| | T-6.2 Cancellation | `CancelledError` propagating correctly, never swallowed, on both backends | — | `test_m6_t62_cancellation.py` |
+| | T-6.3 Retry by effect class | `read`/`external` auto-retry with backoff; `write`/`danger` get exactly one attempt | ADR-042 | `test_m6_t63_retry.py` |
+| | T-6.4 Chaos testing | `harness.testing.chaos` — 5 scenarios; surfaced N-2, N-4 (fixed right away) | ADR-044 | `test_m6_t64_chaos.py` |
 | **M7 — Isolation** | T-7.1 Workspace confinement | `workspace.py::confine` | ADR-045 | `test_m7_t71_workspace.py` |
-| | T-7.2 Egress mặc định CHẶN | `allowed_hosts` mặc định `()`, `None` là escape hatch tường minh — breaking change có chủ đích | ADR-046 | `test_m7_t72_egress_default.py` |
-| | T-7.3/7.4 Seam `Sandbox` | `sandbox.py` — `InProcess`/`Subprocess`, seam thứ SÁU; secret bị từ chối tường minh trong env | ADR-047 | `test_m7_t73_t74_sandbox.py` |
+| | T-7.2 Egress DENIED by default | `allowed_hosts` defaults to `()`, `None` is an explicit escape hatch — a deliberate breaking change | ADR-046 | `test_m7_t72_egress_default.py` |
+| | T-7.3/7.4 The `Sandbox` seam | `sandbox.py` — `InProcess`/`Subprocess`, the SIXTH seam; a secret is explicitly refused inside env vars | ADR-047 | `test_m7_t73_t74_sandbox.py` |
 | **M8 — Observability** | T-8.1 Envelope v1 | `Event` +`schema_version`/`trace_id`/`tenant_id`/`session_id` | ADR-048 | `test_m8_t81_envelope.py` |
-| | T-8.2 Approval là bản ghi | `Decision` +`policy_version` — hoá ra đã đủ trường từ trước | ADR-049 | `test_m8_t82_approval_record.py` |
-| | T-8.3 OTel exporter thật | `observe/otel.py::OtelExporter` theo đúng mapping `docs/10 §2` đã công bố sẵn | ADR-050 | `test_m8_t83_otel.py` |
-| | T-8.4 Cost/successful-task | `harness.eval.cost_per_success` — Wilson-scored CI | ADR-051 | `test_m8_t84_cost_per_success.py` |
-| | T-8.5 Event stream | `Agent.stream()` — async generator, `Event` thật | ADR-052 | `test_m8_t85_stream.py` |
-| | T-8.6 `Session` resource | `session.py::Session` — bọc `Chat`, backend cổ điển only | ADR-053 | `test_m8_t86_session.py` |
-| **K-13 (phần còn lại)** | Va chạm namespace `P-`/`I-` | `POL-`/`PLUG-`/`IDEM-` — xem `07-risks-and-open-issues.md §2` | — | — |
-| **M9 — Integration** | T-9.1 MCP client | `harness/mcp/` — `classify_mcp_tool()`, `Scope.server`. Đóng S-7/S-8/S-10/S-17, một phần S-9 | ADR-054 | `test_m9_t91_mcp.py` |
-| | T-9.2 Service API | `harness/server/` — `POST /v1/runs`+`Idempotency-Key`, SSE, approvals qua HTTP. Caller thật đầu tiên của `execute_once`, ở MỨC RUN (không đóng S-4 — xem N-8) | ADR-055 | `test_m9_t92_service_api.py` |
-| | T-9.3 Canonical event | `observe/events.py::to_dict()` — một hình dạng, ba transport (in-process/SSE/CLI `--json`) | ADR-056 | `test_m9_t93_canonical_events.py` |
-| **M10 — Evaluation** | T-10.1 Trajectory contract | `harness/eval/trajectory.py::check_trajectory()` — 8 tiêu chí, hàm thuần | ADR-057 | `test_m10_t101_trajectory.py` |
-| | T-10.2 Golden set | `harness/eval/golden.py::run_golden_set()` — pass rate + CI, dùng lại Wilson interval của T-8.4 | ADR-058 | `test_m10_t102_golden.py` |
-| | T-10.3 Benchmark | `harness/eval/benchmark.py::benchmark()` + `import_cold_start_ms()` — đóng Y-05 | ADR-059 | `test_m10_t103_benchmark.py` |
-| **N-9** (dọn nợ sau M10) | `tenant_id` chưa tới `Policy.check()` | `RunContext.tenant_id`/`_Ctx.tenant_id`, nối cả hai backend | ADR-060 | `test_n9_tenant_in_context.py` |
-| **N-10** (phản hồi người dùng sau M10) | "2 API interfaces" gây khó dùng | `Agent(durable=True)` — chạy trên `harness.lg.build_agent()`, cùng method như backend cổ điển; `lg/adapter.py::ProviderChatModel` bọc `provider=` thành LangChain model (một seam gọi model, không phải hai); checkpoint SQLite mặc định, tự tạo | `docs/03-public-api.md §3.5`, `docs/02-architecture.md §3.1` | `test_durable_agent.py` (14), `test_parity.py` (mở rộng BA call shape) |
-| (phản hồi người dùng sau N-10) | "compose 4 pattern thành middleware kiểu LangChain được không", "chuẩn hoá tham số các hook lại", rồi "đầu tư tiếp để có run_id/call_id thật" | `harness/middleware.py::Middleware` + `with_middleware()` — sugar dựng từ ba seam có sẵn (`ModelProvider`/tool callable/`Exporter`), KHÔNG phải seam thứ bảy. Mỗi hook nhận ĐÚNG MỘT object (`ModelCall`/`ToolInvocation`/`Event`) mang `.identity: RunIdentity` (`run_id`/`session_id`/`tenant_id`/`step`/`call_id`) — `contextvars.ContextVar` đặt MỘT LẦN mỗi run bởi `Agent`, layer thêm mỗi lời gọi bởi `run.py`/`dispatch.py`/`lg/runtime.py`. Lượt đầu kết luận SAI ("contextvars không sống sót qua backend graph") dựa trên một test tự dựng (`loop.run_in_executor()` trần) — verify lại với `langgraph` thật (`pregel/_executor.py` dùng `contextvars.copy_context()`) mới lộ ra: verify SAI trước, verify ĐÚNG sau khi bị hỏi tiếp — bài học K-13's "verify trước khi kết luận" áp cho cả một kết luận "không làm được" | `docs/03-public-api.md §3.6`, `docs/02-architecture.md §4` | `test_middleware.py` (21, gồm `IdentityThreading` — cả hai backend, test tường minh không cross-talk giữa các tool call chạy song song) |
-| (review + fix sau N-10) | "hãy review lại code", rồi "hãy fix các bug mà bạn vừa phát hiện" | Review tự verify bằng code chạy thật (không chỉ đọc): xác nhận bug trong middleware không crash cả run, tool chạy song song không cross-talk; document 2 hành vi thật (`before_tool`/`after_tool` gọi lại mỗi lần retry cùng `call_id`; không bao giờ bắn cho subagent tool). Phát hiện phụ, không phải bug của middleware: 11 điểm `_emit` trong `lg/runtime.py` (backend `durable`) thiếu `step=` — `Event.step` luôn `None` ở đó dù backend cổ điển luôn có. Đã sửa cả 11 điểm, khớp backend cổ điển; verify bằng in trực tiếp `event.step` qua một run thật. Cùng gốc với N-6, ghi nhận ở đó | `design/07-risks-and-open-issues.md` N-6 | `test_middleware.py` (23: thêm test retry giữ nguyên `call_id`, test subagent không bắn hook); 636 test pass toàn bộ |
-| **N-5/N-6** (đóng 6 mục còn mở, phản hồi "thực hiện toàn bộ 6 mục còn mở") | Retry cấp provider chưa cài; `model.response`/`run.finished` thiếu `usage`/`latency_ms`/`duration_s` | `retry.py::with_provider_retry()` — MỘT implementation cho cả hai backend, chặn bởi `deadline_s=Ledger.remaining_wall_clock()`, đọc `Retry-After` thật (`errors.py::ProviderError.retry_after_s`, `models/anthropic.py::_retry_after()`). Cạm bẫy bắt được TRƯỚC khi ship: định truyền `deadline_s`/`on_retry` qua `.invoke()` kwargs như `max_tokens` — kiểm trực tiếp `ChatAnthropic._get_request_payload` mới lộ ra nó merge MỌI kwarg lạ thẳng vào payload gửi API thật, sẽ 400 escape hatch dùng model thật. Sửa bằng `retry.retry_scope()` (`contextvars.ContextVar` riêng, cùng call stack nên không cần cơ chế copy-context của `middleware.py`). `lg/state.py` thêm `turn_started_at`/`turn_usage` (reset theo turn, không theo thread — `RUN_FINISHED` bắn mỗi turn) | `docs/10-observability-ops.md §3`, `docs/05-data-and-state.md §1` | `test_n5_n6_retry_and_usage.py` (8: retry thành công cả hai backend, lỗi không tạm thời không retry, hết `MAX_ATTEMPTS` hạ cánh mềm, retry không sống lâu hơn ngân sách, `turn_usage` không cộng dồn qua thread); 645 test pass toàn bộ |
-| **N-1** (đóng tiếp 6 mục còn mở, cùng phản hồi) | `lg/runtime.py::_run_tools` gọi tool qua `asyncio.run(spec.fn(**args))` trần, không timeout riêng — khác `dispatch.py::_invoke` (backend cổ điển), một tool treo (HTTP không timeout) treo cả node graph vô thời hạn | `Ledger.tool_timeout(spec.timeout_s)` — helper clamp-về-wall-clock-còn-lại `dispatch.py` đã dùng sẵn, tính lại mỗi `attempt`. `asyncio.timeout()` cần `async with` bên trong coroutine, không có chỗ đưa vào một lệnh `asyncio.run()` trần — thêm coroutine wrapper nhỏ `_with_timeout(coro, timeout)`, gọi `asyncio.run(_with_timeout(spec.fn(**args), timeout))` thay chỗ gọi cũ. `except TimeoutError:` tách riêng, cùng logic hai thông điệp với `dispatch.py` (`"...run wall-clock budget reached"` khi bị clamp bởi ngân sách RUN, `f"...timed out after {spec.timeout_s}s"` khi trần TOOL chạm trước) | `design/07-risks-and-open-issues.md` N-1 | `test_n1_graph_tool_timeout.py` (2: tool treo bị cắt trong dưới 2s thay vì 5s, run vẫn `ok=True`; ngân sách RUN hẹp hơn `timeout_s` riêng tạo đúng thông điệp thứ hai); 647 test pass toàn bộ |
-| **N-8/S-4** (đóng tiếp 6 mục còn mở, cùng phản hồi) | `execute_once` (T-6.1) có caller thật ở MỨC RUN (T-9.2's `Idempotency-Key`) nhưng chưa gắn ở MỨC TOOL CALL — một call `retryable=True` mà `spec.fn()` thành công nhưng bước NGAY SAU nó (json.dumps/`truncate`/kiểm taint) mới raise khiến cả lượt thử bị coi là lỗi và `spec.fn()` chạy lại lần hai, không cần thiết | `execute_once` bọc quanh chính lời gọi `spec.fn()` ở cả `Dispatcher._invoke` và `_run_tools`, khoá `idempotency_key(f"{run_id}:{step}", call_id)` — gộp `step` vào (không đổi chữ ký `idempotency_key`, test khoá sẵn hình dạng gốc) vì `FakeModel.tool_call()`'s `call_id="c1"` mặc định không duy nhất qua các bước. Store in-memory, scoped đúng bằng `Dispatcher.__init__`/`Runtime._idem_for()` (cache theo `run_id`, cùng dạng `_bus_cache`/`_policy_cache`, R-4-an toàn). Nhánh subagent của `_run_tools` giữ nguyên đồng bộ — lồng nó vào coroutine `asyncio.run()`-driven của `execute_once` sẽ raise "asyncio.run() cannot be called from a running event loop" vì `_run_subagent` tự gọi `asyncio.run()` bên trong; dedupe thủ công bằng `idem.get()`/`idem.put()` riêng, hai lệnh `asyncio.run()` KHÔNG lồng nhau, `_run_subagent` chạy đồng bộ ở giữa. `tool.finished` thêm trường `replayed`. Đóng đúng nửa "retry mid-run" của S-4; nửa crash-across-process không đóng, không tuyên bố đóng — vẫn đứng nguyên ở `docs/05 §3`'s luật resume | `design/07-risks-and-open-issues.md` N-8/S-4, `docs/05-data-and-state.md §1`, `src/harness/idempotency.py` | `test_n8_idempotent_tool_calls.py` (2: backend cổ điển ép lỗi thật downstream của `spec.fn()` thành công rồi kiểm side-effect chỉ một lần; backend durable gọi thẳng `Runtime._run_tools(state)` hai lần cùng `run_id`/`step`/`call_id`); 649 test pass toàn bộ |
-| **N-3** (đóng tiếp 6 mục còn mở, cùng phản hồi) | `build_agent()` không có tham số `returns=`; `Agent(durable=True, returns=...)` raise `ConfigError` ngay lúc dựng (N-10's bản vá phần "âm thầm") thay vì đóng bản thân khoảng trống — không nơi nào trên backend durable từng parse câu trả lời cuối | Hoá ra một nửa (yêu cầu model trả đúng hình dạng) đã đúng từ trước, không cần sửa: `_output_format(returns)` đi qua `Agent._asm`, CÙNG `ContextAssembler` cả hai backend dùng chung. Nửa thiếu thật là phía đọc về: `_parse_returns` (method riêng của `RunEngine`) chuyển thành hàm module-level `run.py::parse_returns(want, text)` — `agent.py` và `lg/runtime.py` đều import sẵn từ `run.py`, không import vòng. `build_agent()` nhận `returns=`, thread xuống `Runtime._returns`; `Runtime.finish()` gọi `parse_returns` TRƯỚC khi phát `run.finished` — parity đúng với T-6.4's bản vá (parse SAU khi graph trả về sẽ khiến `run.finished` báo `completed` cho một câu trả lời bị từ chối). `agent.py::_state_to_result()` parse lại (cùng input, xác định) để dựng `Result.value` thật — không đi qua state đã checkpoint vì state phải JSON-checkpointable, một dataclass instance thì không. Gỡ `ConfigError` guard | `design/07-risks-and-open-issues.md` N-3, `docs/03-public-api.md §3.5` | `test_durable_agent.py` (2 test thay test cũ khẳng định `ConfigError`), `test_n3_durable_returns.py` (3: `run.finished` báo đúng outcome cả hai chiều, escape hatch `build_agent()` thô cũng parse đúng); 653 test pass toàn bộ |
-| **S-11** (đóng mục cuối cùng còn lại, cùng phản hồi) | `Actor` là lời tự khai của `approve=` callback, không xác thực — lượt trước (`Approval(ok, actor=...)`) mở kênh TUỲ CHỌN báo danh tính thật nhưng không chặn được một callback CỐ TÌNH khai gian, vì `Decision.actor` ghi nguyên văn bất cứ gì callback nói | `policy/decision.py::AuthEvidence` — bắt buộc `channel`/`channel_message_id`/`principal` (sàn review-security.md's "sửa tối thiểu" tự đặt: bằng chứng do CHÍNH KÊNH trả về, không phải callback tự gõ). `Approval`/`Decision` mang thêm `evidence=`; `PolicyEngine.resolve(..., require_evidence=True)` DENY một actor `human` không kèm evidence, fail-closed — `Agent(require_approval_evidence=True)`/`build_agent(require_approval_evidence=True)` là công tắc, mặc định TẮT (không đổi hành vi callback nào chưa biết `evidence=`). Ranh giới nói thẳng: harness không verify CHỮ KÝ nào (đó là việc của callback, bên giữ secret kênh thật) — chỉ buộc một bản ghi bằng chứng đầy đủ thay vì một chuỗi trần trụi. Khe hở phụ tìm thấy khi sửa: backend cổ điển từng BỎ HẲN actor `resolve()` trả về — `policy.decided` giờ mang `actor`/`evidence` trên CẢ HAI backend. Service API (`POST .../approvals/{call_id}`) nhận thêm `evidence=` tuỳ chọn trong body, cho một operator đặt channel thật trước nó viết bằng chứng vào; `_evidence_from_body` từ chối (400) một object thiếu trường bắt buộc thay vì âm thầm coi là không có gì | `design/07-risks-and-open-issues.md` S-11, `docs/04-interfaces.md`, `docs/05-data-and-state.md §1`, `docs/03-public-api.md §3` | `test_attack_s11.py` (24, mở rộng từ 4: resolve() mang evidence, require_evidence DENY/ALLOW đúng cả hai chiều, chạy thật qua Agent VÀ build_agent(), Service API parsing, mutation test); `test_n7_with_preserves_fields.py` (+1: `require_approval_evidence` không mất qua `with_()`); 672 test pass toàn bộ |
-| **Advisor pattern** (phản hồi người dùng, sau S-11: "sử dụng đa model... phương pháp advisor") | Người dùng hỏi cách dùng nhiều model thông minh (model mạnh cho việc khó, model rẻ cho việc dễ) và cách làm cho một agent "tham vấn advisor" khi gặp khó — không phải một routing tự động (ADR-006 đã từ chối việc đó) mà là một cơ chế "bắt buộc tư vấn trước hành động nguy hiểm" có cấu trúc, không chỉ dựa vào prompt | Nửa đầu (chọn model theo nhiệm vụ) không cần code mới — `model=`/`effort=`/subagent `.as_tool()` đã đủ, `docs/07-cost.md §4` thêm ví dụ advisor cụ thể. Nửa sau, mới: `RequireBeforePolicy` (`policy/builtin.py`) — DENY một tool cho tới khi tool khác đã CHẠY XONG trước đó trong cùng run; chỉ RESTRICT (P-2), không bao giờ GRANT — thiết kế đầu tiên (advisor tự duyệt hành động nguy hiểm, như một `approve=` callback) bị bác ngay khi kiểm lại design/00-foundation.md §4.2's bất biến D-1 (`Actor` cố ý KHÔNG có biến thể `Model` — "chỗ agno sai") và R-3 ("Model không cầm công tắc an toàn nào"): một advisor vẫn là một model, để nó tự cấp quyền là tái tạo đúng lỗi đó. `ctx.tools_called: frozenset[str]` (tên tool đã hoàn thành, KHÔNG tham số/kết quả — IDL-15) là nguồn sự thật, lấy miễn phí từ state có sẵn mỗi backend: `Dispatcher.ran` (cổ điển), quét `state["messages"]` tìm `ToolMessage` khớp (durable) — loại trừ đúng batch HIỆN TẠI nên gọi advisor VÀ tool nguy hiểm trong CÙNG một lượt model vẫn bị chặn | ADR-061 (`docs/12-decision-logs.md`), `docs/07-cost.md §4`, `docs/06-safety.md §4`, `docs/04-interfaces.md` | `test_advisor_gate.py` (10: đơn vị policy, chạy thật qua Agent và build_agent(), chặn đúng khi gọi cùng batch); `examples/advisor_pattern.py`; 731 test pass toàn bộ |
+| | T-8.2 Approval as a record | `Decision` +`policy_version` — turned out to already have every field it needed | ADR-049 | `test_m8_t82_approval_record.py` |
+| | T-8.3 A real OTel exporter | `observe/otel.py::OtelExporter`, matching the mapping `docs/10 §2` already published | ADR-050 | `test_m8_t83_otel.py` |
+| | T-8.4 Cost/successful-task | `harness.eval.cost_per_success` — a Wilson-scored CI | ADR-051 | `test_m8_t84_cost_per_success.py` |
+| | T-8.5 Event streaming | `Agent.stream()` — an async generator, real `Event`s | ADR-052 | `test_m8_t85_stream.py` |
+| | T-8.6 The `Session` resource | `session.py::Session` — wraps `Chat`, classic backend only | ADR-053 | `test_m8_t86_session.py` |
+| **K-13 (remainder)** | The `P-`/`I-` namespace collision | `POL-`/`PLUG-`/`IDEM-` — see `07-risks-and-open-issues.md §2` | — | — |
+| **M9 — Integration** | T-9.1 An MCP client | `harness/mcp/` — `classify_mcp_tool()`, `Scope.server`. Closes S-7/S-8/S-10/S-17, S-9 partially | ADR-054 | `test_m9_t91_mcp.py` |
+| | T-9.2 The Service API | `harness/server/` — `POST /v1/runs`+`Idempotency-Key`, SSE, approvals over HTTP. The first real caller of `execute_once`, at the RUN LEVEL (doesn't close S-4 — see N-8) | ADR-055 | `test_m9_t92_service_api.py` |
+| | T-9.3 A canonical event shape | `observe/events.py::to_dict()` — one shape, three transports (in-process/SSE/CLI `--json`) | ADR-056 | `test_m9_t93_canonical_events.py` |
+| **M10 — Evaluation** | T-10.1 The trajectory contract | `harness/eval/trajectory.py::check_trajectory()` — 8 criteria, a pure function | ADR-057 | `test_m10_t101_trajectory.py` |
+| | T-10.2 A golden set | `harness/eval/golden.py::run_golden_set()` — pass rate + CI, reusing T-8.4's Wilson interval | ADR-058 | `test_m10_t102_golden.py` |
+| | T-10.3 A benchmark | `harness/eval/benchmark.py::benchmark()` + `import_cold_start_ms()` — closes Y-05 | ADR-059 | `test_m10_t103_benchmark.py` |
 
-**Ràng buộc xuyên suốt, giữ nguyên suốt roadmap:** core vẫn 3 dependency, import ~80ms.
-Mọi thứ M6 trở đi là `extra` (`graph`/`viking`/`otel`/`mcp`/`server`; `eval` không cần
-extra — chỉ dùng `jsonschema`, đã core). Mỗi seam mới qua đúng phép thử ranh giới plugin
-ba phần (`docs/02-architecture.md §4`).
+**Constant throughout, held across the whole roadmap:** core still has 3 dependencies,
+a ~80ms import. Everything from M6 on is an `extra`
+(`graph`/`viking`/`otel`/`mcp`/`server`; `eval` needs no extra — it only uses
+`jsonschema`, already core). Every new seam passes the exact three-part plugin-boundary
+test (`docs/02-architecture.md §4`).
 
-## 2. Tự chấm lại — đối chiếu, không bịa số mới
+### Follow-up fixes after M10, in order
 
-Điểm tự chấm GỐC (`docs/17-research-alignment.md §1`, trước M6-M10): **67.8/100**. Số đó
-giờ lỗi thời, nhưng tự chấm một điểm CHÍNH XÁC mới đòi đúng sự nghiêm ngặt bản gốc có (so
-với 12 framework + 9 harness thật, người chấm khác) mà một phiên tự động không tái tạo
-được — bịa một con số mới có vẻ chính xác sẽ chính là "trả lời tự tin nhưng rỗng" luật §45
-cấm. Thay vào đó, đối chiếu từng lý do TRỪ ĐIỂM gốc với code hôm nay:
+Full detail for every one of these lives in
+[`07-risks-and-open-issues.md §1/§3`](07-risks-and-open-issues.md) — this table stays
+short on purpose rather than duplicating it.
 
-| Chiều | Lý do trừ điểm GỐC | Sau M6-M10 |
+| Id | Prompted by | One-line summary | Detail / ADR | Tests |
+|---|---|---|---|---|
+| N-9 | cleanup after M10 | `tenant_id` never reached `Policy.check()` | ADR-060 | `test_n9_tenant_in_context.py` |
+| N-10 | user feedback: "2 API interfaces is confusing" | `Agent(durable=True)` — runs on `harness.lg.build_agent()` through the same methods as the classic backend, one model-calling seam, an auto-created default SQLite checkpoint | `docs/03-public-api.md §3.5`, `docs/02-architecture.md §3.1` | `test_durable_agent.py` (14), `test_parity.py` (3 call shapes) |
+| middleware | user feedback: "can 4 patterns compose like LangChain middleware", then "standardize the hook parameters", then "invest further in real run_id/call_id" | `harness/middleware.py::Middleware` + `with_middleware()` — sugar built from 3 existing seams, not a 7th one; every hook receives one object carrying `.identity: RunIdentity`. First-pass conclusion ("contextvars don't survive the graph backend") was WRONG, based on a self-built test — re-verified against real `langgraph` internals and reversed | `docs/03-public-api.md §3.6`, `docs/02-architecture.md §4` | `test_middleware.py` (21, incl. `IdentityThreading` — no cross-talk between parallel tool calls, both backends) |
+| review + fix | "review the code", then "fix the bugs you just found" | Verified by running real code, not just reading: no crash, no cross-talk; found and fixed a separate gap (11 `_emit` call sites in `lg/runtime.py` missing `step=`) later folded into N-6 | `design/07-risks-and-open-issues.md` N-6 | `test_middleware.py` (23); 636 tests passing |
+| N-5/N-6 | "do all 6 remaining items" | Provider-level retry was documented but never built; `model.response`/`run.finished` missing `usage`/`latency_ms`/`duration_s` | detail in `07-risks §3` | `test_n5_n6_retry_and_usage.py` (8); 645 tests passing |
+| N-1 | same batch | LangGraph had no per-tool timeout | detail in `07-risks §3` | `test_n1_graph_tool_timeout.py` (2); 647 tests passing |
+| N-8/S-4 | same batch | `execute_once` had a caller at the RUN level but not the TOOL-CALL level | detail in `07-risks §3` | `test_n8_idempotent_tool_calls.py` (2); 649 tests passing |
+| N-3 | same batch | LangGraph didn't support `returns=` | detail in `07-risks §3` | `test_n3_durable_returns.py` (3); 653 tests passing |
+| S-11 | same batch, closing the last open item | `Actor` was a self-declaration with no authentication | `AuthEvidence` — detail in `07-risks §1` | `test_attack_s11.py` (24); 672 tests passing |
+| Advisor pattern | user feedback: "how to use multiple models intelligently... an advisor pattern" | `RequireBeforePolicy` — a structural gate requiring a tool to have run before a dangerous one is even offered for approval; the advisor never grants anything itself (D-1, R-3) | ADR-061 (`docs/12-decision-logs.md`), `docs/07-cost.md §4` | `test_advisor_gate.py` (10); `examples/advisor_pattern.py`; 731 tests passing |
+| Compaction x advisor gate | "check the integrity of the logic after that merge", then "fix it" | Real context compaction (from a concurrent session) could erase the durable backend's record of an earlier `consult_advisor` call, causing `RequireBeforePolicy` to falsely deny an already-cleared tool. Confirmed by direct repro before patching. The classic backend was checked separately and found immune | `state["tools_called_ever"]`, ADR-067 (`docs/12-decision-logs.md`) | `test_advisor_gate.py::DurableGateSurvivesCompaction` (+3) + a mutation test; 785 tests passing |
+
+## 2. Re-grading — checked against the original, no new number invented
+
+The ORIGINAL self-graded score (`docs/17-research-alignment.md §1`, before M6-M10) was
+**67.8/100**. That number is now stale, but producing a new, ACCURATE score would need
+the same rigor the original had (benchmarked against 12 frameworks + 9 real harnesses,
+graded by someone else) that an automated session cannot reproduce — inventing a
+new-sounding-precise number would be exactly the "confident but empty answer" rule §45
+forbids. Instead, checking each original PENALTY reason against today's code:
+
+| Dimension | Original penalty reason | After M6-M10 |
 |---|---|---|
-| Control/Safety | Không có lớp Isolation nào | Một phần đóng — `Sandbox` + `Workspace` + egress-deny-default, nhưng KHÔNG phải namespace/cgroup isolation thật (ADR-047 nói thẳng) |
-| Reliability | Không idempotency key, cancellation bị nuốt, không failure injection | Đóng hết (`execute_once` dù chưa gắn dispatch — N-8; cancellation đúng chuẩn; `chaos` 5 kịch bản) |
-| Testability | Không trajectory contract, không golden set | Đóng hết (M10) |
-| Extensibility | Không có MCP | Đóng (M9/T-9.1) |
-| Observability | Không OTel thật, envelope thiếu trace/tenant/schema | Đóng hết (M8) |
-| Integration | Không MCP, không Service API, không connector | MCP + Service API đóng; connector (ngoài MCP) vẫn không có |
-| Performance | Chưa đo latency/throughput/concurrency | Đóng (M10/T-10.3) |
-| Ecosystem | Chưa có | Không đổi — ngoài phạm vi M6-M10 |
+| Control/Safety | No isolation layer at all | Partially closed — `Sandbox` + `Workspace` + egress-deny-default, but NOT real namespace/cgroup isolation (ADR-047 says so plainly) |
+| Reliability | No idempotency key, cancellation swallowed, no failure injection | Fully closed (`execute_once`, even before it was wired into dispatch — N-8; correct cancellation; `chaos`'s 5 scenarios) |
+| Testability | No trajectory contract, no golden set | Fully closed (M10) |
+| Extensibility | No MCP | Closed (M9/T-9.1) |
+| Observability | No real OTel, an envelope missing trace/tenant/schema | Fully closed (M8) |
+| Integration | No MCP, no Service API, no connectors | MCP + the Service API closed; connectors (beyond MCP) still don't exist |
+| Performance | Latency/throughput/concurrency never measured | Closed (M10/T-10.3) |
+| Ecosystem | Didn't exist | Unchanged — out of scope for M6-M10 |
 
-Việc cần làm trước khi gắn một con số mới: một người (không phải phiên tự động) chấm lại
-theo đúng phương pháp `docs/17 §1` — cùng thang 1-5, có so sánh với corpus thật.
+What's needed before attaching a new number: a human (not an automated session)
+re-grading using `docs/17 §1`'s exact method — the same 1-5 scale, benchmarked against
+the real corpus.
 
-## 3. Còn lại trước v1.0
+## 3. What's left before v1.0
 
-Không còn là việc CODE. Theo `docs/17 §6`'s tiêu chí:
+No longer CODE work. Per `docs/17 §6`'s criteria:
 
-1. **Tự chấm lại bằng người thật** — xem `## 2`.
-2. **Pilot 2-4 tuần** — cùng model, cùng task set, cùng tool set, cùng security policy.
-   Không con số tự chấm nào thay thế được việc này; golden set (M10) là công cụ ĐO pilot,
-   không phải thứ thay thế nó.
-3. **Một mục kỹ thuật còn mở** (N-1/N-3/N-5/N-6/N-8/S-11 đã đóng), không chặn release —
-   `07-risks-and-open-issues.md §7`: S-9's phần re-pointing-nhãn, hoãn CÓ CHỦ Ý (cùng lý
-   do K-12: xây fingerprinting cho một threat chưa từng quan sát được là tự bịa threat
-   model, đúng thứ luật §45 cấm) — không phải việc còn thiếu thời gian.
+1. **A real re-grading by a human** — see `## 2`.
+2. **A 2-4 week pilot** — the same model, task set, tool set, security policy. No
+   self-graded number substitutes for this; the golden set (M10) is the tool that
+   MEASURES a pilot, not a replacement for one.
+3. **One technical item still open** (N-1/N-3/N-5/N-6/N-8/S-11 are all closed), not
+   blocking release — `07-risks-and-open-issues.md §7`: S-9's label-re-pointing half,
+   DELIBERATELY deferred (the same reason as K-12: building fingerprinting for a threat
+   never observed would mean inventing that threat model, exactly what rule §45
+   forbids) — not a matter of time.
 
-**Sau v1.0:** mở rộng theo nhu cầu đo được, không theo lịch định sẵn (luật §8.4 "cắt khỏi
-đường đi bắt buộc, không vứt đi", áp dụng nhất quán suốt roadmap này) — S-9's
-`ServerIdentity`+`fingerprint` là ứng viên tự nhiên nhất nếu một lần re-pointing MCP thật
-được quan sát.
+**After v1.0:** extend based on measured need, not a preset schedule (rule §8.4's "cut
+from the mandatory path, don't throw away," applied consistently across this whole
+roadmap) — S-9's `ServerIdentity`+`fingerprint` is the most natural candidate if a real
+MCP re-pointing incident is ever observed.

@@ -1,511 +1,531 @@
-# HARNESS.md — Yêu cầu của chủ dự án
+# HARNESS.md — The Project Owner's Requirements
 
-> Đây là **bản ghi yêu cầu**, không phải bản thiết kế. Nó trả lời câu hỏi *"chủ dự án
-> đã yêu cầu những gì?"*, tách khỏi câu hỏi *"hội đồng đã thiết kế thế nào?"* — cái sau
-> nằm ở [`docs/`](docs/).
+> This is a **requirements record**, not a design document. It answers *"what did the
+> project owner actually ask for?"*, kept separate from *"how did the council design
+> it?"* — the latter lives in [`docs/`](docs/).
 >
-> Mọi mục dưới đây trích từ chính lời chủ dự án trong quá trình làm việc. Chỗ nào là
-> diễn giải của hội đồng đều được đánh dấu rõ. Cột **Ở đâu** trỏ tới nơi yêu cầu đó
-> được đáp ứng, để một yêu cầu không thể "được đồng ý" mà không có địa chỉ.
+> Every item below is drawn from the project owner's own words during the work. Anywhere
+> the council interpreted rather than quoted is marked clearly. The **Where** column
+> points to where each requirement is actually met, so a requirement can never be
+> "agreed to" without an address.
 
-> **Trạng thái hôm nay (đọc trước §XIX, phần dưới vẫn đứng nguyên như một bản ghi
-> lịch sử — không sửa lại các Round 0-39, chỉ nói tiếp câu chuyện):** Round 0-39 đưa
-> package tới trạng thái "Ready for Implement". Sau đó là **hai giai đoạn build thật**,
-> không nằm trong §VII's vòng đếm gốc:
+> **Current status (read this before §XIX — the section below stands as a historical
+> record; Rounds 0-39 are not rewritten, only continued):** Rounds 0-39 brought the
+> package to "Ready for Implement." After that came **two real build phases**, outside
+> §VII's original round count:
 >
-> 1. **58 phát hiện từ hai vòng review đối kháng** (`design/review-kiss.md`,
->    `design/review-security.md`) — soát lại từng cái trên code thật, sửa những cái
->    còn sống. Xem `design/07-risks-and-open-issues.md`.
-> 2. **Kế hoạch tăng trưởng M6-M10** (`docs/17-research-alignment.md`, đối chiếu với
->    một nghiên cứu độc lập 12 framework/9 harness) — idempotency, cancellation đúng
->    chuẩn, chaos testing (M6); workspace confinement, egress mặc định chặn, seam
->    `Sandbox` (M7); envelope sự kiện v1, OTel thật, cost/successful-task (M8); MCP
->    client, Service API, event model chung ba transport (M9); trajectory contract,
->    golden set, benchmark hiệu năng (M10). **Cả năm milestone đã xong** — xem
->    `design/08-roadmap-and-release-plan.md`.
+> 1. **58 findings from two adversarial review rounds** (`design/review-kiss.md`,
+>    `design/review-security.md`) — each one re-checked against the real code, the ones
+>    still live got fixed. See `design/07-risks-and-open-issues.md`.
+> 2. **The M6-M10 growth roadmap** (`docs/17-research-alignment.md`, benchmarked against
+>    an independent survey of 12 frameworks / 9 harnesses) — idempotency, proper
+>    cancellation, chaos testing (M6); workspace confinement, egress denied by default,
+>    the `Sandbox` seam (M7); event envelope v1, real OTel, cost/successful-task (M8); an
+>    MCP client, the Service API, one event model across three transports (M9); the
+>    trajectory contract, a golden set, a performance benchmark (M10). **All five
+>    milestones are done** — see `design/08-roadmap-and-release-plan.md`.
 >
-> §XIX bên dưới dừng ở "vòng 39" theo đúng bản ghi gốc; ba mục "Còn mở" của nó (SC-1b,
-> OI-10, OI-11 — cần trẻ em thật, server OpenViking thật, API key thật) **vẫn còn mở
-> hôm nay**, không đổi — không việc nào trong hai giai đoạn trên chạm tới chúng, vì cả
-> ba đều cần MỘT NGƯỜI THẬT ở ngoài vòng lặp code/test, không phải thêm code sửa được.
+> §XIX below still ends at "Round 39" in the original record; its three "still open"
+> items (SC-1b, OI-10, OI-11 — needing real children, a real OpenViking server, a real
+> API key) **remain open today**, unchanged — neither of the two phases above touched
+> them, because all three need A REAL PERSON outside the code/test loop, not more code.
 
-**Nguồn:** toàn bộ hội thoại thiết kế, hội đồng chạy từ Round 0 đến Round 39.
-**Phạm vi:** thư viện Python `harness`, nhánh `claude/ai-agent-harness-design-ti5vk3`.
+**Source:** the full design conversation, the council running from Round 0 to Round 39.
+**Scope:** the Python library `harness`, branch `claude/ai-agent-harness-design-ti5vk3`.
 
 ---
 
-## 0. Nhiệm vụ gốc
+## 0. The original mandate
 
-Dùng phương pháp **Personal Stack** lập một **Implementation Design Council** gồm các
-chuyên gia phù hợp nhất, để biến ý tưởng và kiến trúc **AI Agent Harness** thành một
-**Implementation Plan cực kỳ chi tiết, thực tế và Ready for Implement**.
+Use the **Personal Stack** method to assemble an **Implementation Design Council** of the
+most suitable experts, to turn the **AI Agent Harness** idea and architecture into an
+**extremely detailed, realistic, Ready-for-Implement Implementation Plan**.
 
-> Đây **không phải** một buổi brainstorming và cũng không phải nhiệm vụ tạo ra một
-> implementation plan trong một lần.
+> This is **not** a brainstorming session, and not a task to produce an implementation
+> plan in one pass.
 
-Hội đồng làm việc lặp nhiều vòng theo chu trình:
+The council works in repeated rounds following this cycle:
 
 ```
 Understand → Design → Challenge → Find Gaps → Debate → Resolve → Refine → Validate → Repeat
 ```
 
-và **chỉ được kết thúc** khi Implementation Plan đủ rõ để một engineering team bắt đầu
-coding ngay mà không phải tự đưa ra quyết định kiến trúc hoặc kỹ thuật quan trọng nào.
+and **may only stop** once the Implementation Plan is clear enough that an engineering
+team can start coding immediately, without having to make any significant architectural
+or technical decision on its own.
 
 ---
 
-## I. Năm nguyên tắc bất biến
+## I. Five invariant principles
 
-> **Tuyệt đối không được đánh đổi các nguyên tắc dưới đây chỉ để làm implementation dễ hơn.**
-> Nếu một thiết kế vi phạm một trong các nguyên tắc này, hội đồng phải phát hiện, phản
-> biện và thiết kế lại.
+> **These principles may never be traded away just to make implementation easier.**
+> If a design violates one of them, the council must catch it, challenge it, and
+> redesign.
 
 ### 1. Extensible / Pluginable
 
-Có thể bổ sung, thay thế, mở rộng capability mà không phải sửa core một cách không cần thiết.
+Capability can be added, replaced, or extended without unnecessarily touching core.
 
-> **Pluginable không đồng nghĩa với "Everything is a Plugin".**
+> **Pluginable does not mean "Everything is a Plugin."**
 
-Hội đồng phải **tự xác định** đâu là plugin boundary hợp lý, đâu là core primitive, đâu
-không nên biến thành plugin. Không được biến mọi thứ thành abstraction/plugin chỉ vì muốn
-extensibility.
+The council must **determine for itself** what a reasonable plugin boundary is, what
+belongs in the core primitives, and what should NOT become a plugin. Nothing gets turned
+into an abstraction/plugin just because extensibility sounds nice.
 
-**Ở đâu:** [`docs/02-architecture.md §4`](docs/02-architecture.md) — phép thử plugin boundary
-ba phần, rút 9 abstraction đề xuất xuống **5 seam**: Tool, ModelProvider, Store, Policy,
-Exporter. Ba thứ được giữ trong core **chính vì** một bản thay thế có thể vô hiệu hoá một
-nguyên tắc bất biến.
+**Where:** [`docs/02-architecture.md §4`](docs/02-architecture.md) — a three-part test for
+the plugin boundary, cutting 9 proposed abstractions down to **5 seams**: Tool,
+ModelProvider, Store, Policy, Exporter. Three things are kept in core **precisely
+because** a replacement could disable an invariant.
 
 ### 2. Cost Efficient
 
-Câu hỏi phải hỏi liên tục:
+The question that must be asked continuously:
 
-> "Có cách nào đạt được cùng kết quả với ít token, ít model call, ít infrastructure và ít
-> computation hơn không?"
+> "Is there a way to reach the same result with fewer tokens, fewer model calls, less
+> infrastructure, and less computation?"
 
-Phải xem xét: model selection, model routing, small vs large model, caching, context
-management, memory, RAG, tool usage, retry, parallel execution, batch processing, token
-usage, cost monitoring, fallback strategy.
+Must be considered: model selection, model routing, small vs. large model, caching,
+context management, memory, RAG, tool usage, retry, parallel execution, batch
+processing, token usage, cost monitoring, fallback strategy.
 
-> **Cost phải là một architectural concern, không phải vấn đề tối ưu sau khi build xong.**
+> **Cost must be an architectural concern, not something optimized after the build is
+> done.**
 
-**Ở đâu:** [`docs/07-cost.md`](docs/07-cost.md) — trần ngân sách pre-flight (ADR-017),
-cache-safety bằng cấu trúc (ADR-029, đo được 95.3%), ADR-026 sau khi SC-2 bị bác bỏ bằng
-đo đạc.
+**Where:** [`docs/07-cost.md`](docs/07-cost.md) — a pre-flight budget ceiling (ADR-017),
+cache-safety by construction (ADR-029, measured at 95.3%), ADR-026 after SC-2 was
+disproven by measurement.
 
 ### 3. Safe by Design
 
-An toàn ngay từ thiết kế, không phải bổ sung security ở cuối. Tư duy bắt buộc:
+Safety from the design stage, not security bolted on at the end. Required mindset:
 
 > **Secure by Design + Fail Safe + Least Privilege + Defense in Depth**
 
-Đặc biệt xem xét: agent safety, tool safety, plugin safety, prompt injection, data leakage,
-unauthorized tool execution, malicious plugin, secret leakage, excessive permissions,
-uncontrolled agent loops, resource exhaustion, supply-chain risks.
+Specifically consider: agent safety, tool safety, plugin safety, prompt injection, data
+leakage, unauthorized tool execution, malicious plugins, secret leakage, excessive
+permissions, uncontrolled agent loops, resource exhaustion, supply-chain risk.
 
-**Ở đâu:** [`docs/06-safety.md`](docs/06-safety.md) — threat model, taint lattice (ADR-011),
-`Secret`, ranh giới tin cậy plugin, 21 kịch bản red-team chạy trong CI.
+**Where:** [`docs/06-safety.md`](docs/06-safety.md) — the threat model, the taint lattice
+(ADR-011), `Secret`, the plugin trust boundary, 21 red-team scenarios that run in CI.
 
 ### 4. Intelligent
 
-Agent thông minh **không** đồng nghĩa với luôn dùng model lớn hoặc reasoning phức tạp.
+An intelligent agent does **not** mean always using a large model or complex reasoning.
 
 > **Maximum intelligence per unit of cost and latency.**
 
-Harness cần chọn được cách xử lý phù hợp với từng nhiệm vụ thay vì luôn dùng cùng một
-model hoặc cùng một workflow.
+The harness needs to pick the right approach for each task instead of always using the
+same model or the same workflow.
 
-**Ở đâu:** [`docs/07-cost.md §6`](docs/07-cost.md) — adaptive thinking bật mặc định,
-`effort` là dial người dùng cầm, `strict` trên mọi tool, `returns=` có kiểu, subagent chạy
-model rẻ hơn, prefix cache ổn định.
+**Where:** [`docs/07-cost.md §6`](docs/07-cost.md) — adaptive thinking on by default,
+`effort` as a dial the caller holds, `strict` on every tool, typed `returns=`, subagents
+running cheaper models, a stable prefix cache.
 
-**⚠️ Hội đồng từ chối một phần yêu cầu này, và nói rõ:** **không có model routing tự động**
-(ADR-006) — không ai nêu được một policy định tuyến mà hội đồng đồng ý là đúng. Việc "chọn
-cách xử lý phù hợp với từng nhiệm vụ" là **thủ công**: người dùng đặt `effort=`, chọn
-`model=`, hoặc uỷ thác cho subagent. Khả năng có, tự động thì không. Vòng 38 kiểm từng
-dòng của bảng §07.6 và tìm ra hai tuyên bố sai hoặc thiếu (xem §XIX).
+**⚠️ The council refused part of this requirement, and says so plainly:** **no automatic
+model routing** (ADR-006) — nobody could state a routing policy the council agreed was
+correct. "Picking the right approach per task" is **manual**: the caller sets `effort=`,
+picks `model=`, or delegates to a subagent. The capability exists; automation does not.
+Round 38 checked every line of the §07.6 table and found two claims that were wrong or
+incomplete (see §XIX).
 
 ### 5. Efficient
 
-Hiệu quả về: latency, token usage, compute, memory, network, infrastructure, **developer
-effort**, operational effort.
+Efficient in: latency, token usage, compute, memory, network, infrastructure,
+**developer effort**, operational effort.
 
-> Không chỉ tối ưu runtime. **Developer Experience cũng là một dạng efficiency.**
+> Not just runtime optimization. **Developer experience is a form of efficiency too.**
 
 ---
 
-## II. Poka-Yoke — chống lỗi ngay từ thiết kế
+## II. Poka-Yoke — mistake-proofing from the design stage
 
-> "Một trong những nguyên tắc quan trọng nhất."
+> "One of the most important principles."
 
-Thay vì *"Developer phải nhớ làm đúng"*, ưu tiên:
+Instead of *"the developer must remember to do it right,"* prioritize:
 
-> **"Thiết kế hệ thống để developer gần như không thể làm sai."**
+> **"Design the system so the developer can almost never do it wrong."**
 
-Mỗi khi phát hiện một loại lỗi có thể xảy ra, phải đặt sáu câu hỏi:
+Every time a possible failure class is found, six questions must be asked:
 
-1. Có thể loại bỏ khả năng xảy ra lỗi này bằng thiết kế không?
-2. Có thể phát hiện lỗi ngay lập tức không?
-3. Có thể tự động ngăn chặn lỗi không?
-4. Có thể cung cấp safe default không?
-5. Có thể biến lỗi runtime thành compile/configuration-time error không?
-6. Có thể thiết kế API khiến cách sử dụng sai trở nên khó hoặc không thể thực hiện không?
+1. Can this failure be eliminated by design?
+2. Can it be detected immediately?
+3. Can it be automatically prevented?
+4. Can a safe default be provided?
+5. Can a runtime error become a compile-time/configuration-time error?
+6. Can the API be designed so that misuse becomes hard or impossible?
 
-Thứ tự ưu tiên:
+Priority order:
 
 ```
-Prevent → Detect Early → Fail Safe → Recover        (KHÔNG phải: Allow → Detect Later → Debug)
+Prevent → Detect Early → Fail Safe → Recover        (NOT: Allow → Detect Later → Debug)
 ```
 
-Áp dụng cho: API, configuration, plugin, agent definition, tool calling, memory, model
+Applies to: API, configuration, plugins, agent definitions, tool calling, memory, model
 selection, workflow, security, deployment, testing, developer experience.
 
-**Ở đâu:** [`docs/08-poka-yoke.md`](docs/08-poka-yoke.md) — 83 failure mode, mỗi mode có
-một biện pháp ở mức thiết kế, xếp hạng theo thang Impossible > Import-time >
+**Where:** [`docs/08-poka-yoke.md`](docs/08-poka-yoke.md) — 83 failure modes, each with a
+design-level mitigation, ranked on the scale Impossible > Import-time >
 Construction-time > First-run > Loud warning > Documented.
 
 ---
 
 ## III. Engineering Principles
 
-| Nguyên tắc | Yêu cầu |
+| Principle | Requirement |
 |---|---|
-| **SOLID** | Áp dụng **thực chất, không máy móc** |
+| **SOLID** | Applied **in substance, not mechanically** |
 | **CLEAN CODE** | Readable, understandable, maintainable, explicit, cohesive, low coupling |
-| **KISS** | Nếu một giải pháp đơn giản giải quyết được vấn đề, **không được** chọn giải pháp phức tạp hơn |
-| **NOT OVER-ENGINEER** | **Bắt buộc.** Không xây capability chỉ vì "có thể cần trong tương lai" |
+| **KISS** | If a simple solution solves the problem, a more complex one **must not** be chosen |
+| **NOT OVER-ENGINEER** | **Mandatory.** Do not build a capability just because "it might be needed someday" |
 
-Với NOT OVER-ENGINEER, phải phân biệt rõ bốn mức: **Required now** / **Required for
-production** / **Useful later** / **Speculative**.
+For NOT OVER-ENGINEER, four tiers must be distinguished clearly: **Required now** /
+**Required for production** / **Useful later** / **Speculative**.
 
-> Không biến future possibility thành current complexity.
+> Do not turn a future possibility into present-day complexity.
 
 ---
 
 ## IV. Extreme Developer Experience
 
-> "Đây là một yêu cầu **đặc biệt quan trọng**."
+> "This is an **especially important** requirement."
 
-Mục tiêu:
+Goal:
 
-> **Một học sinh 10 tuổi cũng có thể hiểu cách sử dụng Harness để xây dựng một Agent cơ bản.**
+> **A 10-year-old should be able to understand how to use the Harness to build a basic
+> Agent.**
 
-Điều này **không** có nghĩa architecture bên trong phải đơn giản như ứng dụng trẻ em:
+This does **not** mean the internal architecture has to be as simple as a children's app:
 
-> **Complexity inside, Simplicity outside.**
+> **Complexity inside, simplicity outside.**
 
-Tối ưu **Time to First Agent** và **Cognitive Load** xuống mức thấp nhất có thể.
+Minimize **Time to First Agent** and **Cognitive Load** as far as possible.
 
-Triết lý minh hoạ (nhưng **không được mặc định đây là thiết kế cuối cùng** — hội đồng phải
-tự tìm ra DX/UX tốt nhất):
+Illustrative philosophy (but **must not be taken as the final design by default** — the
+council must find the best DX/UX on its own):
 
 ```
 Create Agent → Give it a name → Tell it what to do → Give it capabilities → Run
 ```
 
-### IV.a — Đính chính quan trọng của chủ dự án
+### IV.a — An important correction from the project owner
 
-Ở vòng 0 hội đồng lập luận rằng yêu cầu "10 tuổi" là bất khả thi. Chủ dự án bác bỏ:
+In Round 0 the council argued the "10-year-old" requirement was infeasible. The project
+owner rejected that:
 
-> **"Tôi nói thêm là trẻ em 10 tuổi đã biết `pip install`, đã được học lập trình python
-> cơ bản rồi."**
+> **"I'll add that these 10-year-olds already know `pip install` and have already
+> learned basic Python programming."**
 
-Yêu cầu này phải được hiểu **theo nghĩa đen**. Hội đồng đã mở lại vòng 13–16 và ADR-012.
+This requirement must be read **literally**. The council reopened Rounds 13-16 and
+ADR-012.
 
-**Ở đâu:** [`docs/15-first-agent.md`](docs/15-first-agent.md) — tài liệu hướng tới trẻ em,
-đo được **lớp 4.2** theo thang Flesch–Kincaid, dùng làm đặc tả chạy được;
-[`docs/16-sc1b-field-kit.md`](docs/16-sc1b-field-kit.md) — bộ công cụ khảo sát thật.
+**Where:** [`docs/15-first-agent.md`](docs/15-first-agent.md) — documentation aimed at
+children, measured at **grade 4.2** on the Flesch–Kincaid scale, used as a runnable
+specification; [`docs/16-sc1b-field-kit.md`](docs/16-sc1b-field-kit.md) — a real,
+runnable survey kit.
 
 ---
 
 ## V. Zero-to-Agent Experience
 
-Thiết kế trải nghiệm liên tục:
+Design a continuous journey:
 
 > **Zero knowledge → First Agent → Useful Agent → Advanced Agent**
 
-Phải xác định: mental model tối thiểu, API tối thiểu, configuration tối thiểu, default
+Must be determined: minimum mental model, minimum API, minimum configuration, default
 behavior, **safe defaults**, convention over configuration, **progressive disclosure**.
 
-Advanced capability chỉ xuất hiện khi người dùng thực sự cần. **Không bắt beginner phải
-hiểu** LLM orchestration, agent runtime, context engineering, memory architecture, RAG,
-tool protocol, model routing, multi-agent coordination — chỉ để tạo một Agent đơn giản.
+Advanced capability appears only when the user actually needs it. **A beginner should
+never have to understand** LLM orchestration, agent runtime, context engineering, memory
+architecture, RAG, the tool protocol, model routing, or multi-agent coordination just to
+create a simple Agent.
 
-**Ở đâu:** [`docs/03-public-api.md`](docs/03-public-api.md) — thang progressive disclosure;
-[`examples/langgraph_quickstart.py`](examples/langgraph_quickstart.py) — năm bậc, mỗi bậc
-thêm đúng một khái niệm.
-
----
-
-## VI. Hội đồng phải tự phát hiện mọi vấn đề
-
-Không chỉ giải quyết những gì chủ dự án đã nói. Phải chủ động tìm: architectural,
-implementation, API, UX, security, performance, cost, scalability, testing, deployment,
-operational, maintainability, migration, versioning, plugin-ecosystem, developer-onboarding
-problems.
-
-> **Nếu tôi có assumption chưa hợp lý, hãy phản biện thẳng thắn.**
-> **Không cố bảo vệ ý tưởng của tôi. Mục tiêu là xây được hệ thống tốt nhất.**
+**Where:** [`docs/03-public-api.md`](docs/03-public-api.md) — the progressive-disclosure
+ladder; [`examples/langgraph_quickstart.py`](examples/langgraph_quickstart.py) — five
+tiers, each adding exactly one concept.
 
 ---
 
-## VII. Quy trình Iterative Council
+## VI. The council must find every problem on its own
 
-Không được tạo Implementation Plan một lần rồi kết thúc.
+Not only solve what the project owner explicitly stated. Must proactively look for:
+architectural, implementation, API, UX, security, performance, cost, scalability,
+testing, deployment, operational, maintainability, migration, versioning,
+plugin-ecosystem, and developer-onboarding problems.
 
-| Vòng | Nội dung |
+> **If I have an assumption that isn't sound, challenge it directly.**
+> **Don't try to defend my ideas. The goal is to build the best possible system.**
+
+---
+
+## VII. The Iterative Council process
+
+The Implementation Plan must not be produced in one pass and then closed.
+
+| Round | Content |
 |---|---|
-| **Round 0** | Understand — goals, constraints, requirements, NFR, principles, success criteria. Ambiguity quan trọng phải được giải quyết |
-| **Round 1** | Initial Implementation Plan — chưa cần hoàn hảo, tạo baseline để phản biện |
-| **Round 2** | Architecture-to-Code — tìm missing component / interface / dependency / contract / ambiguous behavior |
-| **Round 3** | Developer Review — *"Tôi nhận task này hôm nay. Tôi có đủ thông tin để code chưa?"* Nếu **No** → xác định blocker và sửa plan |
-| **Round 4** | Beginner UX — *"Một học sinh 10 tuổi có thể tạo Agent đầu tiên không?"* |
-| **Round 5** | Poka-Yoke — với mỗi lỗi: **Can we prevent it by design?** |
-| **Round 6** | Cost & Performance — token/model/infrastructure waste, latency, computation, network thừa |
-| **Round 7** | Security & Safety — **cố tình tìm cách break the system** |
+| **Round 0** | Understand — goals, constraints, requirements, NFRs, principles, success criteria. Significant ambiguity must be resolved |
+| **Round 1** | Initial Implementation Plan — doesn't need to be perfect, creates a baseline to challenge |
+| **Round 2** | Architecture-to-Code — find missing components / interfaces / dependencies / contracts / ambiguous behavior |
+| **Round 3** | Developer Review — *"I picked up this task today. Do I have enough to start coding?"* If **No** → identify the blocker and fix the plan |
+| **Round 4** | Beginner UX — *"Can a 10-year-old build their first Agent?"* |
+| **Round 5** | Poka-Yoke — for every mistake: **can we prevent it by design?** |
+| **Round 6** | Cost & Performance — token/model/infrastructure waste, latency, unnecessary computation, network use |
+| **Round 7** | Security & Safety — **deliberately try to break the system** |
 | **Round 8** | Production Engineering — reliability, failure handling, observability, deployment, scaling, recovery, upgrade, migration |
-| **Round N** | **Recursive Review** — sau mỗi thay đổi lớn, review lại **toàn bộ**, vì một thay đổi có thể tạo regression ở phần khác. **Không giới hạn số vòng** |
+| **Round N** | **Recursive Review** — after every major change, review **everything** again, because one change can create a regression elsewhere. **No cap on the number of rounds** |
 
-**Ở đâu:** [`docs/00-council.md`](docs/00-council.md) — nhật ký đầy đủ Round 0 → Round 39,
-**kèm cả những lập luận đã thua**.
+**Where:** [`docs/00-council.md`](docs/00-council.md) — the full log, Round 0 through
+Round 39, **including the arguments that lost**.
 
 ---
 
-## VIII. Implementation Plan phải đạt mức nào
+## VIII. What level the Implementation Plan must reach
 
-Không chỉ Epic → Story → Task. Mỗi task phải trả lời đủ **chín** câu hỏi:
+Not just Epic → Story → Task. Every task must fully answer **nine** questions:
 
 **What** · **Why** · **Where** · **How** · **Dependency** · **Contract** · **Failure** ·
 **Test** · **Done**
 
-**Ở đâu:** [`docs/11-implementation-plan.md`](docs/11-implementation-plan.md) — M0–M5, mọi
-task theo đúng chín mục này, kèm ma trận truy vết.
+**Where:** [`docs/11-implementation-plan.md`](docs/11-implementation-plan.md) — M0-M5,
+every task follows exactly these nine points, with a traceability matrix.
 
 ---
 
-## IX. Poka-Yoke cho chính Implementation Plan
+## IX. Poka-Yoke for the Implementation Plan itself
 
-Mỗi task quan trọng phải có: preconditions, inputs, expected behavior, constraints,
-acceptance criteria, Definition of Done, tests, dependencies.
+Every significant task must have: preconditions, inputs, expected behavior, constraints,
+acceptance criteria, a Definition of Done, tests, dependencies.
 
-Hai điều kiện loại bỏ:
+Two disqualifying conditions:
 
-> - Nếu developer có thể hiểu task theo nhiều cách khác nhau → **task chưa đủ rõ**.
-> - Nếu developer có thể implement sai nhưng vẫn pass review → **thiết kế chưa đủ Poka-Yoke**.
+> - If a developer could understand the task in more than one way → **the task isn't
+>   clear enough.**
+> - If a developer could implement it wrong and still pass review → **the design isn't
+>   Poka-Yoke enough.**
 
 ---
 
 ## X. Implementation Readiness Gate
 
-Sau **mỗi vòng**, hội đồng phải tự chấm 16 chiều:
+After **every round**, the council must self-grade across 16 dimensions:
 
 Architecture · Component Design · Interfaces · Data & State · Security · Cost ·
 Performance · Testing · Observability · Deployment · Plugin Architecture · Poka-Yoke ·
 Developer Experience · Beginner Experience · Documentation · Implementation Tasks
 
-> **Chỉ cần một critical item = No → không được kết thúc.** Mở vòng tiếp theo.
+> **A single critical item graded No → cannot close.** Open another round.
 
 ---
 
 ## XI. Final Implementation Simulation
 
-Trước khi tuyên bố Ready for Implement, phải mô phỏng:
+Before declaring Ready for Implement, must simulate:
 
-> *"Ngày mai một engineering team bắt đầu implementation dựa hoàn toàn vào Implementation
-> Plan này."*
+> *"Tomorrow an engineering team starts implementation relying entirely on this
+> Implementation Plan."*
 
-Walkthrough: **Day 1 → Day 2 → First Component → First Integration → First Agent →
-First Test → First Deployment**. Tìm tất cả blocker, rồi **Fix → Update Plan → Review Again**.
-
----
-
-## XII. Điều kiện kết thúc tuyệt đối
-
-> - Không kết thúc dựa trên số vòng.
-> - Không kết thúc vì "đã đủ chi tiết".
-> - Không kết thúc vì "hội đồng đã đồng ý".
-
-Chỉ kết thúc khi **đồng thời**:
-
-1. Một engineering team có thể bắt đầu implementation ngay từ Implementation Plan mà không
-   cần đưa ra thêm architectural decision quan trọng.
-2. Một người mới có thể sử dụng Harness với cognitive load tối thiểu để tạo Agent.
-3. Kiến trúc cân bằng được **Extensibility + Cost Efficiency + Intelligence + Safety +
-   Performance + Simplicity + Developer Experience** mà không vi phạm **Poka-Yoke + SOLID +
-   Clean Code + KISS + Not Over-Engineering**.
+Walk through: **Day 1 → Day 2 → First Component → First Integration → First Agent →
+First Test → First Deployment**. Find every blocker, then **Fix → Update Plan → Review
+Again**.
 
 ---
 
-## XIII. Deliverable bắt buộc
+## XII. Absolute stopping conditions
 
-| Deliverable | Ở đâu |
+> - Do not stop based on the number of rounds completed.
+> - Do not stop because "it's detailed enough."
+> - Do not stop because "the council agreed."
+
+Only stop when **all of the following hold at once**:
+
+1. An engineering team can start implementation directly from the Implementation Plan
+   without making any further significant architectural decision.
+2. A newcomer can use the Harness with minimal cognitive load to create an Agent.
+3. The architecture balances **Extensibility + Cost Efficiency + Intelligence + Safety +
+   Performance + Simplicity + Developer Experience** without violating **Poka-Yoke +
+   SOLID + Clean Code + KISS + Not Over-Engineering**.
+
+---
+
+## XIII. Required deliverables
+
+| Deliverable | Where |
 |---|---|
 | Final Implementation Plan | [`docs/11-implementation-plan.md`](docs/11-implementation-plan.md) |
 | **Design Decision Log** | [`docs/12-decision-logs.md`](docs/12-decision-logs.md) — ADR-001…040 |
 | **Implementation Decision Log** | [`docs/12-decision-logs.md`](docs/12-decision-logs.md) — IDL-01…52 |
 | **Risk Register** | [`docs/13-risk-register.md`](docs/13-risk-register.md) — R-01…R-23 |
-| **Open Issues** (chỉ giữ thứ thực sự không blocking) | [`docs/13-risk-register.md §3`](docs/13-risk-register.md) — OI-1…OI-11 |
-| **Definition of Done** | [`docs/11-implementation-plan.md`](docs/11-implementation-plan.md) — mỗi task |
+| **Open Issues** (only what is genuinely non-blocking) | [`docs/13-risk-register.md §3`](docs/13-risk-register.md) — OI-1…OI-11 |
+| **Definition of Done** | [`docs/11-implementation-plan.md`](docs/11-implementation-plan.md) — per task |
 | **Implementation Sequence** | [`docs/11-implementation-plan.md`](docs/11-implementation-plan.md) — M0→M5 |
 | **Dependency Graph** | [`docs/11-implementation-plan.md`](docs/11-implementation-plan.md) |
 | **Validation Plan** | [`docs/14-validation-plan.md`](docs/14-validation-plan.md) — AC-01…65 |
 
 ---
 
-## XIV. Nguyên tắc tối thượng
+## XIV. The overriding principle
 
-> - **Do not optimize for producing a detailed plan. Optimize for producing a plan that can
->   actually be implemented.**
+> - **Do not optimize for producing a detailed plan. Optimize for producing a plan that
+>   can actually be implemented.**
 > - **Do not optimize for architectural sophistication. Optimize for simplicity,
 >   extensibility, safety, intelligence, efficiency and usability.**
-> - **Do not ask developers to remember how to use the system correctly. Use Poka-Yoke to
->   make the correct way the easiest way.**
+> - **Do not ask developers to remember how to use the system correctly. Use Poka-Yoke
+>   to make the correct way the easiest way.**
 > - **Do not expose internal complexity to users unnecessarily.**
 > - **Complexity inside. Simplicity outside.**
-> - **If the council finds a critical problem, do not document it and move on. Resolve it,
->   update the plan, and review again.**
+> - **If the council finds a critical problem, do not document it and move on. Resolve
+>   it, update the plan, and review again.**
 > - **Keep iterating until the council can confidently say: "This Implementation Plan is
 >   ready to implement."**
 
 ---
 
-## XV. Nền tảng bắt buộc
+## XV. Required foundation
 
-Nguyên văn, đưa ra sau khi hội đồng đã **khuyến nghị ngược lại** ở vòng 34:
+Verbatim, issued after the council had **recommended the opposite** in Round 34:
 
-> **"Bắt buộc: xây dựng trên nền tảng langchain/langgraph, openvikking"**
+> **"Required: build on top of langchain/langgraph, openvikking"**
 
-Hội đồng ghi nhận việc đảo chiều bằng một câu và **không tranh luận lại**.
+The council recorded the reversal in one sentence and **did not re-litigate it**.
 
-| Thành phần | Trạng thái | Ghi chú |
+| Component | Status | Note |
 |---|---|---|
-| **LangChain / LangGraph** | ✅ Đã xây | [`src/harness/lg/`](src/harness/lg/) — LangGraph giữ vòng lặp; luật an toàn trở thành **hình dạng đồ thị** (ADR-032) |
-| **`openvikking`** | ✅ Đã xây | Tên đúng là **`openviking`** (một chữ `k`) — [volcengine/OpenViking](https://github.com/volcengine/OpenViking). Ban đầu bị ghi nhận nhầm là "không tồn tại trên PyPI" do lỗi chính tả. Tích hợp qua seam `Store` (ADR-035): [`src/harness/memory/viking.py`](src/harness/memory/viking.py) |
+| **LangChain / LangGraph** | Done | [`src/harness/lg/`](src/harness/lg/) — LangGraph holds the loop; the safety rules become the **shape of the graph** (ADR-032) |
+| **`openvikking`** | Done | The real name is **`openviking`** (one `k`) — [volcengine/OpenViking](https://github.com/volcengine/OpenViking). Initially misreported as "not on PyPI" due to the typo. Integrated through the `Store` seam (ADR-035): [`src/harness/memory/viking.py`](src/harness/memory/viking.py) |
 
-**Điều yêu cầu này làm vỡ, và hội đồng nói thẳng:** NFR-05 giới hạn ≤ 3 runtime
-dependency. `langgraph` kéo theo **36 gói**; `openviking` (server) kéo theo **185 gói**.
-Giải pháp trung thực là extra: `harness[graph]`, `harness[viking]` — core vẫn 3
-dependency và import 90 ms, có test chặn ranh giới đó (AC-46).
+**What this requirement broke, stated plainly:** NFR-05 caps runtime dependencies at
+≤ 3. `langgraph` pulls in **36 packages**; the `openviking` server pulls in **185
+packages**. The honest solution is an extra: `harness[graph]`, `harness[viking]` — core
+stays at 3 dependencies and a 90ms import, with a test enforcing that boundary (AC-46).
 
 ---
 
-## XVI. Quyết định phạm vi
+## XVI. Scope decisions
 
-Chốt qua hỏi–đáp trực tiếp ở vòng 0:
+Settled through direct Q&A in Round 0:
 
-| Câu hỏi | Quyết định |
+| Question | Decision |
 |---|---|
-| Ngôn ngữ | **Python** |
-| Hình thái | **Library-first**, service tính sau |
-| Đối tượng & threat model | **Open-source / lập trình viên phổ thông**, có **plugin bên thứ ba không đáng tin** trong threat model |
+| Language | **Python** |
+| Form | **Library-first**, a service considered later |
+| Audience & threat model | **Open-source / general-purpose developers**, with **untrusted third-party plugins** in the threat model |
 
 ---
 
-## XVII. Yêu cầu phát sinh trong quá trình làm việc
+## XVII. Requirements that emerged during the work
 
-| # | Nguyên văn | Kết quả |
+| # | Verbatim | Outcome |
 |---|---|---|
-| 1 | *"báo cáo tóm tắt kết quả đi"* | Báo cáo tổng hợp |
-| 2 | *"tóm lại đã thiết kế xong, hết lỗi, ready for implement chưa?"* | Trả lời thẳng, kèm danh sách còn mở |
-| 3 | *"cho tôi xem code ví dụ tạo một agent đa chức năng đi"* | [`examples/support_agent.py`](examples/support_agent.py) — 6 tool đủ 4 lớp effect, subagent, `returns=`, ngân sách, phê duyệt, transcript, `Secret` |
-| 4 | *"agent Trợ lý CSKH có chạy được multi turn, multi workflow, cross workflow không?"* | Trả lời kèm chứng minh chạy được |
-| 5 | *"có business thì nên quản lý bằng state machine sẽ tốt hơn chứ nhỉ"* | **Đồng ý.** [`examples/refund_workflow.py`](examples/refund_workflow.py) + [`docs/06-safety.md §4.1`](docs/06-safety.md) — state machine là một `Policy`, nên nó chỉ **thắt chặt**, không bao giờ nới lỏng |
-| 6 | *"có nên xây dựng harness này dựa trên một framework có sẵn như langchain langgraph không"* | Hội đồng khuyến nghị **không** → chủ dự án **bác bỏ** ở mục XV |
-| 7 | *"cho tôi example tạo agent với harness langgraph đi"* | [`examples/langgraph_quickstart.py`](examples/langgraph_quickstart.py). **Chính việc viết example này phát hiện 3 lỗi** — multi-turn chưa bao giờ chạy được (vòng 37) |
-| 8 | *"hãy viết toàn bộ yêu cầu của tôi ... ra thành một file"* | File này |
+| 1 | *"give me a summary report"* | A consolidated report |
+| 2 | *"in short, is the design finished, error-free, ready for implement?"* | A direct answer, with a list of what's still open |
+| 3 | *"show me example code for building a multi-capability agent"* | [`examples/support_agent.py`](examples/support_agent.py) — 6 tools across all 4 effect classes, a subagent, `returns=`, a budget, approval, a transcript, `Secret` |
+| 4 | *"can the Support Assistant agent run multi-turn, multi-workflow, cross-workflow?"* | Answered, with proof that it runs |
+| 5 | *"wouldn't a business process be better managed with a state machine?"* | **Agreed.** [`examples/refund_workflow.py`](examples/refund_workflow.py) + [`docs/06-safety.md §4.1`](docs/06-safety.md) — a state machine is a `Policy`, so it can only **tighten**, never loosen |
+| 6 | *"should this harness be built on an existing framework like langchain/langgraph?"* | The council recommended **no** → the project owner **overrode** it in §XV |
+| 7 | *"give me an example building an agent with harness + langgraph"* | [`examples/langgraph_quickstart.py`](examples/langgraph_quickstart.py). **Writing this example itself found 3 bugs** — multi-turn had never actually worked (Round 37) |
+| 8 | *"write up all of my requirements ... into one file"* | This file |
 
 ---
 
-## XVIII. Yêu cầu về quy trình Git
+## XVIII. Git process requirements
 
-- Phát triển trên nhánh **`claude/ai-agent-harness-design-ti5vk3`** (repo `nqthiep/harness`).
-- Commit với thông điệp rõ ràng, mô tả được.
-- **Không bao giờ** push sang nhánh khác nếu chưa được cho phép rõ ràng.
+- Develop on branch **`claude/ai-agent-harness-design-ti5vk3`** (repo `nqthiep/harness`).
+- Commit with clear, descriptive messages.
+- **Never** push to a different branch without explicit permission.
 
 ---
 
-## XIX. Trạng thái hiện tại đối chiếu với yêu cầu
+## XIX. Current status against requirements
 
-| Yêu cầu | Trạng thái | Bằng chứng |
+| Requirement | Status | Evidence |
 |---|:--:|---|
-| 5 nguyên tắc bất biến có mục riêng, quyết định riêng, test riêng | ✅ | Vòng 21 kiểm đếm; một nguyên tắc từng **không có mục nào** cho tới lúc đó |
-| Plugin boundary được xác định bằng phép thử, không bằng cảm tính | ✅ | 5 seam, [`docs/02-architecture.md §4`](docs/02-architecture.md) |
-| Cost là architectural concern | ✅ | ADR-017/026/029; SC-4 = 95.3% đo thật |
-| **Intelligent** — chọn cách xử lý theo nhiệm vụ | ⚠️ **Một phần** | Dial có (`effort`, `model`, subagent) nhưng **không tự động định tuyến** — hội đồng từ chối có lý do (ADR-006). Xem §I.4 |
-| Safe by Design | ✅ | 21 red-team test chạy trong CI; 4 lỗi bảo mật đã tìm ra và sửa |
-| Poka-Yoke | ✅ | 83 failure mode, xếp hạng theo thang phòng ngừa |
-| Extreme DX / 10 tuổi | ⚠️ **Một phần** | Đo được: tài liệu lớp 4.2, thông báo lỗi xấu nhất lớp 4.9. **Chưa đo với trẻ em thật** — xem SC-1b |
-| Zero-to-Agent | ✅ | Thang progressive disclosure + quickstart 5 bậc |
-| Rounds 0–8 + Round N đệ quy | ✅ | **Round 0 → Round 39**, nhật ký đầy đủ kèm lập luận đã thua |
-| Readiness Gate 16 chiều | ✅ | [`docs/00-council.md §3`](docs/00-council.md) |
-| Final Implementation Simulation | ✅ | [`docs/14-validation-plan.md §5`](docs/14-validation-plan.md) |
-| 9 deliverable mục XIII | ✅ | Bảng ở mục XIII |
-| Nền tảng bắt buộc (LangChain/LangGraph + OpenViking) | ✅ | Mục XV |
+| The 5 invariant principles each have their own section, decision, and test | Done | Round 21 counted them; one principle had **no section at all** until then |
+| The plugin boundary is determined by a test, not by feel | Done | 5 seams, [`docs/02-architecture.md §4`](docs/02-architecture.md) |
+| Cost is an architectural concern | Done | ADR-017/026/029; SC-4 = 95.3% measured for real |
+| **Intelligent** — picking the right approach per task | ⚠️ **Partial** | The dials exist (`effort`, `model`, subagent) but **no automatic routing** — the council refused it, with reasons (ADR-006). See §I.4 |
+| Safe by Design | Done | 21 red-team tests running in CI; 4 security bugs found and fixed |
+| Poka-Yoke | Done | 83 failure modes, ranked on the prevention scale |
+| Extreme DX / 10-year-old | ⚠️ **Partial** | Measured: docs at grade 4.2, worst error message at grade 4.9. **Not yet measured with real children** — see SC-1b |
+| Zero-to-Agent | Done | A progressive-disclosure ladder + a 5-tier quickstart |
+| Rounds 0-8 + recursive Round N | Done | **Round 0 → Round 39**, a full log including the arguments that lost |
+| 16-dimension Readiness Gate | Done | [`docs/00-council.md §3`](docs/00-council.md) |
+| Final Implementation Simulation | Done | [`docs/14-validation-plan.md §5`](docs/14-validation-plan.md) |
+| 9 deliverables from §XIII | Done | Table in §XIII |
+| Required foundation (LangChain/LangGraph + OpenViking) | Done | §XV |
 
-### Vòng 38 — kiểm source code đối chiếu chính file này
+### Round 38 — checking the source code against this very file
 
-Bốn lỗi, đều là chỗ **tài liệu khẳng định một đằng, code làm một nẻo**:
+Four bugs, all cases where **the documentation claimed one thing and the code did
+another**:
 
-| # | Lỗi | Trạng thái |
+| # | Bug | Status |
 |---|---|---|
-| H38.1 | `pause_turn` chưa từng được xử lý — API nói *chạy tiếp được*, harness nói *lỗi, chấm hết*. Đây là thứ server tool (web search) trả về, nên lỗi rơi đúng vào tính năng sinh ra nó | ✅ Đã sửa (ADR-038) |
-| H38.2 | IDL-19 khẳng định "refusal fallbacks bật mặc định" ở **ba tài liệu**; payload chưa bao giờ mang nó | ✅ Đã sửa (ADR-039) |
-| H38.3 | **Trên chính backend bắt buộc**, `refusal` và `max_tokens` đều báo `completed` — người dùng nhận nửa câu trả lời gắn nhãn hoàn tất | ✅ Đã sửa (ADR-038) |
-| H38.4 | `assert_tool_called`/`assert_no_tool` đọc **ý định** chứ không đọc **hành vi** — không phân biệt nổi tool bị chặn với tool đã chạy | ✅ Đã sửa (IDL-49) |
+| H38.1 | `pause_turn` was never handled — the API says *it can keep running*, the harness said *error, stop*. This is what a server tool (web search) returns, so the bug landed exactly on the feature that produces it | Fixed (ADR-038) |
+| H38.2 | IDL-19 claimed "refusal fallbacks are on by default" in **three documents**; the payload never actually carried it | Fixed (ADR-039) |
+| H38.3 | **On the very backend that's required**, both `refusal` and `max_tokens` reported `completed` — the user got half an answer labeled as finished | Fixed (ADR-038) |
+| H38.4 | `assert_tool_called`/`assert_no_tool` read **intent**, not **behavior** — couldn't tell a blocked tool from one that actually ran | Fixed (IDL-49) |
 
-Ba trong bốn nằm ở đường code **không test nào chạy qua**; cái thứ tư nằm trong chính các
-helper dùng để test. Bảng parity (R-17, điểm 25) bỏ lọt H38.3 vì **chưa kịch bản parity nào
-từng đặt stop reason của provider** — tất cả đều kết thúc `end_turn` hoặc `tool_use`.
+Three of the four sat on a code path **no test ever exercised**; the fourth was inside the
+very helpers used to write tests. The parity table (R-17, point 25) missed H38.3 because
+**no parity scenario had ever set the provider's stop reason** — every one of them ended
+in `end_turn` or `tool_use`.
 
-> Mỗi lần package này được mở rộng, code mới hỏng ở một **input mà code cũ vẫn xử lý được** —
-> không bao giờ hỏng ở chính tính năng đang thêm.
+> Every time this package is extended, the new code breaks on an **input the old code
+> already handled** — never on the feature actually being added.
 
-### Vòng 39 — chạy mypy/ruff, mục còn mở từ vòng 30
+### Round 39 — running mypy/ruff, closing an item left open from Round 30
 
-| # | Phát hiện | Trạng thái |
+| # | Finding | Status |
 |---|---|---|
-| H39.1 | **`@value` vô hình với type checker** → `Usage(input_tokns=1)` lọt, `Usage(1,2,3,4,5)` lọt, và `agent.name` — thuộc tính công khai theo §03 — bị báo **không tồn tại** với mọi người dùng chạy mypy. §II câu hỏi 5 bị đảo ngược trên toàn bộ tầng dữ liệu | ✅ Sửa bằng PEP 681 (ADR-040); 112 → 0 |
-| H39.2 | `returns=` nhận **instance** thay vì class → `AttributeError` thô, **sau khi đã trả tiền cho một model call** | ✅ Từ chối lúc dựng, nói rõ phải viết gì |
-| H39.3 | Một cảnh báo lint mà cách sửa hiển nhiên **làm hỏng một test bảo mật** (biến giữ `Secret` sống trong weak registry ADR-024) | ✅ Ghi rõ lý do + `noqa` |
-| H39.4 | **`ruff --fix` làm hỏng package** — xoá một re-export, `import harness` chết | ✅ Bắt được vì chạy test ngay sau đó (IDL-52) |
+| H39.1 | **`@value` was invisible to the type checker** → `Usage(input_tokns=1)` went through, `Usage(1,2,3,4,5)` went through, and `agent.name` — a public attribute per §03 — was reported as **not existing** for every user who ran mypy. §II question 5 was inverted across the entire data layer | Fixed with PEP 681 (ADR-040); 112 → 0 |
+| H39.2 | `returns=` accepted an **instance** instead of a class → a raw `AttributeError`, **after already paying for a model call** | Refused at construction time, with a clear message about what to write instead |
+| H39.3 | A lint warning whose obvious fix **would have broken a security test** (a variable keeping a `Secret` alive in ADR-024's weak registry) | Documented with a reason + `noqa` |
+| H39.4 | **`ruff --fix` broke the package** — removed a re-export, `import harness` died | Caught because a test ran immediately after (IDL-52) |
 
-**Cố tình KHÔNG làm:** 62/162 lỗi ruff là style một dòng (`def spent(self) -> Money: return self._spent`) — dùng nhất quán, viết lại 60 dòng đang chạy tốt là churn có rủi ro và không ai đọc dễ hơn. Ruff được cấu hình theo style thật của dự án. `mypy --strict` cũng từ chối. **§III "not over-engineer" áp cho cả việc dọn dẹp, không chỉ cho tính năng.**
+**Deliberately NOT done:** 62 of 162 ruff findings were single-line style
+(`def spent(self) -> Money: return self._spent`) — used consistently, and rewriting 60
+lines of code that already work is risky churn nobody finds more readable. Ruff is
+configured to match the project's real style. `mypy --strict` was rejected too. **§III's
+"not over-engineer" applies to cleanup as much as to features.**
 
-### Còn mở — nói thẳng, không giấu
+### Still open — stated plainly, not hidden
 
-| # | Vấn đề | Vì sao chưa đóng được |
+| # | Issue | Why it can't close yet |
 |---|---|---|
-| **SC-1b** | Chưa đo với **trẻ em thật 10–12 tuổi** | Cần người thật. [`docs/16-sc1b-field-kit.md`](docs/16-sc1b-field-kit.md) là bộ công cụ chạy được, nhưng hội đồng **không coi yêu cầu mục IV là đã đạt** cho tới khi đo xong |
-| **OI-10** | Binding OpenViking **chưa từng chạy với server thật** | Server cần embedding model và wizard đòi TTY. Test chạy qua **code thật của SDK** trên stub transport; nội dung response thật vẫn chưa được kiểm chứng |
-| **OI-11** | `AnthropicProvider` **chưa chạy với API thật** | Không có `ANTHROPIC_API_KEY`. Payload giờ được assert offline theo tài liệu hiện hành của Anthropic (AC-56/57) — chính việc đó bắt được 3 tuyên bố sai ở vòng 38. **Cái nó không bắt được:** một tham số mà tài liệu mô tả khác với hành vi thật của endpoint. Một lần gọi thật là đóng |
-| ~~—~~ | ~~mypy / ruff chưa từng chạy~~ — **ĐÃ ĐÓNG (vòng 39)** | Chạy rồi: 162 lỗi ruff, 112 lỗi mypy. Quan trọng nhất không phải con số: **không người dùng nào của thư viện này có type checking trên `Money`, `Usage`, `Result`**, và `agent.name` bị báo là không tồn tại. Đã sửa; cả hai giờ là cổng CI (AC-62/63/64) |
+| **SC-1b** | Not yet measured with **real 10-12 year old children** | Needs real people. [`docs/16-sc1b-field-kit.md`](docs/16-sc1b-field-kit.md) is a runnable kit, but the council **does not consider §IV met** until that measurement happens |
+| **OI-10** | The OpenViking binding **has never run against a real server** | The server needs an embedding model and a wizard that requires a TTY. The tests run through **the SDK's real code** over a stub transport; the real response content is still unverified |
+| **OI-11** | `AnthropicProvider` **has never run against the real API** | No `ANTHROPIC_API_KEY`. The payload is now asserted offline against Anthropic's current documentation (AC-56/57) — that alone caught 3 false claims in Round 38. **What it can't catch:** a parameter the docs describe differently than the endpoint actually behaves. One real call would close this |
+| ~~—~~ | ~~mypy / ruff had never been run~~ — **CLOSED (Round 39)** | Run now: 162 ruff errors, 112 mypy errors. The number matters less than this: **no user of this library had type checking on `Money`, `Usage`, `Result`**, and `agent.name` was reported as not existing. Fixed; both are now CI gates (AC-62/63/64) |
 
 ---
 
-## XX. Bài học mà chính yêu cầu của chủ dự án tạo ra
+## XX. Lessons the project owner's own requirements produced
 
-Ghi lại vì chúng là kết quả trực tiếp của việc mục VI bắt hội đồng phải tự phản biện.
+Recorded because they are a direct result of §VI forcing the council to challenge itself.
 
-**23 vòng đọc–review** tìm ra 20 lỗi và **0 lỗi bảo mật**.
-**16 vòng xây thật** tìm ra hơn 38 lỗi, **4 lỗi bảo mật**, và **12+ tính năng đã đặc tả
-nhưng chưa bao giờ được viết** — kể cả model provider.
+**23 read-and-review rounds** found 20 bugs and **0 security bugs**.
+**16 real-build rounds** found more than 38 bugs, **4 security bugs**, and **12+ features
+that were specified but never actually written** — including the model provider.
 
-> **Đọc không tìm ra được thứ chỉ có chạy mới tìm ra.**
+> **Reading alone cannot find what only running can find.**
 
-Hội đồng đã **tuyên bố hội tụ sai hai lần** (vòng 12 với gate 16/16, vòng 23 với "phát
-hiện đang giảm dần"). Mục XII của chủ dự án — *"không kết thúc vì hội đồng đã đồng ý"* —
-là thứ duy nhất ngăn cả hai lần đó trở thành điểm dừng.
+The council **declared convergence incorrectly twice** (Round 12 with a 16/16 gate,
+Round 23 with "findings are tapering off"). The project owner's §XII — *"do not stop
+because the council agreed"* — is the only thing that kept both of those from becoming a
+stopping point.
 
-Ba lỗi tái phát đúng lớp đã từng sửa (vòng 25 → 35, vòng 27 → 35, vòng 34 → 35 → 37):
+Three bugs recurred in a class already fixed once before (Round 25 → 35, Round 27 → 35,
+Round 34 → 35 → 37):
 
-> **Một lớp lỗi đã được đặt tên và sửa ở implementation này không có nghĩa là đã sửa ở
-> implementation kế tiếp.**
+> **A failure class that was named and fixed in this implementation does not mean it's
+> fixed in the next one.**
 
-Và bài học vòng 37, do chính việc viết tài liệu tìm ra:
+And the Round 37 lesson, found only by writing the documentation itself:
 
-> **Một bộ test phủ hết mọi luật vẫn có thể bỏ sót hình dạng sử dụng.**
-> Mọi kịch bản graph đều chỉ `invoke()` đúng một lần, nên multi-turn chưa bao giờ chạy được
-> mà không ai biết.
+> **A test suite that covers every rule can still miss a usage shape.**
+> Every graph scenario called `invoke()` exactly once, so multi-turn had never actually
+> worked, and nobody knew.
 
 ---
 
-*Bản ghi này được cập nhật khi chủ dự án bổ sung hoặc thay đổi yêu cầu.*
+*This record is updated whenever the project owner adds or changes a requirement.*

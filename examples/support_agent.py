@@ -1,9 +1,10 @@
-"""Trợ lý chăm sóc khách hàng — một agent đa chức năng.
+"""Customer support assistant — a multi-capability agent.
 
-Chạy:  python3 examples/support_agent.py
+Run:  python3 examples/support_agent.py
 
-Ví dụ này dùng FakeModel (không cần API key, không tốn tiền). Để chạy thật, xoá
-`provider=...` và chạy `harness setup` trước — Agent sẽ tự dùng AnthropicProvider.
+This example uses FakeModel (no API key needed, costs nothing). To run for real,
+remove `provider=...` and run `harness setup` first — the Agent will use
+AnthropicProvider on its own.
 """
 from __future__ import annotations
 
@@ -18,158 +19,160 @@ from harness import Agent, Secret, tool
 from harness.memory import SqliteStore
 from harness.tools.calc import calculate
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. Dữ liệu giả lập  (thật ra là DB / API của bạn)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# 1. Mock data (in reality, your DB / API)
+# -----------------------------------------------------------------------------
 ORDERS = {
-    "A-4471": {"khach": "Lan",  "mon": "Bàn phím cơ", "gia": 1_290_000,
-               "trang_thai": "đã giao", "ngay_giao": "2026-08-20"},
-    "A-4472": {"khach": "Minh", "mon": "Chuột không dây", "gia": 450_000,
-               "trang_thai": "đang giao", "ngay_giao": None},
+    "A-4471": {"customer": "Lan",  "item": "Mechanical keyboard", "price": 1_290_000,
+               "status": "delivered", "shipped": "2026-08-20"},
+    "A-4472": {"customer": "Minh", "item": "Wireless mouse", "price": 450_000,
+               "status": "in transit", "shipped": None},
 }
 DB = SqliteStore(Path(tempfile.mkdtemp()) / "notes.db", agent="support")
 API_KEY = Secret("sk-live-PAYMENTS-abc123", name="payment_key")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. Công cụ — mỗi cái khai báo nó làm gì với thế giới
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# 2. Tools — each declares what it does to the world
+# -----------------------------------------------------------------------------
 
-@tool(effect="read")                       # chỉ nhìn → chạy song song, tự động cho phép
-def tim_don_hang(ma_don: str) -> dict:
-    """Tra cứu một đơn hàng theo mã."""
-    return ORDERS.get(ma_don, {"loi": f"không có đơn {ma_don}"})
+@tool(effect="read")                       # only looks -> runs in parallel, auto-allowed
+def find_order(order_id: str) -> dict:
+    """Look up an order by id."""
+    return ORDERS.get(order_id, {"error": f"no such order {order_id}"})
 
 
 @tool(effect="read")
-async def doc_ghi_chu(tu_khoa: str) -> str:
-    """Đọc lại các ghi chú đã lưu về một khách hàng."""
-    hits = await DB.search(tu_khoa, limit=3)
-    return "\n".join(f"- {m.key}: {m.value}" for m in hits) or "chưa có ghi chú nào"
+async def read_notes(keyword: str) -> str:
+    """Read back saved notes about a customer."""
+    hits = await DB.search(keyword, limit=3)
+    return "\n".join(f"- {m.key}: {m.value}" for m in hits) or "no notes yet"
 
 
-@tool(effect="write")                      # sửa được → chạy tuần tự, không tự retry
-async def luu_ghi_chu(ma_don: str, noi_dung: str) -> str:
-    """Lưu một ghi chú về đơn hàng để lần sau đọc lại."""
-    await DB.put(f"don_{ma_don}", noi_dung)
-    return f"đã lưu ghi chú cho {ma_don}"
+@tool(effect="write")                      # changes something -> runs sequentially, no auto-retry
+async def save_note(order_id: str, note: str) -> str:
+    """Save a note about an order for later reading."""
+    await DB.put(f"order_{order_id}", note)
+    return f"note saved for {order_id}"
 
 
-@tool(effect="danger")                     # không undo được → LUÔN hỏi trước khi chạy
-def hoan_tien(ma_don: str, so_tien: int) -> str:
-    """Hoàn tiền cho khách. Không thể huỷ sau khi đã chạy."""
-    with API_KEY.reveal() as key:          # bí mật chỉ mở trong khối này
-        _ = key                            # gọi cổng thanh toán ở đây
-    return f"đã hoàn {so_tien:,}đ cho đơn {ma_don}"
+@tool(effect="danger")                     # can't undo -> ALWAYS asks before running
+def refund(order_id: str, amount: int) -> str:
+    """Refund the customer. Cannot be undone once it runs."""
+    with API_KEY.reveal() as key:          # the secret is only open inside this block
+        _ = key                            # call the payment gateway here
+    return f"refunded {amount:,} for order {order_id}"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 3. Người phê duyệt — mọi tool `danger` đều đi qua đây
-# ─────────────────────────────────────────────────────────────────────────────
-def hoi_y_kien(call, ctx) -> bool:
-    print(f"    ⚠  Xin phép chạy {call.name}({dict(call.arguments)})")
-    ok = int(call.arguments.get("so_tien", 0)) <= 1_000_000     # tự động duyệt dưới 1tr
-    print(f"    {'✓ đồng ý' if ok else '✗ từ chối — vượt hạn mức'}")
+# -----------------------------------------------------------------------------
+# 3. The approver — every `danger` tool goes through here
+# -----------------------------------------------------------------------------
+def ask_approval(call, ctx) -> bool:
+    print(f"    !  requesting permission to run {call.name}({dict(call.arguments)})")
+    ok = int(call.arguments.get("amount", 0)) <= 1_000_000     # auto-approve under 1M
+    print(f"    {'-> approved' if ok else '-> declined -- over the limit'}")
     return ok
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4. Subagent — việc đọc nhiều giao cho model rẻ, ngân sách riêng
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# 4. Subagent — bulk reading handed to a cheap model, its own budget
+# -----------------------------------------------------------------------------
 @tool(effect="read")
-def doc_chinh_sach(muc: str) -> str:
-    """Đọc một mục trong chính sách đổi trả."""
-    return ("Đổi trả trong 7 ngày kể từ ngày giao. Hàng phải còn nguyên hộp. "
-            "Hoàn tiền tối đa 100% giá trị đơn.")
+def read_policy(section: str) -> str:
+    """Read a section of the return policy."""
+    return ("Returns accepted within 7 days of delivery. Item must be unopened. "
+            "Refund up to 100% of the order value.")
 
 
-chuyen_gia_chinh_sach = Agent(
-    name="Chuyên gia chính sách",
-    job="Đọc chính sách và trả lời ngắn gọn, chỉ dựa trên văn bản.",
-    tools=[doc_chinh_sach],
-    model="claude-haiku-4-5",              # model rẻ cho việc đọc
+policy_expert = Agent(
+    name="Policy Expert",
+    job="Read the policy and answer briefly, based only on the text.",
+    tools=[read_policy],
+    model="claude-haiku-4-5",              # a cheap model for reading
     budget="$0.01",
 )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 5. Kiểu dữ liệu trả về — câu trả lời được kiểm tra, không phải chuỗi
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# 5. The return type — a checked answer, not a bare string
+# -----------------------------------------------------------------------------
 @dataclasses.dataclass
-class KetLuan:
-    ma_don: str
-    duoc_hoan_tien: bool
-    so_tien: int
-    ly_do: str
+class Conclusion:
+    order_id: str
+    refund_approved: bool
+    amount: int
+    reason: str
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 6. Agent chính
-# ─────────────────────────────────────────────────────────────────────────────
-def tao_agent(provider=None, transcript=None) -> Agent:
+# -----------------------------------------------------------------------------
+# 6. The main agent
+# -----------------------------------------------------------------------------
+def make_agent(provider=None, transcript=None) -> Agent:
     return Agent(
-        name="Trợ lý CSKH",
+        name="Support Assistant",
         job=(
-            "Giúp khách hàng về đơn hàng. Luôn tra cứu đơn trước khi trả lời. "
-            "Kiểm tra chính sách đổi trả trước khi hoàn tiền. "
-            "Không bao giờ đoán trạng thái đơn hàng."
+            "Help customers with their orders. Always look up the order before "
+            "answering. Check the return policy before issuing a refund. "
+            "Never guess an order's status."
         ),
         tools=[
-            tim_don_hang,
-            doc_ghi_chu,
-            luu_ghi_chu,
-            calculate,                              # tool có sẵn
-            chuyen_gia_chinh_sach.as_tool(),        # subagent thành một tool
-            hoan_tien,
+            find_order,
+            read_notes,
+            save_note,
+            calculate,                              # a built-in tool
+            policy_expert.as_tool(),                # a subagent turned into a tool
+            refund,
         ],
-        returns=KetLuan,                            # câu trả lời có kiểu, được validate
-        budget="$0.20, 15 steps, 2m",               # trần cứng, kiểm tra TRƯỚC mỗi lần gọi
-        approve=hoi_y_kien,                         # mọi `danger` phải qua đây
-        transcript=transcript,                      # ghi lại mọi quyết định
+        returns=Conclusion,                          # a typed, validated answer
+        budget="$0.20, 15 steps, 2m",                # a hard ceiling, checked BEFORE every call
+        approve=ask_approval,                        # every `danger` call goes through this
+        transcript=transcript,                       # records every decision
         provider=provider,
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 7. Chạy
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# 7. Run
+# -----------------------------------------------------------------------------
 def main() -> None:
     from harness.models.fake import FakeModel
 
-    kich_ban = FakeModel([
-        FakeModel.tool_call("tim_don_hang", {"ma_don": "A-4471"}, call_id="c1"),
-        FakeModel.tool_call("ask_chuyen_gia_chinh_sach",
-                            {"task": "Đơn giao 20/08 còn được đổi trả không?"}, call_id="c2"),
+    script = FakeModel([
+        FakeModel.tool_call("find_order", {"order_id": "A-4471"}, call_id="c1"),
+        FakeModel.tool_call("ask_policy_expert",
+                            {"task": "Is an order delivered on 08/20 still returnable?"},
+                            call_id="c2"),
         FakeModel.tool_call("calculate", {"expression": "1290000 * 1.0"}, call_id="c3"),
-        FakeModel.tool_call("hoan_tien", {"ma_don": "A-4471", "so_tien": 1290000}, call_id="c4"),
-        FakeModel.tool_call("luu_ghi_chu",
-                            {"ma_don": "A-4471", "noi_dung": "Đã hoàn tiền đầy đủ"}, call_id="c5"),
-        # Với returns=KetLuan, model trả về JSON đúng kiểu — harness kiểm tra và dựng lại
-        FakeModel.text('{"ma_don": "A-4471", "duoc_hoan_tien": true, '
-                       '"so_tien": 1290000, "ly_do": "Còn trong hạn đổi trả 7 ngày"}'),
+        FakeModel.tool_call("refund", {"order_id": "A-4471", "amount": 1290000}, call_id="c4"),
+        FakeModel.tool_call("save_note",
+                            {"order_id": "A-4471", "note": "Refunded in full"}, call_id="c5"),
+        # With returns=Conclusion, the model returns JSON of the right shape -- the
+        # harness validates it and rebuilds the dataclass.
+        FakeModel.text('{"order_id": "A-4471", "refund_approved": true, '
+                       '"amount": 1290000, "reason": "Still within the 7-day return window"}'),
     ])
 
     ts = Path(tempfile.mkdtemp()) / "run.jsonl"
-    agent = tao_agent(provider=kich_ban, transcript=ts)
+    agent = make_agent(provider=script, transcript=ts)
 
-    print("Công cụ và mức ảnh hưởng đã khai báo:")
+    print("Declared tools and their effect classes:")
     for t in agent.toolset:
         print(f"  {t.name:28} {t.effect.value}")
 
-    print("\nChạy:")
-    kq = agent.try_run("Đơn A-4471 giao hôm 20/08 bị lỗi phím, tôi muốn hoàn tiền.")
+    print("\nRunning:")
+    r = agent.try_run("Order A-4471, delivered 08/20, has a broken key -- I want a refund.")
 
-    print(f"\nTrả lời (có kiểu) : {kq.value}")
-    print(f"  .duoc_hoan_tien  : {kq.value.duoc_hoan_tien if kq.value else '—'}")
-    print(f"  .so_tien         : {kq.value.so_tien:,}đ" if kq.value else "")
-    print(f"Kết thúc: {kq.stop_reason.value}  ·  {kq.steps} bước  ·  {kq.cost}")
+    print(f"\nTyped answer      : {r.value}")
+    print(f"  .refund_approved : {r.value.refund_approved if r.value else '-'}")
+    print(f"  .amount          : {r.value.amount:,}" if r.value else "")
+    print(f"Stopped: {r.stop_reason.value}  .  {r.steps} steps  .  {r.cost}")
 
-    print("\nNhật ký (mọi quyết định đều được ghi):")
+    print("\nLog (every decision is recorded):")
     from harness.observe.transcript import read
     for e in read(ts):
         if e["kind"] == "policy.decided":
-            print(f"  {e['data']['tool']:28} → {e['data']['verdict']}")
+            print(f"  {e['data']['tool']:28} -> {e['data']['verdict']}")
 
-    print("\nBí mật KHÔNG lọt vào nhật ký:",
+    print("\nSecret does NOT leak into the log:",
           "sk-live-PAYMENTS" not in ts.read_text())
 
 

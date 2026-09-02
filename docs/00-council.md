@@ -1658,10 +1658,10 @@ reachable. That is a reachability proof over the real execution structure — it
 paths no test walks, which the AST tests over our own source never could.
 
 ```
-node             : ['budget', 'model', 'policy', 'approve', 'tools', 'finish']
-vào 'model' từ   : ['budget']
-vào 'tools' từ   : ['approve', 'policy']
-cổng bị đi vòng  : KHÔNG
+nodes            : ['budget', 'model', 'policy', 'approve', 'tools', 'finish']
+into 'model' from: ['budget']
+into 'tools' from: ['approve', 'policy']
+gate bypassed    : NO
 ```
 
 **H35.1 — The port reintroduced RT-13: a per-request secret reached the model in
@@ -2071,105 +2071,113 @@ completeness it does not have. The parity suite is what keeps the shared rows ho
 
 ---
 
-### Round 42 — Đối chiếu với nghiên cứu hợp nhất về framework và harness
+### Round 42 — Checked against an outside study of frameworks and harnesses
 
-Người dùng đưa vào một nghiên cứu độc lập: 12 framework, 9 harness, ma trận 10 tiêu chí có
-trọng số, và một phụ lục API với 5 anti-pattern. Hội đồng dùng nó như **một bài kiểm tra
-từ bên ngoài** — cái mà 41 vòng vừa qua không có, vì mọi tiêu chí trước đều do chính người
-dùng hoặc chính hội đồng đặt ra.
+The user brought in an independent study: 12 frameworks, 9 harnesses, a weighted 10-criterion
+matrix, and an API appendix with 5 anti-patterns. The council used it as **an external
+exam** — something the previous 41 rounds lacked, since every criterion up to that point
+had been set by the user or the council itself.
 
-**Tự chấm theo đúng ma trận của nghiên cứu: 67.8/100.** Để tham chiếu, nghiên cứu chấm
-LangGraph 89.4, Goose 83.5, Pi 76.8. Con số không so sánh trực tiếp được (khác người
-chấm, và họ chấm dự án đã trưởng thành) — **giá trị nằm ở hình dạng**: mạnh ở Safety 4/5,
-Cost 4/5, Testability 4/5, DX 4/5; yếu ở Integration 2/5, Performance 2/5,
+**Self-scored on the study's own matrix: 67.8/100.** For reference, the study scored
+LangGraph 89.4, Goose 83.5, Pi 76.8. The numbers aren't directly comparable (different
+grader, and those are mature projects) — **the value is in the shape**: strong on Safety
+4/5, Cost 4/5, Testability 4/5, DX 4/5; weak on Integration 2/5, Performance 2/5,
 Observability 3/5, Reliability 3/5.
 
-**H42.1 — Nghiên cứu chỉ đúng một chỗ hội đồng đã lảng tránh.** [§01.5](01-requirements.md)
-xếp sandbox vào non-goal, lập luận rằng cách ly thật cần process/WASM và đó là một sản
-phẩm khác. Nghiên cứu bác lại ở mức nguyên tắc, và bác đúng: *"approval không đồng nghĩa
-sandbox"* là nhận xét của nó về Cline, và **harness mắc đúng lỗi đó**. Isolation là một
-trong tám lớp Poka-Yoke; harness có bảy, không có lớp này. Không thể đóng gói container
-vào một thư viện — nhưng ba việc thư viện làm được thì đã không làm: workspace root,
-egress **mặc định chặn** (hiện `allowed_hosts=None` nghĩa là cho tất cả), và một seam để
-cắm sandbox thật. R-24, chấm 20.
+**H42.1 — The study was right about exactly the one thing the council had dodged.**
+[§01.5](01-requirements.md) puts sandboxing in non-goals, arguing that real isolation
+needs a process/WASM boundary and that's a different product. The study pushed back on
+principle, and was right to: *"approval is not isolation"* is its remark about Cline, and
+**this harness makes exactly that mistake**. Isolation is one of eight Poka-Yoke layers;
+the harness has seven, missing this one. A library can't ship a container — but three
+things a library *can* do were left undone: a workspace root, egress **deny-by-default**
+(currently `allowed_hosts=None` means allow-all), and a seam to plug in a real sandbox.
+R-24, scored 20.
 
-**H42.2 — `CancelledError` bị nuốt.** Đo được: `t.cancel()` rồi `await t` trả về
-`Result(stop_reason="cancelled")` thay vì raise. Phần side effect thì **đúng** — tool bị
-huỷ thật, không chạy ngầm — nên đây là lỗi giao thức chứ không phải lỗ hổng: một
-`TaskGroup` hay `asyncio.wait_for` bao ngoài sẽ không thấy việc huỷ đã xảy ra. `try_run()`
-trả về `Result` là thiết kế (IDL-11), nhưng **huỷ không phải một stop reason bình thường,
-nó là tín hiệu điều khiển.**
+**H42.2 — `CancelledError` was swallowed.** Measured: `t.cancel()` then `await t` returns
+`Result(stop_reason="cancelled")` instead of raising. The side-effect part is **correct**
+— the tool really is cancelled, nothing keeps running in the background — so this is a
+protocol defect, not a vulnerability: an outer `TaskGroup` or `asyncio.wait_for` never
+sees that the cancellation happened. `try_run()` returning a `Result` is by design
+(IDL-11), but **cancellation is not an ordinary stop reason — it's a control signal.**
 
-**H42.3 — Không có idempotency key.** Anti-pattern 3 của nghiên cứu, và OWASP xếp
-duplicate-action thành rủi ro riêng. [§05.3](05-data-and-state.md) từ chối *tự* chạy lại
-`write`/`danger` khi resume, và hội đồng đã coi thế là đủ — không đủ: một client timeout
-rồi gọi lại vẫn gửi email lần hai, vì không có gì nhận ra đó là cùng một lời gọi. R-25.
+**H42.3 — No idempotency key.** The study's anti-pattern 3, and OWASP lists duplicate-action
+as its own risk category. [§05.3](05-data-and-state.md) refuses to *automatically* re-run
+`write`/`danger` on resume, and the council had considered that sufficient — it isn't: a
+client that times out and calls again still sends the email a second time, because nothing
+recognizes it as the same call. R-25.
 
-**H42.4 — Envelope thiếu trường truy vết.** `Event` có `seq, ts, run_id, kind, step, data`;
-nghiên cứu đòi thêm `schema_version`, `trace_id`, `tenant_id`. Không có version thì không
-đổi được taxonomy mà không phá exporter của người khác — và taxonomy đã đổi hai lần
-(vòng 27, vòng 35).
+**H42.4 — The envelope is missing trace fields.** `Event` has `seq, ts, run_id, kind, step,
+data`; the study asks for `schema_version`, `trace_id`, `tenant_id` as well. Without a
+version, the taxonomy can't change without breaking someone else's exporter — and the
+taxonomy has already changed twice (round 27, round 35).
 
-### Điều nghiên cứu xác nhận là đúng
+### What the study confirmed was right
 
-Bảy trong tám lớp Poka-Yoke đã có, và nguyên tắc trung tâm của nghiên cứu —
-*"model được quyền **đề xuất** tool call, không được tự cấp quyền thực thi"* — chính là
-điều `unguarded_paths()` chứng minh bằng reachability (ADR-032). Ba trong năm anti-pattern
-API đã tránh được từ trước: `Result` không phải một chuỗi, state không phải final text,
-và ranh giới an toàn nằm ở policy engine chứ không ở transport.
+Seven of eight Poka-Yoke layers already exist, and the study's central principle —
+*"the model may **propose** a tool call, never grant itself permission to execute it"* —
+is exactly what `unguarded_paths()` proves by reachability (ADR-032). Three of the study's
+five API anti-patterns were already avoided beforehand: `Result` is not a bare string,
+state is not the final text, and the safety boundary lives in the policy engine rather
+than the transport.
 
-### Kế hoạch: [§17](17-research-alignment.md)
+### The plan: [§17](17-research-alignment.md)
 
-M6 Reliability → M7 Isolation → M8 Observability → M9 Integration → M10 Evaluation, xếp
-theo `trọng số × khoảng trống`. M6 trước vì idempotency là điều kiện tiên quyết cho retry,
-cho service API và cho contract "retry không nhân đôi side effect". M7 trước M9 vì mở MCP
-ra khi chưa có isolation là mở rộng bề mặt tấn công trước khi dựng tường.
+M6 Reliability → M7 Isolation → M8 Observability → M9 Integration → M10 Evaluation, ordered
+by `weight × gap`. M6 first because idempotency is a precondition for retry, for the
+service API, and for the contract "retry never duplicates a side effect." M7 before M9
+because opening up MCP before isolation exists widens the attack surface before the wall
+is built.
 
-**Và một ràng buộc tự áp lên kế hoạch.** Nghiên cứu cảnh báo *surface rộng* (LlamaIndex)
-và *operationally nặng* (OpenHands). Kế hoạch này thêm MCP, HTTP server, sandbox và eval —
-đúng những thứ làm thư viện phình. Core giữ nguyên 3 dependency và import dưới 100 ms;
-mọi thứ M7–M10 là `extra`; và phép thử plugin boundary áp cho từng seam mới. Mục nào không
-qua được phép thử đó thì không vào.
+**And one constraint the plan imposed on itself.** The study warns about *surface bloat*
+(LlamaIndex) and *heavy operational weight* (OpenHands). This plan adds MCP, an HTTP
+server, sandboxing, and eval — exactly the things that bloat a library. Core keeps its 3
+dependencies and sub-100ms import; everything in M7–M10 is an `extra`; and the plugin-
+boundary test applies to every new seam. Anything that fails that test doesn't get in.
 
 ---
 
-### Round 43 — Câu hỏi về API, và lỗi mà chính câu hỏi đó tìm ra
+### Round 43 — A question about the API, and the defect the question itself found
 
-Câu hỏi: *"phần API interface có cần thiết kế lại không?"* Trả lời bằng cách đo theo năm
-contract nghiên cứu tách ra, chứ không bằng ý kiến.
+The question: *"does the API interface need a redesign?"* Answered by measuring against
+the study's five separated contracts, not by opinion.
 
-**H43.1 — Dangling tool calls bị bỏ im lặng, và hội thoại lưu lại không hợp lệ.**
-Nghiên cứu nêu một chi tiết tinh vi về PydanticAI: *"final output có thể kết thúc run
-trước khi dangling tool calls được thực thi."* Đem đúng câu đó thử harness:
+**H43.1 — Dangling tool calls were silently dropped, and the saved conversation was
+invalid.** The study calls out a subtle detail about PydanticAI: *"the final output can
+end the run before dangling tool calls have executed."* Tried that exact claim against
+the harness:
 
 ```
-model trả: text + tool_use{ghi}  với stop_reason "end_turn"
-vòng lặp : completed · tool đã chạy []        ← bỏ im lặng
-           tool_use ['c1'] / tool_result []   ← VI PHẠM I-3
-graph    : tool đã chạy [1] · có ToolMessage  ← đúng
+model returns: text + tool_use{write}  with stop_reason "end_turn"
+loop     : completed · tools run []           ← silently dropped
+           tool_use ['c1'] / tool_result []   ← VIOLATES I-3
+graph    : tools run [1] · has ToolMessage    ← correct
 ```
 
-Hai lỗi trong một. Tool bị bỏ, **và** hội thoại giữ lại một `tool_use` không có
-`tool_result` — phát lại hội thoại đó cho provider là bị từ chối thẳng. Luật đã sửa:
-**tool call chạy vì nó CÓ MẶT, không vì provider dán nhãn `"tool_use"`.**
+Two defects in one. The tool was dropped, **and** the saved conversation kept a `tool_use`
+with no matching `tool_result` — replaying that conversation to the provider is rejected
+outright. The rule is fixed now: **a tool call runs because it IS PRESENT, not because the
+provider labeled the stop reason `"tool_use"`.**
 
-Điều đáng ghi nhất: **backend graph vốn đã đúng.** Sau bảy vòng liên tiếp graph là bên
-thua kém (H38.3, H41.1, và cả loạt trước), lần này vòng lặp mới là bên phải đuổi theo.
-Bảng parity không nói ai đúng — nó chỉ nói hai bên khác nhau, và lần này bên đúng là bên
-mới hơn.
+The most notable finding: **the graph backend was already correct.** After seven straight
+rounds where the graph was the losing side (H38.3, H41.1, and the run before them), this
+time it was the classic loop that had to catch up. The parity table doesn't say who's
+right — it only says the two sides differ, and this time the correct side was the newer one.
 
-**Trả lời câu hỏi: không thiết kế lại.** Contract 1 (invocation) và 2 (tool) là phần mạnh
-nhất của gói — không thư viện nào trong nghiên cứu suy ra **năm hành vi từ một phân loại
-`effect`**, và cả hai đang được §04.8 bảo hành. Contract 3 (event stream) và 4 (session)
-thì thiếu hẳn — nhưng thiếu không phải sai, và thêm chúng **không đổi một chữ ký nào đang
-có**: `Agent.stream()` là phương thức mới, `Session` là đối tượng mới. Phá contract 1–2 để
-"hiện đại hoá" là đổi thứ đã chứng minh lấy thứ chưa.
+**Answer to the question: no redesign.** Contract 1 (invocation) and 2 (tool) are the
+strongest part of the package — no library in the study derives **five behaviors from one
+`effect` classification**, and both are guarded by §04.8. Contract 3 (event stream) and 4
+(session) are genuinely missing — but missing is not wrong, and adding them **doesn't
+change a single existing signature**: `Agent.stream()` is a new method, `Session` is a new
+object. Breaking contracts 1–2 to "modernize" would trade something proven for something
+unproven.
 
-Cụ thể cần học ở đâu, ghi trong [§17.3.3](17-research-alignment.md): `run_stream_events`
-và dependency injection của PydanticAI, run-state-as-object của OpenAI Agents SDK, stream
-có version của LangGraph, session cách ly của Goose. Và một mục **cố ý không học**: bốn
-promise rời rạc của Mastra — `Result` gom một chỗ là quyết định, vì bốn thứ rời nhau dễ bị
-đọc thiếu một.
+Specifically what to learn where, recorded in [§17.3.3](17-research-alignment.md):
+PydanticAI's `run_stream_events` and dependency injection, the OpenAI Agents SDK's
+run-state-as-object, LangGraph's versioned stream, Goose's session isolation. And one item
+**deliberately not adopted**: Mastra's four separate promises — collapsing into one
+`Result` is a deliberate decision, because four separate things are easy to read
+incompletely.
 
 ---
 
@@ -2293,8 +2301,8 @@ with a 16/16 gate. They found:
 | **39** | **Every value type in the package was invisible to type checkers, so users got no checking on `Money`, `Usage`, `Result` — and `agent.name` was reported as not existing** | **A tool nobody has run is a claim, not a check — and its autofix is a change that needs testing like any other** |
 | **40** | **`examples/proof.py` — every requirement asserted in running code, validated by breaking the library and watching it fail** | **A proof that cannot fail is not a proof** |
 | **41** | **`as_tool()` was built, documented, and broken on the mandated backend — its error reached the model as a tool result; and the example's own state machine let the refund through** | **An example that demonstrates a control must be read as carefully as the control** |
-| **42** | **Một nghiên cứu bên ngoài chấm 67.8/100 và chỉ ra lớp Poka-Yoke duy nhất còn trống: Isolation — chỗ hội đồng đã tự cho phép mình lảng tránh** | **Tiêu chí do chính mình đặt ra không phát hiện được thứ mình đã quyết định không nhìn** |
-| **43** | **Dangling tool calls bị bỏ im lặng và hội thoại lưu lại vi phạm I-3 — tìm ra bằng cách đem một cảnh báo về thư viện KHÁC ra thử thư viện mình** | **Backend mới hơn không phải lúc nào cũng là bên sai; parity chỉ nói hai bên khác nhau** |
+| **42** | **An outside study scored 67.8/100 and named the one Poka-Yoke layer still missing: Isolation — the exact spot the council had let itself off the hook** | **A criterion you set for yourself doesn't catch what you already decided not to look at** |
+| **43** | **Dangling tool calls were silently dropped and the saved conversation violated I-3 — found by trying a warning about a DIFFERENT library against our own** | **A newer backend isn't always the wrong one; parity only says the two sides differ** |
 
 **Every one of these passed a prior review.** The five techniques that found them — multiply
 the numbers out, execute the contract, traverse types rather than tasks, count coverage per
