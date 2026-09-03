@@ -372,10 +372,27 @@ returned — the same "caught at construction" discipline the lethal-trifecta ch
 already applies, and the same shape `_check_subagent_safety` already enforces for a
 subagent ("more restricted than its parent, never less"). See ADR-073.
 
-No separate "already applied" bookkeeping exists for calling `with_profile()` twice with
-the same profile: one that adds tools under names it used before hits `ToolSet`'s
-ordinary duplicate-name guard (`DuplicateToolError`) on the second call — a mechanism
-that already exists and already fires, not a new one.
+**A second rule, added after the first shipped: at most one profile per agent, unless
+you say otherwise.** `CodingProfile()` then `ResearchProfile()` on the same `Agent`
+constructed with no error and no warning — measured, not hypothetical — producing a
+garbled system prompt (each profile rebuilds the whole prompt around its own template,
+so fragments of the first survive under the second) and a toolset unioning `search`/
+`fetch` (`external`) with `write_source`/`git_commit` (`write`): exactly the
+"reads the untrusted world, writes the codebase" combination `CodingProfile`'s own
+`ask_reader` subagent exists to keep separate. `_check_tool_set`'s lethal-trifecta
+refusal does not catch it (scoped to `external`+`danger`, not `external`+`write` — core's
+own settled scope, unchanged by this fix). `Agent.with_profile()` now refuses a SECOND
+call by default; `allow_multiple=True` is the explicit opt-in, the same shape
+`accepts_tainted=`/`allowed_hosts=None` already use elsewhere for a real but
+narrower-than-`danger` risk. It waives that one rule only — `ToolSet`'s duplicate-name
+guard and `_refuse_if_loosened`'s safety-knob check both still run underneath it.
+
+**`durable=True` — verified through construction only.** `with_profile()` mechanically
+works on the LangGraph backend too (a profile-wrapped `ToolSpec` constructs without
+error, `durable` survives `with_()`), but whether an actual RUN through the compiled
+graph invokes a wrapped tool function identically to the classic backend has never been
+observed — that needs a real model call, and none has happened in this codebase's
+history (OI-11). Treat the combination as untested past construction.
 
 ## 4. Choosing an effect
 

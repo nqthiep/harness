@@ -193,6 +193,25 @@ class DeepSeekProvider:
     """`ModelProvider` (`harness.models.base`) speaking DeepSeek's OpenAI-compatible
     `/chat/completions` endpoint. No inheritance — this satisfies the `Protocol`
     structurally, the same way `examples/proof.py`'s own second provider does.
+
+    **You own closing this — `ModelProvider` has no lifecycle hook.** Checked directly
+    against `models/base.py`: the `Protocol` declares `complete`/`price`/
+    `count_input_tokens`/`max_output` and nothing else — no `close`, no `__del__` call,
+    no `Agent`/`RunEngine` code path that would call one if it existed. `httpx.
+    AsyncClient` holds a real connection pool, so a `DeepSeekProvider()` an `Agent` is
+    handed and never explicitly closed leaks that pool for the life of the process —
+    real for a short script that exits anyway, real for a long-running service that
+    creates one per request and does not. Two ways to close it correctly:
+
+        async with DeepSeekProvider() as provider:      # preferred — closes on exit,
+            agent = Agent(..., provider=provider)        # including when run() raises
+            agent.run("...")
+
+        provider = DeepSeekProvider()                     # or, when an async-with block
+        try:                                               # doesn't fit the caller's
+            ...                                            # shape (e.g. a provider that
+        finally:                                            # outlives one Agent call)
+            await provider.aclose()
     """
     name = "deepseek"
 
@@ -261,3 +280,9 @@ class DeepSeekProvider:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    async def __aenter__(self) -> "DeepSeekProvider":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.aclose()

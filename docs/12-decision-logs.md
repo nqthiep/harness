@@ -2270,6 +2270,12 @@ duplicate-name guard (`DuplicateToolError`) on the second call, for free — the
 mechanism already existed and already fires; adding a second one would be exactly the
 "the same rule enforced two ways can drift" shape R-17 warns about.
 
+**Superseded in part by ADR-074.** This paragraph covered reapplying the SAME profile;
+composing two DIFFERENT profiles was untested, and turned out to be real and dangerous
+(a garbled prompt plus an unreviewed `external`+`write` tool union). ADR-074 adds the
+bookkeeping this paragraph argued against — read it for why the argument here turned
+out to be correct only for the narrower case it actually tested.
+
 **Test.** `tests/test_profile.py` — one test per knob `_refuse_if_loosened` reads
 (downgrading `safety`, expanding `accepts_tainted`, widening or removing
 `allowed_hosts`, turning off `require_approval_evidence`, raising `max_asks_per_run`,
@@ -2280,6 +2286,146 @@ never executed is not a control). Plus: `with_profile()` returns a new `Agent` a
 extends its toolset; a legitimate tightening (adding a policy, raising `safety`) is
 allowed; reapplying a tool-adding profile hits `DuplicateToolError`, not a bespoke
 error.
+
+---
+
+### ADR-074 — `Agent.with_profile()` refuses a second profile by default; `_profiles` bookkeeping added
+
+**Status:** Accepted. Supersedes ADR-073's "no new bookkeeping" argument for the case
+it did not actually test.
+
+**Context.** A systems-engineer-style review of the `Profile` mechanism (asked for
+explicitly, after ADR-073 shipped) tested a case none of that ADR's own tests covered:
+composing two DIFFERENT profiles on one `Agent`, rather than reapplying the SAME one.
+
+```python
+a = Agent(name="X", job="do the thing")
+a2 = a.with_profile(CodingProfile(root=root, tasks_db=...))
+a3 = a2.with_profile(ResearchProfile())      # constructed. No error. No warning.
+```
+
+Two things were wrong with the result, both measured directly. First, the prompt: each
+profile's `apply()` rebuilds the WHOLE system prompt from its own template around
+`agent.job` (`CodingProfile`'s and `ResearchProfile`'s own `_system_prompt`/`_SYSTEM`),
+so the second profile's template wins, but with fragments of the first still present —
+`a3.job` read `"You are X, a research assistant... # Your task for this session / You
+are X, working in a single repository checkout at ... # Your task for this session / do
+the thing"`, two contradictory identity claims and a duplicated section header. Second,
+and worse: the resulting toolset unioned `search`/`fetch` (`ResearchProfile`,
+`effect="external"` — an untrusted-content source) with `write_source`/`edit_source`/
+`git_commit` (`CodingProfile`, `effect="write"` — a code-mutation sink). That is exactly
+the "reads the untrusted world, writes the codebase" combination
+`CODING_AGENT_BLUEPRINT.md §3` and `CodingProfile`'s own `ask_reader` subagent
+(`§06.4`, least privilege) exist to keep on two SEPARATE agents.
+
+`_check_tool_set`'s lethal-trifecta refusal (`agent.py`) does not catch this: it is
+scoped to `external`+`danger`, not `external`+`write` — `write` is treated as reversible
+throughout this library (`git reset` undoes a bad `write_source`/`git_commit`,
+`design/02-safety-engine.md §4.1`), and that is core's own settled scope, unchanged by
+anything below. `Agent(tools=[search, write_source])` raised nothing before this ADR
+either, and still doesn't — constructing that combination directly has always been
+possible. What composing two profiles changed is not the underlying rule; it made
+hitting that combination BY ACCIDENT trivial and invisible: `.with_profile(a)
+.with_profile(b)` reads as safe composition, the same way `with_middleware(agent, x, y)`
+composing two middlewares is safe by construction (§3.6's own "can only add restriction
+or observation" guarantee) — except `Profile` never had that guarantee for the
+tool-union case, only for the single-agent safety-knob case ADR-073 checked.
+
+**Decision.** `Agent` gains `_profiles: tuple[str, ...]` (`__slots__`/`__init__`/
+`with_()` — a new, small, ordinary field, not a workaround built on an existing
+mechanism the way ADR-073 chose). `with_profile()` checks it first, before calling
+`profile.apply()` at all: if any profile has already been applied and the caller did
+not pass `allow_multiple=True`, it raises `ConfigError` naming the already-applied
+profile and the exact fix. `allow_multiple=True` is the explicit, visible opt-in this
+library asks for everywhere else a real but narrower-than-`danger` risk exists
+(`accepts_tainted=`, `allowed_hosts=None` — ADR-032/T-7.2) — it waives ONLY the
+one-profile rule; `_refuse_if_loosened` (safety knobs) and `ToolSet`'s duplicate-name
+guard (same-profile reapplication) both still run underneath it, unchanged.
+
+Not fixed by widening `_check_tool_set` to cover `external`+`write`: that is a change to
+what core considers safe by default, affecting every caller of `Agent(...)` directly —
+not something a profile-layer finding should decide unilaterally, and the library's own
+`write`-is-reversible reasoning is a deliberate, cited position, not an oversight this
+finding contradicts. The fix is scoped to what profiles specifically made worse: the
+ACCIDENT rate of hitting a combination that was always constructible on purpose.
+
+**Test.** `tests/test_profile.py::WithProfileRefusesASecondOne` — a second, different
+profile refused by default; the same profile reapplied also refused by default (not
+just left to `DuplicateToolError`, which now never gets a chance to fire until
+`allow_multiple=True` is passed); the specific `external`+`write` union reproduced
+directly with the guard bypassed, confirming the guard is what stood between a caller
+and it, not some other mechanism; `allow_multiple=True` permitting composition and
+recording both names in `_profiles`; and that `allow_multiple=True` still hits both
+`DuplicateToolError` (same profile) and `ProfileLoosenedSafetyError` (a knob loosened)
+— the escape hatch waives one rule, not all three.
+
+---
+
+### ADR-075 — `ShellCommandPolicy` gains `mode="allowlist"`; denylist mode's threat model stated honestly
+
+**Status:** Accepted.
+
+**Context.** The same review asked whether `ShellCommandPolicy` (`examples/
+shell_tools.py`, ADR unlogged at the time — it shipped as part of the shell/findings
+work without its own decision-log entry) was actually hard to bypass. It tested six
+deliberate evasions against the default denylist patterns:
+
+```
+ALLOW  rm ${IFS}-rf${IFS}/tmp/x              ($IFS instead of a literal space)
+ALLOW  r""m -rf /tmp/x                       (an empty quote inside the command name)
+ALLOW  a=rm; $a -rf /tmp/x                   (indirection through a shell variable)
+DENY   rm -rf /tmp/x #                       (the plain form — correctly caught)
+ALLOW  echo <base64 of "rm -rf /tmp/x"> | base64 -d | sh
+ALLOW  python3 -c "shutil.rmtree('/tmp/x')"  (deletion via a scripting API, not `rm`)
+```
+
+Five of six returned ALLOW at the time this was measured. (One of the five — the empty-
+quote case — was closed as a side effect of the SAME follow-up commit's unrelated fix to
+`_split_clauses`: real POSIX quote removal normalizes `r""m` to `rm` the way an actual
+shell would parse it, so the denylist's own `\brm\b` check started seeing it. Four of
+six stand; `tests/test_shell_tools.py::DenylistModeEvasionsThat` carries the current,
+accurate count, not this paragraph — read the test if the two ever disagree.) This is
+not a fixable regex gap either way — the space of ways to express "delete this" is not
+enumerable, and a pattern added to catch any one of the remaining four does not
+generalize to a fifth. `ShellCommandPolicy` runs on `run_command`/
+`run_shell`, `effect="write"` (auto-ALLOW under `safety="standard"` — the whole
+mechanism `shell_tools.py`'s own module docstring explains), so a denylist gap here
+means the agent ran the command with no human in the loop at all.
+
+**Decision.** State the real guarantee rather than imply a stronger one: denylist mode
+(unchanged default, backward-compatible) is documented as a net for a CONFUSED model,
+not a boundary against an adversarial or prompt-injected one — an operator combining
+`enable_shell=True` with any untrusted-content tool (`effect="external"`, an untrusted
+MCP server) is told to pair it with a real sandbox (`shell_sandbox=`), not trust this
+policy alone as isolation.
+
+Add `mode="allowlist"` as the fundamentally stronger alternative a denylist cannot be
+turned into by patching: `deny` still checked first (a named prohibition should win
+even inside an allowlist), then every `;`/`&&`/`||`/`|`-separated CLAUSE of the command
+must `re.fullmatch` something in `allow` or the call falls to ASK — never silently
+DENY, since an unrecognized command is unvetted, not proven malicious. Matching per
+clause with `fullmatch`, not `search` over the whole string, is load-bearing:
+`pytest -q && rm -rf /` contains the substring `pytest -q`, and a naive "does the
+command contain something safe-looking" check would let the whole line through on
+that strength alone. `DEFAULT_ALLOW` ships common read/build/test invocations across a
+handful of ecosystems (pytest/ruff/mypy, npm/yarn/pnpm, cargo, go, make) — narrow on
+purpose, extend rather than replace, the same convention `DEFAULT_DENY`/`DEFAULT_ASK`
+already use.
+
+**Test.** `tests/test_shell_tools.py::DenylistModeEvasionsThat` pins the measured gap
+down as a known, tested property of denylist mode (so a future change cannot silently
+imply a stronger guarantee than the mode actually gives) — plus its own separate test
+for the quote-splitting evasion that stopped being one, so the fix reads as understood
+rather than an unexplained change to the count. `AllowlistModeThat` proves the
+allowlist fix against the same evasions (falling to ASK where they match no
+`DEFAULT_ALLOW` pattern, or DENY where `_split_clauses`'s quote normalization now
+surfaces them to the denylist check first), the clause-smuggling case, denylist-still-
+wins composition inside allowlist mode, and both call shapes (`argv`/`cmd`) checked
+identically. `_split_clauses` (quote-aware, `shlex`-based, replacing a plain
+`re.split` on `;`/`&`/`|` that did not know about quoting) is its own fix, covered
+separately — see the commit introducing it for the correctness case it closes in
+`_check_allowlist` (a quoted `;` inside a benign command must not fragment it into
+clauses that spuriously fail to match `allow`).
 
 ---
 

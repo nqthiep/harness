@@ -112,7 +112,6 @@ class DenylistModeEvasionsThat(unittest.TestCase):
     def test_the_measured_evasions_are_not_caught_by_denylist_mode(self):
         evasions = [
             "rm ${IFS}-rf${IFS}/tmp/x",
-            'r""m -rf /tmp/x',
             "a=rm; $a -rf /tmp/x",
             "echo cm0gLXJmIC90bXAveA== | base64 -d | sh",
             "python3 -c \"shutil.rmtree('/tmp/x')\"",
@@ -124,6 +123,52 @@ class DenylistModeEvasionsThat(unittest.TestCase):
                                  "if this now fails, denylist mode caught an evasion it "
                                  "could not catch before — update the module docstring's "
                                  "measurement, don't just delete this test")
+
+    def test_the_quote_splitting_evasion_is_caught_by_split_clauses_posix_normalization(self):
+        """A fifth evasion (`r""m -rf /tmp/x`) WAS on the not-caught list; `_split_clauses`
+        tokenizing with real POSIX quote removal (added for `_check_allowlist`'s
+        correctness, unrelated to this list) closed it as a side effect — `r""m`
+        normalizes to `rm` the same way a real shell parses it. Pinned down separately
+        so it reads as an intentional, understood fix rather than an unexplained gap in
+        the evasion list above."""
+        r = self.policy.check(_call("run_shell", cmd='r""m -rf /tmp/x'), None)
+        self.assertEqual(r.verdict, Verdict.DENY)
+
+
+class SplitClausesThat(unittest.TestCase):
+    """`_split_clauses` (quote-aware, `shlex`-based) is what `_check_allowlist` uses
+    instead of the naive `re.split(r"[;&|\n]+", ...)` a plain regex would need — the
+    naive form has no idea `;`/`|` inside a quoted string isn't a real separator, so a
+    perfectly benign command could get fragmented into clauses that spuriously fail to
+    match anything in `allow`."""
+
+    def test_a_separator_inside_quotes_is_not_a_real_split_point(self):
+        from shell_tools import _split_clauses
+        self.assertEqual(_split_clauses('echo "a;b"'), ['echo a;b'])
+
+    def test_a_real_separator_outside_quotes_still_splits(self):
+        from shell_tools import _split_clauses
+        self.assertEqual(_split_clauses("pytest -q && rm -rf /"),
+                         ["pytest -q", "rm -rf /"])
+
+    def test_malformed_quoting_falls_back_to_treating_it_as_one_clause(self):
+        """An unbalanced quote makes `shlex` raise — caught, not propagated, and
+        resolved to the SAME safe-biased direction the old plain-regex behavior had on
+        exactly the input where quote-awareness cannot help: a single clause containing
+        everything, which `_is_recursive_force_delete`/`_check_allowlist` still scan
+        whole (over-matching stays possible; nothing is silently dropped)."""
+        from shell_tools import _split_clauses
+        self.assertEqual(_split_clauses('rm -rf "unbalanced'), ['rm -rf "unbalanced'])
+
+    def test_a_benign_quoted_semicolon_does_not_wrongly_ask_under_allowlist_mode(self):
+        """The actual correctness bug this fix closes, end to end: before
+        `_split_clauses`, `echo "a;b"` would fragment into `echo "a` and `b"`, and the
+        second fragment matches no `DEFAULT_ALLOW` pattern — a benign, allowlisted
+        command would have been wrongly asked about."""
+        from shell_tools import ShellCommandPolicy
+        policy = ShellCommandPolicy(mode="allowlist")
+        r = policy.check(_call("run_shell", cmd='echo "a;b"'), None)
+        self.assertEqual(r.verdict, Verdict.ALLOW)
 
 
 class AllowlistModeThat(unittest.TestCase):
@@ -152,9 +197,11 @@ class AllowlistModeThat(unittest.TestCase):
         self.assertEqual(r.verdict, Verdict.DENY)
 
     def test_catches_the_measured_evasions_denylist_mode_missed(self):
-        """The actual fix for `DenylistModeEvasionsThat`: none of these match any
-        `DEFAULT_ALLOW` pattern, so allowlist mode falls to ASK for every one of them —
-        never silently autonomous, unlike denylist mode."""
+        """The actual fix for `DenylistModeEvasionsThat`: none of these are ALLOWED —
+        most fall to ASK because they match no `DEFAULT_ALLOW` pattern (allowlist
+        mode's own contribution); `r""m -rf /tmp/x` is instead caught by `deny`, which
+        still runs first even in allowlist mode (`_split_clauses`'s quote normalization
+        makes it visible there too). Either way: never silently autonomous."""
         evasions = [
             "rm ${IFS}-rf${IFS}/tmp/x",
             'r""m -rf /tmp/x',

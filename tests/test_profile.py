@@ -267,5 +267,19 @@ class _Loosens(unittest.TestCase):
         self.assertIn("policies", msg)
 
 
+class WithProfileOnDurableBackend(unittest.TestCase):
+    """`profile.py`'s own docstring is explicit about the boundary of what this proves:
+    CONSTRUCTION on the `durable=True` code path, nothing about an actual RUN through
+    the compiled LangGraph graph — that needs a real model call this codebase has never
+    made (OI-11). Keep this test narrow to match: it pins down exactly what is
+    verified, not more.
+    """
+
+    def test_with_profile_constructs_on_a_durable_agent(self):
+        out = Agent(name="A", job="hi", durable=True).with_profile(_AddsAReadTool())
+        self.assertTrue(out.durable)
+        self.assertEqual({t.name for t in out.toolset}, {"ping"})
+
+
 if __name__ == "__main__":
     unittest.main()

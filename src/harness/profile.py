@@ -14,10 +14,24 @@ A `Profile` is not a place for `danger` tools, transport connections, or anythin
 async lifecycle — `Agent.with_profile()` is sync, matching the rest of Level 0-2's API
 (`docs/03-public-api.md §2`), and `apply()` runs at construction time alongside every
 other check `Agent.__init__` already makes (the cache-determinism linter, the
-lethal-trifecta refusal, `ToolSet`'s duplicate-name guard). A profile that adds tools
-under names it has used before will hit that last guard on a second `with_profile()`
-call with the same profile — there is no separate "already applied" bookkeeping here
-because that mechanism already exists and already fires.
+lethal-trifecta refusal, `ToolSet`'s duplicate-name guard).
+
+`Agent.with_profile()` also refuses a SECOND `.with_profile()` call by default (measured,
+not hypothetical — its own docstring has the finding: composing two profiles unions their
+tools with no review, which is how "reads the untrusted world" and "writes the codebase"
+tools ended up on one agent with nothing catching it). `allow_multiple=True` is the
+explicit opt-in past that refusal.
+
+**Verified only through construction on the LangGraph backend (`durable=True`).**
+`with_profile()` mechanically works there too — `Agent(**base)` accepts `durable=True`
+regardless of which code path called it, and a profile-wrapped `ToolSpec`
+(`dataclasses.replace(spec, fn=...)`, the composition `with_verification`/
+`with_smart_truncation` both use) constructs without error. What that does NOT confirm:
+whether an actual RUN through `harness.lg.build_agent()`'s compiled graph invokes those
+wrapped functions identically to the classic backend — that would need a real model call
+to observe, and none has happened yet in this codebase's history (OI-11,
+`design/07-risks-and-open-issues.md`). Treat `Profile` + `durable=True` as untested past
+construction, not as confirmed working, until that run happens.
 """
 from __future__ import annotations
 
