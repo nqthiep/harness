@@ -426,16 +426,33 @@ class CodingProfile:
         tasks = TaskLedger(SqliteStore(self.tasks_db))
         verifier = Verifier(root, self.verify_commands, sandbox=sandbox, env=code.env)
 
+        # `run_tests`/`git_diff` keep the library's default `max_result_tokens=4_000`
+        # (`tools/__init__.py`) and `dispatch.py::truncate()`'s HEAD-only cut — measured
+        # directly against this repository's own `pytest -v` output (500 passing tests
+        # plus one real failure, 41,085 chars): the kept head is 195 lines of `PASSED`,
+        # and the `FAILURES` section — the one thing `run_tests` exists to show — is
+        # entirely past the cut. `smart_truncate()` keeps both ends instead of just the
+        # head (`output_shaping.py`'s own docstring has the full measurement); applied
+        # here, not in `dispatch.py`, because head-only truncation is still the right
+        # default for `read_source`/`search_code`, and wrong specifically for a log
+        # whose payoff is conventionally at the tail.
+        from output_shaping import with_smart_truncation
+        code_tools = with_smart_truncation(code.tools(), tools=("run_tests", "git_diff"))
+
         # Both OFF by default (see the fields' own docstrings for why) — imported here,
         # not at module level, so a caller who never sets enable_shell=True pays nothing
         # for shell_tools.py's ShellCommandPolicy regex compilation at import time.
         extra_tools: list[Any] = []
         extra_policies: list[Any] = []
         if self.enable_shell:
-            from shell_tools import ShellCommandPolicy, ShellTools
+            from shell_tools import SHELL_MAX_RESULT_TOKENS, ShellCommandPolicy, ShellTools
             shell_sandbox = self.shell_sandbox if self.shell_sandbox is not None else sandbox
             shell = ShellTools(str(root), sandbox=shell_sandbox, env=code.env)
-            extra_tools.extend(shell.tools())
+            # Arbitrary build/test commands have exactly the same "payoff at the tail"
+            # shape `run_tests` does — same fix, same reasoning.
+            extra_tools.extend(with_smart_truncation(
+                shell.tools(), tools=("run_command", "run_shell"),
+                max_tokens=SHELL_MAX_RESULT_TOKENS))
             extra_policies.append(self.shell_policy or ShellCommandPolicy())
         if self.enable_findings:
             from findings_log import FindingsLog
@@ -452,7 +469,7 @@ class CodingProfile:
                  "could not find something — a confident wrong answer costs more "
                  "than an admitted gap. Be brief: the agent asking you has a "
                  "context window to protect."),
-            tools=[t for t in code.tools() if t.effect.value == "read"],
+            tools=[t for t in code_tools if t.effect.value == "read"],
             model=self.reader_model,
             budget=self.reader_budget,
             provider=agent.provider,
@@ -462,7 +479,7 @@ class CodingProfile:
             job=_system_prompt(self, root, agent),
             # `agent.toolset` first: whatever the caller already put on `Agent(...)`
             # — including their own `danger` tools — is PRESERVED, never dropped.
-            tools=[*agent.toolset, *with_verification(code.tools(), verifier),
+            tools=[*agent.toolset, *with_verification(code_tools, verifier),
                   *tasks.tools(), *extra_tools,
                   reader.as_tool(name="ask_reader",
                                  description=("Ask a cheap read-only agent to "
