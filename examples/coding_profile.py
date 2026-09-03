@@ -155,7 +155,7 @@ it hands someone else the job of finding out whether you were right.
    work, `start_task` when you begin one, `finish_task` when it is genuinely done, and
    `block_task` when something stops you. This list survives your context being
    compacted; your memory of it does not. When you have lost track, call `list_tasks`.
-3. Edit narrowly. Prefer `edit_source` (exact string replacement) over `write_source`
+{findings_clause}3. Edit narrowly. Prefer `edit_source` (exact string replacement) over `write_source`
    (whole-file overwrite). If `edit_source` says the string matched more than once, that
    means you do not yet know which site you are changing — add surrounding lines until
    the match is unique rather than guessing.
@@ -163,7 +163,7 @@ it hands someone else the job of finding out whether you were right.
    output for it automatically; fix what it reports before moving on. Run `run_tests`
    before you claim anything works, and again before you commit.
 5. Commit with a message that says why, not what. The diff already says what.
-
+{shell_clause}
 # Being wrong
 When a test fails, read the actual failure before changing anything — the first
 plausible explanation is often not the real one. If a fix does not work twice, stop and
@@ -177,6 +177,22 @@ make a test pass by weakening or deleting the test.
 - Do not attempt to work around a refused tool call. A refusal is a decision that was
   made deliberately; report it and continue with what you can do.
 {instructions_clause}"""
+
+_FINDINGS_CLAUSE = """   When you learn something worth remembering — a root cause, a
+   dead end already ruled out, a quirk of this project's build — call `add_finding`.
+   Call `list_findings` after a compaction or whenever you feel like you've lost the
+   thread; this is the part of your own reasoning that surviving compaction does not
+   otherwise cover.
+"""
+_SHELL_CLAUSE = """
+# Running other commands
+`run_tests` covers this project's test suite; for anything else — installing a
+dependency, a different linter, a language's own build tool — use `run_command` (plain
+argv, no shell syntax) or `run_shell` (a real shell string, for pipes/redirects
+`run_command` cannot express). Most commands run immediately; a few patterns you did not
+write (a force-push, a publish, anything destructive) will ask a human first — that is
+expected, not a failure, and there is no way around it that is worth looking for.
+"""
 
 _NO_INSTRUCTIONS = ""
 _INSTRUCTIONS_HEADER = """
@@ -369,9 +385,30 @@ class CodingProfile:
     #: A real sandbox (Docker/Firecracker) goes here; `None` means `Subprocess` — a
     #: clean-env child process, honestly NOT container isolation.
     sandbox: Any = None
-    #: Where the task list lives. A path, so it survives a process restart; the
-    #: LangGraph checkpointer alone does not cover state outside graph state.
+    #: Where the task list (and, if enabled, the findings log) lives. A path, so it
+    #: survives a process restart; the LangGraph checkpointer alone does not cover
+    #: state outside graph state.
     tasks_db: str = "coding_session.db"
+    #: OFF by default: `run_command`/`run_shell` (`shell_tools.py`) genuinely widen what
+    #: this agent can do — arbitrary commands, gated by `shell_policy` rather than by a
+    #: fixed tool list. Turning this on is a decision an operator makes on purpose, not
+    #: something a profile default should make for them (the same reasoning
+    #: `allowed_hosts`'s deny-by-default carries — T-7.2). Needed for long, exploratory
+    #: sessions that have to run whatever build tool the task actually calls for, not
+    #: just the one `test_command` names.
+    enable_shell: bool = False
+    #: `None` (the default, when `enable_shell=True`) builds a fresh `ShellCommandPolicy`
+    #: with its own sensible deny/ask lists — pass your own to extend or replace them.
+    shell_policy: Any = None
+    #: `None` (the default) uses `ShellTools`'s own `Subprocess`-based sandbox — same
+    #: knob as `sandbox=` above, kept separate because a real deployment may want a
+    #: stronger sandbox specifically for arbitrary commands than for the narrow,
+    #: known-shape `CodeTools` ones.
+    shell_sandbox: Any = None
+    #: OFF by default, same reasoning as `enable_shell`: a durable notebook the model
+    #: writes to costs nothing extra in tokens (`findings_log.py`), but it is still
+    #: additional surface a profile should not turn on silently.
+    enable_findings: bool = False
     extra_middleware: Sequence[Middleware] = field(default_factory=tuple)
 
     def apply(self, agent: Agent) -> Agent:
@@ -388,6 +425,22 @@ class CodingProfile:
         code = CodeTools(root=root, sandbox=sandbox, test_command=self.test_command)
         tasks = TaskLedger(SqliteStore(self.tasks_db))
         verifier = Verifier(root, self.verify_commands, sandbox=sandbox, env=code.env)
+
+        # Both OFF by default (see the fields' own docstrings for why) — imported here,
+        # not at module level, so a caller who never sets enable_shell=True pays nothing
+        # for shell_tools.py's ShellCommandPolicy regex compilation at import time.
+        extra_tools: list[Any] = []
+        extra_policies: list[Any] = []
+        if self.enable_shell:
+            from shell_tools import ShellCommandPolicy, ShellTools
+            shell_sandbox = self.shell_sandbox if self.shell_sandbox is not None else sandbox
+            shell = ShellTools(str(root), sandbox=shell_sandbox, env=code.env)
+            extra_tools.extend(shell.tools())
+            extra_policies.append(self.shell_policy or ShellCommandPolicy())
+        if self.enable_findings:
+            from findings_log import FindingsLog
+            findings = FindingsLog(SqliteStore(self.tasks_db))
+            extra_tools.extend(findings.tools())
 
         # The explorer. Read-only by construction: `as_tool()` takes the MAXIMUM
         # effect of the child's own tools, so a reader holding only `read` tools
@@ -410,7 +463,7 @@ class CodingProfile:
             # `agent.toolset` first: whatever the caller already put on `Agent(...)`
             # — including their own `danger` tools — is PRESERVED, never dropped.
             tools=[*agent.toolset, *with_verification(code.tools(), verifier),
-                  *tasks.tools(),
+                  *tasks.tools(), *extra_tools,
                   reader.as_tool(name="ask_reader",
                                  description=("Ask a cheap read-only agent to "
                                               "explore the codebase and report "
@@ -420,7 +473,7 @@ class CodingProfile:
             # Appended, never replaced — dropping a policy the caller already set
             # is exactly the loosening `_refuse_if_loosened` exists to catch.
             policies=[*agent.policies, *([ProtectedPaths(self.protected)]
-                                        if self.protected else [])],
+                                        if self.protected else []), *extra_policies],
             # Only a caller who set none gets the terminal prompt; one who already
             # supplied their own `approve=` keeps it — a profile earns the right to
             # ADD a gate, not to swap out the operator's own.
@@ -439,17 +492,31 @@ def _system_prompt(profile: CodingProfile, root: Path, agent: Agent) -> str:
         "Nothing in this repository is write-protected; be correspondingly careful."
     )
     mission_clause = _MISSION_HEADER.format(mission=agent.job) if agent.job.strip() else ""
-    return _SYSTEM.format(name=agent.name, root=root, mission_clause=mission_clause,
-                          protected_clause=protected_clause,
-                          instructions_clause=instructions_clause)
+    return _SYSTEM.format(
+        name=agent.name, root=root, mission_clause=mission_clause,
+        protected_clause=protected_clause, instructions_clause=instructions_clause,
+        findings_clause=_FINDINGS_CLAUSE if profile.enable_findings else "",
+        shell_clause=_SHELL_CLAUSE if profile.enable_shell else "",
+    )
 
 
-def _approve_at_terminal(call: Any) -> bool:
+def _approve_at_terminal(call: Any, ctx: Any = None) -> bool:
     """The default `approve=` — deny unless a human is actually there to say yes.
 
-    Deliberately not `lambda _: True`: a profile whose default silently approves every
-    protected write would make `ProtectedPaths` decorative, which is worse than not
-    having it (W-03 — approval is not isolation, and a rubber stamp is not approval).
+    `policy/engine.py::resolve` calls `approve(call, ctx)` — two positional arguments,
+    not one. An earlier version of this function took only `call` and was never caught
+    by any of this file's own demos, because none of them had previously driven a real
+    ASK verdict through the full `PolicyEngine.resolve()` path end to end (the
+    `ProtectedPaths` demo section calls `policy.check()` directly, bypassing the
+    engine entirely). `_demo_shell_and_findings()`'s `git push` case is what finally
+    exercised this call site for real and surfaced the mismatch — the same "a control
+    that is specified and never executed is not a control" lesson this whole project's
+    own R-16 is named after, one file up.
+
+    Deliberately not `lambda *_: True`: a profile whose default silently approves every
+    protected write would make `ProtectedPaths`/`ShellCommandPolicy` decorative, which
+    is worse than not having them (W-03 — approval is not isolation, and a rubber stamp
+    is not approval).
     """
     if not sys.stdin.isatty():
         return False
@@ -624,5 +691,63 @@ def _demo() -> None:
     print("  Run it on every prompt edit; that is what makes this engineering.")
 
 
+def _demo_shell_and_findings() -> None:
+    """`enable_shell=True, enable_findings=True` — arbitrary commands across whatever
+    build tools a task actually needs, many rounds of trial-and-error, autonomous for
+    everything except the patterns `ShellCommandPolicy` gates. Scripted model, real
+    subprocess, real policy decisions — nothing here is asserted without running it.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from harness import Agent
+    from harness.models.fake import FakeModel
+
+    root = Path(tempfile.mkdtemp(prefix="coding-profile-shell-"))
+    (root / "add.py").write_text("def add(a, b):\n    return a - b\n")
+
+    provider = FakeModel([
+        # Round 1: try one build tool, it "fails" (contrived — a real repo would have
+        # its own), the agent tries a different one instead of getting stuck.
+        FakeModel.tool_call("run_command", {"argv": ["python3", "-m", "pyflakes", "add.py"]}),
+        FakeModel.tool_call("add_finding",
+                            {"text": "pyflakes isn't installed here; use ruff instead"}),
+        FakeModel.tool_call("run_shell", {"cmd": "python3 -m ruff check add.py || true"}),
+        # A command ShellCommandPolicy ASKs about — approve=None in this profile means
+        # the terminal prompt fires; non-interactive here, so it's correctly refused.
+        FakeModel.tool_call("run_command", {"argv": ["git", "push", "origin", "main"]}),
+        FakeModel.tool_call("edit_source",
+                            {"path": "add.py", "old": "return a - b", "new": "return a + b"}),
+        FakeModel.tool_call("run_tests", {}),
+        FakeModel.text("Fixed. Tried pyflakes, switched to ruff when it wasn't "
+                      "installed, and the git push attempt was correctly refused "
+                      "since nothing approved it non-interactively."),
+    ])
+    profile = CodingProfile(root=root, enable_shell=True, enable_findings=True,
+                            verify_commands=(), tasks_db=str(root / "session.db"))
+    agent = Agent(name="Coder", job="Fix add(); use whatever tools you need.",
+                 provider=provider).with_profile(profile)
+
+    print("=" * 70)
+    print("7. enable_shell + enable_findings — arbitrary commands, gated by CONTENT")
+    print("=" * 70)
+    tool_names = {t.name for t in agent.toolset}
+    print(f"  new tools present: "
+          f"{sorted(n for n in tool_names if n in ('run_command', 'run_shell', 'add_finding', 'list_findings'))}")
+
+    result = agent.try_run("Go.")
+    print(f"\n  stop_reason : {result.stop_reason}")
+    print(f"  tools_run   : {', '.join(result.tools_run)}")
+    print(f"  add.py now  : {(root / 'add.py').read_text().strip()!r}")
+    print("\n  -> git push was ATTEMPTED but never took effect (no interactive "
+         "approval),")
+    print("     while pyflakes/ruff/edit_source/run_tests ran autonomously — the "
+         "policy")
+    print("     told them apart by READING the command, not by which tool carried "
+         "it.")
+
+
 if __name__ == "__main__":
     _demo()
+    print()
+    _demo_shell_and_findings()
