@@ -376,6 +376,75 @@ camera, no model file, no `Agent`), adapters where hardware and vendor SDKs live
 tool functions as glue. `CodingProfile`'s `Verifier` is the same division, and neither
 needed anything added to this API.
 
+#### Conventions for a profile's own parameters
+
+`Profile`'s **contract** is two members, and `Agent.with_profile()` touches nothing
+else. A profile's **configuration** — its constructor — is its domain's own vocabulary,
+and measured across the three real ones it barely overlaps at all:
+
+| | fields | its own vocabulary |
+|---|---|---|
+| `CodingProfile` | 18 | `root`, `test_command`, `verify_commands`, `protected`, `sandbox`, `reader_model`, … |
+| `ResearchProfile` | 6 | `search_tool`, `fetch_tool`, `min_sources`, `house_style` |
+| `VisionProfile` | 15 | `detector`, `camera`, `buffer`, `threshold`, `margin`, `private`, `allow_sinks`, … |
+
+Shared by all three: `name` and `budget`. Shared by two: `model`, `effort`, `store`,
+`extra_middleware`. That is the intended shape — `root=` means nothing to a camera and
+`detector=` means nothing to a test suite, so a common parameter schema would be a bag
+of half-meaningless `Optional`s, which is the `AgentBuilder` this project already
+[considered and rejected](02-architecture.md). What IS shared is a set of promises the
+type system cannot state. Follow these, and `tests/test_profile_conventions.py` checks
+them across every profile in `examples/` at once:
+
+1. **`name` is the profile's id, never the agent's.** It is what
+   `ProfileLoosenedSafetyError` and the second-profile refusal quote back; the agent's
+   own name stays `Agent(name=...)`.
+2. **Add, never replace — tools, prompt, policies alike.** `tools=[*agent.toolset, ...]`,
+   `policies=[*agent.policies, ...]`, and the caller's `job` folded in as a SECTION of
+   your template rather than discarded. Rebuilding `tools=` from scratch silently drops
+   the caller's own `danger` tools, which are the ones a profile is least entitled to
+   touch; discarding `job` loses the only statement of what this session is for.
+3. **Say which sizing knobs you own, and mean it.** All three set `budget=`, because a
+   budget describes the SHAPE of the work — how many pages a question is worth fetching,
+   how many steps a task takes — which the profile knows and the caller usually does
+   not. `model=`/`effort=` are a different question (how good must the answer be, at what
+   price), and the profiles genuinely disagree: `CodingProfile` overrides them, because a
+   coding session that silently ran on a weak model fails in ways the caller blames on
+   the prompt; `ResearchProfile` leaves them to `Agent(...)`. Either is fine. Leaving it
+   undocumented is not, because the caller cannot otherwise tell whether their
+   `Agent(model=...)` survives.
+4. **Inject anything with a lifetime or a vendor behind it, and never close it.**
+   `store=`, `sandbox=`, `camera=`, `detector=`, `search_tool=`/`fetch_tool=`. `apply()`
+   returns an `Agent`, which is frozen and has no lifecycle to hang a `close()` on, so
+   the caller owns construction and teardown — `CodingProfile`'s `store=` docstring
+   records the file-descriptor leak that established this rule (ADR-076). A default may
+   be built when the field is `None`, but then it is a short-script convenience, and say
+   so.
+5. **`enable_*` for anything that widens what the agent can do, off by default.**
+   `enable_shell`, `enable_findings`, `enable_enrollment`. An operator turns those on
+   deliberately; a profile default should not decide it for them — the same reasoning
+   `allowed_hosts=()`'s deny-by-default carries.
+6. **Grants belong to the caller.** A profile may ASK for `accepts_tainted=` or a wider
+   `allowed_hosts=`; it may never write them itself. `_refuse_if_loosened` enforces this,
+   and `VisionProfile` turns it into a feature: because it cannot grant
+   `accepts_tainted=["enroll_person"]`, storing face data is always a line in the
+   operator's own source.
+7. **Keep the prompt byte-stable and computed once.** It lands in `job=`, the
+   cache-linted prefix, and `Chat.say()` reconstructs the `Agent` every turn — so
+   anything varying (a live `git status`, a set iterated in nondeterministic order, a
+   count that grows) raises `NonDeterministicPromptError` on turn N of a conversation
+   rather than at startup. Read files at construction, in `apply()`; put anything that
+   genuinely changes per step in a tool result instead.
+
+**Writing this down immediately found a violation**, which is the argument for having
+written it: `CodingProfile` built its `ask_reader` subagent without passing
+`safety=agent.safety`, so it took the default `"standard"` and
+`_check_subagent_safety` refused the result —
+`Agent(safety="strict").with_profile(CodingProfile(...))` raised `UnsafeToolSetError`
+and the profile could not be used on a hardened agent at all. Present since that file's
+first commit; found by asserting convention 6 over all three profiles at once instead of
+one at a time.
+
 **Classify the tools, and the safety engine does the rest.** A profile's most
 consequential decisions are usually its `effect=` choices rather than its code.
 `VisionProfile` gets its consent gate for free that way: `enroll_person` is `danger`, so

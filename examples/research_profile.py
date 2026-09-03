@@ -74,6 +74,20 @@ class ResearchProfile:
     #: `Agent(name=...)`, exactly as in `CodingProfile`.
     name: str = "research"
     min_sources: int = 2
+    #: Set here, unlike `model=`/`effort=`, which this profile deliberately does NOT
+    #: set — recorded because the asymmetry was previously unexplained, and
+    #: `CodingProfile`'s own docstring states the opposite rule for itself ("model/
+    #: effort/budget are the one place this profile does NOT defer to `Agent(...)`").
+    #: The line between them is who knows the answer: a budget is a statement about the
+    #: SHAPE of the work — how many pages a question is worth fetching — which this
+    #: profile knows and the caller usually does not. Which model to spend on it is a
+    #: statement about how good the answer has to be and what it may cost, which is the
+    #: caller's call and theirs alone. So `Agent(model="claude-haiku-4-5")
+    #: .with_profile(ResearchProfile())` keeps the cheap model, on purpose;
+    #: `CodingProfile` would override it, also on purpose, because a coding session that
+    #: silently ran on a weak model would fail in ways the caller would blame on the
+    #: prompt. Either choice is fine; leaving it undocumented was not
+    #: (`docs/03-public-api.md` §3.7, "Conventions").
     budget: str = "$1, 60 steps, 10m"
     house_style: str | None = None
     #: Overridable rather than hard-imported into `apply()`, for two real reasons: a

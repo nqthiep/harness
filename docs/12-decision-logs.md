@@ -2610,6 +2610,71 @@ everything else. `Camera`'s degradation IS verified: with no device,
 `cv2.VideoCapture(0)` raises nothing, `isOpened()` is `False`, and `read()` is
 `(False, None)`.
 
+### ADR-078 — A profile's parameters are its domain's vocabulary; the conventions on top of `Profile` are written down and checked across every profile at once
+
+**Status:** Accepted.
+
+**Context.** "Does every profile have different parameters?" — asked after the third one
+shipped. Measured, yes, and by a wide margin: `CodingProfile` 18 fields,
+`ResearchProfile` 6, `VisionProfile` 15, with exactly `name` and `budget` common to all
+three and `model`/`effort`/`store`/`extra_middleware` common to two.
+
+That is the intended shape. `Profile`'s CONTRACT is two members and
+`Agent.with_profile()` touches nothing else; the constructor is CONFIGURATION, and
+`root=` means nothing to a camera while `detector=` means nothing to a test suite. A
+shared parameter schema would be a bag of half-meaningless `Optional`s — the
+`AgentBuilder` `docs/02-architecture.md` already lists among the abstractions this
+project proposed and rejected.
+
+What the three DO share is a set of promises the type system cannot state and
+`_refuse_if_loosened` does not cover: add-don't-replace for tools/prompt/policies,
+inject-and-never-close for anything with a lifetime, `enable_*` off by default for
+anything that widens capability, grants belong to the caller, and a byte-stable prompt
+computed once. Followed by imitation until now, and unwritten.
+
+**Decision.** Seven conventions written into `docs/03-public-api.md` §3.7 ("Conventions
+for a profile's own parameters"), with `tests/test_profile_conventions.py` checking the
+mechanical ones over all three real profiles at once rather than per profile.
+
+The one genuinely open question is settled by documenting the disagreement rather than
+forcing uniformity: **all three own `budget=`, and they deliberately differ on
+`model=`/`effort=`.** A budget describes the SHAPE of the work — how many pages a
+question is worth fetching, how many steps a task takes — which a profile knows and a
+caller usually does not. Which model to spend is a statement about how good the answer
+must be and at what price, which is the caller's. So `CodingProfile` overrides it (a
+coding session that silently ran on a weak model fails in ways the caller blames on the
+prompt) and `ResearchProfile` does not (`Agent(model="claude-haiku-4-5")
+.with_profile(ResearchProfile())` keeps the cheap model). Either is correct; the defect
+was that `ResearchProfile` set `budget` and not `model` with no explanation anywhere,
+while `CodingProfile`'s docstring states the opposite rule for itself. Now recorded in
+both.
+
+**What writing it down immediately found, which is the argument for having written it.**
+`CodingProfile.apply()` built its `ask_reader` subagent without passing
+`safety=agent.safety`, so the child took the default `"standard"` and
+`_check_subagent_safety` correctly refused a child less restricted than its parent:
+
+```
+Agent(name="Coder", job="fix it", safety="strict").with_profile(CodingProfile(root=...))
+-> UnsafeToolSetError: 'Reader' runs at safety='standard' but you are wrapping it in an
+   agent at safety='strict'.
+```
+
+So the flagship profile **could not be applied to a hardened agent at all**. Present
+since that file's first commit (`13fccb1`), invisible to every test in
+`tests/test_coding_profile.py` and `tests/test_coding_profile_characterization.py`
+because both build agents at the default safety. Found by asserting the
+grants-and-knobs convention across all three profiles at once instead of one at a time —
+the same reason ADR-074's composition defect only appeared when two profiles were
+actually put together. Fixed by passing `safety=agent.safety`; verified both ways
+(construction now succeeds, and the reader's own `safety` reads `strict`).
+
+**Test.** `tests/test_profile_conventions.py` — 10 tests over 3 profiles: names itself,
+keeps the caller's tools, adds tools of its own, folds the caller's mission into the
+prompt, declares a budget, keeps the caller's policies, loosens no safety knob on a
+hardened agent, grants itself neither `accepts_tainted` nor a wider host list, produces
+a byte-stable prompt, and is applied at most once. Full suite 972 passed, ruff clean.
+
 | # | Decision | Rationale |
 |---|---|---|
 | IDL-01 | `Decimal` for all money; `float` banned in `budget/` by lint | A rounding error in a spend ceiling is a real bug class |

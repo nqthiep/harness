@@ -496,6 +496,16 @@ class CodingProfile:
         # The explorer. Read-only by construction: `as_tool()` takes the MAXIMUM
         # effect of the child's own tools, so a reader holding only `read` tools
         # cannot hand the lead a capability it did not already have (§06.4).
+        #
+        # `safety=agent.safety` is not decoration. Without it the reader took the
+        # default `"standard"`, and `_check_subagent_safety` (agent.py) correctly
+        # refuses a child less restricted than its parent — so
+        # `Agent(safety="strict").with_profile(CodingProfile(...))` raised
+        # `UnsafeToolSetError: 'Reader' runs at safety='standard' but you are wrapping
+        # it in an agent at safety='strict'` and this profile simply could not be used
+        # on a hardened agent. Present since this file's first commit (13fccb1), found
+        # by `tests/test_profile_conventions.py` asserting the convention across all
+        # three profiles at once rather than one profile at a time.
         reader = Agent(
             name="Reader",
             job=("Answer questions about this codebase by reading it. Report "
@@ -506,6 +516,7 @@ class CodingProfile:
             tools=[t for t in code_tools if t.effect.value == "read"],
             model=self.reader_model,
             budget=self.reader_budget,
+            safety=agent.safety,
             provider=agent.provider,
         )
 
