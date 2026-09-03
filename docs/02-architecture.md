@@ -193,6 +193,20 @@ core decision it follows (`before_tool` never sees a call `Policy` already denie
 stacking many of these can only add restriction or observation, never bypass one.
 `docs/03-public-api.md §3.6` documents it as a Level-3 extension.
 
+**`Agent.with_profile()`** is the same shape of sugar for a different recurring need:
+packaging a system prompt, a tool set, a model/effort/budget choice, and policies as one
+named, reusable unit, without a second way to construct an `Agent`. `Profile` (`profile.py`)
+is a two-member `Protocol` — `name: str`, `apply(agent) -> Agent` — built entirely from
+`Agent.with_()`; nothing in the run loop knows it exists. What earns it the "sugar, not a
+seam" label is the same discipline `Middleware` follows: `Agent.with_profile()` refuses
+the result of `profile.apply()` if it loosened a safety knob the caller's own `Agent(...)`
+call already set (`ProfileLoosenedSafetyError` — ADR-073), so stacking a profile on top of
+an agent can only add capability, never bypass a decision already made. Two genuinely
+different profiles ship as evidence the abstraction generalizes rather than merely
+naming one shape twice: `examples/coding_profile.py` (file/git tools, a verification
+wrapper, a subagent, a path policy) and `examples/research_profile.py` (two `external`
+tools, a citation-and-skepticism prompt, no subagent, no write tools).
+
 ## 5. Module map
 
 Every module below maps to at least one task in [§11](11-implementation-plan.md). Nothing

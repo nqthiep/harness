@@ -1,17 +1,25 @@
-"""The missing layer: prompt + tool design + model choice + a feedback loop, as ONE call.
+"""The missing layer: prompt + tool design + model choice + a feedback loop, as ONE
+`.with_profile()` call on the SAME `Agent` API everything else in this library uses.
 
 `CODING_AGENT_BLUEPRINT.md` ends with "what you still have to build", and the honest
 answer to *why* a harness cannot ship it is that the harness owns **mechanism** (budget,
 taint, durability, audit) while the things that decide whether an agent is actually good
 at coding are **judgment**: what the system prompt says, which tools exist and how they
 describe themselves, which model runs which role, and how fast the agent learns it broke
-something. This file is that judgment layer, and its entire point is that it needs
-**zero** core changes — every line below is written against the public API, so it can
-live in a user's own repo exactly as it is, or move to `harness/recipes/coding.py`
-verbatim if it ever ships.
+something. This file is that judgment layer, packaged as a `harness.Profile`
+(`src/harness/profile.py`) — every line below is written against the public API, so it
+can live in a user's own repo exactly as it is.
 
-    agent = build_coding_agent(CodingProfile(root="/path/to/repo"))
-    agent.run("Make the failing test in tests/test_parser.py pass")
+    agent = Agent(name="Coder", job="Make tests/test_parser.py pass", tools=[git_push]) \\
+                .with_profile(CodingProfile(root="/path/to/repo"))
+    agent.run("go")
+
+No new constructor, no second way to build an `Agent`. `name=`/`job=`/`tools=` on
+`Agent(...)` still mean exactly what they always meant — `with_profile()` ADDS the
+prompt section, tools, model choice and policies below on top of what you passed, and
+`Agent.with_profile()` (agent.py) mechanically refuses the result if this file ever asks
+for LESS safety than the `Agent(...)` call already had (`ProfileLoosenedSafetyError`) —
+see `profile.py` for why that makes this sugar rather than a new seam core has to trust.
 
 Four seams carry the four missing parts. Each choice below is a consequence of something
 the library already enforces, not a preference:
@@ -132,7 +140,7 @@ VERIFY_MAX_CHARS = 2_000
 
 _SYSTEM = """\
 You are {name}, working in a single repository checkout at {root}.
-
+{mission_clause}
 # What finishing means
 A task is done when the change is made AND the project's own tests pass AND the work is
 committed. Reporting "I made the change" without having run the tests is not finishing —
@@ -176,6 +184,11 @@ _INSTRUCTIONS_HEADER = """
 These come from {source} and take precedence over the general guidance above.
 
 {body}"""
+
+_MISSION_HEADER = """
+# Your task for this session
+{mission}
+"""
 
 
 def _read_instructions(root: Path) -> tuple[str, str | None]:
@@ -316,9 +329,28 @@ class CodingProfile:
     Frozen, and deliberately data-only: a profile is something you check into your repo
     and diff when the agent's behavior changes, which is only true if reading it tells
     you the whole configuration.
+
+        agent = Agent(name="Coder", job="Fix the failing test", tools=[git_push]) \\
+                    .with_profile(CodingProfile(root="."))
+
+    `Agent(...)` still owns identity and mission: `name=` is who the agent is,
+    `job=` is what THIS session is for, and `tools=` is anything you want present that
+    the profile doesn't already know about (`git_push`, a deploy tool — your own
+    `effect="danger"` tools; `CodeTools` ships none, on purpose). `apply()` below
+    ADDS to all three rather than replacing them — the tools you passed stay, and your
+    `job` text becomes a section of the fuller prompt rather than being discarded.
+
+    `model=`/`effort=`/`budget=` are the one place this profile does NOT defer to
+    `Agent(...)`: they are sized for a coding session (`CODING_AGENT_BLUEPRINT.md
+    §1a`), and applying a profile is how you ask for that sizing. Want a different
+    model without touching `Agent(...)`? `dataclasses.replace(profile, model=...)` —
+    the profile is the one source of truth for its own knobs.
     """
     root: str | Path
-    name: str = "Coder"
+    #: The `Profile` protocol's own identifier — shown in `ProfileLoosenedSafetyError`
+    #: if this profile's `apply()` ever tries to loosen a safety knob the caller
+    #: already set. NOT the agent's display name — that's `Agent(name=...)`.
+    name: str = "coding"
     #: The model that decides and writes. Explicit, per ADR-006 — there is no automatic
     #: routing to fall back on, and that is the point.
     model: str = "claude-opus-5"
@@ -334,24 +366,71 @@ class CodingProfile:
     verify_commands: Sequence[Sequence[str]] = (("ruff", "check"),)
     protected: Sequence[str] = ("*.lock", "*.lockb", "poetry.lock", "uv.lock",
                                 "*/migrations/*", ".github/workflows/*", "*.pem", "*.key")
-    #: YOUR `effect="danger"` tools (`git_push`, deploy, a migration runner). Left empty
-    #: because `CodeTools` ships nothing `danger` on purpose: importing it can never by
-    #: itself create the lethal-trifecta refusal.
-    danger_tools: Sequence[Any] = ()
     #: A real sandbox (Docker/Firecracker) goes here; `None` means `Subprocess` — a
     #: clean-env child process, honestly NOT container isolation.
     sandbox: Any = None
     #: Where the task list lives. A path, so it survives a process restart; the
     #: LangGraph checkpointer alone does not cover state outside graph state.
     tasks_db: str = "coding_session.db"
-    #: Durability across a restart (`Agent(durable=True)`).
-    durable: bool = False
-    #: Test/demo seam: a scripted provider instead of the real API.
-    provider: Any = None
     extra_middleware: Sequence[Middleware] = field(default_factory=tuple)
 
+    def apply(self, agent: Agent) -> Agent:
+        """`Profile.apply()` — the whole judgment layer, layered onto `agent` rather
+        than replacing it. `Agent.with_profile()` calls this and then refuses the
+        result if any safety knob moved in the unsafe direction
+        (`agent.py::_refuse_if_loosened`); nothing below needs to know that check
+        exists; it only needs to be true that this method never asks for less safety
+        than `agent` already had, which "add, don't replace" throughout keeps true by
+        construction.
+        """
+        root = Path(self.root).resolve()
+        sandbox = self.sandbox if self.sandbox is not None else Subprocess()
+        code = CodeTools(root=root, sandbox=sandbox, test_command=self.test_command)
+        tasks = TaskLedger(SqliteStore(self.tasks_db))
+        verifier = Verifier(root, self.verify_commands, sandbox=sandbox, env=code.env)
 
-def _system_prompt(profile: CodingProfile, root: Path) -> str:
+        # The explorer. Read-only by construction: `as_tool()` takes the MAXIMUM
+        # effect of the child's own tools, so a reader holding only `read` tools
+        # cannot hand the lead a capability it did not already have (§06.4).
+        reader = Agent(
+            name="Reader",
+            job=("Answer questions about this codebase by reading it. Report "
+                 "file:line for every claim you make, and say plainly when you "
+                 "could not find something — a confident wrong answer costs more "
+                 "than an admitted gap. Be brief: the agent asking you has a "
+                 "context window to protect."),
+            tools=[t for t in code.tools() if t.effect.value == "read"],
+            model=self.reader_model,
+            budget=self.reader_budget,
+            provider=agent.provider,
+        )
+
+        built = agent.with_(
+            job=_system_prompt(self, root, agent),
+            # `agent.toolset` first: whatever the caller already put on `Agent(...)`
+            # — including their own `danger` tools — is PRESERVED, never dropped.
+            tools=[*agent.toolset, *with_verification(code.tools(), verifier),
+                  *tasks.tools(),
+                  reader.as_tool(name="ask_reader",
+                                 description=("Ask a cheap read-only agent to "
+                                              "explore the codebase and report "
+                                              "back. Use this instead of reading "
+                                              "many files yourself."))],
+            model=self.model, effort=self.effort, budget=self.budget,
+            # Appended, never replaced — dropping a policy the caller already set
+            # is exactly the loosening `_refuse_if_loosened` exists to catch.
+            policies=[*agent.policies, *([ProtectedPaths(self.protected)]
+                                        if self.protected else [])],
+            # Only a caller who set none gets the terminal prompt; one who already
+            # supplied their own `approve=` keeps it — a profile earns the right to
+            # ADD a gate, not to swap out the operator's own.
+            approve=agent.approve or _approve_at_terminal,
+        )
+        # A no-op when empty (`middleware.py::with_middleware`), so always safe to call.
+        return with_middleware(built, *self.extra_middleware)
+
+
+def _system_prompt(profile: CodingProfile, root: Path, agent: Agent) -> str:
     instructions_clause, _ = _read_instructions(root)
     protected_clause = (
         "Some paths are protected and a write to one needs a human's approval — "
@@ -359,62 +438,10 @@ def _system_prompt(profile: CodingProfile, root: Path) -> str:
         if profile.protected else
         "Nothing in this repository is write-protected; be correspondingly careful."
     )
-    return _SYSTEM.format(name=profile.name, root=root,
+    mission_clause = _MISSION_HEADER.format(mission=agent.job) if agent.job.strip() else ""
+    return _SYSTEM.format(name=agent.name, root=root, mission_clause=mission_clause,
                           protected_clause=protected_clause,
                           instructions_clause=instructions_clause)
-
-
-def build_coding_agent(profile: CodingProfile) -> Agent:
-    """One call: prompt, tools, models, guardrails and the feedback loop, wired.
-
-    Returns a plain `Agent` — `run`/`try_run`/`arun`/`atry_run`, `as_tool()`, and every
-    safety and budget rule the library already enforces, unchanged. Nothing here is a
-    new kind of object the rest of the harness has to know about, which is the whole
-    reason this file needs no core change.
-    """
-    root = Path(profile.root).resolve()
-    sandbox = profile.sandbox if profile.sandbox is not None else Subprocess()
-    code = CodeTools(root=root, sandbox=sandbox, test_command=profile.test_command)
-    tasks = TaskLedger(SqliteStore(profile.tasks_db))
-
-    # The explorer. Read-only by construction: `as_tool()` takes the MAXIMUM effect of
-    # the child's own tools, so a reader holding only `read` tools cannot hand the lead
-    # a capability it did not already have (§06.4, least privilege).
-    reader = Agent(
-        name="Reader",
-        job=("Answer questions about this codebase by reading it. Report file:line for "
-             "every claim you make, and say plainly when you could not find something — "
-             "a confident wrong answer costs more than an admitted gap. Be brief: the "
-             "agent asking you has a context window to protect."),
-        tools=[t for t in code.tools() if t.effect.value == "read"],
-        model=profile.reader_model,
-        budget=profile.reader_budget,
-        provider=profile.provider,
-    )
-
-    verifier = Verifier(root, profile.verify_commands, sandbox=sandbox, env=code.env)
-
-    lead = Agent(
-        name=profile.name,
-        job=_system_prompt(profile, root),
-        tools=[*with_verification(code.tools(), verifier), *tasks.tools(),
-               *profile.danger_tools,
-               reader.as_tool(name="ask_reader",
-                              description=("Ask a cheap read-only agent to explore the "
-                                           "codebase and report back. Use this instead "
-                                           "of reading many files yourself."))],
-        model=profile.model,
-        effort=profile.effort,
-        budget=profile.budget,
-        policies=[ProtectedPaths(profile.protected)] if profile.protected else [],
-        approve=_approve_at_terminal,
-        durable=profile.durable,
-        provider=profile.provider,
-    )
-
-    # `Middleware` stays available for the sync/observational things it is right for —
-    # counters, `on_event`, `before_model` content — and is a no-op when empty.
-    return with_middleware(lead, *profile.extra_middleware)
 
 
 def _approve_at_terminal(call: Any) -> bool:
@@ -491,25 +518,24 @@ def _demo() -> None:
         "- This project targets Python 3.11.\n")
 
     print("=" * 70)
-    print("1. ONE call builds the whole judgment layer")
+    print("1. The SAME Agent(...), extended with .with_profile() — no new constructor")
     print("=" * 70)
 
-    profile = CodingProfile(
-        root=root,
-        verify_commands=(("python", "-m", "ruff", "check"),),
-        tasks_db=str(root / "session.db"),
-        provider=FakeModel([
-            FakeModel.tool_call("add_task", {"title": "fix add()"}),
-            FakeModel.tool_call("start_task", {"task_id": "t1"}),
-            FakeModel.tool_call("edit_source",
-                                {"path": "add.py", "old": "return a - b",
-                                 "new": "return a + b"}),
-            FakeModel.tool_call("run_tests", {}),
-            FakeModel.tool_call("finish_task", {"task_id": "t1", "note": "sign flipped"}),
-            FakeModel.text("Fixed the sign in add() and ran the suite."),
-        ]),
-    )
-    agent = build_coding_agent(profile)
+    provider = FakeModel([
+        FakeModel.tool_call("add_task", {"title": "fix add()"}),
+        FakeModel.tool_call("start_task", {"task_id": "t1"}),
+        FakeModel.tool_call("edit_source",
+                            {"path": "add.py", "old": "return a - b",
+                             "new": "return a + b"}),
+        FakeModel.tool_call("run_tests", {}),
+        FakeModel.tool_call("finish_task", {"task_id": "t1", "note": "sign flipped"}),
+        FakeModel.text("Fixed the sign in add() and ran the suite."),
+    ])
+    profile = CodingProfile(root=root, verify_commands=(("python", "-m", "ruff", "check"),),
+                            tasks_db=str(root / "session.db"))
+    base = Agent(name="Coder", job="The add() function returns the wrong number. Fix it.",
+                provider=provider)
+    agent = base.with_profile(profile)
 
     # The cached prefix is system + tool schemas together, which is how
     # `assembler.py::_system_blocks` decides whether a breakpoint is worth attaching —
@@ -529,7 +555,15 @@ def _demo() -> None:
 
     print()
     print("=" * 70)
-    print("2. The repo's own AGENTS.md is IN the prompt, read once at construction")
+    print("2a. Agent(job=...) survives — it's now a SECTION of the fuller prompt")
+    print("=" * 70)
+    mission = agent.job[agent.job.index("# Your task for this session"):
+                        agent.job.index("# What finishing means")]
+    print("  " + "\n  ".join(mission.strip().splitlines()))
+
+    print()
+    print("=" * 70)
+    print("2b. The repo's own AGENTS.md is IN the prompt, read once at construction")
     print("=" * 70)
     tail = agent.job[agent.job.index("# This repository's own instructions"):]
     print("  " + "\n  ".join(tail.strip().splitlines()))
@@ -538,7 +572,7 @@ def _demo() -> None:
     print("=" * 70)
     print("3. The run — task list, narrow edit, tests, all inside one budget")
     print("=" * 70)
-    result = agent.try_run("The add() function returns the wrong number. Fix it.")
+    result = agent.try_run("Go ahead.")
     print(f"  stop_reason : {result.stop_reason}")
     print(f"  steps       : {result.steps}   cost: {result.cost}")
     print(f"  tools_run   : {', '.join(result.tools_run)}")

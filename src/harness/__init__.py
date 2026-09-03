@@ -5,14 +5,15 @@ from .agent import Agent
 from .budget.ledger import DEFAULT_BUDGET, Budget
 from .errors import (BudgetExceeded, ConfigError, DuplicateToolError, HarnessError,
                      InvalidBudgetError, MissingEffectError, NonDeterministicPromptError,
-                     PolicyDenied, ProviderError, RunFailed, SyncInAsyncContextError,
-                     ToolContractError, ToolSchemaError, UnknownModelError,
-                     UnsafeToolSetError)
+                     PolicyDenied, ProfileLoosenedSafetyError, ProviderError, RunFailed,
+                     SyncInAsyncContextError, ToolContractError, ToolSchemaError,
+                     UnknownModelError, UnsafeToolSetError)
 from .middleware import (Middleware, ModelCall, RunIdentity, ShortCircuit,
                         ToolInvocation, with_middleware)
 from .models.base import ModelProvider
 from .policy.base import Ruling, Policy, ToolCall, Verdict
 from .policy.decision import Actor, Approval, AuthEvidence
+from .profile import Profile
 from .result import Money, Result, StopReason, Step, Usage
 from .run import RunContext
 from .secrets import Secret, safe_for_display
@@ -26,10 +27,10 @@ __all__ = [
     "Effect", "Secret", "safe_for_display", "Policy", "Verdict", "Ruling", "ToolCall",
     "ToolSpec", "Actor", "Approval", "AuthEvidence", "Session", "SessionExpiredError",
     "Budget", "DEFAULT_BUDGET", "ModelProvider", "Middleware", "ModelCall",
-    "ToolInvocation", "RunIdentity", "ShortCircuit", "with_middleware",
+    "ToolInvocation", "RunIdentity", "ShortCircuit", "with_middleware", "Profile",
     "HarnessError", "ConfigError", "MissingEffectError", "ToolSchemaError",
     "DuplicateToolError", "NonDeterministicPromptError", "UnsafeToolSetError",
     "InvalidBudgetError", "UnknownModelError", "ToolContractError",
     "SyncInAsyncContextError", "RunFailed", "BudgetExceeded", "PolicyDenied",
-    "ProviderError", "__version__",
+    "ProviderError", "ProfileLoosenedSafetyError", "__version__",
 ]

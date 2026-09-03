@@ -2200,6 +2200,87 @@ behavior on a machine without `openwiki` installed (`exit 127`, matching the mod
 and that constructing `CodeTools`/calling `.tools()` never invokes the sandbox at all —
 the tool only runs when something calls `.fn()` directly.
 
+### ADR-073 — `Agent.with_profile()`: a `Profile` is sugar over `with_()`, held to the same only-tightens rule as `Policy`/subagent safety
+
+**Status:** Accepted
+
+**Context.** A user building a coding agent on top of this library asked for a way to
+package "system prompt + tools + model choice + a feedback loop" as one reusable,
+checked-in unit, explicitly rejecting a separate constructor
+(`build_coding_agent(CodingProfile(...))`, `examples/coding_profile.py`'s first shape)
+in favor of the same `Agent(...)` API everything else uses — either `Agent(...,
+profile=)` or `Agent(...).with_profile(...)`.
+
+`Agent(...)`'s real (non-sentinel) defaults for `model`/`effort`/`safety`
+(`agent.py:87-91`) rule out the constructor-parameter shape without a second core
+change: `__init__` cannot tell "the caller wrote `model="claude-opus-5"` on purpose"
+from "the caller wrote nothing", so a profile could not know whether it may fill the
+field in. `job=` would also gain two meanings depending on whether `profile=` was
+present — the whole prompt (today) vs. an input to a template (with a profile) — the
+same "two things decide one value" shape already flagged at R-17/R-20.
+
+The method shape has neither problem, and it is nearly free: `with_()` (`agent.py:575`)
+already reconstructs a full `Agent(**base)` from its overrides, so every construction-
+time check (the cache-determinism linter, the lethal-trifecta refusal, `ToolSet`'s
+duplicate-name guard) already reruns on whatever a profile adds. The one thing nothing
+already checked: a profile silently WIDENING a safety knob the `Agent(...)` call had
+already narrowed — `accepts_tainted`, `safety`, `allowed_hosts`, the approval gate. Left
+unchecked, that reopens exactly the shortcoming `design/README.md`'s own table #7 says
+this project fixed once already ("the model holds its own safety switch") — moved from
+the model into a profile instead of removed.
+
+**Decision.** `Agent.with_profile(profile)` (`agent.py`) calls `profile.apply(self)`
+(the `Profile` Protocol, `profile.py` — `name: str` + `apply(agent) -> Agent`, the same
+minimal shape as `Policy`/`Sandbox`) and then runs `_refuse_if_loosened(before, after,
+profile.name)` before handing the result back. That function is `_check_subagent_safety`
+(`agent.py:858`, "a subagent may only ever be MORE restricted than its parent, never
+less") applied to a profile instead of a child agent: it compares `before`/`after` on
+`safety` (via the existing `_SAFETY_RANK`), `accepts_tainted` (`_grants`, gained entries
+only), `allowed_hosts` (widened, or a list replaced by unrestricted `None`),
+`require_approval_evidence` (`True -> False`), `max_asks_per_run` (the S-25
+approval-fatigue cap, raised), `approve` (a real callback replaced by `None`), and
+`policies` (any dropped from the list — the most direct loosening vector, since a
+`Policy` result composes by `max()` (P-2) only over whatever remains in that list). Any
+violation raises `ProfileLoosenedSafetyError` naming every culprit, never just the
+first.
+
+Deliberately NOT a check on swapping `approve=` for a different callback, or on which
+policies get ADDED — those are not mechanically decidable as "less safe"; only the
+mechanical cases (a value dropped, widened, or a gate removed entirely) are checked,
+the same restraint `_check_tool_set` already applies to the lethal-trifecta check it
+sits next to.
+
+`docs/02-architecture.md §4`'s six-seam table does not grow a row for this.
+`harness.middleware` already established the precedent for something built entirely
+from existing seams that still deserves a name and a rule: its own docstring states
+"every hook runs strictly after the core decision it follows... can only add
+restriction or observation, never bypass one." `Profile` is exactly that shape, with
+`_refuse_if_loosened` playing the enforcement role that ordering plays for
+`Middleware`. Because the three-part plugin test's clause (c) — "two genuinely
+different implementations today" — is nonetheless real evidence about whether an
+abstraction is worth its keep, `examples/research_profile.py` (search/fetch,
+citation-and-skepticism prompt, no subagent, no write tools, `external`-shaped taint
+instead of `write`/`danger`) ships alongside `examples/coding_profile.py`
+(file/git tools, a verification-wrapped edit tool, a reader subagent,
+a path-based `Policy`) specifically so that claim is checked rather than asserted.
+
+No new "already applied" bookkeeping exists for reapplying the same profile twice: a
+profile that adds tools under names it used before hits `ToolSet`'s existing
+duplicate-name guard (`DuplicateToolError`) on the second call, for free — the
+mechanism already existed and already fires; adding a second one would be exactly the
+"the same rule enforced two ways can drift" shape R-17 warns about.
+
+**Test.** `tests/test_profile.py` — one test per knob `_refuse_if_loosened` reads
+(downgrading `safety`, expanding `accepts_tainted`, widening or removing
+`allowed_hosts`, turning off `require_approval_evidence`, raising `max_asks_per_run`,
+replacing `approve` with `None`, dropping a `policies` entry), each changing ONLY that
+knob so a passing test proves the check reads that specific field and not some other
+one that happened to also differ (the R-16 lesson: a control that is specified and
+never executed is not a control). Plus: `with_profile()` returns a new `Agent` and
+extends its toolset; a legitimate tightening (adding a policy, raising `safety`) is
+allowed; reapplying a tool-adding profile hits `DuplicateToolError`, not a bespoke
+error.
+
 ---
 
 ## Implementation Decision Log

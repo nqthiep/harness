@@ -8,12 +8,13 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import replace
-from typing import Any, Callable, Literal, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence
 
 from .budget.ledger import Budget, Ledger
 from .context.assembler import ContextAssembler
 from .context.linter import PrefixWatcher, check_determinism
-from .errors import ConfigError, SyncInAsyncContextError, ToolContractError, UnsafeToolSetError
+from .errors import (ConfigError, ProfileLoosenedSafetyError, SyncInAsyncContextError,
+                     ToolContractError, UnsafeToolSetError)
 from .middleware import _run_scope
 from .observe.console import ConsoleExporter
 from .observe.events import EventBus
@@ -28,6 +29,9 @@ from .secrets import redaction_scope
 from .tools import (EFFECT_PROFILES, Effect, ToolSpec, slug,
                     tool as _tool_decorator)
 from .tools.registry import ToolSet
+
+if TYPE_CHECKING:
+    from .profile import Profile
 
 
 _MISSING: Any = object()
@@ -593,6 +597,24 @@ class Agent:
         base.update(overrides)
         return Agent(**base)
 
+    def with_profile(self, profile: "Profile") -> "Agent":
+        """A new `Agent`, transformed by `profile` — `docs/02-architecture.md §4` /
+        `profile.py` for why this is sugar over `with_()`, not a seventh seam.
+
+        `profile.apply(self)` does the real work and can call `with_()` however it
+        needs to; what this wrapper adds is the one rule every caller of a
+        third-party `Profile` gets for free, without that profile author having to
+        know the rule exists: **a profile can extend an agent, never loosen it.**
+        `_refuse_if_loosened` checks the knobs a prompt/tool bundle has no legitimate
+        reason to touch — `safety`, `accepts_tainted`, `allowed_hosts`,
+        `require_approval_evidence`, `max_asks_per_run`, and which `policies` survive
+        — the same shape of check `_check_subagent_safety` already runs for a
+        subagent, applied here to a profile instead.
+        """
+        after = profile.apply(self)
+        _refuse_if_loosened(self, after, profile.name)
+        return after
+
 
 class Chat:
     """A multi-turn session.  History lives here, never on the frozen Agent — which is
@@ -877,6 +899,66 @@ def _check_subagent_safety(toolset: ToolSet, parent_safety: str) -> None:
                 f'  Fix: Agent(name={child.name!r}, ..., safety="{parent_safety}")\n\n'
                 f"  -> docs/06-safety.md#4-least-privilege"
             )
+
+
+def _refuse_if_loosened(before: "Agent", after: "Agent", profile_name: str) -> None:
+    """`Agent.with_profile()`'s enforcement half — checked BEFORE `after` is handed
+    back to the caller, so a profile that loosens a safety knob never produces a live
+    agent, the same "caught at construction, not mid-run" discipline `_check_tool_set`
+    already applies to the lethal-trifecta combination.
+
+    Deliberately narrow: only knobs where "did this get LESS restrictive" is decidable
+    by comparing two values, not by judging intent. Swapping `approve=` for a
+    DIFFERENT callback is not checked — whether the new one is stricter is a question
+    about what that callback does, the same trust boundary as passing `approve=`
+    directly to `Agent(...)`; only the mechanical case of DROPPING the gate entirely
+    (a real callback replaced by `None`) is decidable and checked here.
+    """
+    culprits: list[str] = []
+
+    if _SAFETY_RANK[after.safety] < _SAFETY_RANK[before.safety]:
+        culprits.append(f"safety: {before.safety!r} -> {after.safety!r}")
+
+    added_tainted = after._grants.accepts_tainted - before._grants.accepts_tainted
+    if added_tainted:
+        culprits.append(f"accepts_tainted gained {sorted(added_tainted)!r}")
+
+    if before.allowed_hosts is not None:
+        if after.allowed_hosts is None:
+            culprits.append("allowed_hosts: a host allowlist -> unrestricted (None)")
+        elif set(after.allowed_hosts) - set(before.allowed_hosts):
+            new = sorted(set(after.allowed_hosts) - set(before.allowed_hosts))
+            culprits.append(f"allowed_hosts gained {new!r}")
+
+    if before.require_approval_evidence and not after.require_approval_evidence:
+        culprits.append("require_approval_evidence: True -> False")
+
+    if after.max_asks_per_run > before.max_asks_per_run:
+        culprits.append(f"max_asks_per_run: {before.max_asks_per_run} -> "
+                        f"{after.max_asks_per_run} (the approval-fatigue cap, S-25)")
+
+    if before.approve is not None and after.approve is None:
+        culprits.append("approve: a callback -> None (no approval gate at all)")
+
+    dropped_policies = [p for p in before.policies if p not in after.policies]
+    if dropped_policies:
+        names = [getattr(p, "__name__", None) or type(p).__name__ for p in dropped_policies]
+        culprits.append(f"policies dropped: {names!r}")
+
+    if not culprits:
+        return
+    raise ProfileLoosenedSafetyError(
+        f"the profile {profile_name!r} would make this agent LESS safe than you already "
+        f"configured it to be.\n\n"
+        + "\n".join(f"  - {c}" for c in culprits) +
+        "\n\n"
+        "  A profile may add tools, prompt content, or policies — it may never loosen "
+        "a\n  safety setting the constructor call already made. If this profile's "
+        "author intends\n  it to run at a different safety level, that is a choice "
+        "you make explicitly at\n  `Agent(...)`, not one a profile makes for you "
+        "silently.\n\n"
+        "  -> docs/06-safety.md#4-least-privilege"
+    )
 
 
 def _check_tool_set(toolset: ToolSet, grants: Grants) -> None:

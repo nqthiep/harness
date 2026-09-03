@@ -171,6 +171,7 @@ error.** A Poka-Yoke whose message is incomprehensible is only half-built.
 | `as_tool(*, name=None, description=None) -> ToolSpec` | ToolSpec | Turns this agent into a subagent tool. |
 | `resume(transcript) -> Result` | Result | Continue an interrupted run from a JSONL transcript. **`durable=True` refuses this call** (§3.5) — a durable run needs no separate resume step. |
 | `with_(**overrides) -> Agent` | Agent | Returns a **new** agent, every field preserved except what `overrides` names. `Agent` is frozen; there are no setters. (N-7: `transcript`/`exporters`/`accepts_tainted`/`sensitive` used to be silently dropped on every call, not just one that touched them — fixed.) |
+| `with_profile(profile: Profile) -> Agent` | Agent | Calls `profile.apply(self)`, then refuses the result with `ProfileLoosenedSafetyError` if it loosened a safety knob the caller already set (§3.7, ADR-073). |
 
 `with_()` exists because `Agent` is immutable, and immutability is what keeps the cache
 prefix stable (ADR-004). Mutating an agent mid-run is not "discouraged" — it is impossible.
@@ -323,6 +324,58 @@ seams already decided:
 `ShortCircuit(result)`, raised from `before_tool`, skips the tool's own function and
 uses `result` as if it had run — still subject to the same truncation/redaction/taint
 labelling a real result gets.
+
+### 3.7 `harness.Profile` — a named, reusable prompt+tools+model bundle
+
+The same "sugar, not a seventh seam" shape as `Middleware` above, for a different
+recurring need: packaging a system prompt, a tool set, a model/effort/budget choice, and
+policies as one thing you can check into a repo and hand to `Agent(...)`, without
+inventing a second way to construct an agent.
+
+```python
+from harness import Agent
+
+class ResearchProfile:
+    name = "research"                              # shown in an error, never the agent's own name
+    def apply(self, agent: Agent) -> Agent:
+        return agent.with_(
+            job=f"You are {agent.name}, a research assistant.\n\n{agent.job}",
+            tools=[*agent.toolset, search, fetch],   # ADD to what the caller passed
+            budget="$1, 60 steps",
+        )
+
+agent = Agent(name="Researcher", job="What changed in Python 3.13's typing module?") \
+            .with_profile(ResearchProfile())
+agent.run("go")                  # same Agent surface — try_run/run/arun/atry_run unchanged
+```
+
+`Profile` is a `Protocol` (like `Policy`/`Sandbox`): a `name: str` and an
+`apply(agent: Agent) -> Agent` method is the whole contract, so a profile can live in
+your own repo with no import from the library beyond the types its `apply()` happens to
+use. `Agent(...)` keeps meaning what it always meant — `name=` is the agent's identity,
+`job=` is this session's own mission, `tools=` is anything you want present regardless
+of which profile runs. A profile written well ADDS to all three (`agent.job` folded in
+as a section, `agent.toolset` kept and extended) rather than discarding what the caller
+passed — `examples/coding_profile.py::CodingProfile` and
+`examples/research_profile.py::ResearchProfile` are two real, structurally different
+profiles built this way.
+
+**The one rule `Agent.with_profile()` enforces that a profile author never has to know
+exists: a profile may extend an agent, never loosen it.** After `profile.apply(self)`
+runs, `_refuse_if_loosened` (`agent.py`) compares the result against the agent you
+started with on the knobs a prompt-and-tools bundle has no legitimate reason to touch —
+`safety`, `accepts_tainted`, `allowed_hosts`, `require_approval_evidence`,
+`max_asks_per_run`, which `policies` survive, and whether an `approve=` gate got
+removed entirely. Any of those moving in the unsafe direction raises
+`ProfileLoosenedSafetyError` naming every culprit, before a live `Agent` is ever
+returned — the same "caught at construction" discipline the lethal-trifecta check
+already applies, and the same shape `_check_subagent_safety` already enforces for a
+subagent ("more restricted than its parent, never less"). See ADR-073.
+
+No separate "already applied" bookkeeping exists for calling `with_profile()` twice with
+the same profile: one that adds tools under names it used before hits `ToolSet`'s
+ordinary duplicate-name guard (`DuplicateToolError`) on the second call — a mechanism
+that already exists and already fires, not a new one.
 
 ## 4. Choosing an effect
 

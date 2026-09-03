@@ -61,7 +61,8 @@ from typing import Any, Sequence
 sys.path.insert(0, "src")
 sys.path.insert(0, "examples")
 
-from coding_profile import CodingProfile, build_coding_agent
+from coding_profile import CodingProfile
+from harness import Agent
 from harness.eval.cost import cost_per_success
 
 #: A commit touching more than this many files is usually a rename, a reformat, or a
@@ -269,16 +270,17 @@ def bench(repo: Path, cases: Sequence[Case], *, profile: CodingProfile | None = 
                 out.append(Outcome(case, valid=True, note=last[:120]))
                 continue
 
-            agent = build_coding_agent(replace(
-                profile or CodingProfile(root=ws.path),
-                root=ws.path,
-                tasks_db=str(ws.path / ".bench-tasks.db"),
-            ))
             task = (f"{case.subject}\n\n"
                     f"The test in {', '.join(case.tests)} currently fails. Make it pass "
                     f"by changing the source, not the test.")
+            case_profile = replace(
+                profile or CodingProfile(root=ws.path),
+                root=ws.path,
+                tasks_db=str(ws.path / ".bench-tasks.db"),
+            )
+            agent = Agent(name="Coder", job=task).with_profile(case_profile)
             started = time.monotonic()
-            result = agent.try_run(task)
+            result = agent.try_run("Begin.")
             elapsed = time.monotonic() - started
 
             fixed, tail = run_tests(ws.path, case.tests)
