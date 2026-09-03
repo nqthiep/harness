@@ -7,8 +7,21 @@ taint, durability, audit) while the things that decide whether an agent is actua
 at coding are **judgment**: what the system prompt says, which tools exist and how they
 describe themselves, which model runs which role, and how fast the agent learns it broke
 something. This file is that judgment layer, packaged as a `harness.Profile`
-(`src/harness/profile.py`) — every line below is written against the public API, so it
-can live in a user's own repo exactly as it is.
+(`src/harness/profile.py`) — every line below is written against the public API, so THIS
+FILE has no dependency outside the library itself, `output_shaping.py`, and, when
+`enable_shell=`/`enable_findings=` are turned on, `shell_tools.py`/`findings_log.py`.
+
+**Correction, stated plainly rather than left implicit: copying `coding_profile.py`
+alone into another repo will NOT run.** An earlier version of this paragraph claimed the
+opposite ("every line ... can live in a user's own repo exactly as it is"), true only
+while this file had no sibling dependencies — `apply()` now imports `output_shaping.py`
+unconditionally (`with_smart_truncation`, for `run_tests`/`git_diff`'s own fix — see its
+own module docstring) and `shell_tools.py`/`findings_log.py` conditionally. What travels
+together, at minimum: `coding_profile.py` + `output_shaping.py`; add `shell_tools.py`
+and/or `findings_log.py` if you use either `enable_` flag. None of the four needs
+anything from `examples/` beyond each other — no shared package, no `__init__.py`, just
+`sys.path.insert(0, "examples")` (or an equivalent import path) pointed at all of them
+together.
 
     agent = Agent(name="Coder", job="Make tests/test_parser.py pass", tools=[git_push]) \\
                 .with_profile(CodingProfile(root="/path/to/repo"))
@@ -387,8 +400,23 @@ class CodingProfile:
     sandbox: Any = None
     #: Where the task list (and, if enabled, the findings log) lives. A path, so it
     #: survives a process restart; the LangGraph checkpointer alone does not cover
-    #: state outside graph state.
+    #: state outside graph state. Ignored when `store=` is set.
     tasks_db: str = "coding_session.db"
+    #: Inject your own `Store` (a `SqliteStore` you already opened, or any other `Store`
+    #: implementation) to control its lifecycle yourself — `apply()` never closes what
+    #: it did not open. Left `None` (the default), `apply()` builds one `SqliteStore
+    #: (self.tasks_db)` and shares it between `TaskLedger` and `FindingsLog` — ONE
+    #: connection, not two (a resource-leak fix in itself: an earlier version opened one
+    #: per ledger, measured at 74 leaked file descriptors after 20 `apply()` calls with
+    #: `enable_findings=True`). That internal default is still never closed by `apply()`
+    #: itself, for the same reason `DeepSeekProvider` cannot close itself automatically
+    #: — `apply()` returns only an `Agent`, which is deliberately lightweight and frozen
+    #: with no lifecycle of its own (`agent.py`'s own docstring: "safe to share across
+    #: requests"), so there is no place to hand the store's `close()` back to a caller
+    #: through that return value. Fine for a short script that exits anyway; NOT fine
+    #: for a loop that builds many agents in one process (`coding_bench.py`'s own case)
+    #: — pass `store=` there and close it yourself once the agent built from it is done.
+    store: Any = None
     #: OFF by default: `run_command`/`run_shell` (`shell_tools.py`) genuinely widen what
     #: this agent can do — arbitrary commands, gated by `shell_policy` rather than by a
     #: fixed tool list. Turning this on is a decision an operator makes on purpose, not
@@ -423,7 +451,11 @@ class CodingProfile:
         root = Path(self.root).resolve()
         sandbox = self.sandbox if self.sandbox is not None else Subprocess()
         code = CodeTools(root=root, sandbox=sandbox, test_command=self.test_command)
-        tasks = TaskLedger(SqliteStore(self.tasks_db))
+        # ONE store shared by TaskLedger and FindingsLog — see `store=`'s own docstring
+        # for the leak this replaced (two SqliteStore instances, two live connections,
+        # neither ever closed) and who owns closing this one.
+        store = self.store if self.store is not None else SqliteStore(self.tasks_db)
+        tasks = TaskLedger(store)
         verifier = Verifier(root, self.verify_commands, sandbox=sandbox, env=code.env)
 
         # `run_tests`/`git_diff` keep the library's default `max_result_tokens=4_000`
@@ -456,7 +488,9 @@ class CodingProfile:
             extra_policies.append(self.shell_policy or ShellCommandPolicy())
         if self.enable_findings:
             from findings_log import FindingsLog
-            findings = FindingsLog(SqliteStore(self.tasks_db))
+            # Same `store` TaskLedger uses — different keys (`harness:tasks` vs
+            # `harness:findings`), same connection, not a second one.
+            findings = FindingsLog(store)
             extra_tools.extend(findings.tools())
 
         # The explorer. Read-only by construction: `as_tool()` takes the MAXIMUM

@@ -48,6 +48,7 @@ programming".
 from __future__ import annotations
 
 import argparse
+import asyncio
 import shutil
 import subprocess
 import sys
@@ -64,6 +65,7 @@ sys.path.insert(0, "examples")
 from coding_profile import CodingProfile
 from harness import Agent
 from harness.eval.cost import cost_per_success
+from harness.memory.sqlite import SqliteStore
 
 #: A commit touching more than this many files is usually a rename, a reformat, or a
 #: merge of several ideas — a poor task statement whichever it is.
@@ -245,12 +247,19 @@ def _validate(ws: Workspace) -> tuple[bool, str]:
 
 
 def bench(repo: Path, cases: Sequence[Case], *, profile: CodingProfile | None = None,
-          dry_run: bool = False) -> list[Outcome]:
+          provider: Any = None, dry_run: bool = False) -> list[Outcome]:
     """Run every case; return one `Outcome` each, discarded cases included.
 
     `dry_run` harvests and validates without building an agent or spending anything —
     run it first, always: it tells you how many of your cases are real before you pay to
     find out.
+
+    `provider=None` (the default) means the real `AnthropicProvider` — this is the
+    path that actually spends money against the live API. Threaded through explicitly,
+    not left implicit in the `Agent(...)` call below, so a test can pass a `FakeModel`
+    and exercise this function's own logic (the per-case `SqliteStore` lifecycle, the
+    outcome bookkeeping) without a network call or a key —
+    `tests/test_coding_bench.py` does exactly that.
     """
     base = Path(tempfile.mkdtemp(prefix="coding-bench-"))
     out: list[Outcome] = []
@@ -273,14 +282,27 @@ def bench(repo: Path, cases: Sequence[Case], *, profile: CodingProfile | None = 
             task = (f"{case.subject}\n\n"
                     f"The test in {', '.join(case.tests)} currently fails. Make it pass "
                     f"by changing the source, not the test.")
+            # Owned here, not left to CodingProfile.apply()'s own internal default:
+            # `bench()` builds one Agent per CASE, in a loop, which is exactly the shape
+            # that turns "a SqliteStore apply() never closes" into a real leak (measured
+            # at 74 file descriptors after 20 such calls before this fix) rather than
+            # the "a short script that exits anyway" cost CodingProfile's own `store=`
+            # docstring accepts for a one-shot caller. Explicit `store=` plus a `finally`
+            # closes exactly what this iteration opened, every iteration, including when
+            # `try_run` raises.
+            case_store = SqliteStore(str(ws.path / ".bench-tasks.db"))
             case_profile = replace(
                 profile or CodingProfile(root=ws.path),
                 root=ws.path,
-                tasks_db=str(ws.path / ".bench-tasks.db"),
+                store=case_store,
             )
-            agent = Agent(name="Coder", job=task).with_profile(case_profile)
+            agent = Agent(name="Coder", job=task,
+                         provider=provider).with_profile(case_profile)
             started = time.monotonic()
-            result = agent.try_run("Begin.")
+            try:
+                result = agent.try_run("Begin.")
+            finally:
+                asyncio.run(case_store.close())
             elapsed = time.monotonic() - started
 
             fixed, tail = run_tests(ws.path, case.tests)

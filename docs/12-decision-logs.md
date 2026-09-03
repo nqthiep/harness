@@ -2429,7 +2429,73 @@ clauses that spuriously fail to match `allow`).
 
 ---
 
-## Implementation Decision Log
+### ADR-076 — `CodingProfile.apply()` shares one `Store`; a caller that builds many agents owns closing it
+
+**Status:** Accepted.
+
+**Context.** A systems-engineer architecture review (asked for explicitly, one level up
+from the Profile-mechanism review ADR-074/075 came from) measured a resource leak:
+`apply()` built a SEPARATE `SqliteStore(self.tasks_db)` for `TaskLedger` and for
+`FindingsLog` — two live `sqlite3` connections to the SAME file, neither ever closed.
+
+```
+fd before: 4, after 20 apply() calls (enable_findings=True): 78, leaked: 74
+```
+
+`SqliteStore` (`memory/sqlite.py`) has always had a real `close()` — the gap was that
+nothing at the profile layer called it, the same class of bug the `DeepSeekProvider`
+fix (`examples/deepseek_provider.py`, same session) found in a `ModelProvider`, but
+worse here: `coding_bench.py` calls `.with_profile()` in a LOOP, one call per benchmark case,
+which is exactly the shape that turns "a short script that exits anyway" into an actual,
+growing leak — a 50-case run would leak on the order of 150+ file descriptors before this
+fix, unbounded by anything in `coding_bench.py` itself, which had no handle to the stores
+`apply()` was creating.
+
+**Decision.** Two changes, addressing the two places this actually bites:
+
+1. `apply()` now builds ONE `Store` and shares it between `TaskLedger` and
+   `FindingsLog` — different keys (`harness:tasks`/`harness:findings`), same
+   connection. Halves the leak in the path nobody has fixed yet (measured: 74 → 30 fds
+   over the same 20 calls) — real, but not the full fix, because `apply()` still owns
+   constructing the default and `Agent` (what `apply()` returns) is deliberately
+   lightweight and frozen with no lifecycle of its own (`agent.py`: "safe to share
+   across requests") — there is no place on the return value to hand a `close()` back
+   to the caller through.
+2. `CodingProfile` gains `store: Any = None` (same injectable-resource shape
+   `sandbox=`/`shell_sandbox=` already use) — a caller that owns a resource-lifecycle
+   boundary can build its own `SqliteStore`, pass it in, and close it themselves.
+   `coding_bench.py`'s per-case loop is exactly this case: it now builds one
+   `SqliteStore` per case, passes it via `store=`, and closes it in a `finally` right
+   after that case's `try_run()` — verified at zero leaked fds across both a batch of
+   successful cases and a batch that raise mid-run (the `finally` firing either way is
+   the actual point; `try_run` itself does not raise for an ordinary internal failure —
+   `run.py`'s step loop catches it and returns `stop_reason=ERROR` — so testing the
+   `finally` needed `Agent.try_run` mocked to raise directly, not a misbehaving
+   provider, to exercise a genuine raise).
+
+Not fixed by giving `Agent` a `close()`: that changes what `Agent` IS for every caller,
+not just the ones using `CodingProfile`, and the class's whole design (frozen, no
+lifecycle, share-safe) is a deliberate property this fix has no standing to override —
+same restraint ADR-074 applied to `_check_tool_set` rather than widening core's own
+settled scope.
+
+**Test.** `tests/test_coding_profile.py` — `TaskLedger`/`FindingsLog` proven to share
+the literal same `Store` object (write through one tool, read back through the other's),
+an injected store used verbatim, and the default (no `store=`) path proven to construct
+exactly one `SqliteStore` via a mock spy — not an fd-count threshold, which turned out to
+vary with GC timing between runs (measured 1.5/call in one batch, 3.0/call in another,
+for the same fixed code) and would have made a flaky regression test.
+`tests/test_coding_bench.py` — a real two-commit git fixture (not this repo's own
+history, so the fixture is stable regardless of what this repo's log looks like later),
+`provider=` (added to `bench()` alongside this fix specifically so it could be tested
+without a live API key) driving a scripted `FakeModel`, and the store closed exactly
+once per case in both the success and the exception path.
+
+Also fixed in the same pass, found while writing this ADR: `coding_profile.py`'s own
+module docstring claimed "every line below ... can live in a user's own repo exactly as
+it is" — true when the file had no sibling dependencies, false since `apply()` started
+importing `output_shaping.py` unconditionally and `shell_tools.py`/`findings_log.py`
+conditionally. Corrected to name exactly what travels together.
 
 | # | Decision | Rationale |
 |---|---|---|
