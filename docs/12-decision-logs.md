@@ -2497,6 +2497,119 @@ it is" — true when the file had no sibling dependencies, false since `apply()`
 importing `output_shaping.py` unconditionally and `shell_tools.py`/`findings_log.py`
 conditionally. Corrected to name exactly what travels together.
 
+### ADR-077 — Camera, face/body, identity and scene ship as a plain `Profile`; the safety engine decides the agent's shape, not the profile
+
+**Status:** Accepted.
+
+**Context.** The requirement: an agent that sees through a camera (OpenCV), detects
+faces and bodies (MediaPipe), recognises identity from a face, recognises the
+environment from an image, and then talks naturally as though it perceives with its
+eyes.
+
+The first design answered this with a new abstraction — `Faculty`, a seven-member
+protocol beneath `Profile` (`tools`/`prompt_section`/`policies`/`middleware`/`sensors`/
+`brief`/`wraps`) plus four new primitives (`Sensor`, `PerceptionBuffer`, `Salience`,
+`Driver`). An independent adversarial review cut it to two members. The follow-up
+question — why not just use `Profile`, since more kinds of component cost usability and
+maintenance — cut it to zero. Three verified reasons:
+
+* `Profile.apply(agent) -> Agent` returns a whole `Agent`, so it already reaches every
+  behaviour lever `with_()` and `with_middleware()` reach. `CodingProfile.apply()`
+  demonstrably changes BEHAVIOUR rather than only adding tools already —
+  `with_verification` (`coding_profile.py:310`) and `with_middleware` (`:534`). A
+  `Faculty` returning fragments for a fixed fold to consume is strictly LESS expressive
+  than that, at four times the surface area.
+* Bundling capability INSIDE one `apply()` is exactly what ADR-074's guard cannot see:
+  `Agent._profiles` would count one profile, and `_refuse_if_loosened` checks seven
+  safety knobs and no tools at all. The new abstraction would have re-opened the hole
+  the previous one was added to close.
+* Business logic never needed a new component kind. It belongs in plain classes, with
+  the tool function as an adapter and the profile as wiring — the division `Verifier`
+  has demonstrated since ADR-073.
+
+Also measured during that review and recorded rather than fixed, being a core doc bug
+outside this change's scope: `middleware.py:174-177` documents a guarantee the code does
+not provide. A `before_model` that changes `system`/`tools` does NOT trip the
+cache-determinism linter — `PrefixWatcher.observe` is called from exactly one site
+(`run.py:85`) on the ASSEMBLER's prefix, which never passes through a middleware.
+
+**Decision.** `examples/vision_tools.py` and `examples/vision_profile.py`. No new
+component kind; `VisionProfile` is a `harness.Profile` exactly like `CodingProfile`.
+Three layers, split so that the layer holding the decisions is the layer that can be
+tested here:
+
+1. **Pure business logic** — `cosine`, `IdentityLedger` (a `Store`, same shape as
+   `TaskLedger`), `posture_of`, `distance_of`, `describe`. No OpenCV, no MediaPipe, no
+   `Agent`. Threshold, the ambiguity refusal, several angles per person, an empty
+   ledger, a corrupt ledger, an empty room: all decided and tested here, with
+   hand-written vectors and hand-written landmarks.
+2. **Adapters** — `Detector` (a four-method Protocol), `MediaPipeDetector`,
+   `FakeDetector`, `Camera`, `PerceptionBuffer`. Everything needing hardware or a
+   downloaded model lives only here.
+3. **Tools** — three `ToolSpec`s whose bodies are glue. Every one returns TEXT, because
+   `dispatch.py` renders a result as `value if isinstance(value, str) else
+   json.dumps(...)` and there is no image path anywhere in the tool-result pipeline;
+   inference is local and the model receives a sentence.
+
+The effect classification IS the design, and three consequences were measured rather
+than designed:
+
+| Tool | Effect | What the mechanism then does, without this profile enforcing it |
+|---|---|---|
+| `look` | `external` | Its result raises `Integrity.UNTRUSTED` on the run (`dispatch.py:298` → `emits_of`). A camera sees whatever is physically in front of it — a sign, a phone screen, a printed page — which is the threat class `external` already exists for. |
+| `identify_person` | `read` | `max_confidentiality` is SECRET, so it still works after a `private` look; and it re-reads the last frame rather than capturing, so it is cheap to call repeatedly. |
+| `enroll_person` | `danger` | The only class whose `decision_standard` is ASK, so storing a biometric record asks a human EVERY time, through `PolicyEngine` and into `DecisionLog`. |
+
+The third row then forces the consent decision into the caller's own source, which is
+the best outcome here and none of it was written by this profile: `external`+`danger`
+means `_check_tool_set` refuses construction unless `enroll_person` is in
+`accepts_tainted`, and a profile is mechanically forbidden from granting itself that —
+measured, `ProfileLoosenedSafetyError: accepts_tainted gained ['enroll_person']`. So
+`enable_enrollment=True` requires the operator to write
+`Agent(accepts_tainted=["enroll_person"])` themselves, where a reviewer sees it. That is
+a stronger consent gate than the `RequireBeforePolicy` this profile was going to ship,
+and it costs no code. `Policy` could not have done it anyway: `Policy.check` is sync and
+`RunContext` deliberately carries no message history (`dispatch.py:47-48`), so no policy
+can verify "the human just said their name".
+
+**The trade this profile makes you state.** Camera content is confidential as well as
+untrusted. `private=True` declares `look`/`identify_person` in `sensitive=`, raising
+`Confidentiality.SECRET` on the run, and `check_flow` then DENIES every PUBLIC-max sink:
+no file writes, no fetches — and no SECOND `look` in the same run either, because
+`external`'s own `max_confidentiality` is PUBLIC. Measured, with the harness's own
+words: `denied by policy: look can only send information onward, and this run has read
+something marked secret`. One look per conversational turn (a `Chat.say()` is one run
+and `TaintTracker` is per-run), which suits talking and rules out watching continuously
+inside one turn. So it is OFF by default — and `apply()` REFUSES the combination that
+makes it matter: composing a camera onto an agent that already holds `write`/`external`
+tools raises unless `private=True` (block it by mechanism) or `allow_sinks=True` (accept
+it on purpose). Not a `Policy`, because this is a property of the TOOLSET and the right
+time to object is construction — the same call `_check_tool_set` makes one layer down.
+`external`+`write` stays constructible in general, as it always has been; this profile
+only insists that combining it with a camera is said out loud.
+
+**Test.** `tests/test_vision_tools.py` (65) and `tests/test_vision_profile.py` (25).
+Full suite 962 passed, ruff clean, mypy clean on both new files. Two of those tests were
+written expecting to pass and did not, and both failures were kept as the finding:
+applying one vision profile twice is refused by this profile's own sink check BEFORE
+`ToolSet`'s duplicate-name guard reaches it, and `spec.parallel_safe` does not exist —
+`parallel_safe`/`retryable`/`emits` are read from `EFFECT_PROFILES[spec.effect]` at
+dispatch time, which is why wrapping a tool's `fn` cannot reach them.
+
+**Unverified, said plainly rather than left to be discovered.** `MediaPipeDetector` has
+never run a real inference pass. Its whole API surface was checked against the installed
+package — every class, every option name, and every result field it reads, including
+`Embedding.embedding` (NOT `float_embedding`, the older API's name) — but `mediapipe`
+1.0.1 bundles no `.task` or `.tflite` file anywhere, none could be fetched in this
+sandbox, and no camera exists here. `mediapipe.solutions` is gone entirely; the working
+namespace is `mediapipe.tasks.python.vision`. `DEFAULT_THRESHOLD = 0.80` is a GUESS: on
+hand-written vectors a 15% perturbation moved cosine similarity from 1.00 to 0.998, so
+the number that matters can only come from measuring false accepts and rejects on real
+embeddings. The injectable `Detector` Protocol is what keeps that unknown out of
+everything else. `Camera`'s degradation IS verified: with no device,
+`cv2.VideoCapture(0)` raises nothing, `isOpened()` is `False`, and `read()` is
+`(False, None)`.
+
 | # | Decision | Rationale |
 |---|---|---|
 | IDL-01 | `Decimal` for all money; `float` banned in `budget/` by lint | A rounding error in a spend ceiling is a real bug class |

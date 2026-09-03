@@ -356,9 +356,33 @@ use. `Agent(...)` keeps meaning what it always meant — `name=` is the agent's 
 `job=` is this session's own mission, `tools=` is anything you want present regardless
 of which profile runs. A profile written well ADDS to all three (`agent.job` folded in
 as a section, `agent.toolset` kept and extended) rather than discarding what the caller
-passed — `examples/coding_profile.py::CodingProfile` and
-`examples/research_profile.py::ResearchProfile` are two real, structurally different
+passed — `examples/coding_profile.py::CodingProfile`,
+`examples/research_profile.py::ResearchProfile` and
+`examples/vision_profile.py::VisionProfile` are three real, structurally different
 profiles built this way.
+
+**A profile carries a whole capability domain without a new kind of component, business
+logic included.** `apply()` returns an `Agent`, so it reaches everything `with_()` and
+`with_middleware()` reach — a tool's own function wrapped to change what it returns
+(`with_verification`), middleware on all five hooks, durable state in a `Store`, a
+subagent via `as_tool()`, and the `sensitive=`/`accepts_tainted=` grants. That is why no
+smaller unit beneath `Profile` was introduced when vision was added (ADR-077): a
+seven-member "faculty" protocol returning fragments for a fixed fold to consume is less
+expressive than a method that returns an `Agent`, and bundling capability inside one
+`apply()` would slip past the one-profile-per-agent rule above. The division that
+actually pays is by TESTABILITY, not by framework layer: business logic in plain classes
+and pure functions (`vision_tools.py`'s identity matching, posture and phrasing — no
+camera, no model file, no `Agent`), adapters where hardware and vendor SDKs live, and
+tool functions as glue. `CodingProfile`'s `Verifier` is the same division, and neither
+needed anything added to this API.
+
+**Classify the tools, and the safety engine does the rest.** A profile's most
+consequential decisions are usually its `effect=` choices rather than its code.
+`VisionProfile` gets its consent gate for free that way: `enroll_person` is `danger`, so
+every biometric write ASKs a human; `look` is `external`, so camera content is marked
+untrusted; and those two together mean `_check_tool_set` refuses construction unless the
+CALLER writes `accepts_tainted=["enroll_person"]` themselves — which `_refuse_if_loosened`
+guarantees a profile cannot do on their behalf. None of that is enforced by the profile.
 
 **The one rule `Agent.with_profile()` enforces that a profile author never has to know
 exists: a profile may extend an agent, never loosen it.** After `profile.apply(self)`
