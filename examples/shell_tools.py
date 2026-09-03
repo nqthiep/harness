@@ -18,11 +18,45 @@ default `safety="standard"`, and a `Policy` can still push a SPECIFIC call to AS
 without touching the tool's baseline (composition only ever tightens, never loosens —
 the exact property `docs/03-public-api.md §3.7`/ADR-073 already leans on for
 `Profile`). So: one tool, classified `write` (an arbitrary command is not reliably
-UNDOABLE the way `git reset` undoes `write_source` — this is an honest stretch of
-`write`'s original "undoable" reasoning, made survivable only because `ShellCommandPolicy`
-below is a real, checked gate on content, not a rubber stamp), gated by a `Policy` that
-reads the ACTUAL command and decides per-call. Same shape as `ProtectedPaths`
-(`coding_profile.py`), generalized from paths to commands.
+UNDOABLE the way `git reset` undoes `write_source` — an honest stretch of `write`'s
+original "undoable" reasoning), gated by a `Policy` that reads the ACTUAL command and
+decides per-call. Same shape as `ProtectedPaths` (`coding_profile.py`), generalized
+from paths to commands.
+
+**What `ShellCommandPolicy`'s DEFAULT (denylist) mode actually is, said plainly: a net
+for a CONFUSED model, not a boundary against an ADVERSARIAL one.** Measured directly —
+`re.search` over a denylist is not hard to evade, and evading it does not require
+sophistication:
+
+```
+ALLOW  rm ${IFS}-rf${IFS}/tmp/x                              # $IFS instead of a space
+ALLOW  r""m -rf /tmp/x                                       # an empty quote inside the name
+ALLOW  a=rm; $a -rf /tmp/x                                   # indirection through a variable
+ALLOW  echo cm0gLXJmIC90bXAveA== | base64 -d | sh             # base64-encoded, decoded, run
+ALLOW  python3 -c "shutil.rmtree('/tmp/x')"                  # deletion via a scripting API, not `rm`
+```
+
+Five of six deliberate evasions tried against the DEFAULT patterns below returned ALLOW.
+This is not a bug this file can regex its way out of — the space of ways to say "delete
+this" is not enumerable, and every fix that catches one of the five above misses a sixth.
+**Treat denylist mode as protection against an honest mistake (the model typed `rm -rf`
+because it meant to), not against a compromised or prompt-injected one.** If untrusted
+content (a fetched web page, an MCP server's output, anything `effect="external"`) can
+reach this agent's context, denylist mode alone is not the isolation boundary for that —
+pair `enable_shell=True` with a REAL sandbox (`shell_sandbox=`, Docker/Firecracker/gVisor)
+whenever that is true, and read `mode="allowlist"` below for the fundamentally different,
+stronger guarantee this class of policy CAN actually give.
+
+**`mode="allowlist"` — ALLOW only what you name, ASK for everything else.** A denylist
+enumerates the infinite "bad" side; an allowlist enumerates the finite "known-safe" side,
+which is the shape that can actually be complete for a given project. Every ALLOW pattern
+must match the ENTIRE clause (`^...$`, not "appears somewhere in it") specifically so
+`pytest -q && rm -rf /` cannot slip through on the strength of `pytest -q` looking safe —
+each `;`/`&&`/`||`/`|`-separated clause is checked independently, and ALL of them must
+match an allow pattern or the call falls to ASK (never silently DENY: an unrecognized
+command is unvetted, not proven malicious). This is the mode to reach for once you know
+which build tools a project actually uses and want a guarantee stronger than "nobody has
+found an evasion of the denylist yet."
 
 **`argv`, not a shell string, by default — and why that distinction is the whole safety
 story here.** `run_command(argv: list[str])` below calls `Sandbox.run(argv, ...)`
@@ -115,27 +149,68 @@ DEFAULT_ASK: Final[tuple[str, ...]] = (
     r"\bgh\s+pr\s+merge\b", r"\bgh\s+release\b",
 )
 
+#: `mode="allowlist"` only. Each pattern must match a whole CLAUSE (`^...$`), not a
+#: substring — read-only inspection and the common build/test/lint invocations across a
+#: handful of ecosystems, deliberately narrow. A project using a tool not listed here
+#: gets ASK for it, not a silent failure to run — extend, don't replace:
+#: `ShellCommandPolicy(mode="allowlist", allow=(*DEFAULT_ALLOW, r"^bazel\s+(build|test)\b.*"))`.
+DEFAULT_ALLOW: Final[tuple[str, ...]] = (
+    r"^(ls|cat|pwd|find|wc|head|tail|diff|echo)\b.*",
+    r"^(grep|rg|ag)\b.*",
+    r"^git\s+(status|diff|log|show|branch|fetch)\b.*",
+    r"^(python3?|node)\s+-m\s+\w+.*",                       # `python3 -m pytest ...`
+    r"^(pytest|python3?\s+-m\s+pytest)\b.*",
+    r"^(ruff|mypy|black|flake8|pylint)\b.*",
+    r"^(npm|yarn|pnpm)\s+(install|ci|test|run|list|audit)\b.*",
+    r"^npx\s+\w+.*",
+    r"^(eslint|prettier|tsc|jest|vitest)\b.*",
+    r"^cargo\s+(build|test|check|fmt|clippy|run)\b.*",
+    r"^go\s+(build|test|vet|fmt|run)\b.*",
+    r"^(make|cmake)\b.*",
+)
+
 
 @dataclass(frozen=True)
 class ShellCommandPolicy:
     """Reads the ACTUAL command a `run_command`/`run_shell` call is about to run and
-    rules per-call — `deny` outranks `ask` outranks the tool's own `write` baseline
-    (ALLOW). Everything not matched runs autonomously; that is the point.
+    rules per-call. Two modes, two different guarantees — see the module docstring's
+    measured evasion section before picking one:
 
-    `Verdict` still composes with `max()` (P-2): this can only push a call UP from
-    ALLOW, never pull one back down — stacking this alongside another `Policy` can only
-    make the combination stricter, the same guarantee every policy in this library
-    already gives.
+    `mode="denylist"` (default, backward-compatible): `deny` outranks `ask` outranks
+    the tool's own `write` baseline (ALLOW) — everything NOT matched runs autonomously.
+    A net for a confused model, not a boundary against an adversarial one.
+
+    `mode="allowlist"`: the reverse shape. `deny` still checked first (belt and
+    suspenders — an explicit prohibition should win even inside an allowlist), then
+    EVERY clause of the command must match something in `allow` or the call falls to
+    ASK. Nothing runs autonomously that you have not named.
+
+    `Verdict` still composes with `max()` (P-2) regardless of mode: this can only push
+    a call UP from ALLOW, never pull one back down — stacking this alongside another
+    `Policy` can only make the combination stricter, the same guarantee every policy in
+    this library already gives.
     """
     name: str = "shell-command"
-    #: Each entry is a regex string (`re.search`) or a callable `(text) -> bool` — the
-    #: latter for a pattern like `_is_recursive_force_delete` that a single regex
-    #: cannot express correctly (see its own docstring for the bug this avoided).
+    mode: str = "denylist"
+    #: Each entry is a regex string or a callable `(text) -> bool` — the latter for a
+    #: pattern like `_is_recursive_force_delete` no single regex expresses correctly
+    #: (see its own docstring for the bug this avoided). `deny`/`ask` match via
+    #: `re.search` (substring — safe to over-match, the failure mode on the other side
+    #: is a real destructive command slipping through); `allow` matches a whole CLAUSE
+    #: via `re.fullmatch` (substring would be a real hole: `pytest -q && rm -rf /`
+    #: contains the substring `pytest -q`).
     deny: Sequence[str | Any] = DEFAULT_DENY
     ask: Sequence[str | Any] = DEFAULT_ASK
+    allow: Sequence[str | Any] = DEFAULT_ALLOW
     #: Tool names this policy inspects. `run_command`'s `argv` is joined with spaces
     #: before matching, so a pattern written for a shell string matches either shape.
     tools: frozenset[str] = frozenset({"run_command", "run_shell"})
+
+    def __post_init__(self) -> None:
+        if self.mode not in ("denylist", "allowlist"):
+            raise ValueError(
+                f"ShellCommandPolicy(mode={self.mode!r}) — must be 'denylist' or "
+                f"'allowlist'")
 
     def _command_text(self, call: ToolCall) -> str:
         if "argv" in call.arguments:
@@ -143,8 +218,12 @@ class ShellCommandPolicy:
         return str(call.arguments.get("cmd", ""))
 
     @staticmethod
-    def _matches(pattern: str | Any, text: str) -> bool:
+    def _search(pattern: str | Any, text: str) -> bool:
         return pattern(text) if callable(pattern) else bool(re.search(pattern, text))
+
+    @staticmethod
+    def _fullmatch(pattern: str | Any, clause: str) -> bool:
+        return pattern(clause) if callable(pattern) else bool(re.fullmatch(pattern, clause))
 
     @staticmethod
     def _label(pattern: str | Any) -> str:
@@ -155,16 +234,30 @@ class ShellCommandPolicy:
             return Ruling(Verdict.ALLOW, "not a shell tool", self.name)
         text = self._command_text(call)
         for pattern in self.deny:
-            if self._matches(pattern, text):
+            if self._search(pattern, text):
                 return Ruling(Verdict.DENY,
                               f"matches a denied pattern ({self._label(pattern)}) — not "
                               f"run, ever, by this policy", self.name)
+        if self.mode == "allowlist":
+            return self._check_allowlist(text)
         for pattern in self.ask:
-            if self._matches(pattern, text):
+            if self._search(pattern, text):
                 return Ruling(Verdict.ASK,
                               f"matches a pattern that needs a human's yes "
                               f"({self._label(pattern)})", self.name)
         return Ruling(Verdict.ALLOW, "no denied or ask-gated pattern matched", self.name)
+
+    def _check_allowlist(self, text: str) -> Ruling:
+        clauses = [c.strip() for c in re.split(r"[;&|\n]+", text) if c.strip()]
+        if not clauses:
+            return Ruling(Verdict.ASK, "empty command", self.name)
+        for clause in clauses:
+            if not any(self._fullmatch(p, clause) for p in self.allow):
+                return Ruling(
+                    Verdict.ASK,
+                    f"{clause!r} does not match any allowed pattern — nothing runs "
+                    f"autonomously that isn't named in `allow`", self.name)
+        return Ruling(Verdict.ALLOW, "every clause matched an allowed pattern", self.name)
 
 
 class ShellTools:

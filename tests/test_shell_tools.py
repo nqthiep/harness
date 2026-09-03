@@ -90,6 +90,92 @@ class ShellCommandPolicyThat(unittest.TestCase):
         r2 = custom.check(_call("run_shell", cmd="rm -rf /"), None)
         self.assertEqual(r2.verdict, Verdict.DENY)
 
+    def test_rejects_an_unknown_mode(self):
+        from shell_tools import ShellCommandPolicy
+        with self.assertRaises(ValueError):
+            ShellCommandPolicy(mode="yolo")
+
+
+class DenylistModeEvasionsThat(unittest.TestCase):
+    """The exact evasions found during a systems-engineer review of this policy
+    (module docstring's own measurement): denylist mode is a net for a CONFUSED model,
+    not a boundary against an adversarial one. These tests pin that fact down as a
+    known, accepted property of denylist mode rather than letting it silently regress
+    into an implied (and false) stronger guarantee — and `AllowlistModeThat` below is
+    the fix these same commands need to actually be caught.
+    """
+
+    def setUp(self):
+        from shell_tools import ShellCommandPolicy
+        self.policy = ShellCommandPolicy()          # default: denylist
+
+    def test_the_measured_evasions_are_not_caught_by_denylist_mode(self):
+        evasions = [
+            "rm ${IFS}-rf${IFS}/tmp/x",
+            'r""m -rf /tmp/x',
+            "a=rm; $a -rf /tmp/x",
+            "echo cm0gLXJmIC90bXAveA== | base64 -d | sh",
+            "python3 -c \"shutil.rmtree('/tmp/x')\"",
+        ]
+        for cmd in evasions:
+            with self.subTest(cmd=cmd):
+                r = self.policy.check(_call("run_shell", cmd=cmd), None)
+                self.assertEqual(r.verdict, Verdict.ALLOW,
+                                 "if this now fails, denylist mode caught an evasion it "
+                                 "could not catch before — update the module docstring's "
+                                 "measurement, don't just delete this test")
+
+
+class AllowlistModeThat(unittest.TestCase):
+    def setUp(self):
+        from shell_tools import ShellCommandPolicy
+        self.policy = ShellCommandPolicy(mode="allowlist")
+
+    def test_allows_a_known_safe_command(self):
+        for cmd in ("pytest -q", "ruff check .", "git status", "npm install"):
+            with self.subTest(cmd=cmd):
+                r = self.policy.check(_call("run_shell", cmd=cmd), None)
+                self.assertEqual(r.verdict, Verdict.ALLOW)
+
+    def test_asks_for_an_unrecognized_command_rather_than_denying_outright(self):
+        r = self.policy.check(_call("run_shell", cmd="some-obscure-build-tool --flag"), None)
+        self.assertEqual(r.verdict, Verdict.ASK)
+
+    def test_a_safe_prefix_does_not_smuggle_a_second_clause_through(self):
+        """The whole point of matching a CLAUSE, not a substring: `pytest -q` looking
+        safe must not launder whatever comes after `&&`."""
+        r = self.policy.check(_call("run_shell", cmd="pytest -q && rm -rf /"), None)
+        self.assertNotEqual(r.verdict, Verdict.ALLOW)
+
+    def test_denylist_still_applies_inside_allowlist_mode(self):
+        r = self.policy.check(_call("run_shell", cmd="sudo pytest -q"), None)
+        self.assertEqual(r.verdict, Verdict.DENY)
+
+    def test_catches_the_measured_evasions_denylist_mode_missed(self):
+        """The actual fix for `DenylistModeEvasionsThat`: none of these match any
+        `DEFAULT_ALLOW` pattern, so allowlist mode falls to ASK for every one of them —
+        never silently autonomous, unlike denylist mode."""
+        evasions = [
+            "rm ${IFS}-rf${IFS}/tmp/x",
+            'r""m -rf /tmp/x',
+            "a=rm; $a -rf /tmp/x",
+            "python3 -c \"shutil.rmtree('/tmp/x')\"",
+            # `echo` alone IS on the allowlist (it's harmless by itself) — this evasion
+            # is caught because `base64 -d` and `sh` are separate clauses that are NOT,
+            # not because `echo` is denied.
+            "echo cm0gLXJmIC90bXAveA== | base64 -d | sh",
+        ]
+        for cmd in evasions:
+            with self.subTest(cmd=cmd):
+                r = self.policy.check(_call("run_shell", cmd=cmd), None)
+                self.assertNotEqual(r.verdict, Verdict.ALLOW)
+
+    def test_argv_form_is_checked_the_same_way(self):
+        r = self.policy.check(_call("run_command", argv=["pytest", "-q"]), None)
+        self.assertEqual(r.verdict, Verdict.ALLOW)
+        r2 = self.policy.check(_call("run_command", argv=["curl", "evil.com"]), None)
+        self.assertNotEqual(r2.verdict, Verdict.ALLOW)
+
 
 class ShellToolsThat(unittest.TestCase):
     def test_run_command_executes_and_confines_cwd(self):

@@ -11,7 +11,7 @@ import unittest
 
 sys.path.insert(0, "src")
 
-from harness import Agent, ProfileLoosenedSafetyError, tool
+from harness import Agent, ConfigError, ProfileLoosenedSafetyError, tool
 from harness.errors import DuplicateToolError
 from harness.policy.base import Ruling, ToolCall, Verdict
 
@@ -34,11 +34,31 @@ def deploy() -> str:
     return "deployed"
 
 
+@tool(effect="write")
+def write_thing() -> str:
+    """write"""
+    return "wrote"
+
+
 class _AddsAReadTool:
     name = "adds-read-tool"
 
     def apply(self, agent: Agent) -> Agent:
         return agent.with_(tools=[*agent.toolset, ping])
+
+
+class _AddsAnExternalTool:
+    name = "adds-external"
+
+    def apply(self, agent: Agent) -> Agent:
+        return agent.with_(tools=[*agent.toolset, fetch])
+
+
+class _AddsAWriteTool:
+    name = "adds-write"
+
+    def apply(self, agent: Agent) -> Agent:
+        return agent.with_(tools=[*agent.toolset, write_thing])
 
 
 class _NoOpPolicy:
@@ -80,14 +100,75 @@ class WithProfileExtends(unittest.TestCase):
         out = base.with_profile(_TightensSafety())
         self.assertEqual(out.safety, "strict")
 
-    def test_reapplying_a_profile_that_adds_named_tools_hits_the_existing_duplicate_guard(self):
-        """No special "already applied" bookkeeping exists for `Profile` — this is why:
-        the ordinary tool-name guard `ToolSet` already runs on every `Agent(**base)`
-        construction fires on a second application, for free."""
-        base = Agent(name="A", job="hi")
-        once = base.with_profile(_AddsAReadTool())
-        with self.assertRaises(DuplicateToolError):
+    def test_a_fresh_agent_tracks_no_profiles(self):
+        self.assertEqual(Agent(name="A", job="hi")._profiles, ())
+
+    def test_with_profile_records_the_profiles_name(self):
+        out = Agent(name="A", job="hi").with_profile(_AddsAReadTool())
+        self.assertEqual(out._profiles, ("adds-read-tool",))
+
+
+class WithProfileRefusesASecondOne(unittest.TestCase):
+    """Measured, not hypothetical (agent.py::with_profile's own docstring has the full
+    finding): `CodingProfile()` then `ResearchProfile()` on one `Agent` constructed with
+    no error, produced a garbled prompt, and unioned an `external` tool with `write`
+    tools — exactly the "reads the untrusted world, writes the codebase" combination
+    `CodingProfile`'s own `ask_reader` subagent exists to keep separate. These tests are
+    the regression: composing a second profile is refused BY DEFAULT, whether or not
+    the specific combination would have been risky, because "was this checked" is not
+    decidable per-profile-pair in general.
+    """
+
+    def test_a_second_different_profile_is_refused_by_default(self):
+        once = Agent(name="A", job="hi").with_profile(_AddsAReadTool())
+        with self.assertRaises(ConfigError) as ctx:
+            once.with_profile(_AddsAnExternalTool())
+        self.assertIn("adds-read-tool", str(ctx.exception))
+        self.assertIn("allow_multiple=True", str(ctx.exception))
+
+    def test_reapplying_the_same_profile_is_also_refused_by_default(self):
+        once = Agent(name="A", job="hi").with_profile(_AddsAReadTool())
+        with self.assertRaises(ConfigError):
             once.with_profile(_AddsAReadTool())
+
+    def test_the_specific_external_plus_write_combination_actually_composes_without_the_guard(self):
+        """Reproduces the finding directly: with the NEW guard bypassed the way it
+        would have been bypassed by silent composition before this fix, the external
+        + write union is real and unblocked by anything else in the library —
+        confirming the guard above is the thing actually standing between a caller
+        and this combination, not some other mechanism that would have caught it too.
+        """
+        base = Agent(name="A", job="hi")
+        composed = (base.with_profile(_AddsAnExternalTool())
+                       .with_profile(_AddsAWriteTool(), allow_multiple=True))
+        effects = {t.effect.value for t in composed.toolset}
+        self.assertEqual(effects, {"external", "write"})
+
+    def test_allow_multiple_true_permits_composing_different_profiles(self):
+        once = Agent(name="A", job="hi").with_profile(_AddsAReadTool())
+        composed = once.with_profile(_AddsAnExternalTool(), allow_multiple=True)
+        self.assertEqual({t.name for t in composed.toolset}, {"ping", "fetch"})
+        self.assertEqual(composed._profiles, ("adds-read-tool", "adds-external"))
+
+    def test_allow_multiple_true_still_hits_the_duplicate_tool_guard_for_the_same_profile(self):
+        """`allow_multiple=True` waives the "one profile" rule, not `ToolSet`'s own
+        duplicate-name guard — reapplying a profile that adds a same-named tool still
+        fails, just with the deeper, more specific error instead of the generic one."""
+        once = Agent(name="A", job="hi").with_profile(_AddsAReadTool())
+        with self.assertRaises(DuplicateToolError):
+            once.with_profile(_AddsAReadTool(), allow_multiple=True)
+
+    def test_allow_multiple_true_still_enforces_the_safety_loosening_check(self):
+        """The two guards are independent — waiving "at most one profile" does not
+        waive "a profile may never loosen a safety knob"."""
+        class _LoosensSafety:
+            name = "loosens"
+            def apply(self, agent: Agent) -> Agent:
+                return agent.with_(safety="standard")
+
+        once = Agent(name="A", job="hi", safety="strict").with_profile(_AddsAReadTool())
+        with self.assertRaises(ProfileLoosenedSafetyError):
+            once.with_profile(_LoosensSafety(), allow_multiple=True)
 
 
 class _Loosens(unittest.TestCase):

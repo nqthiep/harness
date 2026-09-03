@@ -44,7 +44,8 @@ class Agent:
                  "transcript", "exporters",
                  "tenant_id", "session_id", "principal", "decisions",
                  "durable", "checkpoint",
-                 "_asm", "_watch", "_as_tool_budget", "_grants", "_durable_thread")
+                 "_asm", "_watch", "_as_tool_budget", "_grants", "_durable_thread",
+                 "_profiles")
 
     # Declared for the type checker.  The fields are set through `object.__setattr__`
     # (the Agent is frozen), which a checker cannot see — so without these, **a user
@@ -79,6 +80,7 @@ class Agent:
     _watch: Any
     _as_tool_budget: Any
     _durable_thread: str | None
+    _profiles: tuple[str, ...]
 
     def __init__(
         self,
@@ -153,6 +155,13 @@ class Agent:
         # gets its own, generated once and kept only in memory.
         durable: bool = False,
         checkpoint: Any = None,
+        # Bookkeeping for `with_profile()` (agent.py) — which `Profile.name`s have
+        # already been layered onto this agent. Not something a caller sets by hand;
+        # `with_profile()` appends to it after each successful application. Exists so a
+        # SECOND `.with_profile()` call can be refused by default rather than silently
+        # producing a garbled prompt and an unreviewed tool-set combination — see that
+        # method's own docstring for the concrete case this closes.
+        profiles: Sequence[str] = (),
     ) -> None:
         if args:
             shown = ", ".join(repr(a) for a in args)
@@ -218,6 +227,7 @@ class Agent:
         # here is gone; `durable=True` and `returns=` are no longer mutually exclusive.
         object.__setattr__(self, "durable", durable)
         object.__setattr__(self, "checkpoint", checkpoint)
+        object.__setattr__(self, "_profiles", tuple(profiles))
         # `principal=`/`decisions=` are classic-backend-only, stated in their own
         # docstrings above — `build_agent()` has no parameter to hand either to, so a
         # `durable=True` agent given one would silently do nothing with it. Same "fail
@@ -594,26 +604,65 @@ class Agent:
         base["tools"] = list(self.toolset)
         base["accepts_tainted"] = self._grants.accepts_tainted
         base["sensitive"] = self._grants.sensitive
+        base["profiles"] = self._profiles
         base.update(overrides)
         return Agent(**base)
 
-    def with_profile(self, profile: "Profile") -> "Agent":
+    def with_profile(self, profile: "Profile", *, allow_multiple: bool = False) -> "Agent":
         """A new `Agent`, transformed by `profile` — `docs/02-architecture.md §4` /
         `profile.py` for why this is sugar over `with_()`, not a seventh seam.
 
         `profile.apply(self)` does the real work and can call `with_()` however it
-        needs to; what this wrapper adds is the one rule every caller of a
+        needs to; what this wrapper adds is the two rules every caller of a
         third-party `Profile` gets for free, without that profile author having to
-        know the rule exists: **a profile can extend an agent, never loosen it.**
-        `_refuse_if_loosened` checks the knobs a prompt/tool bundle has no legitimate
-        reason to touch — `safety`, `accepts_tainted`, `allowed_hosts`,
-        `require_approval_evidence`, `max_asks_per_run`, and which `policies` survive
-        — the same shape of check `_check_subagent_safety` already runs for a
-        subagent, applied here to a profile instead.
+        know either rule exists:
+
+        1. **A profile can extend an agent, never loosen it.** `_refuse_if_loosened`
+           checks the knobs a prompt/tool bundle has no legitimate reason to touch —
+           `safety`, `accepts_tainted`, `allowed_hosts`, `require_approval_evidence`,
+           `max_asks_per_run`, and which `policies` survive — the same shape of check
+           `_check_subagent_safety` already runs for a subagent, applied here to a
+           profile instead.
+        2. **At most one profile per agent, unless you say otherwise.** A SECOND
+           `.with_profile()` call is refused by default. Measured, not hypothetical:
+           `CodingProfile()` then `ResearchProfile()` on the same `Agent` constructs
+           without error and produces (a) a garbled system prompt — each profile
+           rebuilds the WHOLE prompt from its own template around `agent.job`, so the
+           second profile's template wins, but with fragments of the first still
+           wedged in — and (b) a toolset unioning `search`/`fetch` (`external`, an
+           untrusted-content source) with `write_source`/`git_commit` (`write`, a
+           code-mutation sink) — exactly the "reads the untrusted world, writes the
+           codebase" combination `CodingProfile`'s OWN `ask_reader` subagent exists to
+           keep separate. `_check_tool_set`'s lethal-trifecta refusal does not catch
+           this: it is scoped to `external`+`danger` (`write` is treated as reversible
+           throughout this library — `git reset` undoes a bad `write_source`/
+           `git_commit`, `design/02-safety-engine.md §4.1`), so `external`+`write` has
+           always been constructible directly (`Agent(tools=[search, write_source])`
+           raised nothing before this fix either, and still doesn't — that is core's
+           own settled scope, not something a profile-layer change should override
+           unilaterally). What composing two profiles changed is not the underlying
+           rule; it made hitting that combination by ACCIDENT trivial and invisible —
+           `.with_profile(a).with_profile(b)` reads as safe composition, not as
+           "union two tool sets and hope." `allow_multiple=True` is the explicit,
+           visible opt-in this library asks for everywhere else a real but
+           narrower-than-`danger` risk exists (`accepts_tainted=`, `allowed_hosts=None`).
         """
+        if self._profiles and not allow_multiple:
+            raise ConfigError(
+                f"this agent already has {self._profiles[-1]!r} applied as a profile.\n\n"
+                f"  Composing a second profile ({profile.name!r}) was never checked for "
+                f"safety: prompts\n  can garble (each profile rebuilds the whole prompt "
+                f"around its own template), and\n  the union of two profiles' tools can "
+                f"create a combination neither profile alone\n  has — an `external` tool "
+                f"from one profile next to a `write`/`danger` tool from\n  another is "
+                f"exactly the class this library otherwise keeps apart.\n\n"
+                f"  If you are sure this specific combination is safe, say so explicitly:\n"
+                f'      agent.with_profile({profile.name}_profile, allow_multiple=True)\n\n'
+                f"  -> docs/03-public-api.md §3.7"
+            )
         after = profile.apply(self)
         _refuse_if_loosened(self, after, profile.name)
-        return after
+        return after.with_(profiles=(*self._profiles, profile.name))
 
 
 class Chat:
