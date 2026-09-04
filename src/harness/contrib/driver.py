@@ -75,9 +75,12 @@ rules, and safety distributed by copy-paste drifts in every fork (ADR-082). So i
 without core's compatibility promise — see `harness/contrib/__init__.py` for what that
 means and for the four admission criteria.
 
-**The price of preemption, up front:** `Chat`/`Session` cannot be used. `say()` is sync
-and `_guard_sync()` raises inside a running loop, so there is no way to cancel it. This
-`Driver` calls `agent.atry_run(text, _history=...)` and owns the history list itself.
+**The price of preemption, up front:** a turn has to be a cancellable task, so `Driver`
+is async through and through — there is no sync entry point, and `Chat.say()` cannot be
+used (it is sync, and `_guard_sync()` raises inside a running loop). It drives
+`Chat.asay()`, which exists because this file needed it: the first version reimplemented
+`Chat`'s bookkeeping around the PRIVATE `_history=` keyword, which also meant a cancelled
+turn's tokens were billed and never reached any ledger (ADR-088).
 
 Run it — no camera, no API key:
 
@@ -401,15 +404,18 @@ class Served:
 
 
 class Driver:
-    """Owns the sensors, the conversation history, and the preemption budget.
+    """Owns the sensors, the conversation, and the preemption budget.
 
-    History lives here because `Chat`/`Session` cannot be preempted: `say()` is sync and
-    `_guard_sync()` raises inside a running event loop, so a cancellable turn has to be
-    `agent.atry_run(text, _history=...)` driven directly. That is the real cost of
-    preemption, and it is paid here rather than hidden.
+    The conversation is a real `Chat` (`agent.chat()` unless you pass one), driven through
+    `Chat.asay()`. The first version of this file owned a `list` of messages and passed it
+    to `agent.atry_run(text, _history=...)` — a private keyword — because `Chat` had no
+    async twin. Reimplementing another class's bookkeeping is how the bookkeeping goes
+    wrong: that version also dropped the cost of every cancelled turn, which for a
+    preempting driver is the one turn that happens most (ADR-088).
     """
 
     def __init__(self, agent: Any, *, sensors: Sequence[Sensor] = (),
+                 chat: Any | None = None,
                  inbox: EventInbox | None = None,
                  write_in_flight: WriteInFlight | None = None,
                  allow_preemption: bool = True,
@@ -433,12 +439,19 @@ class Driver:
         #: every turn. A `FakeSensor`'s own `delay_s` hid it completely in the tests.
         self.sensor_interval_s = sensor_interval_s
         self._pump_task: "asyncio.Task[None] | None" = None
-        self.history: list[Any] = []
+        #: Injected, or built here — `Chat` carries the history, the conversation-level
+        #: budget (10x the agent's, ADR-020) and the spend, including a preempted turn's.
+        self.chat = chat if chat is not None else agent.chat()
         self.preemptions: list[float] = []
         self.downgrades = 0
 
         if allow_preemption and require_durable_plan:
             self._refuse_without_a_durable_plan()
+
+    @property
+    def history(self) -> list[Any]:
+        """The conversation so far. A view of `self.chat`, not a second copy of it."""
+        return self.chat.messages
 
     def _refuse_without_a_durable_plan(self) -> None:
         """Rule 3, as a mechanism rather than a warning in a docstring."""
@@ -448,10 +461,11 @@ class Driver:
         raise ConfigError(
             "preemption is enabled, but this agent keeps no plan outside its own "
             "context.\n\n"
-            "  A cancelled turn is LOST: `Chat.say()` assigns history only after "
-            "`try_run`\n  returns, so the interrupted turn never reaches the "
-            "transcript and the model\n  will not know what it was doing — it starts "
-            "over and repeats the work.\n\n"
+            "  A cancelled turn is LOST: `Chat` advances history only after the turn "
+            "returns,\n  so the interrupted turn never reaches the transcript and the "
+            "model will not know\n  what it was doing — it starts over and repeats the "
+            "work. (The tokens it burned\n  ARE billed to the conversation, ADR-088; "
+            "it is the reasoning that is gone.)\n\n"
             "  Give it a durable plan (any of "
             f"{', '.join(sorted(PLAN_TOOLS))}), e.g.\n"
             "      CodingProfile(..., enable_findings=True)   # or TaskLedger's tools\n\n"
@@ -540,8 +554,7 @@ class Driver:
         temporary = self.sensors and (self._pump_task is None or self._pump_task.done())
         if temporary:
             self.start()
-        task = asyncio.create_task(
-            self.agent.atry_run(text, _history=tuple(self.history)))
+        task = asyncio.create_task(self.chat.asay(text))
         ours = _Watch()
         watcher = asyncio.create_task(self._watch(task, ours))
         try:
@@ -561,9 +574,8 @@ class Driver:
                 pass
             if temporary:
                 await self.stop()
-        # History is only advanced on a turn that actually finished. A preempted turn
-        # leaves it untouched, which is exactly why rule 3 exists.
-        self.history = list(result.messages)
+        # `Chat.asay` advanced the history itself; a preempted turn leaves it untouched
+        # (and records the spend), which is exactly why rule 3 exists.
         return Served(result, downgraded=ours.downgraded, event=ours.event)
 
     async def _watch(self, task: "asyncio.Task[Any]", ours: _Watch) -> None:
@@ -596,7 +608,17 @@ class Driver:
 
 def _demo() -> None:
     from .. import Agent, tool, with_middleware
+    from ..models import pricing
     from ..models.fake import FakeModel
+
+    class Priced(FakeModel):
+        """`FakeModel` bills nothing, which would make scenario 1's "a cancelled turn is
+        still billed" print `$0.0000` — a demo contradicting its own claim. Priced like
+        a real model so the number is visible.
+        """
+
+        def price(self, model: str) -> Any:
+            return pricing.price("claude-opus-5")
 
     @tool(effect=Effect.READ)
     async def look() -> str:
@@ -617,7 +639,7 @@ def _demo() -> None:
     def build(inbox, *, mws=(), policies=()):
         agent = Agent(name="Mắt", job="làm việc và để ý xung quanh",
                       tools=[look, list_tasks, slow_write], policies=list(policies),
-                      provider=FakeModel([
+                      provider=Priced([
                           FakeModel.tool_call("slow_write", {}),
                           FakeModel.text("xong việc"),
                       ]))
@@ -637,6 +659,7 @@ def _demo() -> None:
         print(f"  preempted   : {served.preempted}")
         print(f"  event       : {served.event.text if served.event else None}")
         print(f"  history     : {len(driver.history)} message (lượt bị mất — rule 3)")
+        print(f"  chat.spent  : {driver.chat.spent} (lượt bị huỷ VẪN bị tính — ADR-088)")
         print(f"  cancel mất  : {(served.cancel_s or 0.0)*1000:.2f} ms "
               f"(riêng phần huỷ; tổng {(time.monotonic()-t0)*1000:.0f} ms "
               f"gồm 50 ms sensor delay)")

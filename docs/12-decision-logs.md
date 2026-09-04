@@ -3369,6 +3369,75 @@ that can silently regress; a checker run against a weaker file list passes just 
 greenly. Full suite 1064 passed; `mypy` clean on 96 files; every touched demo still runs
 end to end, `proof.py` included.
 
+### ADR-088 — `Chat.asay()`, and the cancelled turn nobody was billing
+
+**Status:** Accepted.
+
+**Context.** `Chat` had only a sync `say()`. From inside a running event loop it raises
+`SyncInAsyncContextError` (`_guard_sync`, and raising beats deadlocking) — so a caller
+that needs a conversation turn to be a cancellable task could not use `Chat` at all. The
+one such caller in this repository is `harness.contrib.driver`, whose entire CRITICAL tier
+is "cancel the turn to serve an urgent event" (ADR-080). It drove
+`agent.atry_run(text, _history=...)` — a PRIVATE keyword argument — and reimplemented
+`Chat`'s bookkeeping beside it. `driver.py`'s own module docstring called that "the price
+of preemption, up front."
+
+It was a higher price than advertised. Reimplemented bookkeeping loses whatever the
+original does that you did not notice, and here that was the money:
+
+```
+atry_run raised CancelledError -> the caller gets NO Result
+RUN_FINISHED said: [('cancelled', '$0.0009')]
+```
+
+`run.py` re-raises `CancelledError` rather than returning a `Result` (T-6.2/Y-01 —
+swallowing it broke asyncio's cancellation protocol for any outer `TaskGroup`), so every
+line after the call is skipped, `self._spent + r.cost` included. The model call that
+produced the interrupted tool request had already been paid for. Measured: a normal turn
+put `$0.0019` into `chat.spent`; a cancelled one put nothing, while its own
+`RUN_FINISHED` reported `$0.0009` spent. A driver whose job is cancelling turns is
+precisely the caller that can burn a conversation's budget without the budget ever
+binding.
+
+**Decision.** `Chat.asay()`, with `say()` and `asay()` sharing a `_turn()` that computes
+the remaining conversation budget once — two copies of "how much is left" is how a sync
+and an async twin drift. Both record the spend of a cancelled turn and then re-raise.
+
+The spend is read through an `Exporter` (`_TurnCost`), not through a new parameter or
+return type on `atry_run`. `RUN_FINISHED` is emitted on every exit path including
+cancellation and already carries `cost_usd`, and an exporter is the read-only seam that
+already exists for exactly "observe what the run did" — so nothing new crosses the run
+boundary.
+
+**A cancelled turn advances `spent` but NOT `messages`, and those are different
+questions.** The spend is a fact that happened. The history is not: there is no assistant
+reply to record, and appending the user message alone would leave two user turns back to
+back — a shape this codebase has never sent to a real provider (OI-11) and will not start
+guessing about. So rule 3 of `contrib.driver` still stands, with its reason narrowed to
+what is actually lost: the reasoning, not the money.
+
+**`Session` deliberately did not get a twin.** Its `_lock` is a `threading.Lock` — the
+concurrency boundary that is its reason to exist — and holding one across an `await`
+blocks the event loop rather than the caller. An `asay` there means choosing an
+`asyncio.Lock` and deciding what happens when both twins are used on one session: a design
+question, not a missing method, and nothing needs it yet. Written into `Session.say`'s
+docstring so the asymmetry is a decision rather than an oversight.
+
+**`contrib.driver` now holds a real `Chat`** (injectable via `chat=`), `driver.history` is
+a read-only view of it rather than a second copy, and the demo's `FakeModel` is subclassed
+to bill like a real model — otherwise scenario 1 prints `chat.spent: $0.0000` beside the
+claim that a cancelled turn is still billed, a demo contradicting itself. It now prints
+`$0.0009`.
+
+**Test.** `tests/test_chat_asay.py`, 9 tests: the twin works and accumulates,
+`say()` still refuses inside a loop, the budget ceiling fires through `asay` too, and five
+on the cancelled turn — it re-raises, the spend reaches the ledger, the history does not
+advance, what is left to spend shrinks, and an outer cancellation is not swallowed by the
+recording. Plus 3 in `tests/test_driver.py`: a preempted turn is billed, `history` and
+`chat.messages` cannot disagree, and an injected `Chat` is the one used. Three mutations,
+each caught: dropping the spend line, blinding the sink to `RUN_FINISHED`, and returning a
+`Result` instead of re-raising. Full suite 1076 passed.
+
 | # | Decision | Rationale |
 |---|---|---|
 | IDL-01 | `Decimal` for all money; `float` banned in `budget/` by lint | A rounding error in a spend ceiling is a real bug class |

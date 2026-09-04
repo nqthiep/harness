@@ -46,10 +46,19 @@ async def slow_write() -> str:
     return "written"
 
 
-def _agent(script, *, tools=(look, list_tasks), policies=(), mws=()):
+class _Priced(FakeModel):
+    """`FakeModel` bills zero, which would make any cost assertion below pass without
+    testing anything. Priced like a real model instead."""
+
+    def price(self, model):
+        from harness.models import pricing
+        return pricing.price("claude-opus-5")
+
+
+def _agent(script, *, tools=(look, list_tasks), policies=(), mws=(), priced=False):
+    provider = (_Priced if priced else FakeModel)(list(script))
     agent = Agent(name="Subject", job="work and pay attention",
-                  tools=list(tools), policies=list(policies),
-                  provider=FakeModel(list(script)))
+                  tools=list(tools), policies=list(policies), provider=provider)
     return with_middleware(agent, *mws) if mws else agent
 
 
@@ -407,6 +416,55 @@ class TheDriverThat(unittest.TestCase):
         self.assertIsNotNone(served.cancel_s)
         self.assertLess(served.cancel_s, 0.05,
                         "the cancel itself should be immediate, whatever the sensor took")
+
+    def test_a_preempted_turn_is_still_billed_to_the_conversation(self):
+        """The other half of "the turn is lost": the tokens are not. The model call that
+        requested the tool was paid for before the cancel landed, and a driver whose
+        whole job is cancelling turns is the caller most able to spend a conversation's
+        budget without ever recording it. `Driver` gets this from `Chat.asay` rather than
+        by hand — it used to drive `atry_run(..., _history=...)` and drop the cost
+        entirely (ADR-088)."""
+        async def go():
+            agent = _agent([FakeModel.tool_call("slow_write", {}),
+                            FakeModel.text("done")],
+                           tools=(look, list_tasks, slow_write), priced=True)
+            driver = Driver(agent,
+                            sensors=[FakeSensor([Event(Priority.CRITICAL, "fire")],
+                                                delay_s=0.05)])
+            return driver, await driver.turn("begin")
+
+        driver, served = asyncio.run(go())
+        self.assertTrue(served.preempted)
+        self.assertEqual(driver.history, [])
+        self.assertGreater(driver.chat.spent.decimal, 0)
+
+    def test_the_conversation_is_a_real_chat_not_a_private_history_list(self):
+        """`driver.history` is a view of `driver.chat`, so the two can never disagree —
+        which is what a second copy of the message list is for."""
+        async def go():
+            agent = _agent([FakeModel.text("hello")])
+            driver = Driver(agent, require_durable_plan=False)
+            served = await driver.turn("hi")
+            return driver, served
+
+        driver, served = asyncio.run(go())
+        self.assertIsNotNone(served.result)
+        self.assertEqual(driver.history, driver.chat.messages)
+        self.assertGreater(len(driver.history), 0)
+
+    def test_an_injected_chat_is_used_as_the_conversation(self):
+        """So a caller who already has a conversation can hand it over rather than
+        starting a second one beside it."""
+        async def go():
+            agent = _agent([FakeModel.text("one"), FakeModel.text("two")])
+            chat = agent.chat()
+            driver = Driver(agent, chat=chat, require_durable_plan=False)
+            await driver.turn("hi")
+            return chat, driver
+
+        chat, driver = asyncio.run(go())
+        self.assertIs(driver.chat, chat)
+        self.assertGreater(len(chat.messages), 0)
 
     def test_rule_2_a_write_in_flight_downgrades_a_critical_instead_of_cancelling(self):
         async def go():

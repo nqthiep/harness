@@ -72,6 +72,14 @@ class Session:
         return exp is not None and (now if now is not None else time.time()) >= exp
 
     def say(self, message: str, *, on_delta=None) -> Result:
+        """Sync only, deliberately: `Chat` grew an async twin (`asay`, ADR-088) and this
+        class did not. `_lock` is a `threading.Lock` — the concurrency boundary that is
+        this class's reason to exist — and holding one across an `await` blocks the whole
+        event loop instead of just the caller. Giving `Session` an `asay` means choosing
+        an `asyncio.Lock` and deciding what happens when both twins are used on one
+        session; that is a design question, not a missing method, and nothing needs it
+        yet. A caller inside an event loop uses `agent.chat()` directly.
+        """
         if self.expired():
             raise SessionExpiredError(
                 f"session {self.id!r} expired at {self.expires_at} "

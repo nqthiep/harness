@@ -673,6 +673,31 @@ class Agent:
         return after.with_(profiles=(*self._profiles, profile.name))
 
 
+class _TurnCost:
+    """An `Exporter` that keeps one number: what the run had spent when it ended.
+
+    `RUN_FINISHED` is emitted on every exit path including cancellation (`run.py` emits
+    it and then re-raises), and `cost_usd` on it is `str(ledger.spent)` — so this is the
+    only place a cancelled turn's bill is readable from outside, and reading it needs no
+    change to `atry_run`'s signature or return type.
+    """
+
+    __slots__ = ("cost",)
+
+    def __init__(self) -> None:
+        self.cost = Money.ZERO
+
+    def emit(self, event: Any) -> None:
+        from .observe.events import EventKind
+        if event.kind is EventKind.RUN_FINISHED:
+            # `"$0.0009"` — `Money.__str__`'s shape, since the bus carries strings, not
+            # `Decimal`s (IDL-42: state is JSON, and a float here would reintroduce
+            # IDL-01's rounding class).
+            self.cost = Money(str(event.data.get("cost_usd", "0")).lstrip("$"))
+
+    def close(self) -> None: ...
+
+
 class Chat:
     """A multi-turn session.  History lives here, never on the frozen Agent — which is
     what lets one Agent serve many concurrent conversations (§05.4)."""
@@ -698,7 +723,12 @@ class Chat:
     @property
     def messages(self) -> list: return list(self._messages)
 
-    def say(self, message: str, *, on_delta=None) -> Result:
+    def _turn(self) -> "tuple[Agent, _TurnCost] | Result":
+        """The agent for this turn, or the `Result` that ends the conversation.
+
+        Shared by `say` and `asay` so the conversation budget is computed in exactly one
+        place: two copies of "how much is left" is how a sync and an async twin drift.
+        """
         remaining = (Money(self._budget.usd) - self._spent
                      if self._budget.usd is not None else None)
         if remaining is not None and remaining.decimal <= 0:
@@ -712,7 +742,58 @@ class Chat:
         if remaining is not None:
             turn = self._agent.with_(budget=replace(self._agent.budget,
                                                     usd=remaining.decimal))
-        r = turn.try_run(message, _history=self._messages, on_delta=on_delta)
+        # The billed cost of a turn that never returns one. `atry_run` re-raises
+        # `CancelledError` rather than returning a Result (run.py, T-6.2/Y-01 — swallowing
+        # it broke asyncio's cancellation protocol), so every line after the call is
+        # skipped, including `self._spent + r.cost`. The tokens were still paid for:
+        # measured, a turn cancelled mid-tool emits
+        # `RUN_FINISHED stop_reason='cancelled' cost_usd='$0.0009'` and the conversation
+        # ledger saw none of it (ADR-088). An `Exporter` is the read-only seam that
+        # already carries this number, so no new plumbing crosses `atry_run`.
+        sink = _TurnCost()
+        return turn.with_(exporters=[*turn.exporters, sink]), sink
+
+    def say(self, message: str, *, on_delta=None) -> Result:
+        """One turn, synchronously. `asay` is the same turn from a running event loop."""
+        prepared = self._turn()
+        if isinstance(prepared, Result):
+            return prepared
+        turn, sink = prepared
+        try:
+            r = turn.try_run(message, _history=self._messages, on_delta=on_delta)
+        except asyncio.CancelledError:
+            self._spent = self._spent + sink.cost
+            raise
+        return self._record(r)
+
+    async def asay(self, message: str, *, on_delta=None) -> Result:
+        """One turn, from inside a running event loop.
+
+        `say()` cannot be used there — it goes through `try_run`, whose `_guard_sync`
+        raises `SyncInAsyncContextError` rather than deadlocking. Without this twin, a
+        caller that needs to interleave a conversation with anything else (the
+        `harness.contrib` `Driver`, which cancels a turn to serve an urgent event) had to
+        drive `atry_run(..., _history=...)` itself and reimplement this class's
+        bookkeeping around a PRIVATE keyword argument (ADR-088).
+
+        **A cancelled turn advances `spent` but not `messages`.** The spend is real and is
+        recorded. The history is not: there is no assistant reply to record, and appending
+        the user message alone would leave two user turns back to back — a shape this
+        library has never sent to a real provider and will not start guessing about here.
+        A caller that wants the interrupted question asked again re-sends it.
+        """
+        prepared = self._turn()
+        if isinstance(prepared, Result):
+            return prepared
+        turn, sink = prepared
+        try:
+            r = await turn.atry_run(message, _history=self._messages, on_delta=on_delta)
+        except asyncio.CancelledError:
+            self._spent = self._spent + sink.cost
+            raise
+        return self._record(r)
+
+    def _record(self, r: Result) -> Result:
         self._messages = list(r.messages)
         self._spent = self._spent + r.cost
         return r
