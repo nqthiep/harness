@@ -171,10 +171,43 @@ class Middleware:
     def before_model(self, call: ModelCall) -> ModelRequest:
         """Immediately before the provider is called. Return `call.request` unchanged,
         or a replacement (`dataclasses.replace(call.request, ...)`) — e.g. to inject
-        content or swap the model. Changing `system`/`tools` differently between
-        otherwise identical calls trips the cache-determinism linter
-        (`context/linter.py`, `NonDeterministicPromptError`); mutate `messages`, not
-        structure, unless the cache break is intended.
+        content or swap the model. Mutate `messages`, not structure.
+
+        **Nothing here is checked, and an earlier version of this docstring said
+        otherwise.** It claimed that varying `system`/`tools` between otherwise
+        identical calls "trips the cache-determinism linter
+        (`context/linter.py`, `NonDeterministicPromptError`)". It does not, and the
+        claim was measured false: a middleware rewriting `request.system` on every call
+        completes a run with no error at all. `PrefixWatcher.observe` is called from
+        exactly one site (`run.py`, once per step) with the ASSEMBLER's own
+        `render_prefix()` — bytes that never pass through a middleware — so the linter
+        cannot see anything a hook here does. A control that is specified and never
+        executed is not a control (R-16), so it is described as absent rather than
+        implied.
+
+        What that leaves you responsible for, all of it real:
+
+        * **Prompt caching.** Varying `system`/`tools` per call invalidates the cached
+          prefix silently — no error, just a bill that stops falling.
+        * **The budget CEILING, though not the accounting.** The pre-flight count runs
+          on a probe the assembler builds (`run.py`), and `reserve()`'s `hard_max_input`
+          comes from that same pre-middleware request, while `_MiddlewareProvider.
+          count_input_tokens` delegates straight through without running any hook. So
+          content injected here is unseen by both — measured once at 33 chars counted
+          against 5064 the provider received. `settle()` still bills `resp.usage`, the
+          provider's real numbers, so spend is not hidden; what breaks is the ceiling.
+          Sharper still: when `hard_max_input` fits, `reserve()` records `exact=True` and
+          the run emits `BUDGET_RESERVED(exact=True)` — an injection makes the transcript
+          positively assert a bound that is false. Keep anything added here small and
+          bounded, and put anything large in a tool result, which is counted normally.
+        * **Window management.** `context/window.manage` measures `msgs`, which never
+          contains what a hook added.
+
+        Making the linter cover this is not a docstring away: `_MiddlewareProvider` is
+        built once in `with_middleware()` and stored on a frozen `Agent` that is shared
+        across concurrent runs, so it has nowhere per-run to keep a watcher — the same
+        constraint that makes `PrefixWatcher`, `Ledger` and `TaintTracker` per-run
+        objects (ADR-079).
         """
         return call.request
 

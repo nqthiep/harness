@@ -458,8 +458,9 @@ exists: a profile may extend an agent, never loosen it.** After `profile.apply(s
 runs, `_refuse_if_loosened` (`agent.py`) compares the result against the agent you
 started with on the knobs a prompt-and-tools bundle has no legitimate reason to touch —
 `safety`, `accepts_tainted`, `allowed_hosts`, `require_approval_evidence`,
-`max_asks_per_run`, which `policies` survive, and whether an `approve=` gate got
-removed entirely. Any of those moving in the unsafe direction raises
+`max_asks_per_run`, which `policies` survive, whether a `sensitive` declaration was
+dropped, and whether an `approve=` gate got removed entirely. Any of those moving in the
+unsafe direction raises
 `ProfileLoosenedSafetyError` naming every culprit, before a live `Agent` is ever
 returned — the same "caught at construction" discipline the lethal-trifecta check
 already applies, and the same shape `_check_subagent_safety` already enforces for a

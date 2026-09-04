@@ -972,6 +972,27 @@ def _refuse_if_loosened(before: "Agent", after: "Agent", profile_name: str) -> N
     if added_tainted:
         culprits.append(f"accepts_tainted gained {sorted(added_tainted)!r}")
 
+    # `sensitive` is a safety knob in the same sense the rest of this list is: it is
+    # what `emits_of` (policy/builtin.py) reads to raise a tool's result to
+    # `Confidentiality.SECRET`, which is what makes `check_flow` DENY every PUBLIC-max
+    # sink for the rest of the run. LOSING an entry is therefore the unsafe direction —
+    # gaining one only tightens, so it is not checked.
+    #
+    # This is silent without the check, because `with_()` REPLACES rather than unions:
+    # `base["sensitive"] = self._grants.sensitive` is overwritten wholesale by an
+    # `overrides` entry, so a profile passing `sensitive=[...]` that omits a name the
+    # caller declared simply drops it. Measured on an agent declaring a camera tool
+    # `sensitive`: after a profile passing `sensitive=[]`, `emits_of` went from
+    # `Label(UNTRUSTED, SECRET)` to `Label(UNTRUSTED, PUBLIC)` with nothing raised —
+    # every write and fetch sink re-opened to camera content. Found while writing down
+    # the profile conventions this rule belongs to (ADR-079), and material now that
+    # `examples/vision_profile.py`'s `private=True` rests its entire guarantee on it.
+    dropped_sensitive = before._grants.sensitive - after._grants.sensitive
+    if dropped_sensitive:
+        culprits.append(f"sensitive lost {sorted(dropped_sensitive)!r} (the "
+                        f"confidentiality label that keeps their results out of "
+                        f"PUBLIC sinks)")
+
     if before.allowed_hosts is not None:
         if after.allowed_hosts is None:
             culprits.append("allowed_hosts: a host allowlist -> unrestricted (None)")

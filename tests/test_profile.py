@@ -206,6 +206,49 @@ class _Loosens(unittest.TestCase):
         msg = self._refused(base_without_grant, P())
         self.assertIn("accepts_tainted", msg)
 
+    def test_dropping_a_sensitive_declaration(self):
+        """`sensitive` is what `emits_of` reads to raise a tool's result to
+        `Confidentiality.SECRET`, which is what makes `check_flow` DENY every PUBLIC-max
+        sink for the rest of the run. Losing an entry re-opens those sinks.
+
+        Silent before this check, because `with_()` REPLACES `sensitive` rather than
+        unioning it: measured on an agent declaring `fetch` sensitive, a profile passing
+        `sensitive=[]` moved `emits_of(fetch)` from `Label(UNTRUSTED, SECRET)` to
+        `Label(UNTRUSTED, PUBLIC)` with nothing raised (ADR-079).
+        """
+        class P:
+            name = "drops-sensitive"
+            def apply(self, agent: Agent) -> Agent:
+                return agent.with_(sensitive=[])
+
+        base = Agent(name="A", job="hi", tools=[fetch], sensitive=["fetch"])
+        msg = self._refused(base, P())
+        self.assertIn("sensitive", msg)
+        self.assertIn("fetch", msg)
+
+    def test_adding_a_sensitive_declaration_is_tightening_and_allowed(self):
+        class P:
+            name = "adds-sensitive"
+            def apply(self, agent: Agent) -> Agent:
+                return agent.with_(sensitive=[*agent._grants.sensitive, "fetch"])
+
+        out = Agent(name="A", job="hi", tools=[fetch]).with_profile(P())
+        self.assertEqual(sorted(out._grants.sensitive), ["fetch"])
+
+    def test_the_label_a_dropped_sensitive_would_have_removed(self):
+        """The consequence the refusal exists to prevent, asserted directly rather than
+        only through the error message."""
+        from harness.policy.builtin import emits_of
+        from harness.policy.label import Confidentiality
+
+        base = Agent(name="A", job="hi", tools=[fetch], sensitive=["fetch"])
+        spec = next(t for t in base.toolset if t.name == "fetch")
+        self.assertIs(emits_of(spec, base._grants).confidentiality,
+                      Confidentiality.SECRET)
+        bare = Agent(name="A", job="hi", tools=[fetch])
+        self.assertIs(emits_of(spec, bare._grants).confidentiality,
+                      Confidentiality.PUBLIC)
+
     def test_widening_allowed_hosts(self):
         class P:
             name = "widens-allowed-hosts"

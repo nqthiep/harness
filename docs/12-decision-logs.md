@@ -2675,6 +2675,72 @@ prompt, declares a budget, keeps the caller's policies, loosens no safety knob o
 hardened agent, grants itself neither `accepts_tainted` nor a wider host list, produces
 a byte-stable prompt, and is applied at most once. Full suite 972 passed, ruff clean.
 
+### ADR-079 — `_refuse_if_loosened` also checks a dropped `sensitive`; `before_model`'s docstring stops claiming a control that does not exist
+
+**Status:** Accepted.
+
+**Context.** Two defects were found and deliberately left unfixed while the vision work
+landed (ADR-077 records the second of them). Both are now fixed, and both are the same
+species: a safety property that reads as guaranteed and is not.
+
+**1. A profile could silently strip `sensitive`.** `_refuse_if_loosened` checked seven
+knobs and not this one, while `with_()` REPLACES `sensitive` rather than unioning it
+(`base["sensitive"] = self._grants.sensitive`, then overwritten wholesale by an
+`overrides` entry). So a profile passing `sensitive=[...]` that omits a name the caller
+declared simply dropped it. Measured on an agent declaring a camera tool `sensitive`,
+against a profile whose `apply()` passes `sensitive=[]`:
+
+```
+before.sensitive : ['look']       emits: Label(UNTRUSTED, SECRET)
+after.sensitive  : []             emits: Label(UNTRUSTED, PUBLIC)      # nothing raised
+```
+
+That is a real loosening, not a bookkeeping detail: `sensitive` is what `emits_of` reads
+to raise a result to `Confidentiality.SECRET`, which is what makes `check_flow` DENY
+every PUBLIC-max sink for the rest of the run. Dropping it re-opens every write and
+fetch to camera content — and `examples/vision_profile.py`'s `private=True` rests its
+entire guarantee on exactly that label, so the hole acquired a live consumer the same
+week it was found.
+
+**2. `Middleware.before_model`'s docstring claimed a linter that never sees it.** It
+said varying `system`/`tools` between otherwise identical calls "trips the
+cache-determinism linter (`context/linter.py`, `NonDeterministicPromptError`)". Measured
+false: a middleware rewriting `request.system` on every call completes a run with no
+error at all. `PrefixWatcher.observe` is called from exactly one site (`run.py`, once per
+step) with the ASSEMBLER's own `render_prefix()` — bytes that never pass through a
+middleware. A control that is specified and never executed is not a control (R-16), and
+a docstring asserting one is worse than silence, because a middleware author reads it and
+stops checking.
+
+**Decision.**
+
+1. `_refuse_if_loosened` gains a `sensitive` check. LOSING an entry is the unsafe
+   direction and is refused; GAINING one only tightens and is not checked — the same
+   asymmetry `accepts_tainted` already uses in the opposite direction.
+2. `before_model`'s docstring now describes what is actually true: nothing checks it, and
+   the three real consequences the author owns — silent prompt-cache loss; a defeated
+   budget CEILING (though not defeated accounting, since `settle()` bills the provider's
+   real `resp.usage`, and the sharper problem is that `reserve()` may record
+   `exact=True` for a bound the injection makes false); and window management measuring
+   `msgs`, which never contains what a hook added.
+
+**Why the second one is a docstring fix and not a code fix.** Making the linter cover
+middleware output needs a per-run watcher inside `_MiddlewareProvider` — but that object
+is built once in `with_middleware()` and stored on a frozen `Agent` that is shared across
+concurrent runs, so state held there would be shared between conversations. That is the
+same constraint that already makes `PrefixWatcher`, `Ledger` and `TaintTracker` per-run
+objects (S-15/S-24/S-29). Real, and a larger change than correcting a false claim;
+recorded here so the next person does not rediscover the reason.
+
+**Test.** `tests/test_profile.py` — a profile dropping `sensitive` is refused, adding one
+is allowed, and the `Confidentiality.SECRET`→`PUBLIC` consequence is asserted directly
+rather than only through the error text. Verified by mutation: neutering the new check
+fails exactly that test and nothing else. `tests/test_middleware.py` — a middleware
+varying `system` every call raises nothing (pinning the true behaviour so the corrected
+docstring cannot drift back), and the pre-flight count is measured to see less than the
+provider receives. Full suite 977 passed; `ruff` and `mypy` both clean under the
+invocations `tests/test_conformance.py` itself uses.
+
 | # | Decision | Rationale |
 |---|---|---|
 | IDL-01 | `Decimal` for all money; `float` banned in `budget/` by lint | A rounding error in a spend ceiling is a real bug class |
