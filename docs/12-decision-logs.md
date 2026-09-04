@@ -3619,6 +3619,82 @@ suite 1109 passed.
 narrower than "this class has never run", which is what OI-11's neighbour in the risk
 register used to say.
 
+### ADR-091 — The payload is per-model, and one of five was wrong
+
+**Status:** Accepted.
+
+**Context.** OI-11's remaining half is "the payload shape has never been validated by a
+real endpoint." ADR-085 measured why a dead key cannot help, and this round closed off the
+one clever way around it. If the endpoint validated request SHAPE before authentication, a
+dead key could verify every parameter name by differential testing. It does not:
+
+```
+valid payload                    -> 401 authentication_error
+an unknown top-level parameter   -> 401 authentication_error
+max_tokens as a string           -> 401 authentication_error
+messages missing entirely        -> 401 authentication_error
+an unknown model id              -> 401 authentication_error
+a body that is not even JSON     -> 401 authentication_error
+```
+
+Authentication precedes every form of validation. The route is closed, and
+`tests/live_probe.py` now measures it so nobody rediscovers that by hand.
+
+So the payload was re-verified the only other way: against the vendor's current
+documented shapes rather than against memory. That found a real defect.
+
+**The payload was model-independent and the API is not.** `complete()` sent
+`thinking={"type": "adaptive"}` and `output_config={"effort": ...}` unconditionally.
+Correct for four of the five models this package prices — and wrong for the fifth:
+`claude-haiku-4-5` **rejects** adaptive thinking (it takes
+`{"type": "enabled", "budget_tokens": N}`) and **rejects** `output_config.effort`. So
+`Agent(model="claude-haiku-4-5")`, a model in `PRICES`, `MAX_CONTEXT` and `MAX_OUTPUT`,
+built a payload the endpoint refuses.
+
+**The conformance test that should have caught it asserted the opposite.** Its docstring
+read "`budget_tokens` is a 400 on every model this package prices" — a general claim, from
+a test that only ever exercised `claude-opus-5`. A false generalisation with one passing
+witness is worse than no test: it answers the question, wrongly, and stops anyone asking
+again. This is R-22's shape ("a document asserts a behaviour the code does not implement")
+with the document being a test.
+
+**Decision.** A `THINKING_SHAPE` table keyed by model, holding the two facts that vary:
+whether thinking is adaptive or budgeted, and whether `effort` is accepted. `output_config`
+is now BUILT UP rather than declared, because an empty `output_config` is not the same
+request as an absent one and on a budgeted model both of its keys can be absent. A budgeted
+model's `budget_tokens` is `max(1024, max_tokens // 2)` and must stay strictly below
+`max_tokens`; when a tightly sized budget leaves no room for both, the payload carries no
+`thinking` at all rather than an invalid pair.
+
+The table is closed over `pricing.PRICES` by construction — `price()` refuses an unpriced
+model before the ledger can size a call, so `complete()` never sees one — and
+`test_every_priced_model_has_a_declared_payload_shape` asserts the two tables are equal,
+so adding a model to one without the other is a test failure. An undeclared model still
+fails visibly, naming the table to edit, rather than defaulting: a silent default is how a
+new model would get the WRONG shape instead of a fixable error.
+
+**Also found, and small enough to state plainly:** `acheck_credentials()` (ADR-086) and
+`tests/live_probe.py` both hardcoded `claude-opus-4-5` — a model this package does not
+price, so the credential check named a model the rest of the library refuses. Both now use
+`claude-opus-5`. Found because the new guard fired on the probe's own request, which is
+the guard working.
+
+**Confirmed correct, not merely assumed:** `output_config.effort` nested rather than
+top-level; the deprecated top-level `output_format` absent; and the `fallbacks: "default"`
+scalar form paired with `server-side-fallback-2026-07-01` (the array form pairs with
+`-2026-06-01` and mixing them is a 400). That pairing was already asserted by a test and
+the assertion holds.
+
+**Test.** `tests/test_conformance.py::ProviderPayload` grew from one model to five: the
+four adaptive models get adaptive thinking and no `budget_tokens` anywhere in the payload;
+the budgeted one gets `{"type": "enabled", "budget_tokens": 4000}` at `max_tokens=8000`
+and no `output_config` at all; the budget floor and the strictly-below rule are checked at
+3000, 2000, 1024 and 500 tokens; the two tables must be equal; and an undeclared model
+raises naming `THINKING_SHAPE`. Full suite 1113 passed.
+
+**What is still open.** Everything above is offline agreement with documentation. A funded
+key remains the only thing that can prove the endpoint agrees — OI-11.
+
 | # | Decision | Rationale |
 |---|---|---|
 | IDL-01 | `Decimal` for all money; `float` banned in `budget/` by lint | A rounding error in a spend ceiling is a real bug class |
@@ -3681,5 +3757,6 @@ register used to say.
 | IDL-58 | A path-confining tool is constructed with its root; a module-level tool function confines to the CWD or not at all | `confine()` existed unused for two milestones because the tools that needed it had no root to pass — the missing constructor was the bug, not the missing call (ADR-065) |
 | IDL-59 | An escalating policy escalates on the SIGNAL, never on "the cheaper rung ran out of work" | Editing always has one more stale result to blank, so compaction gated on that would never have run once (ADR-066) |
 | IDL-60 | Context size is measured over the whole request payload, arguments included — never over `message.content` alone | A LangChain `AIMessage` carrying only tool calls has empty `content`; the arguments are the part that never gets blanked, and they measured as zero (ADR-066) |
+| IDL-63 | A payload claim is asserted per MODEL, never once and generalised | "`budget_tokens` is a 400 on every model this package prices" was a test docstring, tested on one model, and false for another — `claude-haiku-4-5` requires it. A false generalisation with one passing witness stops anyone asking again (ADR-091) |
 | IDL-62 | A credential is resolved by ONE function that returns its VALUE and its source, never by a boolean "is one configured" | Two answers to that question is how `.env` came to report "found" while nothing loaded the file; the run then died on an SDK internal (ADR-086) |
 | IDL-61 | An external doc-generation CLI (`openwiki`) is wired in as a tool the model must call, never a step the harness runs on its own | Every other seam in this library runs on nothing but an explicit call; `--update` is itself a paid model call, so auto-running it would bill every run for a wiki nobody asked to re-read (ADR-072) |

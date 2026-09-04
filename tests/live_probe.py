@@ -19,6 +19,15 @@ and asserting the adapter maps what comes back:
                      that, so a wrong parameter name would look identical to a right
                      one. That half still needs a funded key (OI-11).
 
+The last step below is what closes off the obvious idea for getting around that. If the
+endpoint validated request SHAPE before authentication, a dead key could verify every
+parameter name by differential testing. It does not: an unknown parameter, a `max_tokens`
+of `"abc"`, a missing `messages`, an unknown model id, and a body that is not even JSON
+all come back `401 authentication_error`, identical to a valid payload. Measured, so
+nobody spends an afternoon rediscovering it (ADR-091). The payload is instead asserted
+offline against the vendor's current documented shapes, per model
+(`tests/test_conformance.py::ProviderPayload`).
+
 Run it deliberately:  `PYTHONPATH=src python3 tests/live_probe.py`
 """
 import asyncio
@@ -37,7 +46,7 @@ from harness.models.anthropic import AnthropicProvider          # noqa: E402
 from harness.models.base import ModelRequest                    # noqa: E402
 
 REQUEST = ModelRequest(
-    model="claude-opus-4-5",
+    model="claude-opus-5",
     system=({"type": "text", "text": "You are terse."},),
     tools=(),
     messages=({"role": "user", "content": "Say ok."},),
@@ -87,6 +96,41 @@ async def main() -> int:
     elif "401" not in why:
         print(f"  UNEXPECTED: expected a 401 in the reason, got {why[:80]!r}")
         bad += 1
+
+    # Does anything about the PAYLOAD reach validation before the key is checked?
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    malformed = {
+        "an unknown top-level parameter":
+            {"model": "claude-opus-5", "max_tokens": 16, "not_a_real_param": 1,
+             "messages": [{"role": "user", "content": "hi"}]},
+        "max_tokens as a string":
+            {"model": "claude-opus-5", "max_tokens": "abc",
+             "messages": [{"role": "user", "content": "hi"}]},
+        "messages missing entirely": {"model": "claude-opus-5", "max_tokens": 16},
+        "an unknown model id":
+            {"model": "claude-not-a-model", "max_tokens": 16,
+             "messages": [{"role": "user", "content": "hi"}]},
+    }
+    print()
+    for label, body in malformed.items():
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=_json.dumps(body).encode(),
+            headers={"x-api-key": DEAD_KEY, "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"})
+        try:
+            urllib.request.urlopen(req, timeout=20)
+            kind, status = "no error at all", 200
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+            kind = _json.loads(exc.read()).get("error", {}).get("type", "?")
+        print(f"  {label:<32} -> {status} {kind}")
+        if status != 401:
+            print(f"  NOTE: {label} reached validation before auth. Differential "
+                  f"testing of parameter names is possible after all — see ADR-091.")
 
     print("\nOK — the live endpoint answered and the adapter mapped it."
           if not bad else f"\n{bad} unexpected result(s)")

@@ -35,7 +35,7 @@ class ProviderPayload(unittest.TestCase):
     """HARNESS.md §I.4 — the payload is the whole of what 'Intelligent' buys, and it had
     never been sent, because `AnthropicProvider` has never run against the live API."""
 
-    def payload(self, **kw):
+    def payload(self, model="claude-opus-5", max_tokens=1000, **kw):
         from harness.models.anthropic import AnthropicProvider
         seen = {}
 
@@ -47,19 +47,65 @@ class ProviderPayload(unittest.TestCase):
         p = AnthropicProvider.__new__(AnthropicProvider)
         p._client, p._counts, p._sdk = C(), {}, None
         p._fallbacks = kw.get("fallbacks", True)
-        req = ModelRequest(model="claude-opus-5", system=(), tools=(),
+        req = ModelRequest(model=model, system=(), tools=(),
                            messages=({"role": "user", "content": "hi"},),
-                           max_tokens=1000, effort="medium", stream=False,
+                           max_tokens=max_tokens, effort="medium", stream=False,
                            output_format=None)
         try: asyncio.run(p.complete(req))
         except SystemExit: pass
         return seen
 
-    def test_adaptive_thinking_never_budget_tokens(self):
-        """`budget_tokens` is a 400 on every model this package prices."""
-        k = self.payload()
-        self.assertEqual(k["thinking"], {"type": "adaptive"})
-        self.assertNotIn("budget_tokens", json.dumps(k))
+    def test_the_adaptive_models_get_adaptive_thinking_and_no_budget_tokens(self):
+        """`budget_tokens` is a 400 on these four. NOT on all five — see the next
+        test, which is the correction this one used to be wrong about."""
+        for model in ("claude-opus-5", "claude-opus-4-8", "claude-sonnet-5",
+                      "claude-fable-5"):
+            with self.subTest(model=model):
+                k = self.payload(model)
+                self.assertEqual(k["thinking"], {"type": "adaptive"})
+                self.assertNotIn("budget_tokens", json.dumps(k))
+
+    def test_the_budgeted_model_gets_budget_tokens_and_no_effort(self):
+        """`claude-haiku-4-5` REJECTS adaptive thinking and rejects
+        `output_config.effort`; it takes `{"type": "enabled", "budget_tokens": N}`.
+
+        The old version of this class asserted the opposite as a general rule
+        ("`budget_tokens` is a 400 on every model this package prices") while only ever
+        exercising `claude-opus-5`, so `Agent(model="claude-haiku-4-5")` built a payload
+        the endpoint refuses and every test passed (ADR-091).
+        """
+        k = self.payload("claude-haiku-4-5", max_tokens=8000)
+        self.assertEqual(k["thinking"], {"type": "enabled", "budget_tokens": 4000})
+        self.assertNotIn("output_config", k)
+
+    def test_a_thinking_budget_stays_below_max_tokens_or_is_omitted(self):
+        """The floor is 1024 and it must be strictly under `max_tokens`. A tightly
+        sized budget can leave no room for both, and then the payload carries no
+        `thinking` rather than an invalid pair."""
+        k = self.payload("claude-haiku-4-5", max_tokens=3000)
+        self.assertEqual(k["thinking"]["budget_tokens"], 1500)
+
+        k = self.payload("claude-haiku-4-5", max_tokens=2000)
+        self.assertEqual(k["thinking"]["budget_tokens"], 1024,
+                         "the floor applies, and 1024 < 2000 so it still fits")
+
+        for tight in (1024, 500):
+            with self.subTest(max_tokens=tight):
+                k = self.payload("claude-haiku-4-5", max_tokens=tight)
+                self.assertNotIn("thinking", k)
+
+    def test_every_priced_model_has_a_declared_payload_shape(self):
+        """The two tables cannot drift: `price()` refuses an unpriced model, so this
+        equality is what makes `THINKING_SHAPE` complete by construction."""
+        from harness.models.anthropic import THINKING_SHAPE
+        from harness.models.pricing import PRICES
+        self.assertEqual(set(THINKING_SHAPE), {m for m in PRICES if m != "fake"})
+
+    def test_an_undeclared_model_fails_visibly_rather_than_guessing(self):
+        from harness.errors import ProviderBadRequest
+        with self.assertRaises(ProviderBadRequest) as ctx:
+            self.payload("claude-from-the-future")
+        self.assertIn("THINKING_SHAPE", str(ctx.exception))
 
     def test_effort_lives_inside_output_config(self):
         self.assertEqual(self.payload()["output_config"]["effort"], "medium")

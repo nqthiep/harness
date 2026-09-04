@@ -85,7 +85,12 @@ bound instead of raising.
 
 **What it still cannot catch, and why a live call was not enough on its own:** the server
 rejects the key *before* validating the payload, so `thinking`, `output_config`, `betas`
-and `fallbacks` would look identical whether their names are right or wrong. Only a funded
+and `fallbacks` would look identical whether their names are right or wrong. Measured, not
+assumed: an unknown parameter, `max_tokens: "abc"`, a missing `messages`, an unknown model
+id and a body that is not JSON all return `401 authentication_error`, so differential
+testing of parameter names against a dead key is impossible (ADR-091). Re-verifying the
+payload against the vendor's documentation instead found a real defect — the payload was
+model-independent and one of the five priced models rejects it. Only a funded
 key closes that. Not available here: `ANTHROPIC_API_KEY` is unset, and
 `ANTHROPIC_BASE_URL` points at a host-managed gateway whose credentials this environment
 does not hold (the probe pins the vendor URL so it cannot spend through it). For the

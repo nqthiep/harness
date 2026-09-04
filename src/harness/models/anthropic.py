@@ -9,7 +9,7 @@ seam real (ADR-002).
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Final, Mapping, NamedTuple
 
 from ..errors import (ProviderAuthError, ProviderBadRequest, ProviderError,
                       ProviderRateLimited, ProviderTimeout, ProviderUnavailable)
@@ -21,6 +21,50 @@ from .base import DeltaFn, ModelRequest, ModelResponse
 _STATUS = {401: ProviderAuthError, 403: ProviderAuthError,
            400: ProviderBadRequest, 404: ProviderBadRequest,
            408: ProviderTimeout, 429: ProviderRateLimited}
+
+
+class _Shape(NamedTuple):
+    """How ONE model takes its reasoning configuration."""
+
+    #: `True` -> `thinking={"type": "adaptive"}`. `False` -> the older
+    #: `{"type": "enabled", "budget_tokens": N}`, which the adaptive models reject with
+    #: a 400 and which the budgeted ones REQUIRE in order to think at all.
+    adaptive: bool
+    #: Whether `output_config.effort` is accepted. It errors on the older models.
+    effort: bool
+
+
+#: Per-model payload shape, because there is no single correct one.
+#:
+#: This table replaces one unconditional `thinking={"type": "adaptive"}` plus one
+#: unconditional `output_config.effort`, sent for every model. That was right for four
+#: of the five models this package prices and wrong for the fifth: `claude-haiku-4-5`
+#: takes `budget_tokens` and REJECTS both adaptive thinking and `effort`, so
+#: `Agent(model="claude-haiku-4-5")` built a payload the endpoint refuses. The
+#: conformance test that was supposed to cover this asserted the opposite —
+#: "`budget_tokens` is a 400 on every model this package prices" — and only ever
+#: exercised `claude-opus-5` (ADR-091).
+#:
+#: Closed over `pricing.PRICES` by construction: `price()` refuses an unpriced model
+#: before `complete()` is ever reached, and
+#: `test_every_priced_model_has_a_declared_payload_shape` fails if the two tables drift.
+_ADAPTIVE, _BUDGETED = _Shape(True, True), _Shape(False, False)
+THINKING_SHAPE: Final[Mapping[str, _Shape]] = {
+    "claude-opus-5":    _ADAPTIVE,
+    "claude-opus-4-8":  _ADAPTIVE,
+    "claude-sonnet-5":  _ADAPTIVE,
+    # Thinking is always ON and not configurable: `{"type": "adaptive"}` is accepted and
+    # equivalent to omitting the parameter, while BOTH `{"type": "disabled"}` and
+    # `{"type": "enabled", "budget_tokens": N}` are a 400. Sending adaptive keeps one
+    # code path for every adaptive-family model.
+    "claude-fable-5":   _ADAPTIVE,
+    "claude-haiku-4-5": _BUDGETED,
+}
+
+#: The vendor's floor for `budget_tokens`, and it must also stay strictly BELOW
+#: `max_tokens`. A budget the ledger sized tightly can leave no room for both, and then
+#: the honest payload carries no `thinking` at all rather than an invalid pair.
+MIN_THINKING_BUDGET: Final = 1024
 
 
 class AnthropicProvider:
@@ -81,8 +125,12 @@ class AnthropicProvider:
         key can reach.
         """
         try:
+            # A model this package prices — `claude-opus-4-5` was hardcoded here and is
+            # not one of them, so a credential check named a model the rest of the
+            # library refuses (ADR-091). `count_tokens` needs SOME model id; the default
+            # `Agent(model=...)` is the honest one to use.
             await self._client.messages.count_tokens(
-                model="claude-opus-4-5", messages=[{"role": "user", "content": "ok"}])
+                model="claude-opus-5", messages=[{"role": "user", "content": "ok"}])
         except Exception as exc:
             return False, str(self._map(exc))
         return True, ""
@@ -113,20 +161,51 @@ class AnthropicProvider:
         self._counts[key] = n
         return n
 
+    def _shape(self, model: str) -> _Shape:
+        shape = THINKING_SHAPE.get(model)
+        if shape is None:                              # pragma: no cover - see below
+            # Unreachable through `Agent`: `pricing.price()` refuses an unpriced model
+            # before the ledger can size a call, so `complete()` never sees one. Raised
+            # rather than defaulted anyway, because a silent default is how a new model
+            # would get the WRONG shape instead of a fixable error.
+            raise ProviderBadRequest(
+                f"no payload shape is declared for model {model!r}, so this adapter "
+                f"does not know whether it takes adaptive thinking or a token "
+                f"budget.\n\n  Add it to `THINKING_SHAPE` in models/anthropic.py.\n\n"
+                f"  -> docs/12-decision-logs.md ADR-091")
+        return shape
+
+    def _thinking(self, shape: _Shape, max_tokens: int) -> dict[str, Any] | None:
+        if shape.adaptive:
+            return {"type": "adaptive"}
+        budget = max(MIN_THINKING_BUDGET, max_tokens // 2)
+        if budget >= max_tokens:
+            return None                                # no room for a valid pair
+        return {"type": "enabled", "budget_tokens": budget}
+
     async def complete(self, request: ModelRequest, *,
                        on_delta: DeltaFn | None = None) -> ModelResponse:
+        shape = self._shape(request.model)
         kwargs: dict[str, Any] = {
             "model": request.model,
             "max_tokens": request.max_tokens,
             "system": list(request.system),
             "messages": list(request.messages),
-            "thinking": {"type": "adaptive"},          # never budget_tokens (400 on 4.7+)
-            "output_config": {"effort": request.effort},
         }
+        thinking = self._thinking(shape, request.max_tokens)
+        if thinking is not None:
+            kwargs["thinking"] = thinking
+        # Built up rather than declared: an EMPTY `output_config` is not the same request
+        # as an absent one, and on a budgeted model both of its keys can be absent.
+        output_config: dict[str, Any] = {}
+        if shape.effort:
+            output_config["effort"] = request.effort
+        if request.output_format:
+            output_config["format"] = dict(request.output_format)
+        if output_config:
+            kwargs["output_config"] = output_config
         if request.tools:
             kwargs["tools"] = list(request.tools)
-        if request.output_format:
-            kwargs["output_config"]["format"] = dict(request.output_format)
 
         # The beta endpoint carries the fallbacks parameter; everything else is identical.
         api = self._client.messages
