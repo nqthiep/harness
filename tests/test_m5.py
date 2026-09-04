@@ -2,7 +2,8 @@
 import os, pathlib, re, sys, tempfile, unittest
 
 from harness import Agent, tool, ConfigError, MissingEffectError, ToolSchemaError
-from harness.cli import NO_KEY_MESSAGE, cmd_new, cmd_setup, key_status
+from harness.cli import (NO_KEY_MESSAGE, api_key, cmd_new, cmd_setup, key_status,
+                         read_env_file, write_env)
 from harness.models.fake import FakeModel
 
 DOC = pathlib.Path("docs/15-first-agent.md").read_text()
@@ -113,6 +114,153 @@ class Setup(unittest.TestCase):
         self.assertIn("harness setup", str(cm.exception))
         self.assertNotIn("ANTHROPIC_API_KEY", str(cm.exception))
         self.assertIn("harness setup", NO_KEY_MESSAGE)
+
+
+class TheKeyActuallyReachesTheProvider(unittest.TestCase):
+    """`harness setup` stores a key in `.env`, every no-key message points at
+    `harness setup`, and until ADR-086 nothing in the library ever read that file.
+
+    Measured before the fix, with the key stored exactly as `cmd_setup` stores it:
+
+        key_status(): (True, '.env file')
+        RunFailed: ProviderError: TypeError: "Could not resolve authentication
+                   method. Expected one of api_key, auth_token, or credentials..."
+
+    So the status line said "found", and the run died on an SDK internal. Every test
+    below is one link of that chain.
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.dotenv = pathlib.Path(self._dir.name) / ".env"
+        self.addCleanup(self._dir.cleanup)
+        self._saved = os.environ.pop("ANTHROPIC_API_KEY", None)
+        if self._saved is not None:
+            self.addCleanup(os.environ.__setitem__, "ANTHROPIC_API_KEY", self._saved)
+
+    # -- reading ------------------------------------------------------------
+    def test_the_shapes_a_dotenv_can_take(self):
+        self.dotenv.write_text(
+            "# a comment\n"
+            "\n"
+            "PLAIN=one\n"
+            "export EXPORTED=two\n"
+            'DQUOTED="three"\n'
+            "SQUOTED='four'\n"
+            "  SPACED = five \n"
+            "garbage-with-no-equals\n"
+        )
+        self.assertEqual(read_env_file(self.dotenv),
+                         {"PLAIN": "one", "EXPORTED": "two", "DQUOTED": "three",
+                          "SQUOTED": "four", "SPACED": "five"})
+
+    def test_a_missing_file_is_no_key_not_an_error(self):
+        self.assertEqual(read_env_file(self.dotenv), {})
+
+    def test_the_value_comes_back_not_just_a_boolean(self):
+        """The whole defect in one assertion: the old check answered "is the name in the
+        text" and there was no way to ask for the key itself."""
+        self.dotenv.write_text("ANTHROPIC_API_KEY=sk-ant-from-file\n")
+        self.assertEqual(api_key({}, dotenv=self.dotenv),
+                         ("sk-ant-from-file", ".env file"))
+
+    def test_a_commented_out_assignment_is_not_a_configured_key(self):
+        """`"ANTHROPIC_API_KEY" in dotenv.read_text()` — the old test — reported this
+        file as configured."""
+        self.dotenv.write_text("# ANTHROPIC_API_KEY=sk-ant-old\n")
+        self.assertEqual(key_status({}, dotenv=self.dotenv), (False, ""))
+
+    def test_an_environment_variable_still_wins(self):
+        """ADR-013: two sources of truth for one credential is a support burden
+        forever."""
+        self.dotenv.write_text("ANTHROPIC_API_KEY=sk-ant-from-file\n")
+        self.assertEqual(api_key({"ANTHROPIC_API_KEY": "sk-ant-from-env"},
+                                 dotenv=self.dotenv),
+                         ("sk-ant-from-env", "environment variable"))
+
+    # -- writing ------------------------------------------------------------
+    def test_what_setup_writes_is_what_the_reader_reads(self):
+        """The round trip, which is the property that actually matters: `cmd_setup`'s
+        `write_env` and `_resolve_provider`'s `api_key` are two halves of one
+        contract."""
+        write_env("sk-ant-round-trip", path=self.dotenv)
+        self.assertEqual(api_key({}, dotenv=self.dotenv),
+                         ("sk-ant-round-trip", ".env file"))
+
+    def test_writing_replaces_the_old_key_and_keeps_everything_else(self):
+        self.dotenv.write_text("OTHER=keep\nANTHROPIC_API_KEY=sk-ant-old\nMORE=keep\n")
+        write_env("sk-ant-new", path=self.dotenv)
+        parsed = read_env_file(self.dotenv)
+        self.assertEqual(parsed["ANTHROPIC_API_KEY"], "sk-ant-new")
+        self.assertEqual((parsed["OTHER"], parsed["MORE"]), ("keep", "keep"))
+        self.assertEqual(self.dotenv.read_text().count("ANTHROPIC_API_KEY"), 1)
+
+    def test_the_file_is_not_world_readable(self):
+        write_env("sk-ant-secret", path=self.dotenv)
+        self.assertEqual(self.dotenv.stat().st_mode & 0o777, 0o600)
+        self.assertFalse(self.dotenv.with_name(".env.tmp").exists(),
+                         "the temp file used for the atomic replace was left behind")
+
+    # -- the provider actually receiving it ---------------------------------
+    def test_a_dotenv_key_is_passed_to_the_provider_explicitly(self):
+        """The SDK reads `ANTHROPIC_API_KEY` from the environment and nothing else, so a
+        key that came from `.env` has to be HANDED to it. This is the assertion that
+        would have failed before the fix."""
+        from unittest.mock import patch
+
+        from harness.agent import _resolve_provider
+        with patch("harness.cli.api_key", return_value=("sk-ant-from-file", ".env file")):
+            provider = _resolve_provider(None)
+        self.assertEqual(provider._client.api_key, "sk-ant-from-file")
+
+    def test_a_provider_with_no_credential_at_all_refuses_to_construct(self):
+        """Rather than constructing and dying on the first request with an SDK
+        `TypeError` mapped to a generic `ProviderError` — after the budget has already
+        reserved, and not the exception a caller catches for bad credentials."""
+        from harness.errors import ProviderAuthError
+        from harness.models.anthropic import AnthropicProvider
+        with self.assertRaises(ProviderAuthError) as ctx:
+            AnthropicProvider()
+        self.assertIn("harness setup", str(ctx.exception))
+
+    def test_with_middleware_gives_the_same_no_key_error_as_a_bare_agent(self):
+        """It built `AnthropicProvider()` itself instead of going through
+        `_resolve_provider` — a third copy of the logic whose own docstring says it
+        exists so copies could not drift."""
+        from unittest.mock import patch
+
+        from harness.middleware import with_middleware
+
+        class M:
+            def before_model(self, call):
+                return call.request
+
+        agent = Agent(name="A", job="hi")
+        with patch("harness.cli.api_key", return_value=(None, "")):
+            with self.assertRaises(ConfigError) as bare:
+                agent.run("hi")
+            with self.assertRaises(ConfigError) as wrapped:
+                with_middleware(agent, M())
+        self.assertEqual(str(bare.exception), str(wrapped.exception))
+
+    def test_every_command_in_the_help_line_has_a_branch(self):
+        """`setup` was advertised in `main`'s help text and fell through to
+        "unknown command 'setup'" — the command every no-key message tells the user to
+        run did not exist. Compared mechanically so the next added command cannot
+        repeat it."""
+        import inspect
+
+        from harness import cli
+
+        source = inspect.getsource(cli.main)
+        # The help text is one call split over several source lines, so join its string
+        # literals back together before splitting on "|".
+        help_call = source.split("print(", 1)[1].split(")", 1)[0]
+        help_text = "".join(re.findall(r'"([^"]*)"', help_call)).replace("harness ", "")
+        advertised = {part.split()[0] for part in help_text.split("|") if part.strip()}
+        implemented = set(re.findall(r'cmd == "(\w+)"', source))
+        self.assertEqual(advertised - implemented, set(),
+                         "advertised in --help, no branch behind it")
 
 
 class TutorialPromises(unittest.TestCase):

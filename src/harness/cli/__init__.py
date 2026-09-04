@@ -48,15 +48,81 @@ def cmd_new(name: str, *, cwd: Path | None = None) -> list[Path]:
     return [agent_file, gitignore]
 
 
-def key_status(env: Mapping[str, str] | None = None) -> tuple[bool, str]:
+def read_env_file(path: Path | None = None) -> dict[str, str]:
+    """Parse a `.env` the way `cmd_setup` writes one. Deliberately minimal: `KEY=value`,
+    one per line, `#` comments and blanks skipped, an `export ` prefix tolerated, and one
+    layer of surrounding quotes stripped. Not a dotenv implementation — no interpolation,
+    no multi-line values, no `.env.local` chain. A file this can't parse yields no key,
+    which surfaces as "MISSING", never as a wrong key.
+    """
+    path = path if path is not None else Path(".env")
+    out: dict[str, str] = {}
+    if not path.exists():
+        return out
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k = k.removeprefix("export ").strip()
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            v = v[1:-1]
+        if k:
+            out[k] = v
+    return out
+
+
+def api_key(env: Mapping[str, str] | None = None, *,
+            dotenv: Path | None = None) -> tuple[str | None, str]:
+    """The key and where it came from, or `(None, "")`.
+
+    One function answers this for the whole library — the CLI's status line, `doctor`,
+    and `_resolve_provider`'s actual construction of the provider. Two answers to "is a
+    key configured" is what let this break: `key_status` used to report `.env file` from
+    a SUBSTRING check (`"ANTHROPIC_API_KEY" in text`, so a commented-out line counted)
+    and nothing ever loaded the file, so a key stored exactly as `harness setup` stores
+    it produced `ProviderError: TypeError: "Could not resolve authentication method"`
+    mid-run — measured, on the path every no-key message in this library points at
+    (ADR-086). An environment variable still wins (ADR-013).
+    """
     import os
     env = env if env is not None else os.environ
     if env.get("ANTHROPIC_API_KEY"):
-        return True, "environment variable"
-    dotenv = Path(".env")
-    if dotenv.exists() and "ANTHROPIC_API_KEY" in dotenv.read_text():
-        return True, ".env file"
-    return False, ""
+        return env["ANTHROPIC_API_KEY"], "environment variable"
+    from_file = read_env_file(dotenv).get("ANTHROPIC_API_KEY")
+    if from_file:
+        return from_file, ".env file"
+    return None, ""
+
+
+def key_status(env: Mapping[str, str] | None = None, *,
+               dotenv: Path | None = None) -> tuple[bool, str]:
+    key, source = api_key(env, dotenv=dotenv)
+    return key is not None, source
+
+
+def write_env(key: str, *, path: Path | None = None) -> Path:
+    """Store the key in `.env`, replacing any line already assigning it, and preserving
+    everything else in the file.
+
+    `0o600` is passed to `os.open` rather than chmod'd afterwards, so the key is never
+    briefly world-readable — the same technique `policy/decision.py` uses for its
+    approval journal, which is the only other file in this library that holds something
+    worth protecting. Written to a sibling temp file and `os.replace`d in, so an
+    interrupted write cannot leave a `.env` with half a key in it.
+    """
+    import os
+    path = path if path is not None else Path(".env")
+    kept = [ln for ln in (path.read_text().splitlines() if path.exists() else [])
+            if not ln.strip().removeprefix("export ").startswith("ANTHROPIC_API_KEY=")]
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.unlink(missing_ok=True)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write("\n".join([*kept, f"ANTHROPIC_API_KEY={key}"]) + "\n")
+    os.replace(tmp, path)
+    return path
 
 
 NO_KEY_MESSAGE = (
@@ -217,6 +283,16 @@ def _money(budget) -> str:
     return str(Money(budget.usd)) if budget.usd is not None else "unlimited"
 
 
+def _ask_for_key() -> str:
+    """§15 Step 2 promises this "will tell you exactly where to get one", so it does.
+    Kept next to `main` rather than inside `cmd_setup`, which stays testable by taking
+    this as a callable.
+    """
+    print("Get a key at https://console.anthropic.com/settings/keys")
+    print("It looks like  sk-ant-api03-...  and it is like a password: keep it secret.")
+    return input("Paste your key here: ").strip()
+
+
 def main(argv: list[str] | None = None) -> int:                 # pragma: no cover
     argv = argv if argv is not None else sys.argv[1:]
     if not argv or argv[0] in ("-h", "--help"):
@@ -225,6 +301,12 @@ def main(argv: list[str] | None = None) -> int:                 # pragma: no cov
         return 0
     cmd, *rest = argv
     try:
+        if cmd == "setup":
+            from ..models.anthropic import AnthropicProvider
+            print(cmd_setup(read_key=_ask_for_key,
+                            write_env=lambda k: write_env(k),
+                            validate=lambda k: AnthropicProvider(api_key=k).check_credentials()))
+            return 0
         if cmd == "new":
             for p in cmd_new(rest[0] if rest else "helper"):
                 print(f"wrote {p.name}")

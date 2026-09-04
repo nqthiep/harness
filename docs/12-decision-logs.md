@@ -859,7 +859,10 @@ it silently names a retired model.
 **Care required.** The scalar form pairs with `-2026-07-01` and the array form with
 `-2026-06-01`; mixing them is a 400. Asserted by a test rather than trusted to memory.
 
-**Still unverified against the live API** — like the rest of this provider (OI-11).
+**Still unverified against the live API.** The unauthenticated probe of ADR-085 reaches
+the beta endpoint and gets a 401, which proves the SDK accepts these kwargs and the route
+exists — but a 401 is returned before the payload is validated, so it says nothing about
+whether `betas`/`fallbacks` are the names the endpoint honours (OI-11).
 
 ### ADR-040 — `@value` declares itself to type checkers
 
@@ -3182,6 +3185,140 @@ the loop (4 tests), deleting each of the five clauses (1-2 tests each), and pinn
 decision comparison to `decision_standard` instead of the agent's own level (the
 level-branch test). Full suite 1052 passed; `ruff` and `mypy` clean.
 
+### ADR-085 — OI-11 halved with a dead key: the live endpoint, at zero cost and no credential
+
+**Status:** Accepted (partial — the authenticated half stays open).
+
+**Context.** Every run this library has ever made went through `FakeModel`. That is a
+rule, not an omission: `no_network` is an autouse fixture (IDL-08) so a contributor cannot
+bill the project by accident. The cost is recorded as IDL-50 — "this provider has never
+run against the live API, so 'it looks right' was the only check it had. Three of its
+claims were wrong or absent" — and as OI-11, whose stated remedy was "one live call with a
+real key."
+
+Asked to clear the outstanding debt, I re-probed reachability rather than repeating the
+earlier "blocked by the proxy" from memory, and the earlier claim turned out to be too
+broad:
+
+```
+api.deepseek.com     http=000        <- 403 to CONNECT at the egress proxy
+api.anthropic.com    http=401        <- the real API answered
+api.openai.com       http=000        <- 403 to CONNECT at the egress proxy
+```
+
+`api.anthropic.com` is on the proxy's bypass list. So the endpoint was reachable all
+along; what is missing is a key. `ANTHROPIC_API_KEY` is unset here, and `ANTHROPIC_BASE_URL`
+points at a host-managed gateway holding credentials this environment does not own.
+
+**Decision.** Take the half that a dead key can prove, and be exact about the half it
+cannot. `tests/live_probe.py` is a standalone script — not collected by pytest, so
+`no_network` still governs the suite — that pins the vendor URL (so it cannot spend
+through the host gateway), sends a syntactically valid but dead key, and asserts the
+adapter maps what really comes back:
+
+```
+complete()            -> ProviderAuthError: Error code: 401 - {'type': 'error',
+                         'error': {'type': 'authentication_error',
+                         'message': 'API key is invalid.'}, ...}
+count_input_tokens()  -> 80 (character upper bound 80, unauthenticated)
+```
+
+The first real byte from a model endpoint in this codebase's history.
+
+| | |
+|---|---|
+| **Proven** | DNS; a real TLS handshake with the vendor; the endpoint path; a request the installed SDK (1.3.0) accepts with no `TypeError`; `_map()`'s `401 -> ProviderAuthError` arm against a real response body rather than a hand-written fake of one (IDL-46); and that `count_input_tokens`'s never-fail-a-run fallback really returns the character upper bound instead of raising |
+| **Not proven** | the payload SHAPE — `thinking`, `output_config`, `betas`, `fallbacks`. The server rejects the key before it validates any of them, so a wrong parameter name is indistinguishable from a right one here |
+
+**Why this is worth having rather than waiting for the funded call.** The three defects
+IDL-50 names were all in the payload, which this does not touch — so the honest framing is
+that OI-11 went from "no live contact at all" to "the transport and the error path have
+live evidence; the payload still does not." Writing the boundary into the script's own
+docstring is the point: the next person to read it learns what the green line does and
+does not mean, instead of inferring from a passing script that the provider is verified.
+
+**Second-order finding, measured after this ADR first claimed the opposite.** A short
+string (`"nope"`) is NOT rejected client-side — it reaches the server and comes back 401,
+same as the long dead key. The only locally-decidable case is the ABSENCE of a
+credential: an empty key raises the SDK's own `TypeError` ("Could not resolve
+authentication method"), which `_map` turns into a generic `ProviderError`. That is what
+led to ADR-086.
+
+### ADR-086 — The first-run key path had never been executed end to end
+
+**Status:** Accepted.
+
+**Context.** Found immediately after ADR-085's probe made a real credential error
+observable for the first time. Every "no key" message in this library ends with
+`Run: harness setup`. Following that instruction, all the way through, does not work —
+five separate breaks in one path, none of which any test could see while every run went
+through `FakeModel`:
+
+1. **`.env` was never loaded.** `cmd_setup` writes the key to `.env`; nothing in the
+   library ever read it, and the Anthropic SDK reads `os.environ` only. Measured, with
+   the key stored exactly as `cmd_setup` stores it:
+
+   ```
+   key_status(): (True, '.env file')
+   RunFailed: ProviderError: TypeError: "Could not resolve authentication method.
+              Expected one of api_key, auth_token, or credentials to be set..."
+   ```
+
+   The status line said found; the run died on an SDK internal.
+2. **`key_status` answered the wrong question.** `"ANTHROPIC_API_KEY" in dotenv.read_text()`
+   — a substring test, so `# ANTHROPIC_API_KEY=old` counted as configured — and it
+   returned a `bool`, so there was no way to ask for the key even if something wanted to.
+3. **A missing credential was not a `ProviderAuthError`.** It surfaced mid-run, after the
+   budget had reserved, as a `ProviderError` whose message begins with `TypeError:` —
+   so a caller catching the documented exception for bad credentials missed it.
+4. **`harness setup` did not exist.** `main()` advertises it in the help line and has no
+   branch for it; the word fell through to `unknown command 'setup'`.
+5. **There was no `harness` command at all.** `pyproject.toml` declared no
+   `[project.scripts]`.
+
+And, found on the way: **`with_middleware` was a third copy of "build the default
+provider"** and had already drifted from `_resolve_provider`, whose docstring says it
+exists precisely so the copies could not. With no key configured, `with_middleware(agent)`
+returned a live agent that failed mid-run on the SDK `TypeError`, where the same agent
+unwrapped raises `ConfigError: this agent has no way to reach a model yet. Run: harness
+setup`.
+
+**Decision.** One function owns "where does the credential come from", and it returns the
+VALUE: `cli.api_key() -> (key | None, source)`, with `key_status()` reduced to a boolean
+view of it, `read_env_file()` doing a deliberately minimal parse (`KEY=value`, comments
+and blanks skipped, an `export ` prefix tolerated, one layer of quotes stripped — not a
+dotenv implementation), and `write_env()` writing through `os.open(..., 0o600)` into a
+sibling temp file that is then `os.replace`d in, so the key is never briefly
+world-readable and an interrupted write cannot leave half a key behind (the same
+technique `policy/decision.py` already uses for the approval journal). `_resolve_provider`
+passes the key EXPLICITLY, because a key from `.env` is invisible to the SDK's own env
+lookup. `AnthropicProvider.__init__` refuses to construct with no resolvable credential.
+`with_middleware` calls `_resolve_provider`. `main()` gained the `setup` branch and
+`pyproject.toml` gained the console script.
+
+`AnthropicProvider.acheck_credentials()` is the validation `cmd_setup` has always taken
+as an injected callable and never had a real implementation of: a `count_tokens` call,
+which authenticates against the same key and bills nothing, mapped through `_map` so the
+CLI never sees an `anthropic.*` type (ADR-002). Verified live with a dead key —
+`(False, "Error code: 401 ...")` — in `tests/live_probe.py`.
+
+**Test.** 12 tests in `tests/test_m5.py::TheKeyActuallyReachesTheProvider`, one per link:
+the `.env` shapes, a missing file, the value coming back rather than a boolean, the
+commented-out line, environment-variable precedence (ADR-013), the write/read round trip,
+replacement preserving other lines, `0o600` and no leftover temp file, the key reaching
+`provider._client.api_key`, the construction-time refusal, `with_middleware` producing the
+same error text as a bare agent, and a mechanical check that every command in `main`'s
+help line has a branch behind it. Mutation-verified: renaming the `setup` branch fails the
+help-line test, removing the `.env` read fails the value and round-trip tests, and
+removing the construction check fails the refusal test. Full suite 1064 passed.
+
+**What this says about the method.** Five breaks in the single path the documentation
+tells every new user to walk, in a repository that mutation-tests its guards. They were
+invisible because `no_network` (IDL-08) is load-bearing and correct — and its cost is that
+nothing downstream of "get a credential" was ever executed. ADR-085's dead-key probe
+found them within minutes of existing. That is the argument for the probe, not for
+weakening the fixture.
+
 | # | Decision | Rationale |
 |---|---|---|
 | IDL-01 | `Decimal` for all money; `float` banned in `budget/` by lint | A rounding error in a spend ceiling is a real bug class |
@@ -3244,4 +3381,5 @@ level-branch test). Full suite 1052 passed; `ruff` and `mypy` clean.
 | IDL-58 | A path-confining tool is constructed with its root; a module-level tool function confines to the CWD or not at all | `confine()` existed unused for two milestones because the tools that needed it had no root to pass — the missing constructor was the bug, not the missing call (ADR-065) |
 | IDL-59 | An escalating policy escalates on the SIGNAL, never on "the cheaper rung ran out of work" | Editing always has one more stale result to blank, so compaction gated on that would never have run once (ADR-066) |
 | IDL-60 | Context size is measured over the whole request payload, arguments included — never over `message.content` alone | A LangChain `AIMessage` carrying only tool calls has empty `content`; the arguments are the part that never gets blanked, and they measured as zero (ADR-066) |
+| IDL-62 | A credential is resolved by ONE function that returns its VALUE and its source, never by a boolean "is one configured" | Two answers to that question is how `.env` came to report "found" while nothing loaded the file; the run then died on an SDK internal (ADR-086) |
 | IDL-61 | An external doc-generation CLI (`openwiki`) is wired in as a tool the model must call, never a step the harness runs on its own | Every other seam in this library runs on nothing but an explicit call; `--update` is itself a paid model call, so auto-running it would bill every run for a wiki nobody asked to re-read (ADR-072) |

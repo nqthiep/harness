@@ -733,10 +733,14 @@ def _resolve_provider(provider: Any) -> Any:
     default Anthropic one if a key is configured, or a clear error" — factored out so
     the two copies of this couldn't drift (they briefly did, mid-implementation)."""
     if provider is None:
-        from .cli import key_status
-        if key_status()[0]:
+        from .cli import api_key
+        key, _source = api_key()
+        if key is not None:
             from .models.anthropic import AnthropicProvider
-            provider = AnthropicProvider()
+            # Passed EXPLICITLY, never left to the SDK's own env lookup: the key may
+            # have come from `.env`, which nothing loads into `os.environ` and the SDK
+            # therefore cannot see (ADR-086).
+            provider = AnthropicProvider(api_key=key)
     if provider is None:
         raise ConfigError(
             "this agent has no way to reach a model yet.\n\n"

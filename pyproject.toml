@@ -5,6 +5,11 @@ description = "Build AI agents that are cheap to run, hard to misuse, and easy t
 requires-python = ">=3.11"
 dependencies = ["anthropic", "typing-extensions", "jsonschema"]
 
+[project.scripts]
+# Every no-key message in this library says "Run: harness setup". Without this entry
+# there was no `harness` command at all to run (ADR-086).
+harness = "harness.cli:main"
+
 [project.optional-dependencies]
 # 36 transitive packages against NFR-05's budget of three, measured — which is why it is
 # an extra and not a dependency (ADR-032).  `import harness` must never import LangChain.

@@ -48,8 +48,49 @@ class AnthropicProvider:
             ) from exc
         self._sdk = anthropic
         self._client = anthropic.AsyncAnthropic(**({"api_key": api_key} if api_key else {}))
+        # Caught here rather than on the first request. Without this, a provider with no
+        # resolvable credential constructs happily and dies mid-run as
+        # `ProviderError: TypeError: "Could not resolve authentication method..."` — an
+        # SDK internal, raised after the budget has already reserved, and NOT a
+        # `ProviderAuthError`, so a caller catching the documented exception for "bad
+        # credentials" misses it. Measured on the `.env` path (ADR-086). Note the SDK
+        # accepts a short or malformed key without complaint — only the ABSENCE of one
+        # is decidable locally; `"nope"` reaches the server and comes back 401.
+        if self._client.api_key is None and getattr(self._client, "auth_token", None) is None:
+            raise ProviderAuthError(
+                "no Anthropic credential is configured.\n\n"
+                "  Run:  harness setup\n"
+                "  or:   export ANTHROPIC_API_KEY=sk-ant-...\n"
+                "  or:   AnthropicProvider(api_key=...)\n\n"
+                "  -> docs/15-first-agent.md"
+            )
         self._counts: dict[str, int] = {}
         self._fallbacks = fallbacks
+
+    async def acheck_credentials(self) -> tuple[bool, str]:
+        """Is this credential accepted? `(True, "")` or `(False, why)`.
+
+        `count_tokens` rather than a one-token `messages.create`: it authenticates
+        against the same key and bills nothing, so validating a key before storing it
+        (IDL-25) does not cost the user money to find out their key works.
+
+        Lives here, not in the CLI, because mapping a vendor exception is exactly what
+        ADR-002 keeps inside this file — the caller gets `(bool, str)` and never sees an
+        `anthropic.*` type. Verified against the live endpoint with a dead key
+        (`tests/live_probe.py`), which is the only half of it a probe without a funded
+        key can reach.
+        """
+        try:
+            await self._client.messages.count_tokens(
+                model="claude-opus-4-5", messages=[{"role": "user", "content": "ok"}])
+        except Exception as exc:
+            return False, str(self._map(exc))
+        return True, ""
+
+    def check_credentials(self) -> tuple[bool, str]:
+        """`acheck_credentials` for a sync caller (the `harness setup` command)."""
+        import asyncio
+        return asyncio.run(self.acheck_credentials())
 
     # -- protocol ---------------------------------------------------------
     def price(self, model: str): return pricing.price(model)
