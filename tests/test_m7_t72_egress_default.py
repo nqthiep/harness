@@ -8,10 +8,7 @@ chỉ cho đúng những host đó qua. Cái ĐỔI ở đây chỉ là GIÁ TR�
 (chặn tất cả). `allowed_hosts=None` truyền TƯỜNG MINH vẫn là escape hatch hợp lệ —
 cùng khuôn `Budget(usd=None)` của S-20: không im lặng, phải gõ ra.
 """
-import sys
 import unittest
-
-sys.path.insert(0, "src")
 
 from harness import Agent, tool
 from harness.models.fake import FakeModel

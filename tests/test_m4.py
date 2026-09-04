@@ -1,6 +1,5 @@
 """M4 executed: memory stores, plugin registry, subagents."""
-import asyncio, os, sys, tempfile, unittest
-sys.path.insert(0, "src")
+import asyncio, os, tempfile, unittest
 
 from harness import Agent, tool, Effect, ConfigError
 from harness.memory import InMemoryStore, SqliteStore

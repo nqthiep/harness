@@ -5,8 +5,6 @@ riêng) bằng SDK OTel THẬT (`InMemorySpanExporter`/`InMemoryMetricReader`), 
 import sys
 import unittest
 
-sys.path.insert(0, "src")
-
 from harness import Agent, tool
 from harness.models.fake import FakeModel
 from harness.observe.otel import OtelExporter

@@ -10,8 +10,7 @@ thể vượt trần gấp nhiều lần.
 
 Không cần dựng agent hay graph — đây là lỗi ở đúng MỘT lớp (`Ledger`), kiểm trực tiếp.
 """
-import sys, unittest
-sys.path.insert(0, "src")
+import unittest
 
 from harness.budget.ledger import Budget, Ledger
 from harness.errors import BudgetExceeded

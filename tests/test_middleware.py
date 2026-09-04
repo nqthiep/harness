@@ -5,10 +5,7 @@ never a grab bag of positional arguments; (2) a `Middleware` can add
 restriction/observation, never bypass what the six core seams already decided — most
 importantly, it must never see a tool call `Policy` already denied.
 """
-import sys
 import unittest
-
-sys.path.insert(0, "src")
 
 from harness import (Agent, Middleware, ModelCall, RunIdentity, ShortCircuit,
                      ToolInvocation, tool, with_middleware)

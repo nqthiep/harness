@@ -8,6 +8,8 @@ A stub that just reports a number would measure nothing.
 from __future__ import annotations
 
 import json
+
+# Runs OUTSIDE pytest (imported by `bench_cache.py`), so `conftest.py` never applies.
 import sys
 sys.path.insert(0, "src")
 

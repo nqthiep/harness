@@ -10,11 +10,8 @@ hàm `observe.events.to_dict()` duy nhất cả hai xây trên đó.
 """
 import json
 import os
-import sys
 import tempfile
 import unittest
-
-sys.path.insert(0, "src")
 
 from harness import Agent, tool
 from harness.models.fake import FakeModel

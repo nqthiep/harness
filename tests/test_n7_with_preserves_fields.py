@@ -4,10 +4,7 @@ caller đụng tới một trong bốn trường đó. Phát hiện khi viết T
 `with_()` để thêm một exporter riêng) — test transcript của `stream()` fail vì
 `with_()` đã âm thầm đặt `transcript=None` trên agent phái sinh.
 """
-import sys
 import unittest
-
-sys.path.insert(0, "src")
 
 from harness import Agent
 

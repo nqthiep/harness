@@ -2912,6 +2912,101 @@ implementation. A file-watcher or a CI-status poller would make the case; until 
 promoting it would be building a seam for one use case, which is what ADR-080 declined to
 do and what `docs/02-architecture.md` lists among the rejected abstractions.
 
+### ADR-082 — `harness.contrib`: ship what you don't want re-derived, copy-paste what you want edited
+
+**Status:** Accepted.
+
+**Context.** Asked directly: why is this in `examples/` instead of somewhere reusable?
+Measured before answering, and the numbers made the answer:
+
+```
+examples/          6,780 lines, no __init__.py     -> not a package
+cross-imports      7 real ones between its own files
+sys.path.insert    136 calls across 100 files
+pyproject          packages = ["src/harness"]      -> examples/ is not shipped
+tests/conftest.py  did not exist
+```
+
+Reuse was already happening; it was happening through a path hack. `examples/` had
+stopped being examples and become a second library with no name, no imports, and no
+checker pointed at it.
+
+But "put it all in a common package" is the wrong fix, because two different kinds of
+thing were sitting there:
+
+* **Judgment, meant to be forked** — the prompts, `Verifier`'s command list,
+  `Salience`'s priority table, `DEFAULT_THRESHOLD = 0.80` (documented as a guess needing
+  per-deployment calibration). A prompt you cannot edit is worthless.
+* **Domain-neutral mechanism** — `driver.py`, `output_shaping.py`. No opinion about
+  coding or cameras, no new dependency.
+
+**Decision.** `src/harness/contrib/` — shipped (hatchling includes subpackages; verified
+by building the wheel and listing `harness/contrib/{__init__,driver,output_shaping}.py`
+in it, with `examples/` correctly absent), covered by the same `ruff`, `mypy` and test
+suite as core, and explicitly outside core's compatibility promise. No re-export from
+`harness`: the longer import path IS the disclaimer.
+
+    from harness.contrib.driver import Driver, Priority
+
+**The line: copy-paste what you want people to EDIT; ship what you don't want them to
+RE-DERIVE.** `driver.py` carries four safety rules about preemption. Safety distributed
+by copy-paste drifts silently in every fork, and this project has already paid twice —
+`coding_profile.py` claimed single-file portability that had stopped being true
+(ADR-076), and its subagent ran at the wrong `safety` level from its first commit until a
+conformance test caught it (ADR-078). Four admission criteria are in
+`harness/contrib/__init__.py` so this does not become a junk drawer; criterion 2 (no new
+dependency) is why `vision_tools.py` stays in `examples/` however reusable it looks —
+OpenCV and MediaPipe against NFR-05's dependency budget is not a trade worth making.
+
+Also, and this is the part that pays for itself: `coding_profile.py`'s copy-paste story
+got SHORTER. `with_smart_truncation` now ships, so that file runs on its own again, and
+only `shell_tools.py`/`findings_log.py` still travel with it when the `enable_` flags are
+used. The fix for a false portability claim was to move the dependency, not to keep
+restating it.
+
+**`tests/conftest.py`** replaces 123 `sys.path.insert` lines across 79 test files. Three
+files legitimately keep their own, with the reason now written next to it: `bench_cache.py`
+(run through `subprocess` by `proof.py`), `caching_fake.py` (imported by it), and
+`test_roadmap.py` (the README says to run it directly). Removing theirs broke the proof
+run, which is how they were identified — a regression this change caused and fixed inside
+the same change.
+
+**What pointing mypy at `examples/` for the first time found, all of it real:**
+
+1. **`Profile.name` was declared as a settable variable**, so under mypy NO
+   `@dataclass(frozen=True)` profile satisfied the Protocol — which is the shape
+   `docs/03-public-api.md` §3.7 recommends and all three real profiles use:
+   `Argument 1 to "with_profile" ... expected "Profile"; note: Protocol member
+   Profile.name expected settable variable, got read-only attribute`. Nine of the twenty
+   findings were this one defect. Now a read-only `@property`, which accepts strictly
+   more and rejects nothing that worked.
+2. **`Agent.safety` was annotated `str`** while `__init__` takes
+   `Literal["standard", "strict"]`, so `Agent(safety=parent.safety)` — exactly what a
+   subagent must do to be no less restricted than its parent, and what
+   `CodingProfile.apply()` does for its reader since ADR-078 — failed to type check.
+3. A leaked loop variable in `proof.py` shadowing `readability.grade`, which worked only
+   because of the order the two lines happened to be in, plus five missing annotations
+   whose first guesses were wrong (`PASSED`/`FAILED`/`WARNED` hold 3-tuples, not strings
+   — the file unpacks them three-wide at the bottom).
+
+Both core defects were invisible at runtime, which is why nothing had caught them:
+nothing checks the `Profile` Protocol at runtime, and `agent.py` only ever reads
+`safety`.
+
+**Scoped out, deliberately and with the number stated.** `examples/` is checked as its
+own unit (`mypy examples/ --ignore-missing-imports`, now a conformance test) rather than
+co-analysed with core. Co-analysis types the cross-module calls exactly instead of as
+`Any` and surfaces **10 further findings**, all pre-existing looseness in demo blocks
+(`_Spec` test doubles handed to `ToolCall`, `object` where a dataclass was meant,
+`list[_Scored]` where `Sequence[Result]` is expected). Worth closing; not worth
+attaching to this change. The note lives in `pyproject.toml` next to the config so the
+next person finds it rather than rediscovers it.
+
+**Test.** Full suite 1035 passed; `ruff` and `mypy` clean; a new conformance test keeps
+`examples/` type-checked; all six example demos plus both `contrib` modules run
+(`PYTHONPATH=src python3 -m harness.contrib.driver` — `-m` now, since these are package
+modules with relative imports).
+
 | # | Decision | Rationale |
 |---|---|---|
 | IDL-01 | `Decimal` for all money; `float` banned in `budget/` by lint | A rounding error in a spend ceiling is a real bug class |

@@ -14,9 +14,8 @@ Bất biến thay thế I-1 (design/04-runtime-durability.md §3.5):
 
 Hai test dưới đây kiểm đúng một điều đó, ở hai độ cao khác nhau.
 """
-import sys, unittest
+import unittest
 from datetime import datetime, timedelta, timezone
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
 
 from fake_chat import FakeChat
 from langchain_core.messages import HumanMessage

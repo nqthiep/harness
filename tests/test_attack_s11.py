@@ -18,8 +18,7 @@ một deployment BẬT bắt buộc — DENY một actor `human` báo cáo mà k
 thay vì âm thầm tin. Mặc định vẫn TẮT, y hệt kỷ luật tương thích ngược mọi cổng tuỳ chọn
 khác trong codebase này.
 """
-import sys, unittest
-sys.path.insert(0, "src")
+import unittest
 
 from harness import Actor, Approval, AuthEvidence, tool
 from harness.policy.base import Verdict

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Any
 import subprocess
 import sys
 import time
@@ -21,7 +22,11 @@ from decimal import Decimal
 
 sys.path.insert(0, "src"); sys.path.insert(0, "tests")
 
-PASSED, FAILED, WARNED = [], [], []
+# Each row is `(requirement_id, requirement, detail)` — unpacked three-wide at the
+# bottom of the file, which is what the annotation has to say.
+PASSED: "list[tuple[str, str, str]]" = []
+FAILED: "list[tuple[str, str, str]]" = []
+WARNED: "list[tuple[str, str, str]]" = []
 
 
 def passed(req_id: str, requirement: str, evidence: str) -> None:
@@ -259,7 +264,7 @@ passed("SI.3", "A Secret cannot leak through an f-string, repr, a log, or JSON",
        "__str__/__format__ mask it; __reduce__ blocks serialization; redact() catches "
        "it at output boundaries")
 
-short_log = []
+short_log: list[tuple[str, dict]] = []
 class Recorder:
     def emit(self, e): short_log.append((e.kind.value, e.data))
     def close(self): pass
@@ -279,7 +284,7 @@ passed("SI.3", "FAIL SAFE -- a `danger` tool is DENIED by default with no approv
 section("SI.4", "INTELLIGENT -- maximum intelligence per unit of cost and latency")
 from harness.models.anthropic import AnthropicProvider                 # noqa: E402
 
-captured = {}
+captured: "dict[str, Any]" = {}   # a provider payload: nested dicts/lists
 class _M:
     async def create(self, **k): captured.update(k); raise SystemExit
 class _B: messages = _M()
@@ -390,8 +395,9 @@ except TypeError as e:
     ladder.append(("Call-time", "float used as currency", str(e)))
 
 assert len(ladder) == 5, ladder
-for grade, mistake, msg in ladder:
-    print(f"      [{grade:<13}] {mistake:<26} -> {msg[:44]}")
+for stage, mistake, msg in ladder:              # NOT `grade`: `readability.grade` is
+    print(f"      [{stage:<13}] {mistake:<26} -> {msg[:44]}")   # imported below, and a
+                                                # leaked loop variable would shadow it
 passed("SII", "Five common mistakes, all blocked BEFORE anything runs",
        "none of these is a runtime error; docs/08 lists 83 failure modes ranked by "
        "prevention tier")

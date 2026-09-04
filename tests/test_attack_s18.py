@@ -5,8 +5,7 @@ toàn trước biến thể đó); (2) DNS rebinding vẫn là lỗ thật — k
 vị (cần DNS resolver thật), nên viết lại thành một khẳng định về THIẾT KẾ: `EgressPolicy`
 không bao giờ đọc gì ngoài chuỗi URL model đưa ra.
 """
-import sys, unittest
-sys.path.insert(0, "src")
+import unittest
 
 from harness.policy.base import ToolCall, Verdict
 from harness.policy.builtin import EgressPolicy

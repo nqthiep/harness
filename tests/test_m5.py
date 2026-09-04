@@ -1,6 +1,5 @@
 """M5 executed: the four-command cold start, and §15's promises as tests."""
 import os, pathlib, re, sys, tempfile, unittest
-sys.path.insert(0, "src")
 
 from harness import Agent, tool, ConfigError, MissingEffectError, ToolSchemaError
 from harness.cli import NO_KEY_MESSAGE, cmd_new, cmd_setup, key_status

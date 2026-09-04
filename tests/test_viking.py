@@ -6,8 +6,7 @@ they do not do is talk to a live `openviking-server`: that needs an embedding mo
 config wizard with a TTY.  Recorded plainly rather than implied — R-16 exists because a
 control that was specified and never executed failed on first execution.
 """
-import asyncio, sys, unittest
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
+import asyncio, unittest
 
 import httpx
 

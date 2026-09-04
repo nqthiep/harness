@@ -1,6 +1,5 @@
 """Properties P-1 and P-8 — the invariants the whole cost argument rests on."""
-import sys, random, unittest
-sys.path.insert(0, "src")
+import random, unittest
 
 from harness import Agent, tool, Budget
 from harness.budget.ledger import Ledger, MIN_USEFUL_OUTPUT_TOKENS

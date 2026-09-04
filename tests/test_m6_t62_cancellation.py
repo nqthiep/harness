@@ -11,10 +11,7 @@ Sửa: `RunEngine.run()`'s `except asyncio.CancelledError:` giờ dọn dẹp (p
 `CancelledError` truyền thẳng lên `asyncio.run()`, ra ngoài lời gọi.
 """
 import asyncio
-import sys
 import unittest
-
-sys.path.insert(0, "src")
 
 from harness import Agent, tool
 from harness.models.base import ModelResponse

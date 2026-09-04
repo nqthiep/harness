@@ -14,11 +14,7 @@ nothing more. See ADR-077.
 """
 import asyncio
 import json
-import sys
 import unittest
-
-sys.path.insert(0, "src")
-sys.path.insert(0, "examples")
 
 from harness import Effect
 from harness.memory.inmemory import InMemoryStore

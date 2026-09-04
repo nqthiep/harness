@@ -8,11 +8,7 @@ that turns "a short script that exits anyway" into a real, growing leak).
 is what makes this testable at all without a live API key.
 """
 import subprocess
-import sys
 import unittest
-
-sys.path.insert(0, "src")
-sys.path.insert(0, "examples")
 
 from harness.models.fake import FakeModel
 

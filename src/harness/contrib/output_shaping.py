@@ -28,11 +28,8 @@ tail-only both bet on one shape; this doesn't have to bet.
 """
 from __future__ import annotations
 
-import sys
 from dataclasses import replace
 from typing import Any, Final, Sequence
-
-sys.path.insert(0, "src")
 
 #: Matches `shell_tools.SHELL_MAX_RESULT_TOKENS` — the same class of output (a build/
 #: test log), so the same budget.

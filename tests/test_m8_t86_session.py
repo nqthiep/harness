@@ -2,12 +2,9 @@
 resume, ranh giới đồng thời. Chỉ bao lấy `Chat` (backend cổ điển) — không xây lại state
 isolation Round 37 đã sửa, chỉ ĐẶT TÊN cho thứ đã tồn tại ngầm.
 """
-import sys
 import threading
 import time
 import unittest
-
-sys.path.insert(0, "src")
 
 from harness import Agent
 from harness.models.fake import FakeModel

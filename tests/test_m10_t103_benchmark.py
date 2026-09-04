@@ -4,10 +4,7 @@ từng đo là import time").
 """
 import asyncio
 import os
-import sys
 import unittest
-
-sys.path.insert(0, "src")
 
 from harness.eval.benchmark import BenchmarkReport, benchmark, import_cold_start_ms
 

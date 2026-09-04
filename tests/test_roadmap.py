@@ -11,6 +11,8 @@ import asyncio
 import sys
 import unittest
 
+# Also run directly, outside pytest — README says `python3 tests/test_roadmap.py` —
+# so `tests/conftest.py` cannot be relied on here.
 sys.path.insert(0, "src"); sys.path.insert(0, "tests")
 
 from harness import Agent, tool

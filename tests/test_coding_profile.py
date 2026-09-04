@@ -6,11 +6,7 @@ store between the two, and by accepting an injected `store=` so a caller that bu
 many agents in a loop (`coding_bench.py`'s own case) can own and close it explicitly.
 These tests check the fix mechanically, not just that fewer fds leak in one manual run.
 """
-import sys
 import unittest
-
-sys.path.insert(0, "src")
-sys.path.insert(0, "examples")
 
 from harness import Agent
 from harness.memory.inmemory import InMemoryStore

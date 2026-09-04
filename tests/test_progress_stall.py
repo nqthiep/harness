@@ -14,11 +14,7 @@ Nhóm test ở đây tương ứng đúng bốn điều `progress.py` tự hứa
    (`tests/test_redteam.py::RT06`, `tests/test_walkthrough.py::rt06`,
    `tests/test_lg.py`, `tests/test_parity.py` đã sửa cho điều này).
 """
-import sys
 import unittest
-
-sys.path.insert(0, "src")
-sys.path.insert(0, "tests")
 
 from fake_chat import FakeChat
 from langchain_core.messages import HumanMessage

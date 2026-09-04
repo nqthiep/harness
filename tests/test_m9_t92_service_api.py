@@ -10,11 +10,8 @@ instant the request that started it returns. That is a `TestClient` artifact, no
 production one — a real ASGI server (uvicorn) runs one loop for the process's whole
 life — but it means every test below opens the client once for its whole scenario.
 """
-import sys
 import time
 import unittest
-
-sys.path.insert(0, "src")
 
 from harness import Agent, tool
 from harness.models.fake import FakeModel

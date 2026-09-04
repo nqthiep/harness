@@ -10,17 +10,13 @@ The last test runs the whole chain — camera → sensor → `Driver` → a real
 with no camera and no model file.
 """
 import asyncio
-import sys
 import unittest
-
-sys.path.insert(0, "src")
-sys.path.insert(0, "examples")
 
 from harness import Agent, Effect, tool, with_middleware
 from harness.memory.inmemory import InMemoryStore
 from harness.models.fake import FakeModel
 
-from driver import Driver, EventAnnouncer, EventInbox, Priority
+from harness.contrib.driver import Driver, EventAnnouncer, EventInbox, Priority
 from vision_sensor import (Change, CameraSensor, DEFAULT_STABLE_READS, Salience,
                            render)
 from vision_tools import (Body, Camera, Face, FakeDetector, IdentityLedger,

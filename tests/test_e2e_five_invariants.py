@@ -16,8 +16,7 @@ Nếu lát này gãy ở đâu đó chỉ vì tổ hợp — hai cơ chế riên
 đó chính là lớp lỗi mà nghiên cứu đo được: 16 vòng CHẠY tìm ra lỗi mà 23 vòng REVIEW không
 tìm ra (research/00-executive-summary.md).
 """
-import sys, unittest
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
+import unittest
 
 from fake_chat import FakeChat
 from langchain_core.messages import HumanMessage

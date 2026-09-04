@@ -7,12 +7,9 @@ khi `path` là tuyệt đối (`Path("/root") / "/etc/passwd" == Path("/etc/pass
 bằng cách chặn tuyệt đối TRƯỚC khi join, không dựa vào containment check để bắt nó.
 """
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
-
-sys.path.insert(0, "src")
 
 from harness.workspace import WorkspaceEscapeError, confine
 

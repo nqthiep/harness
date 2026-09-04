@@ -51,18 +51,20 @@ just documented:
    the agent never finishes anything. Past `max_preemptions` in `window_s`, a `CRITICAL`
    is served as `HIGH` instead.
 
-**Why this is caller-owned code and not part of the harness.** `run.py` sits at its
-IDL-13 ceiling of 250 lines and is the single place where a budget check precedes a model
-call and a permission check precedes a tool call (ADR-001); a wake source does not belong
-there. `docs/02-architecture.md` §4's plugin test wants "two genuinely different
-implementations TODAY — not hypothetically" before something earns a seam, and this repo
-has ONE real `Sensor` (`vision_sensor.CameraSensor`) plus the test double below. A test
-double is not an implementation, so part (c) is still unmet: a second genuinely
-different one — a file-watcher, a CI-status poller — is what would make the case.
-And a `Driver` owns a thread, an event loop and the conversation history — none of which
-an `Agent` can hold, being frozen with no lifecycle. If a second real sensor ships and
-this stabilises, promoting `Sensor`/`Event` into core is a small ADR; starting in core
-and walking it back is not.
+**Why this is `contrib` and not core, and not `examples/` either.** Not core: `run.py`
+sits at its IDL-13 ceiling of 250 lines and is the single place where a budget check
+precedes a model call and a permission check precedes a tool call (ADR-001), so a wake
+source does not belong there; and `Sensor` has not earned a seam — `docs/02-architecture.md`
+§4's plugin test wants "two genuinely different implementations TODAY — not
+hypothetically" and this repo has ONE real one (`examples/vision_sensor.CameraSensor`)
+plus the test double below, a test double not being an implementation. A `Driver` also
+owns a thread, an event loop and the conversation history, none of which a frozen `Agent`
+can hold.
+
+Not `examples/` either, which is where this started: the four rules below are SAFETY
+rules, and safety distributed by copy-paste drifts in every fork (ADR-082). So it ships,
+without core's compatibility promise — see `harness/contrib/__init__.py` for what that
+means and for the four admission criteria.
 
 **The price of preemption, up front:** `Chat`/`Session` cannot be used. `say()` is sync
 and `_guard_sync()` raises inside a running loop, so there is no way to cancel it. This
@@ -70,21 +72,22 @@ and `_guard_sync()` raises inside a running loop, so there is no way to cancel i
 
 Run it — no camera, no API key:
 
-    python3 examples/driver.py
+    PYTHONPATH=src python3 -m harness.contrib.driver
+
+`-m` and not a path, because this is a package module now and its imports are relative;
+`PYTHONPATH=src` because this repository is not installed (src layout, no editable
+install) — an installed copy needs neither.
 """
 from __future__ import annotations
 
 import asyncio
-import sys
 import time
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any, Protocol, Sequence
 
-sys.path.insert(0, "src")
-
-from harness import Effect, Middleware, Ruling, ShortCircuit, ToolCall, Verdict
-from harness.errors import ConfigError
+from .. import Effect, Middleware, Ruling, ShortCircuit, ToolCall, Verdict
+from ..errors import ConfigError
 
 #: Effects whose calls must not be interrupted by a cancel (rule 2), and which a `HIGH`
 #: event blocks (rule: an event worth interrupting for is worth not writing during).
@@ -460,8 +463,8 @@ class Driver:
 # ── the demo: all four tiers, scripted model, fake sensor, no camera ────────────
 
 def _demo() -> None:
-    from harness import Agent, tool, with_middleware
-    from harness.models.fake import FakeModel
+    from .. import Agent, tool, with_middleware
+    from ..models.fake import FakeModel
 
     @tool(effect=Effect.READ)
     async def look() -> str:

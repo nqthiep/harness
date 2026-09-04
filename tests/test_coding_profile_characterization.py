@@ -35,13 +35,9 @@ refactor:
 """
 import asyncio
 import hashlib
-import sys
 import tempfile
 import unittest
 from pathlib import Path
-
-sys.path.insert(0, "src")
-sys.path.insert(0, "examples")
 
 from harness import Agent
 from harness.memory.inmemory import InMemoryStore

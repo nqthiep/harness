@@ -21,8 +21,7 @@ Kịch bản khai thác gốc (review-security.md S-3, biến thể dùng `Secre
   4. `send_report` gọi tiếp — `check_flow` không có gì để chặn, dữ liệu (đã lộ secret) rời
      máy qua sink PUBLIC. Không `Decision` DENY nào.
 """
-import sys, unittest
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
+import unittest
 
 from harness import Agent, tool
 from harness.models.fake import FakeModel

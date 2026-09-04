@@ -55,6 +55,13 @@ ignore = ["E701", "E702", "E741"]
 [tool.mypy]
 python_version = "3.11"
 files = ["src/harness"]
+# `examples/` is type-checked too, but as its OWN unit rather than co-analysed with core
+# — `tests/test_conformance.py::test_mypy_is_clean_on_the_examples_too` runs
+# `mypy examples/ --ignore-missing-imports`, which is clean and which is what caught two
+# real core defects (ADR-082). Co-analysing them (adding "examples" here) types the
+# cross-module calls exactly instead of as `Any` and surfaces 10 further findings, all
+# pre-existing looseness in demo blocks; closing those is worth doing and is not this
+# change.
 ignore_missing_imports = true
 # Not `strict`.  Round 39 took mypy from 112 errors to a documented remainder, and the
 # value was never the count: it was that **a user running mypy on `agent.name` was told

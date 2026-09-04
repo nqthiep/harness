@@ -44,10 +44,30 @@ __all__ = ["Profile"]
 
 
 class Profile(Protocol):
-    #: Shown in `ProfileLoosenedSafetyError` when this profile's `apply()` tries to
-    #: loosen a safety knob the caller already set — the diagnostic names WHICH profile,
-    #: not just that something went wrong.
-    name: str
+    @property
+    def name(self) -> str:
+        """Shown in `ProfileLoosenedSafetyError` when this profile's `apply()` tries to
+        loosen a safety knob the caller already set, and in the second-profile refusal —
+        the diagnostic names WHICH profile, not just that something went wrong.
+
+        A read-only `@property` rather than `name: str`, and the difference is not
+        cosmetic: a Protocol member declared as a VARIABLE must be settable, so every
+        `@dataclass(frozen=True)` profile — which is the shape `docs/03-public-api.md`
+        §3.7 recommends and all three real ones use — failed to satisfy this Protocol
+        under mypy:
+
+            Argument 1 to "with_profile" of "Agent" has incompatible type
+            "VisionProfile"; expected "Profile"
+            note: Protocol member Profile.name expected settable variable, got
+            read-only attribute
+
+        Runtime was unaffected (nothing checks this Protocol at runtime and `agent.py`
+        only ever READS `profile.name`), so it went unnoticed until `examples/` was
+        pointed at the type checker (ADR-082). A frozen dataclass field satisfies a
+        read-only property, so this accepts strictly more than before and rejects
+        nothing that used to work.
+        """
+        ...
 
     def apply(self, agent: "Agent") -> "Agent":
         """Return a new `Agent` (frozen — `with_()` builds it) with this profile's

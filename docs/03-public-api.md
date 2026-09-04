@@ -376,6 +376,23 @@ camera, no model file, no `Agent`), adapters where hardware and vendor SDKs live
 tool functions as glue. `CodingProfile`'s `Verifier` is the same division, and neither
 needed anything added to this API.
 
+#### Where a recipe's code lives: `examples/`, `harness.contrib`, or core
+
+Three tiers, and the boundary is what you are expected to DO with the code (ADR-082):
+
+| tier | what belongs there | promise |
+|---|---|---|
+| `examples/` | judgment meant to be forked — prompts, `Verifier`'s command list, priority tables, thresholds | none; copy it and edit it |
+| `harness.contrib` | domain-neutral mechanism with no new dependency — `contrib.driver`, `contrib.output_shaping` | shipped and checked, NO compatibility promise, never re-exported from `harness` |
+| core (`harness`) | the six seams and the mechanism they serve | the documented contract, an ADR trail, a risk register |
+
+The rule that decides it: **copy-paste what you want people to edit; ship what you do
+not want them to re-derive.** A prompt you cannot edit is worthless, so prompts are
+copied. Interrupt handling with four safety rules drifts silently in every fork, so it
+ships. `harness/contrib/__init__.py` carries the four admission criteria; the one that
+does the most work is "no new dependency", which is why `examples/vision_tools.py` stays
+copy-paste however reusable it looks.
+
 #### Conventions for a profile's own parameters
 
 `Profile`'s **contract** is two members, and `Agent.with_profile()` touches nothing

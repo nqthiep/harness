@@ -10,12 +10,9 @@ via a small `_with_timeout()` wrapper coroutine (`asyncio.timeout()` needs an
 to hand it one through).
 """
 import asyncio
-import sys
 import tempfile
 import unittest
 from decimal import Decimal
-
-sys.path.insert(0, "src")
 
 from harness import Agent, Budget, Effect, tool
 from harness.models.fake import FakeModel

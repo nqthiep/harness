@@ -4,11 +4,8 @@ truncate()` ITSELF (core, not the fix) first — proof the problem is real befor
 the fix works, the same "reproduce, then fix" discipline `docs/09-testing.md` asks for
 red-team findings.
 """
-import sys
 import unittest
 
-sys.path.insert(0, "src")
-sys.path.insert(0, "examples")
 
 
 def _big_pytest_style_output(n_passing: int = 500) -> str:
@@ -51,32 +48,32 @@ class HeadOnlyTruncationLosesTheFailure(unittest.TestCase):
 
 class SmartTruncateThat(unittest.TestCase):
     def test_short_text_is_returned_unchanged(self):
-        from output_shaping import smart_truncate
+        from harness.contrib.output_shaping import smart_truncate
         text = "short output, well under the limit"
         self.assertEqual(smart_truncate(text, 4_000), text)
 
     def test_keeps_the_failure_a_head_only_cut_would_lose(self):
-        from output_shaping import smart_truncate
+        from harness.contrib.output_shaping import smart_truncate
         text = _big_pytest_style_output()
         out = smart_truncate(text, 4_000)
         self.assertIn("FAILURES", out)
         self.assertIn("this is the actual bug", out)
 
     def test_also_keeps_something_from_the_head(self):
-        from output_shaping import smart_truncate
+        from harness.contrib.output_shaping import smart_truncate
         text = _big_pytest_style_output()
         out = smart_truncate(text, 4_000)
         self.assertIn("test_pass[0] PASSED", out)
 
     def test_stays_within_budget(self):
-        from output_shaping import smart_truncate
+        from harness.contrib.output_shaping import smart_truncate
         text = _big_pytest_style_output(n_passing=5000)
         out = smart_truncate(text, 4_000)
         # Generous slack for the head/tail markers themselves, not a tight bound.
         self.assertLess(len(out), 4_000 * 4 + 400)
 
     def test_never_splits_a_multibyte_character(self):
-        from output_shaping import smart_truncate
+        from harness.contrib.output_shaping import smart_truncate
         text = ("x" * 20_000) + "🎉" * 100 + ("y" * 20_000)
         out = smart_truncate(text, 100)          # tiny budget, forces a cut near emoji
         out.encode("utf-8")                      # raises if a surrogate/half-char leaked
@@ -87,7 +84,7 @@ class WithSmartTruncationThat(unittest.TestCase):
         import asyncio
 
         from harness import tool
-        from output_shaping import with_smart_truncation
+        from harness.contrib.output_shaping import with_smart_truncation
 
         @tool(effect="read")
         async def big_one() -> str:
@@ -112,7 +109,7 @@ class WithSmartTruncationThat(unittest.TestCase):
 
     def test_wrapping_preserves_effect_and_other_fields(self):
         from harness import Effect, tool
-        from output_shaping import with_smart_truncation
+        from harness.contrib.output_shaping import with_smart_truncation
 
         @tool(effect="write", timeout_s=99.0)
         async def run_something() -> str:
@@ -132,7 +129,7 @@ class WithSmartTruncationThat(unittest.TestCase):
 
         from harness.dispatch import truncate
         from harness import tool
-        from output_shaping import with_smart_truncation
+        from harness.contrib.output_shaping import with_smart_truncation
 
         @tool(effect="read")
         async def big_one() -> str:

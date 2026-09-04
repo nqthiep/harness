@@ -20,8 +20,7 @@ Round 37) — một lần thứ TƯ, cho `EventBus`. Sửa theo đúng khuôn `_
 `_engine_for` (S-15): `Runtime._bus_cache` giữ một `EventBus` riêng cho mỗi `run_id`, dựng
 lười lúc dùng lần đầu, và bỏ hẳn `self._started`.
 """
-import sys, unittest
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
+import unittest
 
 from fake_chat import FakeChat
 from langchain_core.messages import HumanMessage

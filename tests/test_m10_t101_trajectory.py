@@ -3,10 +3,7 @@
 `output_schema`, `no_duplicate_side_effects`.
 """
 import asyncio
-import sys
 import unittest
-
-sys.path.insert(0, "src")
 
 from harness import Agent, tool
 from harness.eval.trajectory import Trajectory, check_trajectory

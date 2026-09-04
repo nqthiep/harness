@@ -20,8 +20,7 @@ approve) đã bị khoá dựa trên nhãn PUBLIC từ TRƯỚC KHI batch chạy
 Kiểm cả hai backend — cơ chế khác nhau, cùng một lỗ hổng (xem `dispatch.py::_run_tools` và
 `lg/runtime.py::_regate` cho chi tiết từng nơi).
 """
-import sys, unittest
-sys.path.insert(0, "src")
+import unittest
 
 from harness import Agent, tool
 from harness.models.base import ModelResponse

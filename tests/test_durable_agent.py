@@ -10,8 +10,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, "src")
-
 from harness import Agent, tool
 from harness.errors import ConfigError, UnsafeToolSetError
 from harness.models.fake import FakeModel

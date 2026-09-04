@@ -7,21 +7,21 @@ taint, durability, audit) while the things that decide whether an agent is actua
 at coding are **judgment**: what the system prompt says, which tools exist and how they
 describe themselves, which model runs which role, and how fast the agent learns it broke
 something. This file is that judgment layer, packaged as a `harness.Profile`
-(`src/harness/profile.py`) — every line below is written against the public API, so THIS
-FILE has no dependency outside the library itself, `output_shaping.py`, and, when
-`enable_shell=`/`enable_findings=` are turned on, `shell_tools.py`/`findings_log.py`.
+(`src/harness/profile.py`) — every line below is written against the public API.
 
-**Correction, stated plainly rather than left implicit: copying `coding_profile.py`
-alone into another repo will NOT run.** An earlier version of this paragraph claimed the
-opposite ("every line ... can live in a user's own repo exactly as it is"), true only
-while this file had no sibling dependencies — `apply()` now imports `output_shaping.py`
-unconditionally (`with_smart_truncation`, for `run_tests`/`git_diff`'s own fix — see its
-own module docstring) and `shell_tools.py`/`findings_log.py` conditionally. What travels
-together, at minimum: `coding_profile.py` + `output_shaping.py`; add `shell_tools.py`
-and/or `findings_log.py` if you use either `enable_` flag. None of the four needs
-anything from `examples/` beyond each other — no shared package, no `__init__.py`, just
-`sys.path.insert(0, "examples")` (or an equivalent import path) pointed at all of them
-together.
+**What travels with this file if you copy it, and it got shorter (ADR-082).**
+`with_smart_truncation` — the `run_tests`/`git_diff` result-shaping fix `apply()` uses
+unconditionally — now ships as `harness.contrib.output_shaping`, installed with the
+library rather than copied beside this file. So `coding_profile.py` on its own runs, and
+the only siblings that still have to travel are the two the `enable_` flags reach for:
+`shell_tools.py` (`enable_shell=True`) and `findings_log.py` (`enable_findings=True`).
+Neither needs anything from `examples/` beyond itself.
+
+That is the boundary ADR-082 draws, from this file's side: what you are meant to EDIT
+stays here to be copied — the prompt below, `Verifier`'s command list, `protected`'s
+patterns — and what you should not have to re-derive ships. An earlier version of this
+paragraph had to correct itself for claiming single-file portability that had stopped
+being true; the fix was to move the dependency, not to keep restating it.
 
     agent = Agent(name="Coder", job="Make tests/test_parser.py pass", tools=[git_push]) \\
                 .with_profile(CodingProfile(root="/path/to/repo"))
@@ -468,7 +468,7 @@ class CodingProfile:
         # here, not in `dispatch.py`, because head-only truncation is still the right
         # default for `read_source`/`search_code`, and wrong specifically for a log
         # whose payoff is conventionally at the tail.
-        from output_shaping import with_smart_truncation
+        from harness.contrib.output_shaping import with_smart_truncation
         code_tools = with_smart_truncation(code.tools(), tools=("run_tests", "git_diff"))
 
         # Both OFF by default (see the fields' own docstrings for why) — imported here,

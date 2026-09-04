@@ -6,10 +6,7 @@ that knob, not merely that the function exists and returns without error on the 
 path (the R-16 lesson this whole repository is built around: a control that is specified
 and never executed is not a control).
 """
-import sys
 import unittest
-
-sys.path.insert(0, "src")
 
 from harness import Agent, ConfigError, ProfileLoosenedSafetyError, tool
 from harness.errors import DuplicateToolError

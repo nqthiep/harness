@@ -27,8 +27,7 @@ in `src/harness/` at all yet (`observe/events.py`'s `EventBus`/`Exporter` is the
 observability mechanism today) — so it is a design-doc-only trim
 (`design/04-runtime-durability.md` §8.2), not tested here.
 """
-import sys, unittest
-sys.path.insert(0, "src")
+import unittest
 
 from harness import Agent, tool
 from harness.budget.ledger import Budget, Ledger

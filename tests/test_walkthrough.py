@@ -1,6 +1,5 @@
 """The §14.5 acceptance walkthrough, executed.  No network, no API key, no pytest."""
-import sys, unittest, asyncio
-sys.path.insert(0, "src")
+import unittest, asyncio
 
 from harness import (Agent, tool, StopReason, Secret, Budget,
                      UnsafeToolSetError, MissingEffectError, NonDeterministicPromptError, RunFailed)

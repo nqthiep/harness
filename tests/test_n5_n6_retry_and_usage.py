@@ -2,11 +2,8 @@
 design/07-risks-and-open-issues.md. Built together: the retry wrapper measures the same
 latency the event now reports, on both backends, through one shared `retry.py`.
 """
-import sys
 import tempfile
 import unittest
-
-sys.path.insert(0, "src")
 
 from harness import Agent
 from harness.errors import ProviderBadRequest, ProviderRateLimited

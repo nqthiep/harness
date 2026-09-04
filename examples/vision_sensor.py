@@ -58,7 +58,7 @@ from typing import Callable
 sys.path.insert(0, "src")
 sys.path.insert(0, "examples")
 
-from driver import Event, Priority
+from harness.contrib.driver import Event, Priority
 from vision_tools import (Camera, Detector, IdentityLedger, PerceptionBuffer, Reading,
                           describe)
 

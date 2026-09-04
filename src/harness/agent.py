@@ -58,7 +58,13 @@ class Agent:
     model: str
     effort: str
     budget: Budget
-    safety: str
+    #: Narrower than `str` deliberately: `__init__` accepts
+    #: `Literal["standard", "strict"]`, so annotating the ATTRIBUTE as `str` made the
+    #: round trip fail type checking — `Agent(safety=parent.safety)`, which is exactly
+    #: what a subagent has to do to be no less restricted than its parent
+    #: (`_check_subagent_safety`), and what `CodingProfile.apply()` now does for its
+    #: reader (ADR-078). Found by pointing mypy at `examples/` (ADR-082).
+    safety: Literal["standard", "strict"]
     approve: Any
     policies: tuple[Any, ...]
     allowed_hosts: tuple[str, ...] | None

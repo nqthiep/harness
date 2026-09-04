@@ -16,13 +16,9 @@ packages one domain's judgement and `root=` means nothing to a camera. A shared
 parameter schema would be the `AgentBuilder` `docs/02-architecture.md` §"what was
 proposed and rejected" already turned down.
 """
-import sys
 import tempfile
 import unittest
 from pathlib import Path
-
-sys.path.insert(0, "src")
-sys.path.insert(0, "examples")
 
 from harness import Agent, Ruling, Verdict
 from harness.memory.inmemory import InMemoryStore

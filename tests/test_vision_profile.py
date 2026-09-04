@@ -8,11 +8,7 @@ test says which mechanism it is actually exercising, because a test that passes 
 different reason than you think is worse than no test.
 """
 import asyncio
-import sys
 import unittest
-
-sys.path.insert(0, "src")
-sys.path.insert(0, "examples")
 
 from harness import Agent, Effect
 from harness.errors import ConfigError, ProfileLoosenedSafetyError, UnsafeToolSetError

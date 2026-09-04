@@ -2,10 +2,7 @@
 cậy, tổng cost/token — không bao giờ một con số trần trụi (S-06, cùng luật T-8.4).
 """
 import asyncio
-import sys
 import unittest
-
-sys.path.insert(0, "src")
 
 from harness import Agent, tool
 from harness.eval.golden import GoldenCase, run_golden_set

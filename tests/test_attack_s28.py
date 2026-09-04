@@ -10,8 +10,7 @@ cho con lẫn cha, nên một con không có `approve=` của riêng nó KHÔNG 
 kèm cảnh báo một lần. Không có "dừng lâu" nào để mà phá luật node `tools`. Không cần sửa
 code — chỉ cần nói rõ (đúng như review đề nghị khi không có gì để sửa).
 """
-import sys, unittest
-sys.path.insert(0, "src")
+import unittest
 
 from harness import Agent, tool
 from harness.models.fake import FakeModel

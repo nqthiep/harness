@@ -1,6 +1,5 @@
 """M3 executed: transcript, resume, exporters, event taxonomy."""
 import io, os, subprocess, sys, tempfile, textwrap, unittest
-sys.path.insert(0, "src")
 
 from harness import Agent, tool, Secret
 from harness.models.fake import FakeModel

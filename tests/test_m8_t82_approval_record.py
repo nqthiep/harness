@@ -13,11 +13,8 @@ approval không mở khoá được lần chạy thứ hai") hoá ra ĐÃ ĐÚNG
 (hết hạn thì bị lọc) từ trước bản vá này. Test dưới đây khoá lại cả hai claim đó, không
 sửa gì thêm ở logic — chỉ `policy_version` là code mới thật sự.
 """
-import sys
 import unittest
 from datetime import datetime, timedelta, timezone
-
-sys.path.insert(0, "src")
 
 from harness.policy.base import Verdict
 from harness.policy.decision import (POLICY_ENGINE_VERSION, Actor, Decision, DecisionLog,

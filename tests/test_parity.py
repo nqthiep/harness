@@ -7,7 +7,6 @@ against both backends.  A row that differs is a defect in whichever backend is w
 never a difference to document.
 """
 import sys, unittest
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
 
 from fake_chat import FakeChat
 from langchain_core.messages import HumanMessage

@@ -10,17 +10,13 @@ No camera, no sensor hardware, no API key: `FakeSensor` scripts the events and
 `FakeModel` scripts the model.
 """
 import asyncio
-import sys
 import unittest
-
-sys.path.insert(0, "src")
-sys.path.insert(0, "examples")
 
 from harness import Agent, Effect, ToolCall, Verdict, tool, with_middleware
 from harness.errors import ConfigError
 from harness.models.fake import FakeModel
 
-from driver import (Driver, Event, EventAnnouncer, EventInbox, FakeSensor,
+from harness.contrib.driver import (Driver, Event, EventAnnouncer, EventInbox, FakeSensor,
                     INJECTED_CALL_ID, InterruptGate, Priority, WriteInFlight)
 
 

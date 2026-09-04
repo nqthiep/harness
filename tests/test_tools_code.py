@@ -13,13 +13,10 @@ phân loại effect nói đúng sự thật về từng tool.
 import asyncio
 import os
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from shutil import which
-
-sys.path.insert(0, "src")
 
 from harness import Effect
 from harness.tools.code import PASS_ENV, CodeTools

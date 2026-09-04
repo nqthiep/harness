@@ -7,8 +7,7 @@ Kiểm trên code hôm nay: `PolicyEngine.resolve()` gọi thẳng `approve(call
 `redact()` chỉ xử lý `Secret`, không xử lý control character). Và không có cơ chế đếm/trần
 nào cho số lần `ASK` trong một run trước bản vá này.
 """
-import sys, unittest
-sys.path.insert(0, "src")
+import unittest
 
 from harness import Agent, safe_for_display, tool
 from harness.models.fake import FakeModel

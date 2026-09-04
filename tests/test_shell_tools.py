@@ -6,11 +6,7 @@ without a policy reading the actual command, EVERYTHING would run unattended). A
 per pattern proves the policy reads that pattern, not merely that the class exists and
 returns something (the R-16 lesson this whole repository is built on).
 """
-import sys
 import unittest
-
-sys.path.insert(0, "src")
-sys.path.insert(0, "examples")
 
 from harness.policy.base import ToolCall, Verdict
 

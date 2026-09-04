@@ -5,7 +5,6 @@ are grouped by the requirement in HARNESS.md they defend, so a future change tha
 one can see which promise it broke.
 """
 import asyncio, json, sys, unittest
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
 
 from harness import Agent, tool
 from harness.models.base import ModelRequest, ModelResponse
@@ -218,6 +217,22 @@ class StaticChecks(unittest.TestCase):
 
     def test_mypy_is_clean(self):
         r = self._tool("mypy")
+        self.assertEqual(r.returncode, 0, r.stdout[-2000:])
+
+    def test_mypy_is_clean_on_the_examples_too(self):
+        """`examples/` is 6,780 lines that other files in this repo import, so "it is
+        only an example" stopped being true a while ago (ADR-082). Checked as its own
+        unit rather than co-analysed with core — see the note in `pyproject.toml`.
+
+        Worth having: pointing the checker here for the first time found a leaked loop
+        variable in `proof.py` shadowing `readability.grade` (it worked only because of
+        the order the two lines happened to be in) and, through the profiles, two core
+        annotation defects — `Profile.name` declared as a settable variable, which meant
+        NO `frozen=True` profile satisfied the Protocol, and `Agent.safety` annotated
+        `str` while `__init__` takes a `Literal`, so `Agent(safety=parent.safety)` — what
+        every subagent must do — failed to type check.
+        """
+        r = self._tool("mypy", "examples/", "--ignore-missing-imports")
         self.assertEqual(r.returncode, 0, r.stdout[-2000:])
 
     def test_a_user_gets_real_type_checking_on_the_value_types(self):

@@ -14,8 +14,7 @@ luôn đắt hơn `input_per_mtok` đúng 25% (`models/pricing.py::_p`, cố đ�
 đo được, tính được trực tiếp). Mọi cuộc gọi THẬT SỰ ghi cache bị ước lượng thấp hơn thực
 tế đúng 25%, có hệ thống, không phải ngẫu nhiên.
 """
-import sys, unittest
-sys.path.insert(0, "src")
+import unittest
 
 from decimal import Decimal
 

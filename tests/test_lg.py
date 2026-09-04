@@ -4,9 +4,8 @@ The claim being tested is structural: the enforcement is the graph's shape, not 
 convention. That is why the first three tests read the compiled topology rather than
 observing behaviour — they hold for paths no test walks.
 """
-import sys, unittest
+import unittest
 from decimal import Decimal
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
 
 from fake_chat import FakeChat
 from langchain_core.messages import HumanMessage, ToolMessage

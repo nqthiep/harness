@@ -15,11 +15,7 @@ appended-to and immune to compaction, unioned with a scan of checkpointed
 `state["messages"]` for backward compatibility; see `DurableGateSurvivesCompaction`
 below for why the message scan alone was not enough).
 """
-import sys
 import unittest
-
-sys.path.insert(0, "src")
-sys.path.insert(0, "tests")
 
 from harness.policy.base import ToolCall, Verdict
 from harness.policy.builtin import RequireBeforePolicy

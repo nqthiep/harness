@@ -1,4 +1,7 @@
 """SC-4: cache reads on turns 3+ of the 10-turn fixture must be >= 90%."""
+
+# Runs OUTSIDE pytest, so `tests/conftest.py` does not apply — `examples/proof.py`
+# runs this file through `subprocess`.
 import sys
 sys.path.insert(0, "src"); sys.path.insert(0, "tests")
 

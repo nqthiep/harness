@@ -3,8 +3,7 @@
 A red-team failure blocks merge unconditionally.  It is not a flake and is never
 re-run to green.
 """
-import base64, functools, json, sys, unittest
-sys.path.insert(0, "src")
+import base64, functools, json, unittest
 
 from harness import (Agent, tool, Secret, Verdict, StopReason,
                      UnsafeToolSetError, UnknownModelError)
