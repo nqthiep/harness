@@ -3741,6 +3741,56 @@ libraries present the summary falls back to the exception text, so a bare
 `assertIn("libEGL.so.1", …)` passed either way; the test now asserts the labelled
 `Original error:` line.
 
+### ADR-093 — `Session.asay()`, and one session is driven sync or async, never both
+
+**Status:** Accepted.
+
+**Context.** ADR-088 gave `Chat` an async twin and deliberately did not give one to
+`Session`, on the grounds that its `threading.Lock` — the concurrency boundary that is the
+class's reason to exist — is the wrong primitive to hold across an `await`. That reasoning
+was right and the conclusion was wrong: the consequence was that from inside an event loop
+`Session` was unusable. `say()` there raises `SyncInAsyncContextError`, so the only way
+forward was to drop to `agent.chat()` and give up the id, owner, TTL and `fork()` that are
+the entire point of the class. "A design question, not a missing method" is a fair
+description of the problem and not a reason to leave it.
+
+**Decision.** `asay()`, with its own `asyncio.Lock`, and the mixing question ANSWERED
+rather than left open: a session fixes its mode on the first turn and refuses the other
+one afterwards with `SessionModeError`.
+
+Refusing, rather than trying to make the two locks cooperate, because they cannot. A
+`threading.Lock` acquired through `to_thread` cannot be released if the await is cancelled
+while still waiting, which trades a race for a permanent deadlock. And two DIFFERENT locks
+do not exclude each other, so a session guarded by both would leave `Chat`'s
+read-modify-write of `_messages`/`_spent` unguarded across the mix — the exact race the
+lock exists to close, re-opened by the fix for it. Which mode a session is in is decidable
+at the first call, so it is decided there. `.fork()` starts with no mode, which is what the
+error message tells you to reach for, so a test asserts that is actually true.
+
+**The lock is created per running loop, not once.** `asyncio.Lock` binds to the loop of
+its first CONTENDED acquire and afterwards raises
+`RuntimeError: ... is bound to a different event loop`. Measured, because the shape of it
+matters: an UNCONTENDED acquire never binds, so a single lock reused across two
+`asyncio.run()` calls works fine right up until two callers actually contend for it. That
+is the worst shape a latent bug can have — it passes every test written by someone not
+thinking about contention. A lock cannot be held across a loop's lifetime anyway, so
+rebinding when the loop changes loses nothing.
+
+**Test.** `tests/test_m8_t86_session.py` grew two classes (23 tests total, from 13). Five
+mutations, each caught: dropping the lock, never rebinding it to a new loop, never
+refusing a mode change, skipping the TTL check, and checking the TTL after the lock
+instead of before it.
+
+**And one test that was worthless until it was fixed.** The async concurrency test
+originally used plain `FakeModel`, whose `complete` is `async def` with no `await` inside
+— so it runs straight through, two `asay` calls never interleave, and the test passed with
+the lock REMOVED. Found by mutation, not by review. It now uses a provider that actually
+suspends, which makes the race deterministic: both calls read `_messages == []` before
+either writes it back, so without the lock the second write wins and the history is 2
+messages instead of 4. The sync half of the same boundary had this right already
+(`SlowFakeModel`, and a fully deterministic `Event`-driven mutation test beside it) — the
+new test simply failed to copy it.
+
 | # | Decision | Rationale |
 |---|---|---|
 | IDL-01 | `Decimal` for all money; `float` banned in `budget/` by lint | A rounding error in a spend ceiling is a real bug class |
@@ -3803,6 +3853,7 @@ libraries present the summary falls back to the exception text, so a bare
 | IDL-58 | A path-confining tool is constructed with its root; a module-level tool function confines to the CWD or not at all | `confine()` existed unused for two milestones because the tools that needed it had no root to pass — the missing constructor was the bug, not the missing call (ADR-065) |
 | IDL-59 | An escalating policy escalates on the SIGNAL, never on "the cheaper rung ran out of work" | Editing always has one more stale result to blank, so compaction gated on that would never have run once (ADR-066) |
 | IDL-60 | Context size is measured over the whole request payload, arguments included — never over `message.content` alone | A LangChain `AIMessage` carrying only tool calls has empty `content`; the arguments are the part that never gets blanked, and they measured as zero (ADR-066) |
+| IDL-64 | A concurrency test must use a provider that actually `await`s | `FakeModel.complete` is `async def` with no await inside, so two "concurrent" calls never interleave and the test passes with the lock removed (ADR-093) |
 | IDL-63 | A payload claim is asserted per MODEL, never once and generalised | "`budget_tokens` is a 400 on every model this package prices" was a test docstring, tested on one model, and false for another — `claude-haiku-4-5` requires it. A false generalisation with one passing witness stops anyone asking again (ADR-091) |
 | IDL-62 | A credential is resolved by ONE function that returns its VALUE and its source, never by a boolean "is one configured" | Two answers to that question is how `.env` came to report "found" while nothing loaded the file; the run then died on an SDK internal (ADR-086) |
 | IDL-61 | An external doc-generation CLI (`openwiki`) is wired in as a tool the model must call, never a step the harness runs on its own | Every other seam in this library runs on nothing but an explicit call; `--update` is itself a paid model call, so auto-running it would bill every run for a wiki nobody asked to re-read (ADR-072) |

@@ -2,13 +2,14 @@
 resume, ranh giới đồng thời. Chỉ bao lấy `Chat` (backend cổ điển) — không xây lại state
 isolation Round 37 đã sửa, chỉ ĐẶT TÊN cho thứ đã tồn tại ngầm.
 """
+import asyncio
 import threading
 import time
 import unittest
 
 from harness import Agent
 from harness.models.fake import FakeModel
-from harness.session import Session, SessionExpiredError
+from harness.session import Session, SessionExpiredError, SessionModeError
 
 
 def _agent(script):
@@ -64,6 +65,123 @@ class SessionSay(unittest.TestCase):
         r2 = s.say("bạn khoẻ không")
         self.assertTrue(r2.ok)
         self.assertEqual(len(s.messages), 4)
+
+
+class SessionAsay(unittest.IsolatedAsyncioTestCase):
+    """`Session` had no async twin, so from inside an event loop it was unusable: `say()`
+    raises `SyncInAsyncContextError` there, and the fallback was to drop to
+    `agent.chat()` and give up the id, owner, TTL and `fork()` that are this class's
+    whole point (ADR-093)."""
+
+    @staticmethod
+    def _session(script=("mot", "hai"), **kw):
+        agent = Agent(name="S", job="j", model="fake",
+                      provider=FakeModel([FakeModel.text(t) for t in script]))
+        return Session(agent, **kw)
+
+    async def test_asay_chuyen_tiep_toi_chat_va_giu_lich_su(self):
+        s = self._session()
+        self.assertEqual((await s.asay("chao")).text, "mot")
+        self.assertEqual((await s.asay("nua")).text, "hai")
+        self.assertEqual(len(s.messages), 4)
+
+    async def test_say_khong_dung_duoc_trong_event_loop(self):
+        """Which is why `asay` exists — `say()` there is not merely awkward, it raises."""
+        from harness.errors import SyncInAsyncContextError
+        s = self._session()
+        with self.assertRaises(SyncInAsyncContextError):
+            s.say("chao")
+
+    async def test_asay_sau_khi_het_han_raise(self):
+        s = self._session(ttl_s=0.0)
+        with self.assertRaises(SessionExpiredError):
+            await s.asay("chao")
+
+    async def test_ttl_duoc_kiem_truoc_ca_lock(self):
+        """An expired session must not even queue behind the lock."""
+        s = self._session(ttl_s=0.0)
+        with self.assertRaises(SessionExpiredError):
+            await s.asay("chao")
+        self.assertIsNone(s._alock, "no lock should have been created at all")
+
+    async def test_hai_asay_dong_thoi_khong_dua_lich_su(self):
+        """The async half of the concurrency boundary, and it needs a provider that
+        actually AWAITS.
+
+        `FakeModel.complete` is `async def` with no await inside, so it runs straight
+        through and two `asay` calls never interleave — the first version of this test
+        passed with the lock REMOVED, which is a test that proves nothing. With a
+        provider that suspends, both calls read `_messages == []` before either writes
+        it back, and without the lock the second write wins: 2 messages, not 4.
+        """
+        class SlowFakeModel(FakeModel):
+            async def complete(self, request, *, on_delta=None):
+                await asyncio.sleep(0.02)
+                return await super().complete(request, on_delta=on_delta)
+
+        agent = Agent(name="S", job="j", model="fake",
+                      provider=SlowFakeModel([FakeModel.text("mot"),
+                                              FakeModel.text("hai")]))
+        s = Session(agent)
+        await asyncio.gather(s.asay("a"), s.asay("b"))
+        self.assertEqual(len(s.messages), 4,
+                         "two concurrent asay() must serialise, not race on _messages")
+
+
+class SessionMode(unittest.TestCase):
+    """One session is driven sync or async, never both: `say()` needs a
+    `threading.Lock` and `asay()` needs an `asyncio.Lock`, and two locks do not exclude
+    each other — mixing them would re-open the race the lock exists to close."""
+
+    @staticmethod
+    def _session():
+        agent = Agent(name="S", job="j", model="fake",
+                      provider=FakeModel([FakeModel.text("x"), FakeModel.text("y")]))
+        return Session(agent)
+
+    def test_sync_first_then_async_is_refused(self):
+        s = self._session()
+        s.say("chao")
+        with self.assertRaises(SessionModeError) as ctx:
+            asyncio.run(s.asay("nua"))
+        self.assertIn("say()", str(ctx.exception))
+        self.assertIn("fork()", str(ctx.exception))
+
+    def test_async_first_then_sync_is_refused(self):
+        s = self._session()
+        asyncio.run(s.asay("chao"))
+        with self.assertRaises(SessionModeError):
+            s.say("nua")
+
+    def test_a_fresh_session_has_no_mode_until_the_first_turn(self):
+        self.assertIsNone(self._session()._mode)
+
+    def test_a_fork_can_be_driven_the_other_way(self):
+        """Which is what the error message tells you to do, so it has to be true."""
+        s = self._session()
+        s.say("chao")
+        fork = s.fork()
+        self.assertIsNone(fork._mode)
+        self.assertEqual(asyncio.run(fork.asay("nua")).text, "y")
+
+    def test_the_async_lock_is_rebuilt_for_a_new_event_loop(self):
+        """`asyncio.Lock` binds to the loop of its first CONTENDED acquire and then
+        raises `RuntimeError: ... is bound to a different event loop`. Measured: an
+        uncontended acquire never binds, so one lock reused across two `asyncio.run`
+        calls works right up until two callers actually contend — the worst shape a
+        latent bug can have."""
+        agent = Agent(name="S", job="j", model="fake",
+                      provider=FakeModel([FakeModel.text(t) for t in "abcd"]))
+
+        async def two_at_once(session):
+            await asyncio.gather(session.asay("a"), session.asay("b"))
+            return session._alock
+
+        s = Session(agent)
+        first = asyncio.run(two_at_once(s))
+        second = asyncio.run(two_at_once(s))       # would RuntimeError with one lock
+        self.assertIsNot(first, second)
+        self.assertEqual(len(s.messages), 8)
 
 
 class SessionFork(unittest.TestCase):
