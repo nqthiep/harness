@@ -1,4 +1,4 @@
-"""`examples/driver.py` — priority-driven runtime events over the four channels the
+"""`harness.contrib.driver` — priority-driven runtime events over the four channels the
 harness actually acts on.
 
 Every test names the mechanism it exercises, because each tier is a DIFFERENT harness
@@ -16,8 +16,9 @@ from harness import Agent, Effect, ToolCall, Verdict, tool, with_middleware
 from harness.errors import ConfigError
 from harness.models.fake import FakeModel
 
-from harness.contrib.driver import (Driver, Event, EventAnnouncer, EventInbox, FakeSensor,
-                    INJECTED_CALL_ID, InterruptGate, Priority, WriteInFlight)
+from harness.contrib.driver import (Driver, Event, EventAnnouncer, EventInbox,
+                                    FakeSensor, INJECTED_CALL_ID, InterruptGate,
+                                    Priority, WriteInFlight)
 
 
 @tool(effect=Effect.READ)
@@ -127,6 +128,47 @@ class WriteInFlightThat(unittest.TestCase):
         wif.after_tool(self._Inv("slow_write"))
         self.assertFalse(wif.busy)
 
+    def test_a_cancelled_write_does_not_strand_the_count_forever(self):
+        """F-2, the regression that shipped. A cancel lands inside the tool call it
+        interrupts, so `after_tool` never runs — and without the per-run reset `_depth`
+        stayed above zero for the life of the process, which made
+        `Driver._may_preempt()` answer `(False, 'a write is in flight')` forever. Rule 2
+        disabled rule 2, on exactly the path rule 2 exists for. Worse than a leak: a
+        `Middleware` is wired onto a FROZEN `Agent` shared across concurrent runs, so
+        the stuck count was cross-conversation (S-15/S-24/S-29)."""
+        async def go():
+            wif = WriteInFlight(["slow_write"])
+            agent = _agent([FakeModel.tool_call("slow_write", {}),
+                            FakeModel.text("x")],
+                           tools=(look, list_tasks, slow_write), mws=[wif])
+            driver = Driver(agent, inbox=EventInbox(), write_in_flight=wif)
+            task = asyncio.create_task(agent.atry_run("write"))
+            await asyncio.sleep(0.1)
+            mid = wif.busy
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            await asyncio.sleep(0.05)
+            return mid, wif, driver
+
+        mid, wif, driver = asyncio.run(go())
+        self.assertTrue(mid, "the write should have been in flight when cancelled")
+        self.assertFalse(wif.busy, "and the count must not survive the run")
+        self.assertEqual(wif.stranded, 1,
+                         "the reset should record that a guarded call was stranded")
+        self.assertTrue(driver._may_preempt()[0],
+                        "preemption must not be disabled for the rest of the process")
+
+    def test_a_normal_run_leaves_nothing_stranded(self):
+        wif = WriteInFlight(["slow_write"])
+        agent = _agent([FakeModel.tool_call("slow_write", {}), FakeModel.text("x")],
+                       tools=(look, list_tasks, slow_write), mws=[wif])
+        agent.try_run("write")
+        self.assertFalse(wif.busy)
+        self.assertEqual(wif.stranded, 0)
+
     def test_the_guarded_names_can_be_read_off_a_built_agent(self):
         agent = _agent([], tools=(look, list_tasks, slow_write))
         self.assertEqual(WriteInFlight.names_from(agent), ("slow_write",))
@@ -225,25 +267,48 @@ class TheEventAnnouncerThat(unittest.TestCase):
                        mws=[EventAnnouncer(inbox, carrier="look")])
         self.assertFalse(agent.try_run("begin").tainted)
 
-    def test_it_announces_once_and_empties_the_inbox(self):
+    def test_it_announces_once_and_marks_the_event_delivered(self):
+        """Delivered rather than removed: `InterruptGate` needs to know the model has
+        been told, and it cannot record that itself (`Policy.check` is pure, POL-4).
+        The event stays until something newer displaces it."""
         inbox = EventInbox()
         inbox.offer(Event(Priority.NORMAL, "once"))
         announcer = EventAnnouncer(inbox, carrier="look")
         agent = _agent([FakeModel.text("a"), FakeModel.text("b")], mws=[announcer])
         agent.try_run("begin")
         self.assertEqual(announcer.announced, 1)
-        self.assertIsNone(inbox.peek())
+        self.assertTrue(inbox.delivered)
+        self.assertIsNone(inbox.pending_undelivered(),
+                          "a delivered event must stop blocking anything")
+        self.assertIsNotNone(inbox.peek(), "but it is still the last thing seen")
 
-    def test_it_does_not_announce_an_event_above_its_ceiling(self):
-        """A CRITICAL event is the Driver's business (a cancel), not this middleware's —
-        announcing it here would quietly serve it at the wrong tier."""
+    def test_a_lowered_ceiling_still_skips_what_it_is_told_to_skip(self):
         inbox = EventInbox()
         inbox.offer(Event(Priority.CRITICAL, "fire"))
-        announcer = EventAnnouncer(inbox, carrier="look")
+        announcer = EventAnnouncer(inbox, carrier="look", ceiling=Priority.NORMAL)
         agent = _agent([FakeModel.text("done")], mws=[announcer])
         agent.try_run("begin")
         self.assertEqual(announcer.announced, 0)
-        self.assertIsNotNone(inbox.peek(), "the event must still be pending")
+        self.assertIsNotNone(inbox.pending_undelivered())
+
+    def test_the_default_ceiling_announces_a_high_event(self):
+        """The F-1 fix. The default used to be `NORMAL`, which meant a `HIGH` event had
+        NO consumption path at all: `InterruptGate` only reads and this middleware
+        skipped it, so the event blocked every write for the life of the process.
+
+        A `CRITICAL` reaching here at all means the Driver already declined to cancel
+        for it (rule 2 or rule 4), so serving it as an announcement is the downgrade
+        working, not the wrong tier."""
+        inbox = EventInbox()
+        inbox.offer(Event(Priority.HIGH, "Nghia is waiting"))
+        announcer = EventAnnouncer(inbox, carrier="look")
+        agent = _agent([FakeModel.text("a"), FakeModel.text("b")], mws=[announcer])
+        result = agent.try_run("begin")
+        self.assertEqual(announcer.announced, 1)
+        seen = [str(b.get("content")) for m in result.messages
+                for b in (m.get("content") or [])
+                if isinstance(b, dict) and b.get("type") == "tool_result"]
+        self.assertIn("Nghia is waiting", seen)
 
     def test_it_short_circuits_only_its_own_injection(self):
         inbox = EventInbox()
@@ -272,6 +337,51 @@ class TheEventAnnouncerThat(unittest.TestCase):
         with self.assertRaises(ShortCircuit) as caught:
             announcer.before_tool(_OurInv())
         self.assertEqual(caught.exception.result, "the event text")
+
+
+class TheHighTierDoesNotLivelockThat(unittest.TestCase):
+    """F-1, the regression that shipped. Measured before the fix: one `HIGH` event
+    denied every `write`/`danger` call in every subsequent run, forever, because the
+    gate could only read and the announcer skipped anything above `NORMAL`."""
+
+    def test_a_high_event_blocks_a_write_and_then_stops_blocking_it(self):
+        inbox = EventInbox()
+        inbox.offer(Event(Priority.HIGH, "Nghia is waiting for you"))
+        gate = InterruptGate(inbox)
+        announcer = EventAnnouncer(inbox, carrier="look")
+
+        first = _agent([FakeModel.tool_call("slow_write", {}), FakeModel.text("1")],
+                       tools=(look, list_tasks, slow_write), policies=[gate],
+                       mws=[announcer]).try_run("write the file")
+        self.assertNotIn("slow_write", first.tools_run,
+                         "the event should have blocked the write")
+        self.assertIn("look", first.tools_run,
+                      "and the announcer should have delivered it in the same run")
+
+        second = _agent([FakeModel.tool_call("slow_write", {}), FakeModel.text("2")],
+                        tools=(look, list_tasks, slow_write), policies=[gate],
+                        mws=[EventAnnouncer(inbox, carrier="look")]
+                        ).try_run("write the file")
+        self.assertIn("slow_write", second.tools_run,
+                      "once the model has been told, writes must work again")
+
+    def test_it_does_not_take_the_event_before_the_model_can_read_it(self):
+        """Armed on `after_model`, delivered on `before_tool`. Taking it at arm time
+        would drop the block one step early — the model has read nothing yet."""
+        inbox = EventInbox()
+        inbox.offer(Event(Priority.HIGH, "wait"))
+        announcer = EventAnnouncer(inbox, carrier="look")
+
+        from harness.models.base import ModelResponse
+        from harness.result import Usage
+
+        call = type("_ModelCall", (),
+                    {"response": ModelResponse((), "end_turn", Usage(1, 1), "fake"),
+                     "request": None, "identity": None})()
+        announcer.after_model(call)
+        self.assertIsNotNone(inbox.pending_undelivered(),
+                             "arming must not deliver, and must not take")
+        self.assertFalse(inbox.delivered)
 
 
 class TheDriverThat(unittest.TestCase):
@@ -406,6 +516,89 @@ class TheDriverThat(unittest.TestCase):
             return await driver.pump()
 
         self.assertEqual(asyncio.run(go()).priority, Priority.HIGH)
+
+    def test_sensors_are_read_on_their_own_interval_not_on_the_watchers(self):
+        """F-3. The watcher used to call `pump()` every `poll_s`, measured at 34
+        `Sensor.read()` calls per second during a half-second turn — for a
+        `CameraSensor` that is a camera grab plus a full MediaPipe inference, back to
+        back, for the whole turn. A `FakeSensor`'s own `delay_s` hid it completely."""
+        class Counting:
+            def __init__(self):
+                self.reads = 0
+
+            async def read(self):
+                self.reads += 1
+                return None
+
+            def close(self):
+                pass
+
+        @tool(effect=Effect.READ)
+        async def slow_read() -> str:
+            "Long enough for the watcher to spin many times."
+            await asyncio.sleep(0.3)
+            return "x"
+
+        async def go():
+            sensor = Counting()
+            agent = _agent([FakeModel.tool_call("slow_read", {}),
+                            FakeModel.text("done")],
+                           tools=(list_tasks, slow_read))
+            driver = Driver(agent, sensors=[sensor], inbox=EventInbox(),
+                            poll_s=0.01, sensor_interval_s=0.1)
+            await driver.turn("work")
+            return sensor.reads
+
+        reads = asyncio.run(go())
+        # ~0.3 s at 0.1 s spacing. Generous bound, but nowhere near the 30+ that
+        # `poll_s`-paced polling produced.
+        self.assertLessEqual(reads, 8, f"sensors polled {reads} times in ~0.3s")
+        self.assertGreaterEqual(reads, 1, "but they must be polled at all")
+
+    def test_start_polls_while_the_agent_is_idle_and_stop_stops(self):
+        """F-4. `pump()` used to be called only from inside `turn()`, measured at ZERO
+        reads across 0.3 s of idle — so a conversational agent, idle most of the time,
+        noticed arrivals only while it was already busy, and a `CameraSensor`'s debounce
+        and baseline state never advanced between turns."""
+        class Counting:
+            def __init__(self):
+                self.reads = 0
+
+            async def read(self):
+                self.reads += 1
+                return None
+
+            def close(self):
+                pass
+
+        async def go():
+            sensor = Counting()
+            driver = Driver(_agent([], tools=(look, list_tasks)), sensors=[sensor],
+                            inbox=EventInbox(), sensor_interval_s=0.05)
+            driver.start()
+            driver.start()                       # idempotent
+            await asyncio.sleep(0.3)
+            idle = sensor.reads
+            await driver.stop()
+            after = sensor.reads
+            await asyncio.sleep(0.2)
+            return idle, after, sensor.reads
+
+        idle, after, final = asyncio.run(go())
+        self.assertGreater(idle, 0, "an idle agent must still be watching")
+        self.assertEqual(final, after, "stop() must actually stop the loop")
+
+    def test_it_works_as_an_async_context_manager(self):
+        async def go():
+            sensor = FakeSensor()
+            async with Driver(_agent([], tools=(look, list_tasks)), sensors=[sensor],
+                              inbox=EventInbox()) as driver:
+                self.assertIsNotNone(driver._pump_task)
+            return sensor.closed, driver._pump_task
+
+        closed, task = asyncio.run(go())
+        self.assertTrue(closed, "__aexit__ should close the sensors too")
+        self.assertIsNone(task)
 
     def test_close_closes_every_sensor(self):
         sensors = [FakeSensor(), FakeSensor()]

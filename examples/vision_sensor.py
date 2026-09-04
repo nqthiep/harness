@@ -1,8 +1,8 @@
 """`CameraSensor` — the camera as a real `Sensor`: it reports what CHANGED, at a
 priority decided in code.
 
-This is the piece that connects `vision_tools.py` (eyes) to `driver.py` (priority-served
-runtime events). `Camera` on its own returns `(frame, error)` — a *state*, and states are
+This is the piece that connects `vision_tools.py` (eyes) to `harness.contrib.driver`
+(priority-served runtime events). `Camera` on its own returns `(frame, error)` — a *state*, and states are
 not events. An event is a difference: "Thiep just walked in" is actionable, "Thiep is
 present" repeated thirty times a second is noise the context window pays for.
 
@@ -18,7 +18,7 @@ present" repeated thirty times a second is noise the context window pays for.
   inference: MediaPipe is CPU-bound C++ and OpenCV's `read()` blocks. Doing it inline
   would stall the event loop the agent's own run is using, which is the exact trap that
   makes every middleware hook unsuitable for acquisition.
-* **Priority is a TABLE, filled in by code.** Rule 1 of `driver.py`: a camera is
+* **Priority is a TABLE, filled in by code.** Rule 1 of `harness.contrib.driver`: a camera is
   `effect="external"` and its content is untrusted, so if event TEXT could set priority,
   anyone holding up a sign reading "URGENT" could preempt the agent. `Salience` maps a
   structural `Change` — who arrived, who left, how many unrecognised faces — to a
@@ -151,7 +151,8 @@ class _State:
 
 
 class CameraSensor:
-    """A `Sensor` (`driver.py`) over a `Camera` + `Detector` + `IdentityLedger`.
+    """A `Sensor` (`harness.contrib.driver`) over a `Camera` + `Detector` +
+    `IdentityLedger`.
 
     `buffer=` is shared with whatever `VisionProfile` built, so the agent's own
     `identify_person` reads the same `Reading` this sensor published — one perception,

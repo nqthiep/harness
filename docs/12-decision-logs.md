@@ -3007,6 +3007,102 @@ next person finds it rather than rediscovers it.
 (`PYTHONPATH=src python3 -m harness.contrib.driver` — `-m` now, since these are package
 modules with relative imports).
 
+### ADR-083 — Four defects in `harness.contrib.driver`, two of them shipped and critical
+
+**Status:** Accepted.
+
+**Context.** Asked to review and argue against my own work, one commit after shipping it.
+Four defects, all measured, all in code written in the three commits before this one. Two
+were critical and were live in a shipped package.
+
+**F-1 (critical) — the `HIGH` tier was a livelock.** `InterruptGate` could only READ the
+inbox (it has to: `Policy.check` is sync and pure, POL-4, so a policy must not consume),
+and `EventAnnouncer`'s ceiling was `NORMAL`, so it skipped anything more urgent. Nothing
+in the system ever removed a `HIGH` event. Measured across two consecutive runs sharing
+one gate:
+
+```
+lượt 1 tools_run: ()   | inbox còn: True
+lượt 2 tools_run: ()   | inbox còn: True
+```
+
+One `HIGH` event denied every `write`/`danger` call for the life of the process. The tier
+ADR-080 called "the one worth understanding" was the only one that did not work.
+
+*Fix:* the block should last until the model has been TOLD, and "has been told" is a fact
+somebody must record. `EventInbox` grew a `delivered` flag; `EventAnnouncer` arms on
+`after_model` and calls `deliver()` in `before_tool` — the moment the text actually
+becomes a tool result — and the gate reads `pending_undelivered()`, which is still a pure
+read. The default ceiling is now `CRITICAL`: a `CRITICAL` only reaches the announcer when
+the `Driver` already declined to cancel for it, so announcing it is the downgrade working
+rather than the wrong tier.
+
+**F-2 (critical) — rule 2 disabled rule 2, the first time rule 2 fired.**
+`WriteInFlight.before_tool` increments a depth counter; a cancel lands INSIDE the tool
+call it interrupts, so `after_tool` never runs. Measured:
+
+```
+giữa write, busy = True
+sau cancel,  busy = True      <- phải là False
+_may_preempt() = (False, 'a write is in flight')
+```
+
+Permanent, for the life of the process, on exactly the CRITICAL path the guard exists to
+protect. And worse than a leak: a `Middleware` is wired onto a FROZEN `Agent` shared
+across concurrent runs, so the stuck count was cross-conversation — the class of bug
+`Ledger`, `TaintTracker` and `PrefixWatcher` are all per-run to avoid (S-15/S-24/S-29).
+The reasoning was quoted in that module's own docstring, for other things, and the mistake
+was made anyway.
+
+*Fix:* reset the count on `RUN_STARTED`/`RUN_FINISHED` through `on_event`. `RUN_FINISHED`
+is emitted even on cancellation (`run.py` emits it and then re-raises). A `stranded`
+counter records when a reset found a non-zero depth, so the condition stays visible
+instead of silently swallowed.
+
+**F-3 (high) — the watcher re-read every sensor every `poll_s`.** Measured at **34
+`Sensor.read()` calls per second** during a half-second turn. For `CameraSensor` that is a
+camera grab plus a full MediaPipe inference, back to back, burning a core for the duration
+of every turn. `FakeSensor.delay_s` hid it completely in the tests.
+
+**F-4 (high) — sensors were read ONLY from inside a turn.** Measured at zero reads across
+0.3 s of idle. A conversational agent is idle most of the time, so it noticed arrivals
+only while already busy — backwards — and `CameraSensor`'s debounce and baseline state
+never advanced between turns either. The "camera → sensor → Driver → agent" end-to-end
+test passed only because it called `pump()` by hand.
+
+*Fix for both:* separate the two clocks. `sensor_interval_s` (default 0.2 s) paces a
+`_pump_forever` loop started by `Driver.start()` and stopped by `stop()` (also an async
+context manager); `poll_s` stays the watcher's interval but the watcher now only reads the
+INBOX, which is an attribute access. A turn with no loop running starts a temporary one so
+single-shot use still sees events arrive mid-turn. Measured after: 6 reads/second during a
+turn instead of 34, and 4 reads across 0.65 s of idle instead of 0, with `stop()`
+verified to actually stop.
+
+**F-5 (medium) — a documented tier with no implementation.** ADR-080's table said `LOW`
+meant "the next `Driver.turn()` after this one returns". Nothing implemented that:
+`turn()` takes the caller's text and never reads the inbox. It also should not be
+implemented that way — putting perception into the turn's user message is the unlabelled,
+highest-authority channel this design exists to avoid. Corrected in the table: `LOW` is a
+PRECEDENCE, travelling the same route as `NORMAL` and differing only in what displaces it.
+
+**F-6 (low)** — stale paths after the `contrib` move (`tests/test_driver.py`'s docstring,
+`vision_sensor.py`'s three references, an error message pointing at `examples/driver.py`)
+and an import continuation left misaligned by the mechanical edit that moved it.
+
+**And a finding about the method, not the code.** Mutation testing missed F-1 through F-4
+completely. Every mutation chosen in ADR-080 and ADR-081 was the DELETION OF A GUARD, and
+none of these four is a deleted guard — they are missing paths and lifecycle leaks.
+Mutation testing validates the tests that exist; it says nothing about behaviour never
+tested for. ADR-081's confidence in it was overstated, and the four defects were found by
+attacking the design with fresh probes instead.
+
+**Test.** `tests/test_driver.py` 40 tests (up from 32), including one regression test per
+critical defect. Verified by mutation that each new guard has teeth: restoring `peek()` in
+the gate fails exactly the livelock test, removing the per-run reset fails exactly the
+stranded-write test, and putting `pump()` back in the watcher fails exactly the polling
+test. Full suite 1038 passed; `ruff` and `mypy` clean; the contrib demo and the vision
+demos all still run.
+
 | # | Decision | Rationale |
 |---|---|---|
 | IDL-01 | `Decimal` for all money; `float` banned in `budget/` by lint | A rounding error in a spend ceiling is a real bug class |

@@ -17,7 +17,16 @@ priority scheme:
 | `CRITICAL` | `task.cancel()` on the running turn            | the WHOLE turn       | ~0 ms   |
 | `HIGH`     | a `Policy` DENY carrying the event as its reason| only the blocked call| next tool call |
 | `NORMAL`   | `after_model` injects a `tool_use`, `before_tool` short-circuits it | nothing | one model call |
-| `LOW`      | the next `Driver.turn()` after this one returns | nothing              | end of turn |
+| `LOW`      | the same injection, but loses the inbox to anything more urgent | nothing | one model call, if nothing outranks it |
+
+**`LOW` is a precedence, not a separate channel** — corrected here rather than left as
+written, because an earlier version of this table claimed `LOW` meant "the next
+`Driver.turn()` after this one returns" and NOTHING implemented that: `turn()` takes the
+caller's text and never reads the inbox. It was a documented tier with no code. It also
+should not be implemented that way: putting perception into the turn's user message is
+the unlabelled, highest-authority channel this whole design exists to avoid. So `LOW`
+travels the same route as `NORMAL` and differs only in what displaces it
+(`EventInbox.offer` keeps the more urgent of two undelivered events).
 
 `HIGH` is the one worth understanding, because it is the tier that matches "stop the
 action, don't destroy the work": a `Ruling(DENY, reason=...)` both blocks the call AND
@@ -162,33 +171,59 @@ class FakeSensor:
 
 
 class EventInbox:
-    """One pending event: the most urgent one offered since it was last taken.
+    """One pending event, plus whether the model has been TOLD about it yet.
 
     Size one on purpose. A queue would make the agent replay a backlog of stale
     perceptions ("someone arrived" five times), which is worse than saying the newest
     true thing once. Rebinding a frozen `Event` is atomic under the GIL, so a sensor
     task can offer while a sync hook peeks.
+
+    **The delivered flag exists because the `HIGH` tier livelocked without it.**
+    Measured: `InterruptGate` only READ the inbox (it has to — `Policy.check` is sync
+    and pure, POL-4, so a policy must not consume anything), and `EventAnnouncer`'s
+    ceiling skipped anything above `NORMAL`. So one `HIGH` event stayed pending forever
+    and denied every `write`/`danger` call for the life of the process — two consecutive
+    runs both came back `tools_run: ()` with the inbox still full. The block is supposed
+    to last until the model has been told, not until the end of time, and "has been told"
+    is a fact somebody has to record: `deliver()` records it where the telling actually
+    happens (`EventAnnouncer.before_tool`, the moment the text becomes a tool result),
+    and `pending_undelivered()` is the pure read a gate can safely make.
     """
 
-    __slots__ = ("_pending",)
+    __slots__ = ("_pending", "_delivered")
 
     def __init__(self) -> None:
         self._pending: Event | None = None
+        self._delivered = False
 
     def offer(self, event: Event) -> None:
+        """A delivered event is history: anything new replaces it regardless of
+        priority. An UNdelivered one is only displaced by something at least as
+        urgent."""
         current = self._pending
-        if current is None or event.priority >= current.priority:
-            self._pending = event
+        if current is None or self._delivered or event.priority >= current.priority:
+            self._pending, self._delivered = event, False
 
     def peek(self) -> Event | None:
         return self._pending
 
+    def pending_undelivered(self) -> Event | None:
+        """What a gate may act on: pending AND not yet in front of the model."""
+        return None if self._delivered else self._pending
+
+    def deliver(self) -> None:
+        self._delivered = True
+
+    @property
+    def delivered(self) -> bool:
+        return self._delivered
+
     def take(self) -> Event | None:
-        event, self._pending = self._pending, None
+        event, self._pending, self._delivered = self._pending, None, False
         return event
 
     def clear(self) -> None:
-        self._pending = None
+        self._pending, self._delivered = None, False
 
 
 class WriteInFlight(Middleware):
@@ -199,11 +234,27 @@ class WriteInFlight(Middleware):
     caller, who has the toolset. Counted rather than boolean: `write` tools are not
     `parallel_safe` so the harness serialises them within a step, but a `read` tool can
     run beside one and this must not be cleared by the wrong `after_tool`.
+
+    **`on_event` resets the count per run, and that is not defensive tidiness — without
+    it this class disabled rule 2 permanently the first time rule 2 fired.** A cancel
+    lands inside the tool call it interrupts, so `after_tool` never runs, so `_depth`
+    stays above zero for the life of the process and `Driver._may_preempt()` answers
+    `(False, 'a write is in flight')` forever. Measured, on exactly the CRITICAL path
+    the guard exists to protect. Worse than a leak: a `Middleware` is wired onto a
+    FROZEN `Agent` that is shared across concurrent runs, so the stuck count is
+    cross-conversation — the class of bug `Ledger`, `TaintTracker` and `PrefixWatcher`
+    are all per-run to avoid (S-15/S-24/S-29). `RUN_FINISHED` is emitted even on
+    cancellation (`run.py` emits it and then re-raises), and `RUN_STARTED` covers any
+    path where it was not.
     """
 
     def __init__(self, guarded: Sequence[str]) -> None:
         self.guarded = frozenset(guarded)
         self._depth = 0
+        #: Counts resets that found a non-zero depth — i.e. how many runs ended with a
+        #: guarded call still notionally in flight. Non-zero is the signature of a
+        #: cancelled write, not of a bug in this class.
+        self.stranded = 0
 
     @property
     def busy(self) -> bool:
@@ -218,6 +269,16 @@ class WriteInFlight(Middleware):
         if call.name in self.guarded and self._depth:
             self._depth -= 1
         return call.result
+
+    def on_event(self, event: Any) -> None:
+        """Observation only, per the hook's contract — but the observation this class
+        cannot live without. See the class docstring for what happened without it."""
+        from ..observe.events import EventKind
+
+        if event.kind in (EventKind.RUN_STARTED, EventKind.RUN_FINISHED):
+            if self._depth:
+                self.stranded += 1
+            self._depth = 0
 
     @staticmethod
     def names_from(agent: Any) -> tuple[str, ...]:
@@ -244,7 +305,10 @@ class InterruptGate:
         self.inbox, self.floor = inbox, floor
 
     def check(self, call: ToolCall, ctx: Any) -> Ruling:
-        event = self.inbox.peek()
+        # `pending_undelivered`, not `peek`: once the model has been told, the block has
+        # done its job. Reading `peek()` here is what made the HIGH tier a livelock —
+        # nothing ever cleared it, because a pure policy cannot (POL-4).
+        event = self.inbox.pending_undelivered()
         if event is None or event.priority < self.floor:
             return Ruling(Verdict.ALLOW, "", self.name)
         effect = getattr(call.spec, "effect", None)
@@ -275,7 +339,7 @@ class EventAnnouncer(Middleware):
     """
 
     def __init__(self, inbox: EventInbox, carrier: str,
-                 *, ceiling: Priority = Priority.NORMAL) -> None:
+                 *, ceiling: Priority = Priority.CRITICAL) -> None:
         self.inbox, self.carrier, self.ceiling = inbox, carrier, ceiling
         self.announced = 0
         self._armed: Event | None = None
@@ -283,10 +347,14 @@ class EventAnnouncer(Middleware):
     def after_model(self, call: Any) -> Any:
         from dataclasses import replace
 
-        event = self.inbox.peek()
+        event = self.inbox.pending_undelivered()
         if event is None or event.priority > self.ceiling or self._armed is not None:
             return call.response
-        self._armed = self.inbox.take()
+        # Armed, not taken: the event stays in the inbox until `before_tool` actually
+        # turns it into a tool result, which is the moment `deliver()` may be recorded.
+        # Taking it here would drop the `InterruptGate`'s block one step too early — the
+        # model has not read anything yet.
+        self._armed = event
         self.announced += 1
         block = {"type": "tool_use", "id": INJECTED_CALL_ID,
                  "name": self.carrier, "input": {}}
@@ -295,6 +363,7 @@ class EventAnnouncer(Middleware):
     def before_tool(self, call: Any) -> Any:
         if getattr(call.identity, "call_id", None) == INJECTED_CALL_ID:
             event, self._armed = self._armed, None
+            self.inbox.deliver()          # the model is about to read it — unblock writes
             raise ShortCircuit(event.text if event else "(sự kiện đã hết hiệu lực)")
         return call.kwargs
 
@@ -346,14 +415,24 @@ class Driver:
                  allow_preemption: bool = True,
                  require_durable_plan: bool = True,
                  max_preemptions: int = 3, window_s: float = 60.0,
-                 poll_s: float = 0.02) -> None:
+                 poll_s: float = 0.02, sensor_interval_s: float = 0.2) -> None:
         self.agent = agent
         self.sensors = tuple(sensors)
         self.inbox = inbox if inbox is not None else EventInbox()
         self.write_in_flight = write_in_flight
         self.allow_preemption = allow_preemption
         self.max_preemptions, self.window_s = max_preemptions, window_s
+        #: How often the watcher re-reads the INBOX during a turn. Cheap by
+        #: construction: an attribute read, no I/O, no sensor.
         self.poll_s = poll_s
+        #: How often sensors are actually READ. Separate from `poll_s`, and the
+        #: separation is the fix for a measured defect: the watcher used to call
+        #: `pump()` every `poll_s`, which meant 34 `Sensor.read()` calls per second
+        #: during a half-second turn — for a `CameraSensor` that is a camera grab plus a
+        #: full MediaPipe inference, back to back, burning a core for the duration of
+        #: every turn. A `FakeSensor`'s own `delay_s` hid it completely in the tests.
+        self.sensor_interval_s = sensor_interval_s
+        self._pump_task: "asyncio.Task[None] | None" = None
         self.history: list[Any] = []
         self.preemptions: list[float] = []
         self.downgrades = 0
@@ -378,7 +457,7 @@ class Driver:
             "      CodingProfile(..., enable_findings=True)   # or TaskLedger's tools\n\n"
             "  Or say you accept the loss on purpose:\n"
             "      Driver(..., require_durable_plan=False)\n\n"
-            "  -> examples/driver.py, docs/12-decision-logs.md ADR-080"
+            "  -> harness/contrib/driver.py, docs/12-decision-logs.md ADR-080"
         )
 
     # -- the priority decision -------------------------------------------------------
@@ -405,6 +484,47 @@ class Driver:
                 self.inbox.offer(event)
         return self.inbox.peek()
 
+    # -- the sensor loop, which is NOT the turn ---------------------------------------
+
+    async def _pump_forever(self) -> None:
+        while True:
+            await self.pump()
+            await asyncio.sleep(self.sensor_interval_s)
+
+    def start(self) -> None:
+        """Begin polling sensors, independently of whether a turn is running.
+
+        Without this, sensors were read ONLY from inside `turn()`'s watcher — measured at
+        zero reads across 0.3 s of idle. A conversational agent is idle most of the time,
+        so events were detected only while it was already busy, which is backwards, and a
+        `CameraSensor`'s debounce and baseline state never advanced between turns either.
+
+        Idempotent. Requires a running event loop (it creates a task), so call it from
+        async code — `Driver` is async by nature: preemption needs a cancellable task,
+        which is why it cannot use `Chat`/`Session` at all.
+        """
+        if self._pump_task is None or self._pump_task.done():
+            self._pump_task = asyncio.create_task(self._pump_forever())
+
+    async def stop(self) -> None:
+        """Stop polling. Safe to call when never started."""
+        task, self._pump_task = self._pump_task, None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def __aenter__(self) -> "Driver":
+        self.start()
+        return self
+
+    async def __aexit__(self, *_exc: Any) -> None:
+        await self.stop()
+        self.close()
+
     # -- one turn --------------------------------------------------------------------
 
     async def turn(self, text: str) -> Served:
@@ -414,6 +534,12 @@ class Driver:
         cancellation would break asyncio's protocol, the same care `run.py` takes at its
         own catch site.
         """
+        # A turn without a running sensor loop starts a temporary one, so single-shot
+        # use (`await driver.turn(...)` with no `start()`) still sees events arriving
+        # DURING the turn — bounded by `sensor_interval_s` rather than by `poll_s`.
+        temporary = self.sensors and (self._pump_task is None or self._pump_task.done())
+        if temporary:
+            self.start()
         task = asyncio.create_task(
             self.agent.atry_run(text, _history=tuple(self.history)))
         ours = _Watch()
@@ -424,22 +550,28 @@ class Driver:
             if not ours.cancelled:
                 raise                       # somebody else cancelled us; honour it
             self.preemptions.append(time.monotonic())
-            return Served(None, preempted=True, event=ours.event,
-                          cancel_s=(time.monotonic() - ours.at) if ours.at else None)
+            served = Served(None, preempted=True, event=ours.event,
+                            cancel_s=(time.monotonic() - ours.at) if ours.at else None)
+            return served
         finally:
             watcher.cancel()
             try:
                 await watcher
             except asyncio.CancelledError:
                 pass
+            if temporary:
+                await self.stop()
         # History is only advanced on a turn that actually finished. A preempted turn
         # leaves it untouched, which is exactly why rule 3 exists.
         self.history = list(result.messages)
         return Served(result, downgraded=ours.downgraded, event=ours.event)
 
     async def _watch(self, task: "asyncio.Task[Any]", ours: _Watch) -> None:
+        """Reads the INBOX, never a sensor. Sensors are read by `_pump_forever` on its
+        own interval — see `sensor_interval_s` for the 34-reads-per-second defect that
+        separation fixes."""
         while not task.done():
-            event = await self.pump()
+            event = self.inbox.peek()
             if event is not None and event.priority is Priority.CRITICAL:
                 may, why = self._may_preempt()
                 if may:
