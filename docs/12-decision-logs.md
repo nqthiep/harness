@@ -2805,8 +2805,10 @@ each enforced in code rather than documented:
 check precedes a model call and a permission check precedes a tool call (ADR-001) — a
 wake source does not belong there, and the precedent for an overrun is to split the file,
 not raise the cap. `docs/02-architecture.md` §4's plugin test requires "two genuinely
-different implementations **today** — not hypothetically", and this repo has exactly one
-`Sensor`, the fake one. Building a seam for one speculative use case is what got
+different implementations **today** — not hypothetically", and at the time this was written the
+repo had only the fake one. (ADR-081 added `CameraSensor`, the first real one; part (c)
+still wants a second genuinely different implementation before `Sensor` earns a seam.)
+Building a seam for one speculative use case is what got
 `Faculty` killed twice in the same session, and what that document already lists among
 the rejected abstractions. And a `Driver` owns a thread, an event loop and the
 conversation history, none of which a frozen `Agent` can hold. Promotion later is a small
@@ -2839,6 +2841,76 @@ look self-contradictory — the demo now uses an `external` carrier and shows
 message: routed as a tool result, an untrusted perception event carries
 `Integrity.UNTRUSTED`; routed as a `user` message it would carry no label at all while
 sitting in the conversation's highest-authority position.
+
+### ADR-081 — `CameraSensor`: a camera is an event source only once it reports DIFFERENCES, resolves identity out of band, and gets its priority from structure
+
+**Status:** Accepted.
+
+**Context.** `vision_tools.Camera` returns `(frame, error)` — a state. `driver.py` needs
+`Event`s. States are not events: "Thiep is present" thirty times a second is noise the
+context window pays for, while "Thiep just walked in" is the thing worth a model call.
+Closing that gap is also what makes `Sensor` a shape with one real implementation rather
+than only a test double.
+
+**Decision.** `examples/vision_sensor.py` — `CameraSensor`, `Change`, `Salience`,
+`render`. Five decisions, each of which had to be made somewhere and belongs here:
+
+1. **Identity is resolved in the sensor, out of band.** `Policy.check` is sync and pure
+   (POL-4); `IdentityLedger.match` is async. So a policy can NEVER look a face up
+   itself, and identity can only reach synchronously-readable state if something out of
+   band puts it there. `CameraSensor` writes resolved names into `Reading.names` (a field
+   added to `Reading` for this, appended last so every existing construction keeps
+   working). That is what makes the `HIGH` tier able to react to WHO is in the room
+   rather than to how many faces there are — the design consequence flagged when ADR-080
+   was written, now closed.
+2. **Acquisition runs on a worker thread** (`asyncio.to_thread`, `use_thread=True` by
+   default). OpenCV's `read()` blocks and MediaPipe is CPU-bound C++; inline it would
+   stall the loop the agent's own turn is using. The captured body is deliberately sync,
+   which is what makes it safe to hand over.
+3. **Priority comes from a TABLE applied to a structural `Change`**, never from text.
+   `Salience.of(Change)` sees who arrived, who left, and how many faces were
+   unrecognised. `promote=` is the operator's override and it too receives a `Change`,
+   not a string.
+4. **The defaults cannot preempt.** `arrival`/`unknown_arrival` are `NORMAL`, `departure`
+   is `LOW`. Cancelling a build because someone walked past the lens is the wrong trade
+   to make on an operator's behalf; `CRITICAL` requires them to write `promote=`.
+5. **Debounced, and blindness is not absence.** A change must hold for `stable_reads`
+   observations (default 2) before it commits, or one dropped frame reads as "Thiep left"
+   followed by "Thiep arrived". And a camera that stops working produces NO event: "I
+   can't see" is not "the room emptied", the second being a claim about the world this
+   sensor has no evidence for.
+
+**The behaviour three of the tests were wrong about, kept as the finding.** The first
+successful observation establishes a BASELINE and announces nothing — opening your eyes
+is not everyone in the room arriving. Three tests expected an arrival without settling a
+baseline first and all three failed; the code was right and the tests were wrong. Someone
+already present at startup is STATE, reachable through the buffer and through
+`look`/`identify_person`, and `VisionProfile`'s prompt already tells the agent to look at
+the start of a conversation. Now asserted explicitly rather than left implicit.
+
+**What mutation testing found that reviewing would not have.** Rule 1 — priority from
+code, never from text — is the most security-relevant rule in ADR-080, and it was
+**documented and unenforced**: injecting `Priority.CRITICAL if "URGENT" in
+str(change.reading)` into `Salience.of` left all 23 tests green. A camera is
+`effect="external"`; whatever is physically in front of it is attacker-controlled, so
+that backdoor is exactly the attack the rule exists to prevent, and nothing would have
+failed. `test_priority_cannot_be_raised_by_TEXT_anywhere_in_the_frame` now asserts that
+two structurally identical `Change`s get the same priority however hostile the frame's
+text is, and re-running the same mutation fails exactly that test. The other two
+mutations (removing the debounce, removing the blindness guard) were already caught.
+
+**Test.** `tests/test_vision_sensor.py`, 25 tests, including an end-to-end run of the
+whole chain — camera → `CameraSensor` → `Driver` → `EventAnnouncer` → a real agent turn —
+with no camera and no model file, asserting the model is told who arrived AND that
+`tainted` is `True`, because an `external` carrier is what makes a perception event
+arrive LABELLED rather than as an unlabelled `user` message. Full suite 1032 passed;
+`ruff` and `mypy` clean, including `mypy` on the new file.
+
+**`Sensor` still stays in `examples/`.** This is the FIRST real implementation; the plugin
+test's part (c) asks for two genuinely different ones, and a test double is not an
+implementation. A file-watcher or a CI-status poller would make the case; until then
+promoting it would be building a seam for one use case, which is what ADR-080 declined to
+do and what `docs/02-architecture.md` lists among the rejected abstractions.
 
 | # | Decision | Rationale |
 |---|---|---|

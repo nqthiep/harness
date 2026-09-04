@@ -56,7 +56,9 @@ IDL-13 ceiling of 250 lines and is the single place where a budget check precede
 call and a permission check precedes a tool call (ADR-001); a wake source does not belong
 there. `docs/02-architecture.md` §4's plugin test wants "two genuinely different
 implementations TODAY — not hypothetically" before something earns a seam, and this repo
-has exactly one `Sensor` (the fake one below; `vision_tools.Camera` is not one yet).
+has ONE real `Sensor` (`vision_sensor.CameraSensor`) plus the test double below. A test
+double is not an implementation, so part (c) is still unmet: a second genuinely
+different one — a file-watcher, a CI-status poller — is what would make the case.
 And a `Driver` owns a thread, an event loop and the conversation history — none of which
 an `Agent` can hold, being frozen with no lifecycle. If a second real sensor ships and
 this stabilises, promoting `Sensor`/`Event` into core is a small ADR; starting in core

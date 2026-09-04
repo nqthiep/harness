@@ -133,6 +133,16 @@ class Reading:
     scene: tuple[tuple[str, float], ...] = ()
     error: str = ""
     frame_size: tuple[int, int] = (0, 0)
+    #: Identity already RESOLVED, aligned with `faces` — `None` where the ledger did not
+    #: recognise that face. Appended last so every existing positional construction
+    #: keeps working.
+    #:
+    #: Load-bearing for anything that reacts to WHO is present rather than to how many:
+    #: `Policy.check` is sync and pure (POL-4) and `IdentityLedger.match` is async, so a
+    #: policy can never look identity up itself. Whoever fills this in — a `CameraSensor`
+    #: out of band, or `identify_person` inside a run — is the only place identity can
+    #: enter synchronously readable state.
+    names: tuple[str | None, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -296,8 +306,11 @@ def describe(reading: Reading, names: Sequence[str | None] = ()) -> str:
 
     `names[i]` pairs with `reading.faces[i]`: a string when the ledger recognised that
     face, `None` when it did not, and an empty sequence when nobody asked about
-    identity — the three cases produce genuinely different sentences.
+    identity — the three cases produce genuinely different sentences. Defaults to
+    `reading.names`, so a `Reading` that already carries resolved identity describes
+    itself without the caller restating it.
     """
+    names = names or reading.names
     if not reading.ok:
         return f"Tôi không nhìn thấy gì lúc này ({reading.error})."
 
