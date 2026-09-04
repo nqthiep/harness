@@ -2601,7 +2601,10 @@ applying one vision profile twice is refused by this profile's own sink check BE
 `parallel_safe`/`retryable`/`emits` are read from `EFFECT_PROFILES[spec.effect]` at
 dispatch time, which is why wrapping a tool's `fn` cannot reach them.
 
-**Unverified, said plainly rather than left to be discovered.** `MediaPipeDetector` has
+**Unverified, said plainly rather than left to be discovered.** *(Superseded by ADR-090:
+it has since run, and the identity threshold turned out to be the wrong question. The
+paragraph stands as written, because what it got right is that saying so is what made
+somebody go and check.)* `MediaPipeDetector` has
 never run a real inference pass. Its whole API surface was checked against the installed
 package — every class, every option name, and every result field it reads, including
 `Embedding.embedding` (NOT `float_embedding`, the older API's name) — but `mediapipe`
@@ -3513,6 +3516,108 @@ names it. The last class matters most: it drives both new sensors through the RE
 asserts a file change and a calendar moment each preempt a turn, that two sensors of
 different kinds share the single inbox slot with the more urgent winning, and that
 `Driver.close()` reaches every sensor. Full suite 1096 passed.
+
+### ADR-090 — The vision detector ran for real, and the identity threshold was the wrong question
+
+**Status:** Accepted.
+
+**Context.** `MediaPipeDetector` (`examples/vision_tools.py`) was written against the
+installed API surface and had never executed one inference. `mediapipe` 1.0.1 bundles no
+model file, there is no camera here, and its docstring said so: "treat this class as
+unrun code" (ADR-077). `DEFAULT_THRESHOLD = 0.80` was a guess, labelled a guess, and the
+whole identity feature rested on it.
+
+Both blocks turned out to be soft. `storage.googleapis.com` serves both the MediaPipe
+models and MediaPipe's own public test photographs, and it is reachable from here. The
+remaining obstacle was not a model at all: MediaPipe 1.0.1's C bindings `dlopen`
+`libEGL.so.1` and `libGLESv2.so.2`, and a bare container has neither, so task
+construction dies with an `OSError` from `ctypes.CDLL` that looks nothing like a missing
+model (`apt-get install libegl1 libgles2`). Worth writing down: a whole capability was
+parked behind a diagnosis nobody had made.
+
+**All four capabilities then ran**, on a 1024×820 portrait:
+
+```
+detect_faces    (  495 ms) 1 face, score 0.922, box (283,115,234,234)
+detect_bodies   (  264 ms) 1 body, facing_camera=True, posture "không rõ dáng"
+classify_scene  (  178 ms) ('suit', 0.592), ('groom', 0.176)
+embed_face      (   76 ms) 1024 dimensions
+```
+
+`posture_of` returning "không rõ dáng" on a head-and-shoulders portrait is correct — hip
+landmarks are not visible, so the `MIN_VISIBILITY` fallback is the path that ran, and it
+ran on real landmarks for the first time.
+
+**Then the measurement the threshold always needed.** 10 same-person pairs (one
+photograph perturbed by crop, brightness and JPEG quality; plus three renderings of it,
+each face detected independently) and 7 different-person pairs:
+
+```
+same person, identical crop ................ 1.0000
+same person, brightness +25 ................ 0.9977
+same person, JPEG q=40 ..................... 0.9672
+same person, crop shifted 8 px ............. 0.9471
+same person, crop 20% wider ................ 0.6414
+same person, same photo at 1/3 scale ....... 0.7455
+same person, photo rotated ................. 0.2870   <- LOWEST same-person
+
+two different people ....................... 0.5613   <- HIGHEST different-person
+two different people ....................... 0.4990
+```
+
+**The distributions do not overlap, they invert.** The same person rotated scores further
+apart than two strangers do. The threshold was never the problem:
+`mediapipe.tasks.vision.ImageEmbedder` with `mobilenet_v3_small` is a GENERIC image
+embedder — it encodes pose, light and background, which is what it is for — and MediaPipe
+Tasks ships no face-recognition model at all. Identity by cosine needs a face-recognition
+embedder (ArcFace, FaceNet, a vendor API) as `embed_model=`.
+
+**Which way the shipped default fails, exactly.** At `0.80`: **0 false accepts out of 7**
+and **4 false rejects out of 10**. It never names the wrong person; it fails to recognise
+the right one, and `IdentityLedger.match` then answers "I don't know" — the direction
+`DEFAULT_MARGIN` exists for. So the default is not dangerous, it is mostly useless with
+this embedder, and a lower number would trade the safe failure for the unsafe one. Saying
+"uncalibrated" without saying which way it fails invites exactly the wrong fix.
+
+**A third finding, contrary to intuition.** The crop is the most fragile input. A 20%
+wider box on the IDENTICAL face costs more similarity (0.6414) than brightness +25
+(0.9977) or JPEG q=40 (0.9672) — so what matters between enrolment and matching is that
+the face is cropped the same way, not that the room is lit the same way. A threshold
+picked by imagining lighting problems is calibrated against the wrong variable.
+
+**Decision.** Three things, none of which is picking a new number.
+
+1. **`calibrate(same, different) -> Calibration`** (pure, layer 1): a threshold derived
+   from labelled pairs, or the refusal to give one. `separable` is the real output;
+   `threshold` is `None` when the distributions overlap, because no number separates them
+   and returning one anyway is the failure mode this whole exercise found. It reports two
+   summary statistics rather than a fitted curve — at the sample sizes a person can label
+   by hand, `min(same)` and `max(different)` are the only two numbers a threshold can
+   come from, and a ROC through 17 points would look far more authoritative than it is
+   (the same reasoning `eval/cost.py` uses for a Wilson interval over a bare rate). The
+   threshold lands at the MIDPOINT of the gap, not on `worst_same`, which would guarantee
+   the next slightly-worse same-person pair is rejected.
+2. **`IdentityLedger.from_calibration(store, calibration)`** — the constructor to reach
+   for, and one that cannot be built on evidence that no threshold works. On the real
+   measurement it raises.
+3. **The measurement is written into the code that depends on it** —
+   `DEFAULT_THRESHOLD`, `MediaPipeDetector`, `VisionProfile.threshold` — with the numbers,
+   the failure direction, and the actual remedy (change the embedder). `tests/vision_probe.py`
+   reproduces it: a standalone script, never collected, that fetches the models and
+   photographs and prints the table.
+
+**Test.** `tests/test_vision_calibration.py`, 13 tests. The real scores are the FIXTURE,
+so the conclusion is asserted with no MediaPipe, no models and no network in the suite:
+not separable, the inversion (worst same 0.2870, best different 0.5613, gap −0.2743), the
+0-false-accept/4-false-reject breakdown at `0.80`, and the crop-beats-lighting finding.
+Four mutations, each caught: dropping the separability test, putting the threshold on
+`worst_same`, accepting one-sided input, and `from_calibration` no longer refusing. Full
+suite 1109 passed.
+
+**What is still not verified.** A live camera — `cv2.VideoCapture(0)` has no device here
+— and accuracy on any face outside the handful of public test photographs. Both are now
+narrower than "this class has never run", which is what OI-11's neighbour in the risk
+register used to say.
 
 | # | Decision | Rationale |
 |---|---|---|

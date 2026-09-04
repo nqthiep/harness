@@ -58,12 +58,34 @@ Vector = Sequence[float]
 # ── layer 1: business logic, pure ────────────────────────────────────────────────
 
 #: Cosine similarity between two face embeddings must clear this to count as the same
-#: person. **A guess, and knowingly so.** MediaPipe's own embedder is L2-normalisable and
-#: its similarity distribution depends on the model file, the crop, and the lighting;
-#: the right number comes from measuring false-accept/false-reject on real faces you
-#: care about. It is a constructor argument on `IdentityLedger` precisely so that
-#: measurement can move it without touching anything else. Treat the default as "high
-#: enough to be cautious", not as calibrated.
+#: person. **It has now been measured, and the measurement says something worse than
+#: "the number is wrong": with a generic MediaPipe `ImageEmbedder` there is no number
+#: that works.** Real inference, real models, real photographs (`tests/vision_probe.py`,
+#: ADR-090):
+#:
+#:     same person, same photo at 1/3 scale ....... 0.7455
+#:     same person, photo rotated ................. 0.2870   <- LOWEST same-person
+#:     two DIFFERENT people ....................... 0.4990
+#:     two DIFFERENT people ....................... 0.5613   <- HIGHEST different-person
+#:
+#: The distributions do not merely overlap, they invert: the same person rotated scores
+#: further apart than two strangers do. `calibrate()` below says so mechanically (overlap
+#: 0.2743 across 10 same-person and 7 different-person pairs), and the cause is not the
+#: threshold — `mediapipe.tasks.vision.ImageEmbedder` with `mobilenet_v3_small` encodes
+#: general picture content (pose, light, background), not identity, and MediaPipe Tasks
+#: ships no face-recognition model at all. Identity by cosine needs a face-recognition
+#: embedder (ArcFace, FaceNet, or a vendor API), supplied as `embed_model=`.
+#:
+#: **Which way it fails matters, so here it is exactly.** On that sample, `0.80` produces
+#: **0 false accepts out of 7** and **4 false rejects out of 10**. It never names the
+#: wrong person; it fails to recognise the right one, and `IdentityLedger.match` then
+#: answers "I don't know" — the safe direction, and the one `DEFAULT_MARGIN` was chosen
+#: for. So this default is not dangerous, it is just mostly useless with this embedder,
+#: and a lower number would trade the safe failure for the unsafe one.
+#:
+#: Kept as a constructor argument, and kept at a cautious value, so that a caller who
+#: brings a real face embedder can move it with `calibrate()` rather than by intuition.
+#: Do not read it as a working default.
 DEFAULT_THRESHOLD = 0.80
 
 #: Two enrolled people this close together means the frame does not distinguish them —
@@ -95,6 +117,77 @@ def cosine(a: Vector, b: Vector) -> float:
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(y * y for y in b))
     return dot / (na * nb) if na and nb else 0.0
+
+
+@dataclass(frozen=True)
+class Calibration:
+    """What a threshold is allowed to be, given labelled pairs you actually measured.
+
+    The point is not the number it returns — it is `separable`. A threshold is only
+    meaningful when every same-person pair scores ABOVE every different-person pair; when
+    they overlap, no threshold anywhere separates them and the honest output is "this
+    embedder cannot do this", not a number that fails quietly on the pairs in between.
+
+    Two summary statistics rather than a full ROC curve: at the sample sizes a person can
+    realistically label by hand (tens of pairs, not thousands), the worst same-person
+    score and the best different-person score are the only two numbers a threshold can be
+    derived from, and a curve fitted through 20 points would look far more authoritative
+    than it is — the same reasoning `eval/cost.py` uses for reporting a Wilson interval
+    instead of a bare rate.
+    """
+
+    threshold: float | None
+    margin: float
+    worst_same: float
+    best_different: float
+    n_same: int
+    n_different: int
+
+    @property
+    def separable(self) -> bool:
+        return self.threshold is not None
+
+    @property
+    def gap(self) -> float:
+        """How much room there is between the two distributions. Negative when they
+        overlap, and the size of the overlap is how badly."""
+        return self.worst_same - self.best_different
+
+    def __str__(self) -> str:
+        head = (f"{self.n_same} same-person pairs (worst {self.worst_same:.4f}), "
+                f"{self.n_different} different-person pairs "
+                f"(best {self.best_different:.4f})")
+        if self.separable:
+            return (f"{head}\n  threshold {self.threshold:.4f}, gap {self.gap:+.4f} — "
+                    f"separable on this sample")
+        return (f"{head}\n  NOT separable: the distributions overlap by "
+                f"{-self.gap:.4f}. No threshold works. Change the EMBEDDER, not the "
+                f"number — a generic image embedder encodes the picture, not the person "
+                f"(see DEFAULT_THRESHOLD).")
+
+
+def calibrate(same: Sequence[float], different: Sequence[float], *,
+              margin: float = DEFAULT_MARGIN) -> Calibration:
+    """A threshold from labelled cosine scores, or the refusal to give one.
+
+    `same` are scores between two embeddings of the SAME person, `different` between two
+    people. Both must be non-empty: a threshold derived from one side alone is a threshold
+    that has never seen the error it is supposed to prevent.
+
+    The threshold lands at the midpoint of the gap, not at `worst_same`: sitting exactly
+    on the worst observed same-person pair guarantees the next slightly-worse one is
+    rejected, and the midpoint is the only choice that gives both error directions the
+    same room on the evidence available.
+    """
+    if not same or not different:
+        raise ValueError(
+            "calibrate needs BOTH same-person and different-person pairs — a threshold "
+            "fitted to one side has never seen the error it exists to prevent")
+    worst_same, best_different = min(same), max(different)
+    threshold = ((worst_same + best_different) / 2.0
+                 if worst_same > best_different else None)
+    return Calibration(threshold, margin, worst_same, best_different,
+                       len(same), len(different))
 
 
 @dataclass(frozen=True)
@@ -172,6 +265,28 @@ class IdentityLedger:
                  margin: float = DEFAULT_MARGIN, key: str = KEY) -> None:
         self._store, self._key = store, key
         self._threshold, self._margin = threshold, margin
+
+    @classmethod
+    def from_calibration(cls, store: Any, calibration: Calibration, *,
+                         key: str = KEY) -> "IdentityLedger":
+        """A ledger whose threshold came from a measurement, and which refuses to exist
+        when the measurement says no threshold works.
+
+        This is the constructor to use. The plain one takes `DEFAULT_THRESHOLD`, which is
+        a cautious guess and is documented as one; this one cannot be built on evidence
+        that a threshold is impossible, which is the state the shipped example
+        configuration is actually in (ADR-090).
+        """
+        if not calibration.separable:
+            raise ValueError(
+                "refusing to build an identity ledger on a threshold that cannot "
+                "work.\n\n"
+                f"  {calibration}\n\n"
+                "  Naming a person on these embeddings would be a coin toss wearing a "
+                "number.\n  -> examples/vision_tools.py::DEFAULT_THRESHOLD")
+        assert calibration.threshold is not None          # `separable` says so
+        return cls(store, threshold=calibration.threshold,
+                   margin=calibration.margin, key=key)
 
     async def _rows(self) -> list[dict[str, Any]]:
         raw = await self._store.get(self._key)
@@ -385,29 +500,43 @@ class FakeDetector:
 
 
 class MediaPipeDetector:
-    """`Detector` over MediaPipe Tasks. Verified against the installed API surface;
-    NOT verified end to end, because it cannot be.
+    """`Detector` over MediaPipe Tasks. **All four capabilities have now run real
+    inference against real models and real photographs** (ADR-090) — the earlier version
+    of this docstring said "treat this as unrun code", and that is no longer true.
 
-    **The model files are not bundled and must be supplied.** Measured on this
-    environment: `mediapipe` 1.0.1 ships no `.task` or `.tflite` anywhere in the
-    package, `mediapipe.solutions` no longer exists at all (the legacy API is gone), and
-    the namespace that does work is `mediapipe.tasks.python.vision`. Each capability is
-    independent — pass only the models you have, and the corresponding method returns
-    empty rather than raising, so a face-only setup is a supported configuration rather
-    than a broken one.
+    Measured, on `mediapipe` 1.0.1, `blaze_face_short_range` + `pose_landmarker_lite` +
+    `efficientnet_lite0` + `mobilenet_v3_small`, against a 1024x820 portrait
+    (`tests/vision_probe.py` reproduces it):
 
-    What IS verified here: every class and option name used below exists in the
-    installed package, and the result containers have the field names read below
-    (`Detection.bounding_box` → `origin_x/origin_y/width/height`,
-    `Classifications.categories` → `category_name/score`, `Embedding.embedding` — note
-    NOT `float_embedding`, which is the older API's name). What is NOT verified: a real
-    inference pass, since no model file could be fetched in this sandbox, and no camera
-    exists here. Treat this class as unrun code until it has run against real models on
-    your device (`docs/12-decision-logs.md`, ADR-077).
+        detect_faces   ( 4426 ms first call): 1 face, score 0.922, box (283,115,234,234)
+        detect_bodies  (  292 ms): 1 body, facing_camera=True, posture "không rõ dáng"
+        classify_scene (  243 ms): ('suit', 0.592), ('groom', 0.176)
+        embed_face     (   71 ms): 1024 dimensions
 
-    Tasks are created lazily and cached: `create_from_options` loads and initialises a
-    model, which is far too expensive to repeat per frame, and it is also why `close()`
-    exists and why the CALLER owns it — same rule as `CodingProfile(store=...)`.
+    The first `detect` pays for `create_from_options` (model load and graph build), which
+    is why tasks are created lazily and CACHED, why `close()` exists, and why the CALLER
+    owns it — the same rule as `CodingProfile(store=...)`. `posture_of` returning "không
+    rõ dáng" on a head-and-shoulders portrait is correct, not a failure: hip landmarks
+    are not visible, and the fallback path is what ran.
+
+    **Identity does not work with a generic image embedder, and that is now measured
+    rather than suspected.** `ImageEmbedder` + `mobilenet_v3_small` puts the same person
+    rotated at 0.2870 and two different people at 0.5613 — inverted, not merely
+    overlapping. MediaPipe Tasks ships no face-recognition model; `embed_model=` needs a
+    real one (ArcFace, FaceNet, a vendor API). See `DEFAULT_THRESHOLD` and `calibrate()`.
+
+    **The model files are still not bundled and must be supplied.** `mediapipe` 1.0.1
+    ships no `.task` or `.tflite` anywhere in the package, `mediapipe.solutions` no longer
+    exists (the legacy API is gone), and the namespace that works is
+    `mediapipe.tasks.python.vision`. The runtime also needs `libEGL.so.1` and
+    `libGLESv2.so.2` present — a bare container has neither, and the failure is an
+    `OSError` from `ctypes.CDLL` at task-construction time, nothing to do with the model
+    file. Each capability is independent: pass only the models you have and the
+    corresponding method returns empty rather than raising, so a face-only setup is a
+    supported configuration.
+
+    What remains unverified: a live camera (`cv2.VideoCapture(0)` has no device here), and
+    accuracy on faces other than the handful of public test photographs above.
     """
 
     def __init__(self, *, face_model: str | None = None, pose_model: str | None = None,
