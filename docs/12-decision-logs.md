@@ -2741,6 +2741,105 @@ docstring cannot drift back), and the pre-flight count is measured to see less t
 provider receives. Full suite 977 passed; `ruff` and `mypy` both clean under the
 invocations `tests/test_conformance.py` itself uses.
 
+### ADR-080 — Runtime events are served by PRIORITY over four existing channels; the `Driver` is caller-owned, not core
+
+**Status:** Accepted.
+
+**Context.** "If the vision profile detects an event, how does it fire that at the
+harness so the harness reacts?" The honest answer is that it cannot, and the reason is
+measured rather than argued: the harness's `EventBus` is one-way. Seventeen CLOSED kinds
+(`observe/events.py` says so in its first line), `Exporter`/`Middleware.on_event` are
+observation only (an exception there disables the hook and never stops the run), and
+`RunContext` carries no bus — so a tool cannot emit either. There is no event INPUT.
+`RunEngine.run()` is also strictly reactive: its `while True` continues only while the
+model keeps calling tools, with no wake source at all.
+
+So an event has to arrive through a channel the harness already acts on. Four exist, and
+they cost wildly different amounts — which IS the priority scheme rather than a
+workaround for the absence of one:
+
+| priority | channel | cost | latency, measured |
+|---|---|---|---|
+| `CRITICAL` | `task.cancel()` on the running turn | the WHOLE turn | **0.17 ms** to unwind |
+| `HIGH` | a `Policy` DENY whose `reason` carries the event | only the blocked call | next tool call |
+| `NORMAL` | `after_model` injects a `tool_use`; `before_tool` short-circuits it | nothing | one model call |
+| `LOW` | the next `turn()` after this one returns | nothing | end of turn |
+
+`HIGH` is the tier that actually matches "stop the action, don't destroy the work", and
+it falls out of a mechanism already there: `PolicyEngine` puts a DENY's reason into the
+tool result the model reads, so one `Ruling` both blocks the call and delivers the
+event. Measured end to end: `denied by policy: something needs attention first: <event>`
+with `tools_run == ()`. The model learns why it was stopped and reroutes, rather than
+being cut off blind and starting over.
+
+**Decision.** `examples/driver.py`: `Priority`, `Event`, `Sensor` (+`FakeSensor`),
+`EventInbox`, `WriteInFlight`, `InterruptGate`, `EventAnnouncer`, `Driver`. Four rules,
+each enforced in code rather than documented:
+
+1. **Priority is computed by CODE, never by the model or read out of event text.** A
+   camera is `external`; its content is untrusted. If text could set priority, anyone
+   holding up a sign reading "URGENT" could preempt the agent. `Sensor.read()` returns a
+   `Priority` it decided; nothing downstream re-derives it.
+2. **Never cancel while a `write`/`danger` call is in flight** — a cancel mid-write can
+   leave the file written and the result unrecorded, and `idempotency.execute_once` does
+   NOT cover it: its key is `(run_id, call_id)` and `run_id` is fresh per `atry_run()`,
+   so the replacement turn never matches. `WriteInFlight` tracks depth through
+   `before_tool`/`after_tool` (counted, not boolean — a `read` is `parallel_safe` and can
+   finish beside a write), and a `CRITICAL` is DOWNGRADED to `HIGH` while it is set.
+   `ToolInvocation` carries `name`/`kwargs`/`result`/`identity` and no effect (verified),
+   so the guarded names are passed in from the toolset.
+3. **Only an agent with a durable plan may be preempted.** `Chat.say()` assigns
+   `self._messages = list(r.messages)` AFTER `try_run` returns, so a cancelled turn
+   raises and the entire turn vanishes from history — the model will not know what it was
+   doing and repeats the work. `Driver` therefore REFUSES `allow_preemption` for an agent
+   with none of `list_tasks`/`add_task`/`list_findings`, naming both the fix and the
+   `require_durable_plan=False` escape hatch. This is ADR-061's point arriving from the
+   other direction: the plan is durable state precisely so it can outlive the context
+   holding it.
+4. **Preemption is capped** (`max_preemptions` in `window_s`). Every preemption discards
+   tokens `settle()` already billed, and unbounded events mean starvation. Past the cap a
+   `CRITICAL` is served as `HIGH`.
+
+**Why `examples/` and not core.** Asked directly, answered with the repo's own rules.
+`run.py` sits at its IDL-13 ceiling of 250 lines and is the single place where a budget
+check precedes a model call and a permission check precedes a tool call (ADR-001) — a
+wake source does not belong there, and the precedent for an overrun is to split the file,
+not raise the cap. `docs/02-architecture.md` §4's plugin test requires "two genuinely
+different implementations **today** — not hypothetically", and this repo has exactly one
+`Sensor`, the fake one. Building a seam for one speculative use case is what got
+`Faculty` killed twice in the same session, and what that document already lists among
+the rejected abstractions. And a `Driver` owns a thread, an event loop and the
+conversation history, none of which a frozen `Agent` can hold. Promotion later is a small
+ADR; starting in core and walking it back is not.
+
+**The price, stated up front rather than discovered.** Preemption cannot use
+`Chat`/`Session`: `say()` is sync and `_guard_sync()` raises inside a running loop, so
+there is no cancellable path through it. `Driver` calls `agent.atry_run(text,
+_history=...)` and owns the history list itself — `_history` being a private kwarg whose
+only other caller is `Chat`. If preemption becomes routine, `Chat` wants an `asay()`; that
+is a core change needing its own ADR, and it should wait for a real `Driver` in use rather
+than this one.
+
+**Test.** `tests/test_driver.py`, 32 tests. Verified by mutation that the three
+load-bearing ones can fail: removing the write-in-flight check fails exactly the rule-2
+test, removing the durable-plan refusal fails exactly the rule-3 test, and swallowing
+every `CancelledError` (instead of re-raising one this `Driver` did not cause, the same
+care `run.py` takes at its own catch site) fails exactly the outer-cancellation test —
+each with no collateral failures. Full suite 1009 passed; `ruff` and `mypy` clean,
+including `mypy` on `examples/driver.py` itself, which is what replaced the watcher's
+untyped `dict` with a `_Watch` dataclass — mypy was right that a dict mixing `bool`,
+`Event | None`, `float` and `str` types every read wrong.
+
+Two labels in the demo were corrected after first running it, and both were mine rather
+than the code's: "52 ms" was mostly the fake sensor's own 50 ms delay (the cancel is
+0.17 ms, now measured and reported separately as `Served.cancel_s`), and `tainted: False`
+came from a `read` carrier tool, which made the module's own claim about labelled arrival
+look self-contradictory — the demo now uses an `external` carrier and shows
+`tainted: True`. Which is the actual security argument for this channel over the user
+message: routed as a tool result, an untrusted perception event carries
+`Integrity.UNTRUSTED`; routed as a `user` message it would carry no label at all while
+sitting in the conversation's highest-authority position.
+
 | # | Decision | Rationale |
 |---|---|---|
 | IDL-01 | `Decimal` for all money; `float` banned in `budget/` by lint | A rounding error in a spend ceiling is a real bug class |
