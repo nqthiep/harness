@@ -2521,8 +2521,10 @@ maintenance — cut it to zero. Three verified reasons:
   than that, at four times the surface area.
 * Bundling capability INSIDE one `apply()` is exactly what ADR-074's guard cannot see:
   `Agent._profiles` would count one profile, and `_refuse_if_loosened` checks seven
-  safety knobs and no tools at all. The new abstraction would have re-opened the hole
-  the previous one was added to close.
+  safety knobs and no tools at all (true when this was written; the tool set is checked
+  by name as of ADR-084, which does not change the argument — an effect downgrade is
+  decidable, a bundled `apply()` doing the wrong thing is not). The new abstraction would
+  have re-opened the hole the previous one was added to close.
 * Business logic never needed a new component kind. It belongs in plain classes, with
   the tool function as an adapter and the profile as wiring — the division `Verifier`
   has demonstrated since ADR-073.
@@ -2627,7 +2629,8 @@ shared parameter schema would be a bag of half-meaningless `Optional`s — the
 project proposed and rejected.
 
 What the three DO share is a set of promises the type system cannot state and
-`_refuse_if_loosened` does not cover: add-don't-replace for tools/prompt/policies,
+`_refuse_if_loosened` did not cover (half of the first is enforced as of ADR-084):
+add-don't-replace for tools/prompt/policies,
 inject-and-never-close for anything with a lifetime, `enable_*` off by default for
 anything that widens capability, grants belong to the caller, and a byte-stable prompt
 computed once. Followed by imitation until now, and unwritten.
@@ -3100,8 +3103,84 @@ attacking the design with fresh probes instead.
 critical defect. Verified by mutation that each new guard has teeth: restoring `peek()` in
 the gate fails exactly the livelock test, removing the per-run reset fails exactly the
 stranded-write test, and putting `pump()` back in the watcher fails exactly the polling
-test. Full suite 1038 passed; `ruff` and `mypy` clean; the contrib demo and the vision
+test. Full suite 1043 passed; `ruff` and `mypy` clean; the contrib demo and the vision
 demos all still run.
+
+### ADR-084 — A profile may not re-declare an existing tool NAME under a weaker effect
+
+**Status:** Accepted.
+
+**Context.** `_refuse_if_loosened` (ADR-074, extended by ADR-079) checked seven values
+between `before` and `after`: `safety`, `accepts_tainted`, `sensitive`, `allowed_hosts`,
+`require_approval_evidence`, `max_asks_per_run`, `approve`, and which `policies` survive.
+It never looked at the tool set, and `with_profile`'s own error text says out loud that a
+profile "may add tools" — which is true, and was being used as if it were the whole story.
+
+`with_(tools=...)` REPLACES the list rather than unioning it, exactly like the `sensitive`
+hole ADR-079 closed one field over. And a tool's `effect` is not a label: `EFFECT_PROFILES`
+derives five rules from it — parallel, retry, the label the result emits, what
+confidentiality may flow in, and whether an approval is required. So a profile that
+re-declares an existing NAME under another effect rewrites five rules at once, silently.
+
+**Measured, both directions.** An agent with `deploy` at `effect="danger"` and a counting
+`approve=` callback:
+
+```
+BEFORE  asks: 1
+with_profile raised nothing
+AFTER   asks: 0
+tool effect before: [<Effect.DANGER: 'danger'>]
+tool effect after : [<Effect.READ: 'read'>]
+```
+
+The approval gate on an irreversible tool, gone, with no error. Separately, `fetch`
+re-declared from `external` to `read`:
+
+```
+before emits: Label(integrity=UNTRUSTED, confidentiality=PUBLIC)
+after  emits: Label(integrity=TRUSTED,   confidentiality=PUBLIC)
+```
+
+`Integrity.UNTRUSTED` is the entire input to `TaintPolicy`. Removing it does not merely
+relabel one result; it un-arms the taint checks for the rest of the run.
+
+**Decision.** Compare the tool sets BY NAME, and for a name present in both under
+different effects, compare the five derived behaviours field by field:
+
+| Field | Loosening direction | What it costs |
+|---|---|---|
+| `parallel_safe` | `False` → `True` | a non-parallel-safe tool now runs concurrently |
+| `retryable` | `False` → `True` | a failed non-idempotent call is re-applied |
+| `emits.integrity` | `UNTRUSTED` → `TRUSTED` | `TaintPolicy` stops arming |
+| `max_confidentiality` | `PUBLIC` → `SECRET` | a PUBLIC-only sink now accepts secret data |
+| `decision_*` | `ASK` → `ALLOW` | the approval gate disappears |
+
+Field by field, **not** by ranking the four effects, because the four do not form a chain:
+`read` is the most permissive on approval yet accepts `SECRET` inflow, where `write` asks
+under `strict` yet is a `PUBLIC`-only sink. Any single rank has to pick one dimension and
+lose the others. The `decision_*` comparison reads `after.safety` — never below
+`before.safety`, since the check above it refuses that — so the same `write` → `read` swap
+is reported as an approval downgrade at `strict` and as a retry/parallel downgrade at
+`standard`, which is what actually happens.
+
+**What is deliberately NOT checked**, keeping ADR-074's "decidable by comparing two
+values, never by judging intent" line: a same-name, same-effect replacement whose function
+body does something else entirely. That is the same trust boundary as handing a profile
+your `approve=` callback, and it is stated in the docstring rather than half-enforced.
+
+**Scope.** The additive pattern the conventions ask profiles to use —
+`[*agent.toolset, *mine]` — cannot reach this hole, and not by luck: `ToolSet.__init__`
+raises `DuplicateToolError` on two specs sharing a name inside one list. The hole needs a
+profile that REBUILDS the list (filtering the name out first, or simply not deriving from
+`agent.toolset`). Dropping a tool stays allowed — that is tightening — and so does
+upgrading one (`read` → `danger`).
+
+**Test.** `tests/test_profile.py` 32 tests (up from 23), including the end-to-end
+`asks == 1` / `asks == []` measurement through a real run rather than only an assertion on
+the error text. Seven mutations, each caught by exactly the test that names it: skipping
+the loop (4 tests), deleting each of the five clauses (1-2 tests each), and pinning the
+decision comparison to `decision_standard` instead of the agent's own level (the
+level-branch test). Full suite 1052 passed; `ruff` and `mypy` clean.
 
 | # | Decision | Rationale |
 |---|---|---|

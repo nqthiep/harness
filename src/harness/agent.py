@@ -625,10 +625,12 @@ class Agent:
 
         1. **A profile can extend an agent, never loosen it.** `_refuse_if_loosened`
            checks the knobs a prompt/tool bundle has no legitimate reason to touch —
-           `safety`, `accepts_tainted`, `allowed_hosts`, `require_approval_evidence`,
-           `max_asks_per_run`, and which `policies` survive — the same shape of check
-           `_check_subagent_safety` already runs for a subagent, applied here to a
-           profile instead.
+           `safety`, `accepts_tainted`, `sensitive`, `allowed_hosts`,
+           `require_approval_evidence`, `max_asks_per_run`, `approve`, which `policies`
+           survive, and the tool set compared BY NAME (a name the caller already declared
+           may not come back under an effect that decides weaker rules — ADR-084) — the
+           same shape of check `_check_subagent_safety` already runs for a subagent,
+           applied here to a profile instead.
         2. **At most one profile per agent, unless you say otherwise.** A SECOND
            `.with_profile()` call is refused by default. Measured, not hypothetical:
            `CodingProfile()` then `ResearchProfile()` on the same `Agent` constructs
@@ -956,6 +958,52 @@ def _check_subagent_safety(toolset: ToolSet, parent_safety: str) -> None:
             )
 
 
+def _effect_loosenings(before: ToolSpec, after: ToolSpec, safety: str) -> list[str]:
+    """Which of the behaviours `effect` DECIDES got less restrictive, for one tool name.
+
+    A tool's `effect` is not a label — it is the whole of what `EFFECT_PROFILES`
+    (`tools/__init__.py`, ADR-003) derives: whether the tool may run in parallel, be
+    retried, whether its result arms the taint checks, what confidentiality may flow
+    into it, and whether it needs an approval. So re-declaring an existing tool NAME
+    under a different effect silently rewrites five rules at once, and `with_(tools=)`
+    REPLACES the tool list rather than unioning it — the same shape of hole
+    `dropped_sensitive` closed one field over (ADR-079).
+
+    Measured, not hypothetical. An agent with `deploy` at `effect="danger"` and an
+    `approve=` callback asked **1** time before a profile and **0** times after one
+    that passed a same-named tool declared `effect="read"`; `with_profile` raised
+    nothing. Separately, a `fetch` re-declared from `external` to `read` went from
+    `Label(UNTRUSTED, PUBLIC)` to `Label(TRUSTED, PUBLIC)` — the untrusted mark that
+    is the entire input to `TaintPolicy`, gone (ADR-084).
+
+    Compared field by field rather than by ranking the four effects, because the four
+    do not form a chain: `read` is the most permissive on approval yet accepts SECRET
+    inflow, where `write` asks under `strict` yet is a PUBLIC-only sink. Any rank would
+    have to pick one dimension and lose the others.
+    """
+    b, a = EFFECT_PROFILES[before.effect], EFFECT_PROFILES[after.effect]
+    out: list[str] = []
+    if not b.parallel_safe and a.parallel_safe:
+        out.append("it may now run in parallel with other tools")
+    if not b.retryable and a.retryable:
+        out.append("it may now be retried after a failure, which double-applies "
+                   "anything it does not do idempotently")
+    if b.emits.integrity > a.emits.integrity:
+        out.append("its result is no longer marked untrusted, so it stops arming "
+                   "`TaintPolicy` for the rest of the run")
+    if a.max_confidentiality > b.max_confidentiality:
+        out.append(f"data up to {a.max_confidentiality.name} may now flow INTO it "
+                   f"(was {b.max_confidentiality.name}-only)")
+    # At the level this agent actually runs at. `after.safety` is never below
+    # `before.safety` — the check above this one refuses that — so reading it here is
+    # reading the stricter of the two.
+    field = "decision_strict" if safety == "strict" else "decision_standard"
+    bv, av = getattr(b, field), getattr(a, field)
+    if av < bv:
+        out.append(f"the approval gate went {bv.name} -> {av.name} at safety={safety!r}")
+    return out
+
+
 def _refuse_if_loosened(before: "Agent", after: "Agent", profile_name: str) -> None:
     """`Agent.with_profile()`'s enforcement half — checked BEFORE `after` is handed
     back to the caller, so a profile that loosens a safety knob never produces a live
@@ -1020,6 +1068,25 @@ def _refuse_if_loosened(before: "Agent", after: "Agent", profile_name: str) -> N
     if dropped_policies:
         names = [getattr(p, "__name__", None) or type(p).__name__ for p in dropped_policies]
         culprits.append(f"policies dropped: {names!r}")
+
+    # Tools, by NAME. `with_()` replaces the list wholesale, so a profile that rebuilds
+    # it — `[t for t in agent.toolset if t.name != "deploy"] + [my_deploy]`, or simply a
+    # fresh list — can re-declare a name the caller already declared, under a different
+    # effect. The additive pattern the conventions ask for (`[*agent.toolset, *mine]`)
+    # cannot reach this: `ToolSet.__init__` raises `DuplicateToolError` on a collision
+    # inside one list. What is NOT checked is a same-name, same-effect swap whose
+    # function body does something else entirely — that is not decidable by comparing
+    # two values, and it is the same trust boundary as handing a profile your `approve=`
+    # callback (see this function's docstring).
+    for after_spec in after.toolset:
+        before_spec = before.toolset.get(after_spec.name)
+        if before_spec is None or before_spec.effect is after_spec.effect:
+            continue
+        why = _effect_loosenings(before_spec, after_spec, after.safety)
+        if why:
+            culprits.append(
+                f"tool {after_spec.name!r} re-declared {before_spec.effect.value!r} -> "
+                f"{after_spec.effect.value!r}: " + "; ".join(why))
 
     if not culprits:
         return

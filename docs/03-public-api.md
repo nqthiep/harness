@@ -420,7 +420,11 @@ them across every profile in `examples/` at once:
    `policies=[*agent.policies, ...]`, and the caller's `job` folded in as a SECTION of
    your template rather than discarded. Rebuilding `tools=` from scratch silently drops
    the caller's own `danger` tools, which are the ones a profile is least entitled to
-   touch; discarding `job` loses the only statement of what this session is for.
+   touch; discarding `job` loses the only statement of what this session is for. Half of
+   this one is now enforced rather than trusted: re-declaring a name the caller already
+   declared, under an effect that decides weaker rules, is refused (ADR-084). Following
+   the spread form makes that unreachable anyway — two specs sharing a name inside one
+   list is a `DuplicateToolError` from `ToolSet` itself.
 3. **Say which sizing knobs you own, and mean it.** All three set `budget=`, because a
    budget describes the SHAPE of the work — how many pages a question is worth fetching,
    how many steps a task takes — which the profile knows and the caller usually does
@@ -476,7 +480,11 @@ runs, `_refuse_if_loosened` (`agent.py`) compares the result against the agent y
 started with on the knobs a prompt-and-tools bundle has no legitimate reason to touch —
 `safety`, `accepts_tainted`, `allowed_hosts`, `require_approval_evidence`,
 `max_asks_per_run`, which `policies` survive, whether a `sensitive` declaration was
-dropped, and whether an `approve=` gate got removed entirely. Any of those moving in the
+dropped, whether an `approve=` gate got removed entirely, and — compared by tool NAME —
+whether any tool the caller already declared came back under an effect that decides
+weaker rules (ADR-084: `danger` → `read` took a measured approval gate from 1 ask to 0,
+and `external` → `read` dropped the `UNTRUSTED` mark that is the whole input to
+`TaintPolicy`). Any of those moving in the
 unsafe direction raises
 `ProfileLoosenedSafetyError` naming every culprit, before a live `Agent` is ever
 returned — the same "caught at construction" discipline the lethal-trifecta check

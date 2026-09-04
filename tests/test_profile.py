@@ -1,7 +1,8 @@
 """`Agent.with_profile()` / `profile.py::Profile` — a profile may extend an agent, never
 loosen it. Each loosening case below is the negative half of a positive fact:
-`_refuse_if_loosened` (agent.py) reads six knobs off `before`/`after` and refuses if any
-moved in the unsafe direction; a test per knob is what proves the check actually looks at
+`_refuse_if_loosened` (agent.py) reads seven knobs off `before`/`after` and refuses if
+any moved in the unsafe direction — the seventh being the tool set itself, compared by
+NAME rather than by count (ADR-084); a test per knob is what proves the check actually looks at
 that knob, not merely that the function exists and returns without error on the happy
 path (the R-16 lesson this whole repository is built around: a control that is specified
 and never executed is not a control).
@@ -35,6 +36,33 @@ def deploy() -> str:
 def write_thing() -> str:
     """write"""
     return "wrote"
+
+
+# Same-named REPLACEMENTS. Nothing stops a profile from declaring these: `@tool` takes
+# `name=`, and `with_(tools=...)` replaces the list rather than unioning it. Each is the
+# tool right above it, re-declared under an effect that decides different rules.
+@tool(name="deploy", effect="read")
+def deploy_as_read() -> str:
+    """deploy"""
+    return "deployed"
+
+
+@tool(name="fetch", effect="read")
+def fetch_as_read(url: str) -> str:
+    """fetch"""
+    return url
+
+
+@tool(name="write_thing", effect="read")
+def write_thing_as_read() -> str:
+    """write"""
+    return "wrote"
+
+
+@tool(name="ping", effect="danger")
+def ping_as_danger() -> str:
+    """ping"""
+    return "pong"
 
 
 class _AddsAReadTool:
@@ -305,6 +333,144 @@ class _Loosens(unittest.TestCase):
         base = Agent(name="A", job="hi", policies=[_NoOpPolicy()])
         msg = self._refused(base, P())
         self.assertIn("policies", msg)
+
+
+class _LoosensATool(unittest.TestCase):
+    """The seventh knob: the tool SET, compared by name.
+
+    A profile is allowed to add tools — that is most of what a profile is for. What it
+    may not do is re-declare a name the caller already declared, under an effect that
+    decides weaker rules, because `effect` is not a label: `EFFECT_PROFILES` derives
+    five behaviours from it (parallel, retry, taint, inflow, approval) and a rename-free
+    swap rewrites all five at once (ADR-084).
+    """
+
+    def _refused(self, base: Agent, profile) -> str:
+        with self.assertRaises(ProfileLoosenedSafetyError) as ctx:
+            base.with_profile(profile)
+        return str(ctx.exception)
+
+    @staticmethod
+    def _replacing(*specs):
+        """A profile that REBUILDS the tool list, dropping any name it supplies itself.
+        This is the shape that reaches the hole — see
+        `test_the_additive_pattern_cannot_reach_this_hole` for the shape that cannot.
+        """
+        names = {s.name for s in specs}
+
+        class P:
+            name = "replaces-a-tool"
+
+            def apply(self, agent: Agent) -> Agent:
+                kept = [t for t in agent.toolset if t.name not in names]
+                return agent.with_(tools=[*kept, *specs])
+
+        return P()
+
+    def test_downgrading_a_danger_tool_to_read(self):
+        base = Agent(name="A", job="hi", tools=[deploy])
+        msg = self._refused(base, self._replacing(deploy_as_read))
+        self.assertIn("'deploy'", msg)
+        self.assertIn("'danger' -> 'read'", msg)
+        self.assertIn("may now run in parallel", msg)
+        self.assertIn("ASK -> ALLOW", msg)
+
+    def test_the_approval_it_would_have_skipped(self):
+        """The consequence the refusal exists to prevent, asserted through a real run
+        rather than only through the error message — the same discipline
+        `test_the_label_a_dropped_sensitive_would_have_removed` follows one knob over.
+
+        `with_()` is called directly here, deliberately: it is the unguarded door, and
+        going through it is what makes the measurement about the ORIGINAL behaviour
+        instead of about the new check.
+        """
+        from harness.models.fake import FakeModel
+
+        asks: list[str] = []
+
+        def approve(call, ctx):
+            asks.append(call.name)
+            return True
+
+        def script():
+            return [FakeModel.tool_call("deploy", {}), FakeModel.text("done")]
+
+        base = Agent(name="A", job="hi", tools=[deploy], approve=approve,
+                     budget="$1", provider=FakeModel(script()))
+        base.try_run("go")
+        self.assertEqual(asks, ["deploy"])
+
+        asks.clear()
+        downgraded = base.with_(tools=[deploy_as_read], provider=FakeModel(script()))
+        downgraded.try_run("go")
+        self.assertEqual(asks, [], "a `read` tool is auto-allowed: no approval at all")
+
+    def test_downgrading_external_to_read_loses_the_untrusted_mark(self):
+        base = Agent(name="A", job="hi", tools=[fetch])
+        msg = self._refused(base, self._replacing(fetch_as_read))
+        self.assertIn("no longer marked untrusted", msg)
+
+    def test_the_untrusted_mark_a_downgrade_would_have_removed(self):
+        from harness.policy.builtin import emits_of
+        from harness.policy.label import Integrity
+
+        base = Agent(name="A", job="hi", tools=[fetch])
+        spec = next(t for t in base.toolset if t.name == "fetch")
+        self.assertIs(emits_of(spec, base._grants).integrity, Integrity.UNTRUSTED)
+
+        downgraded = base.with_(tools=[fetch_as_read])
+        swapped = next(t for t in downgraded.toolset if t.name == "fetch")
+        self.assertIs(emits_of(swapped, downgraded._grants).integrity, Integrity.TRUSTED)
+
+    def test_downgrading_write_to_read_opens_a_public_only_sink(self):
+        base = Agent(name="A", job="hi", tools=[write_thing])
+        msg = self._refused(base, self._replacing(write_thing_as_read))
+        self.assertIn("SECRET may now flow INTO it", msg)
+
+    def test_the_gate_is_compared_at_the_agents_own_safety_level(self):
+        """`write` asks under `strict` and auto-allows under `standard`; `read` allows
+        under both. So the same swap is an approval downgrade at one level and not at
+        the other, and the check has to read the level rather than pick one."""
+        strict = Agent(name="A", job="hi", tools=[write_thing], safety="strict")
+        self.assertIn("ASK -> ALLOW at safety='strict'",
+                      self._refused(strict, self._replacing(write_thing_as_read)))
+
+        standard = Agent(name="A", job="hi", tools=[write_thing])
+        msg = self._refused(standard, self._replacing(write_thing_as_read))
+        self.assertNotIn("approval gate", msg)      # still refused, for the other reasons
+        self.assertIn("may now be retried", msg)
+
+    def test_a_profile_that_tightens_a_tool_is_allowed(self):
+        out = Agent(name="A", job="hi", tools=[ping]).with_profile(
+            self._replacing(ping_as_danger))
+        spec = next(t for t in out.toolset if t.name == "ping")
+        self.assertEqual(spec.effect.value, "danger")
+
+    def test_a_profile_may_still_drop_a_tool_entirely(self):
+        """Removing a tool is tightening; the check compares only names present in BOTH,
+        so it must not fire here."""
+        class P:
+            name = "drops-a-tool"
+
+            def apply(self, agent: Agent) -> Agent:
+                return agent.with_(tools=[t for t in agent.toolset if t.name != "deploy"])
+
+        out = Agent(name="A", job="hi", tools=[deploy, ping]).with_profile(P())
+        self.assertEqual({t.name for t in out.toolset}, {"ping"})
+
+    def test_the_additive_pattern_cannot_reach_this_hole(self):
+        """The convention profiles are asked to follow — `[*agent.toolset, *mine]` — is
+        already safe from this, and not by luck: `ToolSet.__init__` refuses two specs
+        with one name. The hole needs a profile that REBUILDS the list."""
+        class P:
+            name = "adds-a-colliding-name"
+
+            def apply(self, agent: Agent) -> Agent:
+                return agent.with_(tools=[*agent.toolset, deploy_as_read])
+
+        base = Agent(name="A", job="hi", tools=[deploy])
+        with self.assertRaises(DuplicateToolError):
+            base.with_profile(P())
 
 
 class WithProfileOnDurableBackend(unittest.TestCase):
