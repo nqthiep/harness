@@ -1,10 +1,22 @@
-"""OpenViking store — Round 36.
+"""OpenViking store — Round 36, corrected against a live server (ADR-096).
 
 These drive the **real** `openviking_sdk` client against a stub transport, so the SDK's
-own URL building, request shaping, response parsing and error mapping all execute.  What
-they do not do is talk to a live `openviking-server`: that needs an embedding model and a
-config wizard with a TTY.  Recorded plainly rather than implied — R-16 exists because a
-control that was specified and never executed failed on first execution.
+own URL building, request shaping, response parsing and error mapping all execute. They
+were green for the life of the module while the binding did not work at all against a
+real `openviking-server`, in three separate ways, because a stub transport answers
+whatever shape the test asked for:
+
+* every URI used scope `memories`, which a real server rejects outright
+  (`Invalid scope 'memories'. Must be one of: agent, queue, resources, session, temp,
+  upload, user`) — and these tests ASSERTED that scope;
+* `INVALID_URI` was classified as absence, so the wrong scope was silent: `put()`
+  returned successfully having written nothing and `get()` returned `None`;
+* `_memos` looked for `results`/`nodes`/`items`/`data`, and a real search response
+  carries `memories`/`resources`/`skills`.
+
+`tests/viking_probe.py` is what found them, and what to re-run. The lesson is not that
+stub transports are useless — they caught real SDK-shape bugs in Round 36 — it is that a
+stub cannot disagree with you about a convention.
 """
 import asyncio, unittest
 
@@ -193,7 +205,20 @@ class Wire(unittest.TestCase):
         run(store.search("hoàn tiền"))
         _, path, body = rec.seen[-1]
         self.assertEqual(path, "/api/v1/search/search")
-        self.assertIn("viking://memories/support", body)
+        self.assertIn("viking://resources/support", body)
+        self.assertNotIn("viking://memories", body,
+                         "a real server rejects the `memories` scope (ADR-096)")
+
+    def test_both_uri_call_sites_use_one_scope(self):
+        """`search` built its own URI with the scope spelled out again, so correcting
+        `_uri` fixed one of two places and the live server rejected the other
+        immediately."""
+        store, rec = make(payload=ok({"results": []}), namespace="support")
+        run(store.put("k", "v"))
+        run(store.search("q"))
+        for _, _, body in rec.seen:
+            if "viking://" in body:
+                self.assertIn(f"viking://{VikingStore.SCOPE}/support", body)
 
     def test_results_become_memos(self):
         store, rec = make(payload=ok({"results": [
@@ -203,6 +228,31 @@ class Wire(unittest.TestCase):
         memos = run(store.search("khách này"))
         self.assertEqual([m.value for m in memos], ["thích trả lời ngắn", "ở Hà Nội"])
         self.assertEqual(memos[0].score, 0.9)
+
+    def test_the_container_keys_a_real_server_actually_returns(self):
+        """Measured from a live server: `{"memories": [], "resources": [...],
+        "skills": [], "total": 2}`, with rows shaped
+        `{uri, score, abstract, context_type, level, tags}`. None of the four names this
+        used to try appear anywhere in that (ADR-096)."""
+        payload = ok({"memories": [], "skills": [], "total": 1, "resources": [
+            {"uri": "viking://resources/default/a", "context_type": "resource",
+             "level": 1, "score": 0.1068, "abstract": "thích trả lời ngắn",
+             "tags": []}]})
+        store, _ = make(payload=payload)
+        memos = run(store.search("khách này"))
+        self.assertEqual([m.value for m in memos], ["thích trả lời ngắn"])
+        self.assertEqual(memos[0].key, "viking://resources/default/a")
+        self.assertAlmostEqual(memos[0].score, 0.1068, places=4)
+
+    def test_rows_from_several_containers_are_all_read(self):
+        """A search can match a memory AND a resource; reading only the first container
+        that happens to be non-empty would drop the rest."""
+        store, _ = make(payload=ok({
+            "memories": [{"uri": "m", "abstract": "from memories", "score": 0.9}],
+            "resources": [{"uri": "r", "abstract": "from resources", "score": 0.8}],
+            "skills": [{"uri": "s", "abstract": "from skills", "score": 0.7}]}))
+        self.assertEqual([m.value for m in run(store.search("q"))],
+                         ["from memories", "from resources", "from skills"])
 
     def test_a_result_shape_we_do_not_know_yields_nothing_not_a_crash(self):
         for payload in (ok({"results": "surprise"}), ok({"nodes": [{"no_text": 1}]}),
@@ -214,6 +264,36 @@ class Wire(unittest.TestCase):
         store, rec = make(payload=ok({"results": [{"content": "đã giao", "score": 1.0}]}))
         memos = run(store.search("đơn hàng"))
         self.assertEqual(memos[0].value, "đã giao")
+
+
+class AMalformedUriIsNotAbsence(unittest.TestCase):
+    """`ABSENT` contained `INVALID_URI`, so the single most important defect this module
+    had was also completely silent. A malformed URI is a defect in the caller — the scope
+    or the namespace — and absence is a fact about the store (ADR-096)."""
+
+    def test_an_invalid_uri_raises_instead_of_returning_none(self):
+        store, _ = make(payload=err("INVALID_URI", "Invalid scope 'memories'"))
+        with self.assertRaises(VikingKeyError) as ctx:
+            run(store.get("k"))
+        message = str(ctx.exception)
+        self.assertIn("defect in the caller", message)
+        self.assertIn(VikingStore.SCOPE, message, "the message names the scope in use")
+
+    def test_a_write_that_the_server_rejected_does_not_report_success(self):
+        """The measured symptom: against a real server `put()` returned normally having
+        written nothing at all."""
+        store, _ = make(payload=err("INVALID_URI"))
+        with self.assertRaises(VikingKeyError):
+            run(store.put("k", "v"))
+
+    def test_not_found_is_still_absence(self):
+        store, _ = make(payload=err("NOT_FOUND"))
+        self.assertIsNone(run(store.get("k")))
+
+    def test_an_invalid_argument_is_also_the_callers_defect(self):
+        store, _ = make(payload=err("INVALID_ARGUMENT"))
+        with self.assertRaises(VikingKeyError):
+            run(store.get("k"))
 
 
 class Invariants(unittest.TestCase):

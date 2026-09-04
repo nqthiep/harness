@@ -115,14 +115,36 @@ no console script — so there was no `harness` command to run at all. All fixed
 the point for this register is that `no_network` (IDL-08) is load-bearing and correct, and
 its cost is that nothing downstream of "get a credential" had ever been executed.
 
-**OI-10 — The OpenViking binding has never run against a live server.** Its tests drive
-the real `openviking_sdk` client over a stub transport, so the SDK's URL building, request
-shaping, response parsing and error mapping execute — but the server's actual response
-*content* is unverified, because `openviking-server` needs an embedding model and a config
-wizard that requires a TTY. **What this can hide:** a result key this binding does not
-read (`_memos` tries four), an error code outside the table, or a `viking://` addressing
-convention that differs from the one assumed. **Blocking for anyone deploying the viking
-extra**; nothing else waits on it.
+**OI-10 — CLOSED for the key-value path, open for search (ADR-096).** It has now run
+against a live `openviking-server`, and every risk this entry named was real:
+
+* **The `viking://` convention was wrong.** Every URI used scope `memories`;
+  a real server answers `Invalid scope 'memories'. Must be one of: agent, queue,
+  resources, session, temp, upload, user`. `tests/test_viking.py` asserted the wrong
+  scope, and passed, because a stub transport cannot disagree with you about a
+  convention.
+* **`_memos` read none of the right keys.** It tried `results`/`nodes`/`items`/`data`; a
+  real search response is `{"memories": [...], "resources": [...], "skills": [...],
+  "total": N}`.
+* **An error code was misclassified, and that is what made the first one invisible.**
+  `INVALID_URI` was listed as absence, so `put()` returned successfully having written
+  nothing and `get()` returned `None` — indistinguishable from an empty store.
+
+All three fixed; the round trip (`put`/`get`/`delete`) now works against a real server,
+and the old scope raises instead of silently no-opping.
+
+**The wizard this entry blamed does not exist.** Getting a server up needed three things,
+none of them a TTY: `pip install openviking` (a separate distribution from
+`openviking-sdk`), four lines of JSON in `~/.openviking/ov.conf`, and an embedding
+backend — the default downloads a GGUF from `huggingface.co`, which this environment's
+proxy refuses with 403 at CONNECT, so `tests/stub_embedder.py` serves the
+OpenAI-compatible endpoint the config explicitly supports pointing at.
+
+**Still open: semantic recall.** Content written through `put()` does not come back from
+`search()` on this server. Whatever indexes a written resource is not something this
+binding triggers, and `reindex` is deliberately not among its capabilities. So `search`
+parses the real response shape and has not been shown to return a written value —
+`tests/viking_probe.py` is the thing to re-run when that is worked out.
 
 
 Kept deliberately short. Each states why it does **not** block implementation. Anything

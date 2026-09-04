@@ -3951,6 +3951,142 @@ which cannot be obtained from this environment. Both candidates measured here ar
 refusals. Two people is not a sample, and `tests/vision_probe.py` is the thing to re-run
 on faces that matter.
 
+### ADR-096 — OI-10 against a real server: three defects, and the wizard that never existed
+
+**Status:** Accepted (the key-value path closes; search stays open).
+
+**Context.** OI-10 said the OpenViking binding had never run against a live server, named
+its own blocker ("an embedding model and a config wizard that requires a TTY"), and named
+three risks: "a result key this binding does not read (`_memos` tries four), an error code
+outside the table, or a `viking://` addressing convention that differs from the one
+assumed."
+
+All three were real. The blocker was not.
+
+**Getting a server up took three steps and no TTY.** `pip install openviking` — the server
+is a separate distribution from `openviking-sdk` and it is on PyPI. Four lines of JSON in
+`~/.openviking/ov.conf` — there is no wizard. And an embedding backend: the default
+downloads a GGUF from `huggingface.co`, which this environment's proxy refuses with 403 at
+CONNECT, but the config explicitly supports pointing at "local OpenAI-compatible servers",
+so `tests/stub_embedder.py` is one — deterministic hash vectors, useless for semantics and
+sufficient for a real server to run. Two years of "blocked" was a diagnosis nobody had
+made, exactly as with ADR-092's missing `libEGL`.
+
+**Then, immediately:**
+
+```
+put   -> ok
+get   -> None                      <- the value did not come back
+search-> []
+```
+
+`put` reported SUCCESS and wrote nothing. The raw SDK said why:
+
+```
+InvalidURIError: Invalid URI: viking://memories/probe/k1
+  (Invalid scope 'memories'. Must be one of: agent, queue, resources,
+   session, temp, upload, user)
+```
+
+**Three defects, and the third is why the first two were invisible.**
+
+1. **The addressing convention was wrong.** Every URI used scope `memories`, which no
+   real server accepts. `viking://resources/{namespace}/{key}` round-trips. `resources`
+   rather than `user` — the other scope that accepts a write — because
+   `viking://user/{user_id}/...` reserves its second segment for a user id, so putting a
+   namespace there would be a semantic lie, and the server's own config validator names
+   `viking://resources/...` as the resource-directory form.
+2. **`_memos` read none of the right keys.** It tried `results`/`nodes`/`items`/`data`. A
+   real response is `{"memories": [], "resources": [...], "skills": [], "total": 2}` with
+   rows shaped `{uri, score, abstract, context_type, level, tags}`. Reading defensively
+   was the right instinct and all four guesses were wrong — the per-ROW reading
+   (`abstract`, `uri`, `score`) turned out correct, so only the container was missing.
+   All rows from all three containers are now read: a search can match a memory AND a
+   resource, and taking the first non-empty one would drop the rest.
+3. **`INVALID_URI` was classified as absence.** `ABSENT` contained it, so a malformed URI
+   became "nothing there": `put()` returned normally and `get()` returned `None`,
+   indistinguishable from an empty store. A malformed URI is a defect in the CALLER — its
+   scope or its namespace — so it now raises `VikingKeyError` naming both, the same
+   reasoning `check_key` already used for a key that could escape its namespace.
+
+**And a fourth, found by the fix for the first.** `search` built its URI with the scope
+spelled out a second time, so correcting `_uri` fixed one of two call sites and the live
+server rejected the other on the very next call. One `_namespace_uri()` now, and a test
+walks every request body asserting one scope.
+
+**Why the stub-transport tests were green through all of this.** They drive the real SDK
+over a `MockTransport`, which caught real SDK-shape bugs in Round 36 (IDL-46 records
+that) — and a stub answers whatever shape the test asked for. `test_search_is_scoped_to_the_namespace`
+ASSERTED `viking://memories/support`. A stub cannot disagree with you about a convention;
+only the other end can.
+
+**Still open: semantic recall.** Content written through `put()` does not come back from
+`search()` on this server — a namespace-scoped search returns nothing, an unscoped one
+returns the server's own overview documents. Whatever indexes a written resource is not
+something this binding triggers, and `reindex` is deliberately not among its capabilities
+(least privilege, `ALLOWED_CALLS`). `VikingStore`'s docstring carried a doctest asserting
+that recall worked; it has never run and is now replaced by the `get` round trip that has,
+with the gap stated. This is the honest state: key-value verified live, recall not.
+
+**Test.** `tests/test_viking.py` 29 tests (from 22), with the corrected convention and
+the real response shape as fixtures. Five mutations, each caught: restoring the old scope,
+making `INVALID_URI` absence again, making `NOT_FOUND` raise, reading only the first
+container, and re-hardcoding the scope in `search`. `tests/viking_probe.py` is the manual
+script that found all of it, with the exact `ov.conf` it was measured against in its
+docstring. Full suite 1155 passed.
+
+### ADR-097 — The four-command cold start, executed rather than described
+
+**Status:** Accepted.
+
+**Context.** `docs/14-validation-plan.md` states the cold start as four commands:
+
+```
+pip install harness && harness setup && harness new joker && python joker.py
+```
+
+and §14.1 lists it among the mechanically measurable parts of SC-1b — the parts that "now
+*are* measured", as §16's own preamble puts it. ADR-086 found that three of the four could
+not be run at all: there was no `[project.scripts]`, so `harness` was not a command;
+`main()` advertised `setup` in `--help` with no branch behind it; and the key it would
+have written to `.env` was never read back. `harness new` and `python joker.py` were
+covered; the other two were described.
+
+**This matters more than a missing CLI branch.** §16 is a study protocol that sends a
+ten-year-old through exactly these commands, with an adult performing Step 2 — the key —
+while the child watches. Had SC-1b ever been run, three children would have been stopped
+at the second command. Nobody hit it because the study has never been run, which is the
+only reason the gap cost nothing.
+
+**Decision.** Execute what can be executed and say plainly what cannot.
+`tests/test_m5.py::TheFourCommandColdStart` covers the two commands that had no test:
+
+* **`pip install harness`** cannot run here, but the thing it installs can be checked —
+  a console script pointing at something callable, read out of `pyproject.toml` and
+  resolved against the module. There was no `[project.scripts]` at all, so `harness` was
+  a command the documentation invented.
+* **`harness setup`** runs through `main(["setup"])` with `input` and the provider
+  patched: the prompt, the validation, the write, and the part that was missing — the
+  library reading the key back afterwards, from `.env`, at mode `0o600`. A key that fails
+  validation must not reach disk (IDL-25), which is its own test. And §15 Step 2 promises
+  the command "will tell you exactly where to get one", so a test asserts it prints the
+  console URL: a promise in a tutorial a ten-year-old is following is a requirement.
+
+Three mutations, each caught: storing without validating, dropping the where-to-get-a-key
+line, and not stripping the pasted key.
+
+**The corrections are written where the wrong claim was**, not only here: §14.1 gains a
+step 0a saying the cold start had never been run as commands, and §16's preamble carries
+the correction directly under the sentence that claimed the mechanical half was measured.
+A study protocol that overstates what has been verified is worse than one that says
+nothing, because it is what makes running the study feel optional.
+
+**SC-1b itself is unchanged and cannot be closed here.** It needs three children aged
+10–12 who have completed a basic Python course, written consent, and 45 minutes each. No
+amount of engineering substitutes for that, and the kit is deliberately explicit that if
+the fix for a failure is "explain it better", the API is wrong. What this ADR changes is
+that the instrument now works when somebody picks it up. Full suite 1155 passed.
+
 | # | Decision | Rationale |
 |---|---|---|
 | IDL-01 | `Decimal` for all money; `float` banned in `budget/` by lint | A rounding error in a spend ceiling is a real bug class |
@@ -4013,6 +4149,7 @@ on faces that matter.
 | IDL-58 | A path-confining tool is constructed with its root; a module-level tool function confines to the CWD or not at all | `confine()` existed unused for two milestones because the tools that needed it had no root to pass — the missing constructor was the bug, not the missing call (ADR-065) |
 | IDL-59 | An escalating policy escalates on the SIGNAL, never on "the cheaper rung ran out of work" | Editing always has one more stale result to blank, so compaction gated on that would never have run once (ADR-066) |
 | IDL-60 | Context size is measured over the whole request payload, arguments included — never over `message.content` alone | A LangChain `AIMessage` carrying only tool calls has empty `content`; the arguments are the part that never gets blanked, and they measured as zero (ADR-066) |
+| IDL-66 | A stub transport verifies the SDK's shapes, never a CONVENTION the other end owns | `test_search_is_scoped_to_the_namespace` asserted `viking://memories/...` and passed for the life of the module; a real server rejects that scope outright. A stub cannot disagree with you (ADR-096) |
 | IDL-65 | A measurement is taken through the code path that ships, never through a scratch script beside it | Landmark geometry measured on full frames reported "separable, gap +0.0083"; the same feature through `landmark_model=` does not separate at all, because the shipped path crops and because the scratch run silently excluded the photograph that breaks it (ADR-095) |
 | IDL-64 | A concurrency test must use a provider that actually `await`s | `FakeModel.complete` is `async def` with no await inside, so two "concurrent" calls never interleave and the test passes with the lock removed (ADR-093) |
 | IDL-63 | A payload claim is asserted per MODEL, never once and generalised | "`budget_tokens` is a 400 on every model this package prices" was a test docstring, tested on one model, and false for another — `claude-haiku-4-5` requires it. A false generalisation with one passing witness stops anyone asking again (ADR-091) |

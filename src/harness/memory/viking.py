@@ -68,8 +68,19 @@ class VikingStore:
 
     >>> store = VikingStore(url="http://localhost:8080", namespace="support")
     >>> await store.put("khach-01", "thích trả lời ngắn")
-    >>> [m.value for m in await store.search("khách này thích gì")]
-    ['thích trả lời ngắn']
+    >>> await store.get("khach-01")
+    'thích trả lời ngắn'
+
+    **`put`/`get`/`delete` are verified against a real server; `search` is not.**
+    Measured (`tests/viking_probe.py`, ADR-096): the key-value round trip works, and
+    content written through `put()` does not come back from `search()` — a
+    namespace-scoped search returns nothing and an unscoped one returns the server's own
+    overview documents. Whatever indexes a written resource for retrieval is not
+    something this binding triggers, and `reindex` is deliberately not one of the
+    capabilities it holds (see `ALLOWED_CALLS`). The `search` shape below is correct
+    against the real response; whether a written value can be recalled semantically is
+    open. The example that used to stand here asserted it did, and nothing had ever run
+    it.
     """
 
     def __init__(self, *, url: str | None = None, api_key: str | None = None,
@@ -93,8 +104,20 @@ class VikingStore:
         self._ready = False
 
     # -- Store protocol ---------------------------------------------------
+    #: The scope segment of every URI this store builds. `memories` was the original
+    #: guess and a real server rejects it outright — `InvalidURIError: Invalid scope
+    #: 'memories'. Must be one of: agent, queue, resources, session, temp, upload, user`
+    #: (ADR-096). Of the two scopes that accept a write here, `resources` is the one
+    #: whose second segment is free: `viking://user/{user_id}/...` reserves it for a user
+    #: id, so putting a namespace there would be a semantic lie, and the server's own
+    #: config validator names `viking://resources/...` as the resource-directory form.
+    SCOPE = "resources"
+
+    def _namespace_uri(self) -> str:
+        return f"viking://{self.SCOPE}/{self.namespace}"
+
     def _uri(self, key: str) -> str:
-        return f"viking://memories/{self.namespace}/{check_key(key)}"
+        return f"{self._namespace_uri()}/{check_key(key)}"
 
     async def _ensure(self) -> None:
         if not self._ready:
@@ -112,6 +135,15 @@ class VikingStore:
             code = getattr(exc, "code", None)
             if code in ABSENT:
                 return None
+            if code in MALFORMED:
+                raise VikingKeyError(
+                    f"the context database rejected this URI ({code}): {exc}\n\n"
+                    f"  This is a defect in the caller, not a missing value — the scope "
+                    f"or the\n  namespace is wrong. `VikingStore.SCOPE` is "
+                    f"{self.SCOPE!r} and the namespace is "
+                    f"{self.namespace!r}.\n\n"
+                    f"  -> docs/04-interfaces.md#5-store"
+                ) from None
             if code in CREDENTIALS:
                 raise ConfigError(
                     f"the context database refused this client ({code}).\n\n"
@@ -150,7 +182,11 @@ class VikingStore:
     async def search(self, query: str, *, limit: int = 5) -> Sequence[Memo]:
         await self._ensure()
         raw = await self._call("search", query,
-                               target_uri=f"viking://memories/{self.namespace}",
+                               # The SAME scope `_uri` uses. Hardcoding it separately is
+                               # how one fix missed one of two call sites: the live
+                               # server rejected this one immediately after the other
+                               # was corrected (ADR-096).
+                               target_uri=self._namespace_uri(),
                                limit=limit)
         return _memos(raw, limit)
 
@@ -193,7 +229,16 @@ class VikingStore:
 #: version of the binding has never heard of — is a failure, because **mapping an unknown
 #: outcome to "nothing remembered" is fail-open**: the agent would tell a customer their
 #: order does not exist.  Same rule as IDL-30 for an unrecognised provider stop reason.
-ABSENT = frozenset({"NOT_FOUND", "INVALID_URI"})
+ABSENT = frozenset({"NOT_FOUND"})
+
+#: NOT absence. A malformed URI is a defect in the CALLER — this binding's own scope or
+#: namespace — and classifying it as "nothing there" is what hid the wrong scope for the
+#: life of this module: against a real server, `put()` returned successfully while
+#: writing nothing and `get()` returned `None`, which is indistinguishable from an empty
+#: store (ADR-096). It surfaces as a `VikingKeyError` for the same reason `check_key`
+#: does: a `ConfigError` raises at the call that made it instead of becoming a tool
+#: result the model works around.
+MALFORMED = frozenset({"INVALID_URI", "INVALID_ARGUMENT"})
 
 #: Not transient, and not absence: a wrong key or a revoked grant.  Retrying cannot fix
 #: it and an empty result would hide it, so it surfaces as a `ConfigError`.
@@ -205,8 +250,20 @@ def _memos(raw: Any, limit: int) -> list[Memo]:
     defensively rather than trusting one shape (register #79)."""
     if not isinstance(raw, dict):
         return []
-    rows = (raw.get("results") or raw.get("nodes")
-            or raw.get("items") or raw.get("data") or [])
+    # `memories`/`resources`/`skills` are what a REAL server returns — measured, and
+    # none of the four names this used to try appeared anywhere in the response
+    # (`{"memories": [], "resources": [...], "skills": [], "total": 2}`). Reading
+    # defensively was the right instinct and the guesses were all wrong, which is what
+    # a live server was needed to find out (ADR-096). The older names are kept after
+    # them rather than deleted: they cost nothing and this shape has moved before.
+    rows: Any = []
+    for name in ("memories", "resources", "skills",
+                 "results", "nodes", "items", "data"):
+        found = raw.get(name)
+        if isinstance(found, list) and found:
+            rows = [*rows, *found]
+    if not rows:
+        rows = raw.get("results") or []
     if not isinstance(rows, list):
         return []
     now = time.time()

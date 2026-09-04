@@ -52,8 +52,15 @@ class Scaffold(unittest.TestCase):
         self.assertIn('name="Joker"', tutorial)
 
     def test_the_scaffold_actually_runs(self):
-        """Executes the generated file verbatim, with only the provider swapped — so a
-        real cold start differs from this by the API key alone."""
+        """Executes the generated file verbatim, with only the provider swapped.
+
+        This used to claim "a real cold start differs from this by the API key alone",
+        which was false in two ways at once: `harness setup` had no branch behind it and
+        `pyproject.toml` declared no console script, so three of the four commands §14.1
+        calls the cold start could not be run at all (ADR-086). The claim is now
+        narrowed to what is actually true, and
+        `TheFourCommandColdStart` below executes the rest.
+        """
         cmd_new("joker", cwd=self.d)
         src = (self.d / "joker.py").read_text()
         ns = {}
@@ -114,6 +121,103 @@ class Setup(unittest.TestCase):
         self.assertIn("harness setup", str(cm.exception))
         self.assertNotIn("ANTHROPIC_API_KEY", str(cm.exception))
         self.assertIn("harness setup", NO_KEY_MESSAGE)
+
+
+class TheFourCommandColdStart(unittest.TestCase):
+    """`docs/14-validation-plan.md` §251 states the cold start as four commands:
+
+        pip install harness && harness setup && harness new joker && python joker.py
+
+    Three of them went unexecuted for the life of the project. `harness new` and
+    `python joker.py` are covered by `Scaffold` above; this class covers the two that
+    were not, as far as they can go without a PyPI release and without a funded key. It
+    is the mechanically measurable part of SC-1b, and it was measured wrong (ADR-086) —
+    the study in §16 sends a ten-year-old through exactly these commands at Step 2.
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self._cwd = os.getcwd()
+        os.chdir(self._dir.name)
+        self.addCleanup(os.chdir, self._cwd)
+        self._saved = os.environ.pop("ANTHROPIC_API_KEY", None)
+        if self._saved is not None:
+            self.addCleanup(os.environ.__setitem__, "ANTHROPIC_API_KEY", self._saved)
+
+    def test_pip_install_harness_installs_a_harness_command(self):
+        """`pip install` cannot run here, but the thing it would install can be checked:
+        a console script pointing at something callable. There was no
+        `[project.scripts]` at all until ADR-086, so `harness` was a command the
+        documentation invented."""
+        import tomllib
+
+        from harness import cli
+        with open(os.path.join(self._cwd, "pyproject.toml"), "rb") as f:
+            scripts = tomllib.load(f)["project"]["scripts"]
+        self.assertEqual(scripts["harness"], "harness.cli:main")
+        module, _, attr = scripts["harness"].partition(":")
+        self.assertTrue(callable(getattr(cli, attr)))
+        self.assertEqual(module, "harness.cli")
+
+    def test_harness_setup_stores_a_validated_key_the_library_can_then_read(self):
+        """The whole of Step 2, through `main` rather than through `cmd_setup`'s
+        injection points: the prompt, the validation, the write, and — the part that was
+        missing — the library reading it back afterwards."""
+        from unittest.mock import patch
+
+        from harness.cli import api_key, main
+
+        checked = []
+
+        class Provider:
+            def __init__(self, *, api_key):
+                self.key = api_key
+
+            def check_credentials(self):
+                checked.append(self.key)
+                return True, ""
+
+        with patch("builtins.input", return_value="  sk-ant-pasted  "), \
+             patch("harness.models.anthropic.AnthropicProvider", Provider):
+            self.assertEqual(main(["setup"]), 0)
+
+        self.assertEqual(checked, ["sk-ant-pasted"],
+                         "the key is validated before it is stored (IDL-25)")
+        self.assertEqual(api_key({}), ("sk-ant-pasted", ".env file"))
+        self.assertEqual((pathlib.Path(".env").stat().st_mode & 0o777), 0o600)
+
+    def test_a_key_that_does_not_work_is_not_stored(self):
+        from unittest.mock import patch
+
+        from harness.cli import main
+
+        class Provider:
+            def __init__(self, *, api_key):
+                pass
+
+            def check_credentials(self):
+                return False, "Error code: 401"
+
+        with patch("builtins.input", return_value="sk-ant-bad"), \
+             patch("harness.models.anthropic.AnthropicProvider", Provider):
+            self.assertEqual(main(["setup"]), 0)
+        self.assertFalse(pathlib.Path(".env").exists(),
+                         "an invalid key must not reach disk (IDL-25)")
+
+    def test_the_command_tells_the_child_where_to_get_a_key(self):
+        """§15 Step 2 promises "it will tell you exactly where to get one", and a
+        promise in a tutorial a ten-year-old is following is a requirement."""
+        import io
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+
+        from harness.cli import _ask_for_key
+
+        out = io.StringIO()
+        with patch("builtins.input", return_value="k"), redirect_stdout(out):
+            _ask_for_key()
+        self.assertIn("console.anthropic.com", out.getvalue())
 
 
 class TheKeyActuallyReachesTheProvider(unittest.TestCase):
