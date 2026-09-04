@@ -3854,6 +3854,103 @@ real webcam behaves like a decoder here (frame rate, dropped frames, auto-exposu
 someone walks in), and accuracy on faces outside a handful of public test photographs.
 Everything between the decoder and the `Event` has now run.
 
+### ADR-095 — Landmark geometry: better, still not usable, and the measurement moved when the code path did
+
+**Status:** Accepted.
+
+**Context.** ADR-090 measured that identity does not work with a generic
+`ImageEmbedder` and named the remedy: a face-recognition embedder. None can be obtained
+here — no such model is fetchable and every package that would download one reaches a
+blocked host. But MediaPipe ships a 478-point **face landmarker**, and the image
+embedder's worst failure was a ROTATION (the same person, photograph rotated, 0.2870 —
+further apart than two strangers at 0.5613). A rotation is exactly what geometry can undo
+and picture content cannot. Worth measuring.
+
+**The rotation finding is real and large.** Same person, same photograph, one rotated:
+
+```
+generic image embedder ....................... 0.2870
+landmark geometry, NOT rotation-aligned ...... 0.1570
+landmark geometry, rotation-aligned .......... 0.9961
+```
+
+`align_landmarks` centres the mesh, scales it by the inter-ocular distance, and rotates
+the eye line flat — pure arithmetic, testable on hand-written points, no model involved.
+The eye line for both scale and rotation because it is the longest roughly-rigid feature
+on a face: it barely moves with expression, unlike the mouth or the jaw.
+
+**And then the number moved when the code path did, which is the finding that matters.**
+The first measurement ran the landmarker on FULL frames in a scratch script and reported
+`separable`, gap +0.0083 across three pairs a side. Re-measured through
+`MediaPipeDetector(landmark_model=...)` — the code this library actually ships, which
+crops to the detected box first — it does not separate at all:
+
+| | worst same | best different | overlap |
+|---|---|---|---|
+| image embedder | 0.2870 | 0.5613 | 0.2743 |
+| landmark geometry (shipped path) | 0.8772 | 0.9932 | **0.1161** |
+
+The overlap roughly halves and does not close. Two reasons the scratch run flattered
+itself, both worth knowing: full frames give the landmarker more context and a more
+accurate mesh, and one photograph whose faces the full-frame landmarker missed entirely
+was silently excluded — removing exactly the pairs that break it (its face lands at
+0.9932 against a stranger, the highest different-person score there is).
+
+**A measurement taken outside the shipped code path is not a measurement of the shipped
+behaviour.** That is the transferable lesson, and it cost nothing to learn only because
+the re-run happened. Everything reported here now comes through `landmark_model=`.
+
+**One real defect found by that re-run.** Through the shipped path the rotated portrait
+produced NO vector: the landmarker found no face in the tight crop that the face
+detector's box produces, though it found one in the full frame. The case landmark
+geometry exists to handle, silently lost. Measured fix — pad the box before cropping:
+
+```
+                       full frame   pad 0.0   pad 0.2   pad 0.4   pad 0.8
+portrait_rotated.jpg        1          0         0         1         1
+```
+
+`LANDMARK_CROP_PAD = 0.4`, with the table in the comment, because 0.2 is not enough and
+that is not guessable. The `ImageEmbedder` path is left unpadded: it wants the face, not
+the room.
+
+**Decision.** Ship the geometry path as an option (`landmark_model=`, which wins over
+`embed_model=` when both are given), with the population result written into the
+docstring of the method that produces it: better than the alternative, still a refusal,
+and a face-recognition embedder is what the argument is missing.
+
+**And close the hole the experiment walked through.** `Calibration.separable` was the only
+gate, and the full-frame result — three pairs a side, gap 0.0083 — satisfied it;
+`IdentityLedger.from_calibration` would have built a real identity ledger on that.
+`enough_evidence` now also requires:
+
+* **`MIN_CALIBRATION_PAIRS = 10`** a side. With fewer, one mislabelled or unlucky pair
+  moves the threshold by more than the gap it sits in, so the number is a property of the
+  sample rather than of the embedder.
+* **`MIN_CALIBRATION_GAP = 0.05`**. Measured: widening a crop box by 20% on the IDENTICAL
+  face moved similarity by 0.36 (1.0000 → 0.6414). A gap thinner than 0.05 will not
+  survive the next crop, so it is not a separation, it is a coincidence.
+
+Both are judgments, so both are named constants with their reasoning beside them and both
+are parameters of `calibrate()`. `Calibration.complaint` says which gate failed.
+`from_calibration(..., accept_thin_evidence=True)` is the explicit waiver — the shape
+`accepts_tainted=` and `allowed_hosts=None` already use — and it cannot conjure a
+threshold where the distributions overlap, because there is no number to accept.
+
+**Test.** `tests/test_vision_calibration.py` 32 tests (from 16). Six on
+`align_landmarks`, on hand-written points: a face rotated 5°, 30°, 90° and 179° aligns to
+the same vector; scale and position do not matter; a genuinely different shape stays
+different (otherwise the alignment would be discarding the signal with the pose);
+coincident eye corners yield `()`; and the eye line really does come out horizontal.
+Seven on the evidence gate, including both landmark results as their own cases — the
+full-frame one refused for too few pairs, the shipped one refused for overlapping at all —
+and a test that the shipped geometry is at least the better of the two refusals.
+
+**Still open, and now stated precisely.** Identity needs a face-recognition embedder,
+which cannot be obtained from this environment. Both candidates measured here are
+refusals. Two people is not a sample, and `tests/vision_probe.py` is the thing to re-run
+on faces that matter.
+
 | # | Decision | Rationale |
 |---|---|---|
 | IDL-01 | `Decimal` for all money; `float` banned in `budget/` by lint | A rounding error in a spend ceiling is a real bug class |
@@ -3916,6 +4013,7 @@ Everything between the decoder and the `Event` has now run.
 | IDL-58 | A path-confining tool is constructed with its root; a module-level tool function confines to the CWD or not at all | `confine()` existed unused for two milestones because the tools that needed it had no root to pass — the missing constructor was the bug, not the missing call (ADR-065) |
 | IDL-59 | An escalating policy escalates on the SIGNAL, never on "the cheaper rung ran out of work" | Editing always has one more stale result to blank, so compaction gated on that would never have run once (ADR-066) |
 | IDL-60 | Context size is measured over the whole request payload, arguments included — never over `message.content` alone | A LangChain `AIMessage` carrying only tool calls has empty `content`; the arguments are the part that never gets blanked, and they measured as zero (ADR-066) |
+| IDL-65 | A measurement is taken through the code path that ships, never through a scratch script beside it | Landmark geometry measured on full frames reported "separable, gap +0.0083"; the same feature through `landmark_model=` does not separate at all, because the shipped path crops and because the scratch run silently excluded the photograph that breaks it (ADR-095) |
 | IDL-64 | A concurrency test must use a provider that actually `await`s | `FakeModel.complete` is `async def` with no await inside, so two "concurrent" calls never interleave and the test passes with the lock removed (ADR-093) |
 | IDL-63 | A payload claim is asserted per MODEL, never once and generalised | "`budget_tokens` is a 400 on every model this package prices" was a test docstring, tested on one model, and false for another — `claude-haiku-4-5` requires it. A false generalisation with one passing witness stops anyone asking again (ADR-091) |
 | IDL-62 | A credential is resolved by ONE function that returns its VALUE and its source, never by a boolean "is one configured" | Two answers to that question is how `.env` came to report "found" while nothing loaded the file; the run then died on an SDK internal (ADR-086) |

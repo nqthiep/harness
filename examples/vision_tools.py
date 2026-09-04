@@ -119,6 +119,26 @@ def cosine(a: Vector, b: Vector) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
+#: How much evidence a threshold needs before `IdentityLedger.from_calibration` will
+#: build on it. Both are judgments, stated as constants so they can be argued with
+#: instead of being buried in a comparison.
+#:
+#: Ten pairs a side: with fewer, one mislabelled or unlucky pair moves the threshold by
+#: more than the gap it sits in, so the number would be a property of the sample rather
+#: than of the embedder.
+#:
+#: A gap of 0.05: measured on real embeddings, widening a crop box by 20% on the
+#: IDENTICAL face moved cosine similarity by 0.36 (1.0000 -> 0.6414). A gap thinner than
+#: 0.05 will not survive the next crop, so it is not a separation, it is a coincidence.
+#: Both gates exist because a real experiment walked through the `separable` check: the
+#: landmark-geometry variant measured on FULL frames produced a gap of 0.0083 across
+#: three pairs a side, drawn from two people, and read as "separable" (ADR-095). The
+#: same feature measured through the code this library actually ships does not separate
+#: at all — which is the other half of that lesson.
+MIN_CALIBRATION_PAIRS = 10
+MIN_CALIBRATION_GAP = 0.05
+
+
 @dataclass(frozen=True)
 class Calibration:
     """What a threshold is allowed to be, given labelled pairs you actually measured.
@@ -142,10 +162,38 @@ class Calibration:
     best_different: float
     n_same: int
     n_different: int
+    min_pairs: int = MIN_CALIBRATION_PAIRS
+    min_gap: float = MIN_CALIBRATION_GAP
 
     @property
     def separable(self) -> bool:
+        """Whether ANY threshold separates this sample. Necessary, not sufficient — see
+        `enough_evidence`, which is the question a caller actually wants answered."""
         return self.threshold is not None
+
+    @property
+    def enough_evidence(self) -> bool:
+        """Whether the separation is worth trusting: separable, on enough pairs, by
+        enough margin. A three-pair sample separating by 0.0083 is `separable` and is
+        not this."""
+        return (self.separable
+                and min(self.n_same, self.n_different) >= self.min_pairs
+                and self.gap >= self.min_gap)
+
+    @property
+    def complaint(self) -> str:
+        """Why `enough_evidence` is false, in one clause. `""` when it is true."""
+        if not self.separable:
+            return (f"the distributions overlap by {-self.gap:.4f}, so no threshold "
+                    f"works at all")
+        if min(self.n_same, self.n_different) < self.min_pairs:
+            return (f"only {min(self.n_same, self.n_different)} pairs on the thinner "
+                    f"side, and {self.min_pairs} are needed before the threshold is a "
+                    f"property of the embedder rather than of the sample")
+        if self.gap < self.min_gap:
+            return (f"the gap is {self.gap:+.4f}, under the {self.min_gap} a crop change "
+                    f"alone can move a score by")
+        return ""
 
     @property
     def gap(self) -> float:
@@ -157,17 +205,89 @@ class Calibration:
         head = (f"{self.n_same} same-person pairs (worst {self.worst_same:.4f}), "
                 f"{self.n_different} different-person pairs "
                 f"(best {self.best_different:.4f})")
-        if self.separable:
+        if self.enough_evidence:
+            assert self.threshold is not None
             return (f"{head}\n  threshold {self.threshold:.4f}, gap {self.gap:+.4f} — "
-                    f"separable on this sample")
-        return (f"{head}\n  NOT separable: the distributions overlap by "
-                f"{-self.gap:.4f}. No threshold works. Change the EMBEDDER, not the "
-                f"number — a generic image embedder encodes the picture, not the person "
-                f"(see DEFAULT_THRESHOLD).")
+                    f"USABLE on this sample")
+        if not self.separable:
+            return (f"{head}\n  NOT separable: {self.complaint}. Change the EMBEDDER, "
+                    f"not the number — a generic image embedder encodes the picture, "
+                    f"not the person (see DEFAULT_THRESHOLD).")
+        assert self.threshold is not None
+        return (f"{head}\n  separable at {self.threshold:.4f}, gap {self.gap:+.4f}, but "
+                f"NOT ENOUGH EVIDENCE: {self.complaint}.")
+
+
+#: The two landmark indices `align_landmarks` measures scale and rotation from — the
+#: outer eye corners in MediaPipe's canonical 478-point face mesh. The eye line is the
+#: right choice for both because it is the longest roughly-rigid feature on a face: it
+#: barely moves with expression, unlike the mouth or the jaw.
+LEFT_EYE_CORNER, RIGHT_EYE_CORNER = 33, 263
+
+#: How much to widen a face box before handing the crop to the LANDMARKER, as a fraction
+#: of the box. Not a taste setting — measured. A face detector's box is tight, and the
+#: landmarker needs surrounding context to find anything in it: on a rotated portrait,
+#: `0.0` and `0.2` found NO face in the crop while the same landmarker found one in the
+#: full frame, and `0.4` fixed it. Rotation is the case landmark geometry exists to
+#: handle, so silently losing it to a tight crop would have made the whole approach look
+#: like it does not work (ADR-095). The `ImageEmbedder` path does not pad: it wants the
+#: face and not the room.
+LANDMARK_CROP_PAD = 0.4
+
+
+def align_landmarks(points: Sequence[Sequence[float]]) -> Vector:
+    """Face landmarks -> a comparable vector: centred, scaled, and rotated eye-line flat.
+
+    Pure arithmetic on purpose, like everything else in this layer — no numpy, no
+    MediaPipe — so it can be tested on six hand-written points instead of on a model.
+
+    **Rotation alignment is the whole point, and it is measured, not assumed.** On real
+    landmarks from a real photograph and the same photograph rotated:
+
+        generic image embedder ............................ 0.2870
+        landmark geometry, NOT rotation-aligned ........... 0.1570
+        landmark geometry, rotation-aligned ............... 0.9961
+
+    That one case is what destroyed the image embedder — the same person scoring further
+    apart than two strangers (0.5613) — and a rotation is exactly what geometry can undo
+    and a picture-content embedding cannot. It is not enough to make identity work; see
+    `MediaPipeDetector.embed_face` for the population result, which is still a refusal
+    (ADR-095).
+
+    Returns `()` when the eye corners coincide, which is what a degenerate or
+    partly-occluded detection looks like: no magnitude, so no direction to compare.
+    """
+    if len(points) <= max(LEFT_EYE_CORNER, RIGHT_EYE_CORNER):
+        return ()
+    dims = min(len(p) for p in points)
+    if dims < 2:
+        return ()
+    centre = [sum(p[d] for p in points) / len(points) for d in range(dims)]
+    centred = [[p[d] - centre[d] for d in range(dims)] for p in points]
+
+    left, right = centred[LEFT_EYE_CORNER], centred[RIGHT_EYE_CORNER]
+    span = math.sqrt(sum((right[d] - left[d]) ** 2 for d in range(dims)))
+    if span == 0:
+        return ()
+    scaled = [[c / span for c in p] for p in centred]
+
+    # Rotate in the image plane so the eye line is horizontal. Only x and y turn; a `z`
+    # from a landmarker is depth and is left alone.
+    left, right = scaled[LEFT_EYE_CORNER], scaled[RIGHT_EYE_CORNER]
+    angle = -math.atan2(right[1] - left[1], right[0] - left[0])
+    cos_a, sin_a = math.cos(angle), math.sin(angle)
+    out: list[float] = []
+    for p in scaled:
+        out.append(p[0] * cos_a - p[1] * sin_a)
+        out.append(p[0] * sin_a + p[1] * cos_a)
+        out.extend(p[2:])
+    return tuple(out)
 
 
 def calibrate(same: Sequence[float], different: Sequence[float], *,
-              margin: float = DEFAULT_MARGIN) -> Calibration:
+              margin: float = DEFAULT_MARGIN,
+              min_pairs: int = MIN_CALIBRATION_PAIRS,
+              min_gap: float = MIN_CALIBRATION_GAP) -> Calibration:
     """A threshold from labelled cosine scores, or the refusal to give one.
 
     `same` are scores between two embeddings of the SAME person, `different` between two
@@ -187,7 +307,7 @@ def calibrate(same: Sequence[float], different: Sequence[float], *,
     threshold = ((worst_same + best_different) / 2.0
                  if worst_same > best_different else None)
     return Calibration(threshold, margin, worst_same, best_different,
-                       len(same), len(different))
+                       len(same), len(different), min_pairs, min_gap)
 
 
 @dataclass(frozen=True)
@@ -268,23 +388,44 @@ class IdentityLedger:
 
     @classmethod
     def from_calibration(cls, store: Any, calibration: Calibration, *,
-                         key: str = KEY) -> "IdentityLedger":
+                         key: str = KEY,
+                         accept_thin_evidence: bool = False) -> "IdentityLedger":
         """A ledger whose threshold came from a measurement, and which refuses to exist
         when the measurement says no threshold works.
 
         This is the constructor to use. The plain one takes `DEFAULT_THRESHOLD`, which is
-        a cautious guess and is documented as one; this one cannot be built on evidence
-        that a threshold is impossible, which is the state the shipped example
+        a cautious guess and is documented as one; this one refuses a measurement that
+        does not support a threshold — which is the state the shipped example
         configuration is actually in (ADR-090).
+
+        "Does not support" is three separate failures, and `Calibration.complaint` names
+        which: the distributions overlap, or there are too few pairs, or the gap is
+        thinner than a crop change can move a score. The second and third exist because
+        the first is not enough: the landmark-geometry experiment produced a `separable`
+        calibration from three pairs a side with a gap of 0.0083, and an earlier version
+        of this method would have built a ledger on it (ADR-095).
+
+        `accept_thin_evidence=True` is the explicit waiver, the same shape
+        `accepts_tainted=` and `allowed_hosts=None` use elsewhere: possible, never
+        silent.
         """
-        if not calibration.separable:
+        if not calibration.enough_evidence and not accept_thin_evidence:
             raise ValueError(
-                "refusing to build an identity ledger on a threshold that cannot "
-                "work.\n\n"
+                "refusing to build an identity ledger on this measurement: "
+                f"{calibration.complaint}.\n\n"
                 f"  {calibration}\n\n"
                 "  Naming a person on these embeddings would be a coin toss wearing a "
-                "number.\n  -> examples/vision_tools.py::DEFAULT_THRESHOLD")
-        assert calibration.threshold is not None          # `separable` says so
+                "number.\n\n"
+                "  If you have measured this sample and accept it anyway, say so:\n"
+                "      IdentityLedger.from_calibration(store, cal, "
+                "accept_thin_evidence=True)\n\n"
+                "  -> examples/vision_tools.py::DEFAULT_THRESHOLD"
+            )
+        if calibration.threshold is None:
+            raise ValueError(
+                "there is no threshold to waive: the distributions overlap, so "
+                "`accept_thin_evidence=` has nothing to accept.\n\n"
+                f"  {calibration}")
         return cls(store, threshold=calibration.threshold,
                    margin=calibration.margin, key=key)
 
@@ -544,10 +685,17 @@ class MediaPipeDetector:
 
     def __init__(self, *, face_model: str | None = None, pose_model: str | None = None,
                  scene_model: str | None = None, embed_model: str | None = None,
+                 landmark_model: str | None = None,
                  min_face_confidence: float = 0.5, max_scene_labels: int = 3,
                  scene_score_threshold: float = 0.15) -> None:
+        #: `landmark_model` wins over `embed_model` for `embed_face`, when both are
+        #: given. An `ImageEmbedder` encodes the PICTURE (measured unusable for
+        #: identity, ADR-090); the face landmarker encodes the GEOMETRY, which is at
+        #: least the right kind of thing — see `embed_face` for exactly how far that
+        #: has been measured, which is not far (ADR-095).
         self._paths = {"face": face_model, "pose": pose_model,
-                       "scene": scene_model, "embed": embed_model}
+                       "scene": scene_model, "embed": embed_model,
+                       "landmark": landmark_model}
         self._min_face_confidence = min_face_confidence
         self._max_scene_labels = max_scene_labels
         self._scene_score_threshold = scene_score_threshold
@@ -590,6 +738,10 @@ class MediaPipeDetector:
             built = mpv.ImageClassifier.create_from_options(mpv.ImageClassifierOptions(
                 base_options=base, max_results=self._max_scene_labels,
                 score_threshold=self._scene_score_threshold))
+        elif kind == "landmark":
+            built = mpv.FaceLandmarker.create_from_options(mpv.FaceLandmarkerOptions(
+                base_options=base, num_faces=1,
+                min_face_detection_confidence=self._min_face_confidence))
         elif kind == "embed":
             # l2_normalize so `cosine()` compares directions on a common scale, which is
             # the assumption `DEFAULT_THRESHOLD` is stated against.
@@ -643,6 +795,45 @@ class MediaPipeDetector:
                      for lms in result.pose_landmarks)
 
     def embed_face(self, frame: Any, box: tuple[int, int, int, int]) -> Vector:
+        """A vector for one face. Geometry when `landmark_model` was given, otherwise
+        picture content from `embed_model`.
+
+        **Neither is a face-recognition model, and the difference between them is
+        measured (ADR-090, ADR-095).** `ImageEmbedder` encodes pose, light and
+        background: the same person photographed rotated scored 0.2870 while two
+        strangers scored 0.5613 — inverted, so no threshold works. Landmark geometry
+        fixes exactly that case, because a rotation is something geometry can undo, and
+        `align_landmarks` undoes it.
+
+        **Landmark geometry is better and still not usable.** Measured through this
+        method, on the photographs available here (3 same-person and 7 different-person
+        pairs, from two people):
+
+            image embedder .... worst same 0.2870, best different 0.5613, overlap 0.2743
+            landmark geometry . worst same 0.8772, best different 0.9932, overlap 0.1161
+
+        The overlap roughly halves and does not close. `calibrate()` refuses a threshold
+        for either, which is the honest answer: a face-recognition embedder (ArcFace,
+        FaceNet, a vendor API) is what this argument is missing, not a better number.
+
+        Two people is not a sample, and every figure above should be re-measured on
+        faces that matter to you with `tests/vision_probe.py`.
+        """
+        landmarker = self._task("landmark")
+        if landmarker is not None:
+            crop = _crop(frame, _pad_box(box, LANDMARK_CROP_PAD))
+            if crop is None:
+                return ()
+            result = landmarker.detect(self._image(crop))
+            if not result.face_landmarks:
+                return ()
+            height, width = crop.shape[0], crop.shape[1]
+            # Back to pixels before aligning: MediaPipe returns x/y normalised to the
+            # image, so a non-square crop would otherwise arrive pre-distorted and the
+            # eye-line rotation would be measured on the wrong triangle.
+            return align_landmarks([(p.x * width, p.y * height, p.z * width)
+                                    for p in result.face_landmarks[0]])
+
         task = self._task("embed")
         if task is None:
             return ()
@@ -713,6 +904,15 @@ def _native_library_advice(exc: OSError) -> str:
         f"{missing or ()}\n\n"
         f"  Original error: {exc}"
     )
+
+
+def _pad_box(box: tuple[int, int, int, int],
+             fraction: float) -> tuple[int, int, int, int]:
+    """Grow a box about its centre. `_crop` clamps it to the frame afterwards, so a box
+    that grows past an edge is not this function's problem."""
+    x, y, w, h = box
+    dx, dy = int(w * fraction / 2), int(h * fraction / 2)
+    return (x - dx, y - dy, w + 2 * dx, h + 2 * dy)
 
 
 def _crop(frame: Any, box: tuple[int, int, int, int]) -> Any:

@@ -44,6 +44,8 @@ WANTED = {
         MODELS + "image_classifier/efficientnet_lite0/float32/1/efficientnet_lite0.tflite",
     "mobilenet_v3_small.tflite":
         MODELS + "image_embedder/mobilenet_v3_small/float32/1/mobilenet_v3_small.tflite",
+    "face_landmarker.task":
+        MODELS + "face_landmarker/face_landmarker/float16/1/face_landmarker.task",
     "portrait.jpg": ASSETS + "portrait.jpg",
     "portrait_rotated.jpg": ASSETS + "portrait_rotated.jpg",
     "portrait_small.jpg": ASSETS + "portrait_small.jpg",
@@ -148,9 +150,55 @@ def main(into: Path) -> int:
     print("\n=== the verdict ===")
     print("  " + str(calibrate(same, different)).replace("\n", "\n  "))
 
+    geometry(files)
     pipeline(det, files, into)
     det.close()
     return 0
+
+
+def geometry(files) -> None:
+    """The other candidate embedder: landmark GEOMETRY instead of picture content.
+
+    MediaPipe Tasks ships no face-recognition model, which is why identity does not work
+    here (ADR-090). It does ship a 478-point face landmarker, and geometry can undo a
+    rotation — which was the generic embedder's worst case by far. Worth measuring, and
+    measured through the SAME code path the library ships (`landmark_model=`), so these
+    numbers describe the shipped behaviour and not a scratch script (ADR-095).
+    """
+    import cv2
+
+    from vision_tools import MediaPipeDetector, calibrate, cosine
+
+    det = MediaPipeDetector(face_model=str(files["blaze_face_short_range.tflite"]),
+                            landmark_model=str(files["face_landmarker.task"]))
+    print("\n=== landmark geometry, through `landmark_model=` ===")
+    vectors = {}
+    for name in WANTED:
+        if not name.endswith((".jpg", ".png")):
+            continue
+        img = cv2.imread(str(files[name]))
+        faces = det.detect_faces(img)
+        vec = det.embed_face(img, faces[0].box) if faces else ()
+        print(f"  {name:<34} faces={len(faces)} vector={len(vec)} values")
+        if vec:
+            vectors[name] = vec
+
+    same: list[float] = []
+    different: list[float] = []
+    for a, b in itertools.combinations(sorted(vectors), 2):
+        value = cosine(vectors[a], vectors[b])
+        is_same = {a, b} <= ONE_PERSON
+        (same if is_same else different).append(value)
+        print(f"  {a:<34} vs {b:<34} {value:+.4f}  "
+              f"({'SAME person' if is_same else 'different'})")
+    if same and different:
+        print("  " + str(calibrate(same, different)).replace("\n", "\n  "))
+    print()
+    print("  Read this as a hint, not a result. Two people is not a sample, and the")
+    print("  refusal above is the point: `separable` was the only gate until this")
+    print("  experiment walked through it, so `enough_evidence` now also asks for")
+    print("  pairs and for a gap wider than a crop change can move a score.")
+    det.close()
 
 
 def pipeline(det, files, into: Path) -> None:

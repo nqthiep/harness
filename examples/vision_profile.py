@@ -150,12 +150,16 @@ class VisionProfile:
     #: autonomous run.
     budget: str = "$2, 60 steps, 30m"
     #: The identity threshold. The default is a cautious GUESS and is documented as one
-    #: — and with the `ImageEmbedder` this example's `MediaPipeDetector` is wired for,
-    #: no threshold works at all: measured, the same person rotated scores 0.2870 while
-    #: two different people score 0.5613 (ADR-090). Get a real number from
-    #: `vision_tools.calibrate()` on pairs you labelled yourself, with a face-recognition
-    #: embedder, and pass it here. Until then `identify_person` will mostly answer "I
-    #: don't know", which is the safe failure and not a working feature.
+    #: — and with either embedder `MediaPipeDetector` can be wired for, no threshold
+    #: works at all. Measured (ADR-090, ADR-095):
+    #:
+    #:     ImageEmbedder ...... worst same 0.2870, best different 0.5613, overlap 0.2743
+    #:     landmark geometry .. worst same 0.8772, best different 0.9932, overlap 0.1161
+    #:
+    #: Get a real number from `vision_tools.calibrate()` on pairs you labelled yourself,
+    #: with a face-recognition embedder (ArcFace, FaceNet, a vendor API), and pass it
+    #: here. Until then `identify_person` will mostly answer "I don't know", which is the
+    #: safe failure and not a working feature.
     threshold: float = DEFAULT_THRESHOLD
     margin: float = DEFAULT_MARGIN
     #: OFF by default and it needs TWO deliberate acts, which is the point: this flag,
