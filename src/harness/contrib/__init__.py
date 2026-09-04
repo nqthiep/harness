@@ -29,6 +29,7 @@ no entry in the six-seam table, and no re-export from `harness` itself. Importin
 says so out loud:
 
     from harness.contrib.driver import Driver, Priority
+    from harness.contrib.sensors import ClockSensor, FileSensor
     from harness.contrib.output_shaping import with_smart_truncation
 
 Never `from harness import Driver`. The longer path is the disclaimer.
@@ -42,7 +43,13 @@ Never `from harness import Driver`. The longer path is the disclaimer.
 3. More than one real consumer, or one consumer plus a safety argument for a single
    tested copy.
 4. Not a seam. A seam belongs in the six-seam table and must pass
-   `docs/02-architecture.md` §4's three-part plugin test — `Sensor` has ONE real
-   implementation today (`examples/vision_sensor.CameraSensor`), so it lives here rather
-   than being promoted (ADR-081, ADR-082).
+   `docs/02-architecture.md` §4's three-part plugin test. `Sensor` now passes part (c) —
+   three real implementations, `examples/vision_sensor.CameraSensor` plus `FileSensor`
+   and `ClockSensor` in `sensors.py` — and still is not promoted, for a reason that
+   turned out to be sturdier than the head count: **core does not consume it.** A seam is
+   a protocol the core is written against (`ModelProvider`, `Store`, `Policy`, …);
+   `Sensor` is consumed by `Driver`, which is itself `contrib`. Part (b) of the plugin
+   test — "the core can be written with zero knowledge of any concrete implementation" —
+   is not merely satisfied here, it is inapplicable, and that is what settles the
+   question (ADR-089, and ADR-081/082 for the earlier head-count argument).
 """

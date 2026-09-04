@@ -63,12 +63,13 @@ just documented:
 **Why this is `contrib` and not core, and not `examples/` either.** Not core: `run.py`
 sits at its IDL-13 ceiling of 250 lines and is the single place where a budget check
 precedes a model call and a permission check precedes a tool call (ADR-001), so a wake
-source does not belong there; and `Sensor` has not earned a seam — `docs/02-architecture.md`
-§4's plugin test wants "two genuinely different implementations TODAY — not
-hypothetically" and this repo has ONE real one (`examples/vision_sensor.CameraSensor`)
-plus the test double below, a test double not being an implementation. A `Driver` also
-owns a thread, an event loop and the conversation history, none of which a frozen `Agent`
-can hold.
+source does not belong there. And `Sensor` is not a seam — not any more for want of
+implementations (`sensors.py` adds `FileSensor` and `ClockSensor` alongside
+`examples/vision_sensor.CameraSensor`, so `docs/02-architecture.md` §4's "two genuinely
+different implementations TODAY" is met), but because **core never consumes it**: a seam
+is a protocol the core is written against, and `Sensor`'s only consumer is the `Driver`
+below, which is itself `contrib` (ADR-089). A `Driver` also owns a task, a poll interval
+and a `Chat`, none of which a frozen `Agent` can hold.
 
 Not `examples/` either, which is where this started: the four rules below are SAFETY
 rules, and safety distributed by copy-paste drifts in every fork (ADR-082). So it ships,

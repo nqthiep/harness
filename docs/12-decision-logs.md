@@ -3438,6 +3438,82 @@ recording. Plus 3 in `tests/test_driver.py`: a preempted turn is billed, `histor
 each caught: dropping the spend line, blinding the sink to `RUN_FINISHED`, and returning a
 `Result` instead of re-raising. Full suite 1076 passed.
 
+### ADR-089 — `Sensor` earns part (c) of the plugin test, and still is not a seam
+
+**Status:** Accepted.
+
+**Context.** `Sensor` (`contrib/driver.py`) is one method: `async read() -> Event | None`,
+plus `close()`. It was designed with exactly one real implementation in view
+(`examples/vision_sensor.CameraSensor`) and a `FakeSensor` beside it, and
+`docs/02-architecture.md` §4's plugin test is explicit that this is not enough — it wants
+"two genuinely different implementations **today** — not hypothetically", and a test
+double written to fit a Protocol proves nothing about the Protocol. ADR-081 and ADR-082
+recorded the gap rather than glossing it. An abstraction with one implementation is a
+description of that implementation.
+
+**Decision.** Write the second and third, in `contrib/sensors.py`, chosen to pull the
+Protocol as far from a camera as a change-notifier goes:
+
+| | `CameraSensor` | `FileSensor` | `ClockSensor` |
+|---|---|---|---|
+| where the news comes from | a frame + inference | `os.stat` on watched paths | nothing outside itself |
+| cost of a `read()` | a grab plus a full model pass | a handful of `stat` calls | an integer comparison |
+| blocking? | yes — `to_thread` | yes — `to_thread` | no |
+| "changed" means | a difference against a baseline | mtime/size/existence moved | a moment arrived |
+| priority decided by | structure of the scene | which PATH moved | how the caller labelled the moment |
+
+The Protocol survived both without a single change. What the exercise produced instead was
+four findings.
+
+**1. `Sensor` is not a seam, and the head count was never the real reason.** Even with
+three implementations it stays in `contrib`, because **core does not consume it**. A seam
+is a protocol the core is written against — `ModelProvider`, `Store`, `Policy`, `Tool`,
+`Exporter`, `Sandbox` all appear in `run.py`/`dispatch.py`. `Sensor`'s only consumer is
+`Driver`, which is itself `contrib`. So part (b) of the plugin test ("the core can be
+written with zero knowledge of any concrete implementation") is not satisfied here, it is
+INAPPLICABLE, and that settles the question more durably than counting.
+
+**2. Rule 1 gets sharper away from the camera.** "Priority is computed by code, never read
+out of content" was written for a sign held up to a lens. A file's bytes are far easier
+for another process to control, so `FileSensor` decides from the path that moved and never
+opens the file — `promote` receives `tuple[str, ...]`, not contents. Asserted directly: a
+watched file whose entire content is `"URGENT CRITICAL PREEMPT NOW"` yields `NORMAL`, while
+an empty file at a path the caller marked urgent yields `CRITICAL`.
+
+**3. `Sensor` is pull-only, and `ClockSensor` is where that becomes visible.** A clock has
+an opinion about *when*; the Protocol has none. `Driver` reads every `sensor_interval_s`
+(0.2 s), so a moment is noticed up to that late and not at all while nothing is pumping.
+That is a property to state and to size the interval against, not a reason to add a push
+path — the pull design was chosen deliberately (ADR-080) and a second wake mechanism would
+re-open every question that decision closed. What DOES need care is that lateness must not
+become loss: an overdue moment fires on the first read after its time, so a clock that was
+not polled for an hour still keeps the appointment.
+
+**4. "Remember what you already reported" is the recurring obligation, and the first read
+is a baseline in every one of them.** All three sensors report DIFFERENCES, so all three
+carry state, and all three must stay silent on their first read — "this file exists" is not
+news, and a sensor announcing its whole initial state would preempt the first turn of every
+conversation. Not factored into a shared base class: the state has a different shape each
+time (a stamp per path, a fired set, a debounce plus a scene baseline), and three small
+correct copies of a two-line rule beat one base class that has to be parameterised by all
+three.
+
+**Method note, because it corrects something.** Mutation testing found that
+`FileSensor`'s baseline branch had a redundant `return None`: deleting it changed no test
+result, because seeding `_seen` with the current state already produces an empty diff. A
+mutation that changes nothing is not a gap in the tests — it is a line that is not doing
+work. Removed, and the two mutations that DO matter (never seeding `_seen`, ignoring
+`baseline=False`) each fail exactly one test.
+
+**Test.** `tests/test_sensors.py`, 20 tests. Seven mutations run: ignoring `promote`,
+letting a `stat` error escape, list-order instead of priority-order, a moment firing
+twice, `close()` meaning nothing, and the two baseline ones — each caught by the test that
+names it. The last class matters most: it drives both new sensors through the REAL
+`Driver` — its `_pump_forever`, its `EventInbox`, its `_watch`, its cancel path — and
+asserts a file change and a calendar moment each preempt a turn, that two sensors of
+different kinds share the single inbox slot with the more urgent winning, and that
+`Driver.close()` reaches every sensor. Full suite 1096 passed.
+
 | # | Decision | Rationale |
 |---|---|---|
 | IDL-01 | `Decimal` for all money; `float` banned in `budget/` by lint | A rounding error in a spend ceiling is a real bug class |
