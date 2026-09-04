@@ -381,6 +381,58 @@ class TheSensorThat(unittest.TestCase):
         self.assertEqual(cap.released, 0)
 
 
+class WhatTheRealPipelineShowed(unittest.TestCase):
+    """Two facts established by running the whole pipeline over real decoded frames —
+    `cv2.VideoCapture` on a scripted clip, real MediaPipe inference per frame
+    (`tests/vision_probe.py`, ADR-094). Both are asserted here with the fake detector,
+    so the suite keeps them without needing a camera, a model or a video codec."""
+
+    def test_one_stranger_replacing_another_is_invisible(self):
+        """Measured in the real run: the clip goes empty -> person A -> person B ->
+        empty, and the A -> B swap produced NO event. Correct, and worth pinning down
+        rather than discovering later — the sensor reports state DIFFERENCES, and "one
+        unknown face" is the same state as "one unknown face". Seeing the swap is
+        identity's job, which ADR-090 measured as unusable with a generic image
+        embedder: the same limitation from the other side.
+        """
+        # Starts EMPTY, like the clip does: with a face already in frame the baseline
+        # would BE "one stranger" and no arrival could ever fire.
+        sensor, detector, _ = _sensor(faces=[], stable_reads=1)
+
+        async def go():
+            first = await sensor.read()                     # baseline: nobody
+            _see(detector, [Face(THIEP_BOX, 0.9)])
+            second = await sensor.read()                    # one stranger arrives
+            _see(detector, [Face(NGHIA_BOX, 0.9)])          # a DIFFERENT stranger
+            third = await sensor.read()
+            _see(detector, [])
+            fourth = await sensor.read()
+            return first, second, third, fourth
+
+        first, second, third, fourth = asyncio.run(go())
+        self.assertIsNone(first, "the first read is a baseline")
+        self.assertIsNotNone(second)
+        self.assertIsNone(third, "a stranger swapped for a stranger is the same state")
+        self.assertIsNotNone(fourth, "and the departure still fires")
+
+    def test_an_exhausted_source_does_not_name_a_camera_index(self):
+        """The real run ended with `camera 0 không trả về hình` for an exhausted video
+        FILE — an index that had nothing to do with the source, sending the reader to
+        look at the wrong thing."""
+        class Exhausted(_Cap):
+            def read(self):
+                return False, None
+
+        injected = Camera(capture=Exhausted())
+        _frame, err = injected.grab()
+        self.assertNotIn("camera 0", err)
+        self.assertIn("truyền vào", err)
+
+        owned = Camera(index=7)
+        self.assertIn("camera 7", owned._source(),
+                      "a camera this object opened is still named by its index")
+
+
 class EndToEndThat(unittest.TestCase):
     def test_a_camera_arrival_reaches_the_model_through_the_driver(self):
         """camera -> CameraSensor -> Driver -> EventAnnouncer -> a real agent run, with

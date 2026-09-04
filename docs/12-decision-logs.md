@@ -3791,6 +3791,69 @@ messages instead of 4. The sync half of the same boundary had this right already
 (`SlowFakeModel`, and a fully deterministic `Event`-driven mutation test beside it) — the
 new test simply failed to copy it.
 
+### ADR-094 — The whole perception pipeline, on real decoded frames
+
+**Status:** Accepted (the hardware half stays open).
+
+**Context.** After ADR-090 the detector had run real inference on still images, and the
+open item read "a live camera — `cv2.VideoCapture(0)` has no device here". That framing
+made the gap look like one thing when it is two: the physical device, and everything
+between a decoder and an `Event`. `Camera`, `PerceptionBuffer` and `CameraSensor`'s
+baseline, debounce and state diffing had only ever run against a stub `capture` object
+and `FakeDetector` — which tests the sensor's LOGIC, and cannot test the pipeline,
+because both ends of it are the fakes.
+
+`cv2.VideoCapture` reads a FILE through the same interface it reads a device through. So a
+scripted clip gets everything except the hardware.
+
+**Decision.** `tests/vision_probe.py` writes a clip — empty → person A → person B →
+empty, four frames each — and drives the real `Camera` + real `MediaPipeDetector` + real
+`CameraSensor` over it. Real H.264 decoding, real frames of real people, real inference
+per frame:
+
+```
+read  0 (   42 ms) faces=0                    -
+read  3 (   36 ms) faces=0                    -
+read  4 (   57 ms) faces=1                    -
+read  5 (   66 ms) faces=1                    NORMAL: Một người bạn chưa biết vừa xuất
+                                              hiện ... Chỗ này trông như suit, Windsor tie.
+read 12 (   46 ms) faces=0                    -
+read 13 (   36 ms) faces=0                    LOW: ... vừa đi khỏi. Trước mặt tôi không có ai.
+read 16 (    0 ms) error: nguồn hình được truyền vào không trả về hình
+observations=19 suppressed=4
+```
+
+Every claim the sensor makes about itself, happening: the first reads are a baseline and
+announce nothing; the arrival waits for `stable_reads=2` and then fires `NORMAL`; the
+departure fires `LOW`; four reads are suppressed as flicker; and the exhausted clip
+degrades to a sentence with no exception, exactly as `Camera` documents for a missing
+device. ~36-66 ms per frame end to end, after a 42 ms first-call model load.
+
+**Two findings, both from the run rather than from review.**
+
+**1. One stranger replacing another is invisible.** The A → B swap around read 8 produced
+no event. Correct — the sensor reports state DIFFERENCES and "one unknown face" is the
+same state as "one unknown face" — but it is the kind of correct that should be written
+down before somebody finds it in front of a real person. Seeing the swap is identity's
+job, which ADR-090 measured as unusable with a generic image embedder: the same
+limitation from the other side. Now asserted in the suite with the fake detector, so it
+is kept without needing a camera.
+
+**2. The end-of-source message named a camera index that had nothing to do with the
+source.** An exhausted video FILE reported `camera 0 không trả về hình`, sending the
+reader to look at a device. `Camera` now names its real source, and `index` is typed
+`int | str` — `cv2.VideoCapture` always accepted a path and only the annotation said
+otherwise, which is why running a clip needed the `capture=` injection at all.
+
+**Test.** Two tests in `tests/test_vision_sensor.py::WhatTheRealPipelineShowed`, both with
+the fake detector so the suite needs no camera, model or codec; two mutations on the source
+naming, each caught. Full suite 1128 passed.
+
+**What is still open, now narrowly.** A physical device — whether `VideoCapture(0)` on a
+real webcam behaves like a decoder here (frame rate, dropped frames, auto-exposure while
+someone walks in), and accuracy on faces outside a handful of public test photographs.
+Everything between the decoder and the `Event` has now run.
+
 | # | Decision | Rationale |
 |---|---|---|
 | IDL-01 | `Decimal` for all money; `float` banned in `budget/` by lint | A rounding error in a spend ceiling is a real bug class |

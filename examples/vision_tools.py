@@ -748,8 +748,13 @@ class Camera:
     (`agent.py`), so nothing downstream can release this for you.
     """
 
-    def __init__(self, index: int = 0, *, capture: Any = None,
+    def __init__(self, index: "int | str" = 0, *, capture: Any = None,
                  width: int | None = None, height: int | None = None) -> None:
+        #: A device index, or a PATH — `cv2.VideoCapture` takes either, and a recorded
+        #: clip is how the rest of this pipeline gets exercised where no device exists:
+        #: real decoding, real frames, real inference, everything but the hardware
+        #: (`tests/vision_probe.py`, ADR-094). Typed `int | str` because it always
+        #: accepted both and only the annotation said otherwise.
         self.index = index
         self._cap = capture
         self._own = capture is None
@@ -784,8 +789,16 @@ class Camera:
         except Exception as exc:                       # a disconnected USB camera
             return None, f"đọc camera lỗi: {type(exc).__name__}"
         if not ok or frame is None:
-            return None, f"camera {self.index} không trả về hình"
+            # `self.index` is meaningless when a `capture=` was injected, and naming
+            # "camera 0" for an exhausted video file sent the reader looking at the
+            # wrong thing — measured while running the pipeline over a clip (ADR-094).
+            return None, f"{self._source()} không trả về hình"
         return frame, ""
+
+    def _source(self) -> str:
+        if self._own:
+            return f"camera {self.index}"
+        return "nguồn hình được truyền vào"
 
     def close(self) -> None:
         if self._cap is not None and self._own:

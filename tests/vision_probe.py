@@ -22,6 +22,7 @@ Run it deliberately:
 The numbers it prints are quoted in `DEFAULT_THRESHOLD`, in `MediaPipeDetector`, and in
 ADR-090. Re-run it rather than trusting those copies if anything here changes.
 """
+import asyncio
 import itertools
 import sys
 import time
@@ -146,8 +147,77 @@ def main(into: Path) -> int:
 
     print("\n=== the verdict ===")
     print("  " + str(calibrate(same, different)).replace("\n", "\n  "))
+
+    pipeline(det, files, into)
     det.close()
     return 0
+
+
+def pipeline(det, files, into: Path) -> None:
+    """The whole perception pipeline on real decoded frames.
+
+    There is no camera here, and there is no way to fake one that proves anything —
+    `FakeDetector` and a stub `capture` object are what the unit tests already use, and
+    they exercise the sensor's logic, not the pipeline. `cv2.VideoCapture` reads a FILE
+    through the same interface it reads a device through, so a scripted clip gets
+    everything except the hardware: real H.264 decoding, real frames of real people,
+    real inference per frame, and `CameraSensor`'s debounce and baseline running over
+    the result (ADR-094).
+
+    The clip is empty -> person A -> person B -> empty, four frames each, so every
+    transition the sensor claims to detect has a moment to happen in.
+    """
+    import cv2
+    import numpy as np
+
+    from harness.memory.inmemory import InMemoryStore
+    from vision_sensor import CameraSensor
+    from vision_tools import Camera, IdentityLedger, PerceptionBuffer
+
+    size, per = (640, 480), 4
+    blocks = [
+        np.full((size[1], size[0], 3), 90, dtype=np.uint8),
+        cv2.resize(cv2.imread(str(files["portrait.jpg"])), size),
+        cv2.resize(cv2.imread(str(files["business-person.png"])), size),
+        np.full((size[1], size[0], 3), 90, dtype=np.uint8),
+    ]
+    clip = into / "scripted.mp4"
+    writer = cv2.VideoWriter(str(clip), cv2.VideoWriter_fourcc(*"mp4v"), 10, size)
+    for block in blocks:
+        for _ in range(per):
+            writer.write(block)
+    writer.release()
+    total = len(blocks) * per
+
+    print(f"\n=== the whole pipeline over {total} decoded frames ===")
+    capture = cv2.VideoCapture(str(clip))
+    print(f"  cv2.VideoCapture(a file).isOpened() = {capture.isOpened()}")
+
+    sensor = CameraSensor(camera=Camera(capture=capture), detector=det,
+                          ledger=IdentityLedger(InMemoryStore()),
+                          buffer=PerceptionBuffer(), stable_reads=2)
+
+    async def drive() -> None:
+        for i in range(total + 3):          # +3 to run past the end of the clip
+            t0 = time.perf_counter()
+            event = await sensor.read()
+            ms = (time.perf_counter() - t0) * 1000
+            reading = sensor.buffer.reading
+            state = (f"error: {reading.error}" if reading.error
+                     else f"faces={len(reading.faces)}")
+            print(f"  read {i:2d} ({ms:5.0f} ms) {state:<40} "
+                  + (f"{event.priority.name}: {event.text}" if event else "-"))
+
+    asyncio.run(drive())
+    print(f"  observations={sensor.observations} suppressed={sensor.suppressed}")
+    print()
+    print("  Note what did NOT fire: the A -> B swap around read 8. Both are ONE")
+    print("  unknown face, so the state does not change and the sensor is right to")
+    print("  stay quiet — it reports differences, and 'one stranger' is the same")
+    print("  difference. Telling them apart is identity, which ADR-090 measured as")
+    print("  unusable with a generic image embedder. Same limitation, seen from the")
+    print("  other side.")
+    sensor.close()
 
 
 if __name__ == "__main__":

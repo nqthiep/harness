@@ -98,6 +98,14 @@ record, the other two providers are not reachable from here at all — `api.deep
 and `api.openai.com` both get `403` to `CONNECT` from the egress proxy, while
 `api.anthropic.com` is on its bypass list.
 
+**The vision pipeline, for comparison, is no longer in this state.** `MediaPipeDetector`
+has run real inference (ADR-090) and the whole `Camera` → `PerceptionBuffer` →
+`CameraSensor` chain has run over real decoded frames of real people (ADR-094). What
+remains there is a physical device, which is a narrower gap than "it has never run" —
+and the technique is the transferable part: `cv2.VideoCapture` reads a file through the
+same interface it reads a device through, so the fake was only ever needed for the
+hardware.
+
 **What the probe found within minutes of existing (ADR-086).** Five breaks in the
 first-run path every no-key message in this library points at: `.env` was never loaded,
 `key_status` answered by substring and returned a `bool`, a missing credential surfaced
