@@ -219,10 +219,13 @@ class StaticChecks(unittest.TestCase):
         r = self._tool("mypy")
         self.assertEqual(r.returncode, 0, r.stdout[-2000:])
 
-    def test_mypy_is_clean_on_the_examples_too(self):
+    def test_mypy_co_analyses_the_examples_with_core(self):
         """`examples/` is 6,780 lines that other files in this repo import, so "it is
-        only an example" stopped being true a while ago (ADR-082). Checked as its own
-        unit rather than co-analysed with core — see the note in `pyproject.toml`.
+        only an example" stopped being true a while ago (ADR-082). `test_mypy_is_clean`
+        above already covers it — `pyproject.toml` lists it in `files` — and THAT is the
+        fact worth pinning down, because checking the two units separately is measurably
+        weaker: with `examples/` alone, every call into core is typed `Any` and 10 real
+        findings hid behind that (ADR-087).
 
         Worth having: pointing the checker here for the first time found a leaked loop
         variable in `proof.py` shadowing `readability.grade` (it worked only because of
@@ -230,10 +233,17 @@ class StaticChecks(unittest.TestCase):
         annotation defects — `Profile.name` declared as a settable variable, which meant
         NO `frozen=True` profile satisfied the Protocol, and `Agent.safety` annotated
         `str` while `__init__` takes a `Literal`, so `Agent(safety=parent.safety)` — what
-        every subagent must do — failed to type check.
+        every subagent must do — failed to type check. Co-analysis then found a third:
+        `cost_per_success` annotated `Sequence[Result]` while its docstring promised the
+        structural contract, so the duck-typed record its own bench passes was rejected.
         """
-        r = self._tool("mypy", "examples/", "--ignore-missing-imports")
-        self.assertEqual(r.returncode, 0, r.stdout[-2000:])
+        import tomllib
+        with open("pyproject.toml", "rb") as f:
+            files = tomllib.load(f)["tool"]["mypy"]["files"]
+        self.assertIn("examples", files,
+                      "examples/ dropped out of the checked set; a separate `mypy "
+                      "examples/` run types every call into core as Any")
+        self.assertIn("src/harness", files)
 
     def test_a_user_gets_real_type_checking_on_the_value_types(self):
         """The count was never the point.  Before `dataclass_transform`, every value type

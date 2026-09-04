@@ -729,12 +729,15 @@ def _demo() -> None:
     print("=" * 70)
     policy = ProtectedPaths(CodingProfile(root=root).protected)
 
-    class _Spec:
-        name, effect = "edit_source", None
+    # The real spec, from the `CodeTools` this demo already built above — a stub class
+    # made the demo's `ToolCall` a different type from the engine's, which mypy flagged
+    # and which would hide a policy that started reading the spec.
+    edit_spec = next(t for t in code.tools() if t.name == "edit_source")
 
     for path in ("src/app.py", ".github/workflows/ci.yml", "uv.lock"):
         ruling = policy.check(
-            ToolCall(id="c1", name="edit_source", arguments={"path": path}, spec=_Spec()),
+            ToolCall(id="c1", name="edit_source", arguments={"path": path},
+                     spec=edit_spec),
             None)
         print(f"  {path:<28} -> {ruling.verdict.name:<5} ({ruling.reason})")
 

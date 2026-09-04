@@ -234,7 +234,9 @@ r = assistant.run("A customer wants a refund on order A-4471, please handle it")
 
 print("\n  Conclusion (a TYPE, not a string):")
 print(f"      {r.value!r}")
-print(f"      type = {type(r.value).__name__}, refunded = {r.value.refunded}")
+conclusion = r.value if isinstance(r.value, Conclusion) else None    # ADR-022: object | None
+print(f"      type = {type(r.value).__name__}, "
+      f"refunded = {conclusion.refunded if conclusion else '-'}")
 print(f"\n  Cost ${r.cost.decimal:.5f} / ceiling $0.30   .   {r.steps} steps / 20")
 print(f"  Run tainted: {r.tainted}  (because it read data from the shipping carrier)")
 print(f"  Tools that ACTUALLY RAN: {list(r.tools_run)}")

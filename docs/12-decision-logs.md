@@ -3319,6 +3319,56 @@ nothing downstream of "get a credential" was ever executed. ADR-085's dead-key p
 found them within minutes of existing. That is the argument for the probe, not for
 weakening the fixture.
 
+### ADR-087 — Co-analyse `examples/` with core, and fix what that finds
+
+**Status:** Accepted.
+
+**Context.** ADR-082 pointed mypy at `examples/` for the first time and found two core
+annotation defects. It checked the directory as its OWN unit, and recorded in
+`pyproject.toml` that co-analysing it (`files = ["src/harness", "examples"]`) surfaced 10
+further findings, deliberately left open with the number written down.
+
+Separate-unit checking is measurably weaker: with only `examples/` on the command line,
+every call into core is typed `Any`, so a demo can pass a wrong type to a core function
+and nothing notices. All 10 findings were of exactly that kind.
+
+**Decision.** Co-analysis is now the configured check, and the 10 are closed. Two of them
+were not demo sloppiness at all:
+
+* **`cost_per_success` had the wrong annotation, not the wrong caller.** Its docstring has
+  always promised a structural contract — "`runs` needs only `.ok: bool` and a
+  `Money`-shaped-or-numeric `.cost` … any object shaped the same way works too" — while
+  the signature said `Sequence[Result]`. `examples/coding_bench.py` passes a `list[_Scored]`
+  whose own docstring says that shape is supported deliberately, and got
+  `Argument 1 ... has incompatible type`. Fixed where the defect was: a `Scored` Protocol
+  in `eval/cost.py`, with read-only properties (`Result` is a frozen `@value` class, and a
+  protocol declaring `ok: bool` demands a settable attribute) and `cost: Any` on purpose,
+  since `_cost_of` accepts `Money`-shaped, numeric, and `"$1.23"` and narrowing would
+  reject two of the three.
+* **Two demos built a stub `_Spec` class to fill `ToolCall(spec=...)`.** The policies under
+  test read only `arguments`, so it worked — but it made the demo's `ToolCall` a different
+  type from the one the engine builds, which is precisely the drift that hides a policy
+  that later DOES read the spec. Both now use the real spec, taken from the `ShellTools`
+  / `CodeTools` the demo already constructed.
+
+The rest are narrowings the API's own design requires: `Result.value` is `object | None`
+(ADR-022 — the harness cannot know the caller's type), so two demos now `isinstance`-narrow
+before reading fields, which also turns a wrong `returns=` into a printed `-` instead of an
+`AttributeError`; and `Budget.usd` is `Decimal | None` (S-20's unlimited escape hatch), so
+`proof.py` binds and asserts the ceiling once.
+
+**Two findings in `proof.py` are silenced, not fixed, and that is the point of them.**
+`returns=Conclusion("a", "b")` and `Money(1.5)` are rungs on a ladder whose whole purpose
+is to show what a wrong call does. Fixing them would delete the demonstration, so they
+carry `# type: ignore[arg-type]` with the reason written beside them.
+
+**Test.** `test_mypy_is_clean` now covers both trees, and
+`test_mypy_co_analyses_the_examples_with_core` reads `pyproject.toml` and asserts
+`examples` is still in `files` — a test about the CONFIGURATION, because that is the thing
+that can silently regress; a checker run against a weaker file list passes just as
+greenly. Full suite 1064 passed; `mypy` clean on 96 files; every touched demo still runs
+end to end, `proof.py` included.
+
 | # | Decision | Rationale |
 |---|---|---|
 | IDL-01 | `Decimal` for all money; `float` banned in `budget/` by lint | A rounding error in a spend ceiling is a real bug class |

@@ -59,14 +59,14 @@ ignore = ["E701", "E702", "E741"]
 
 [tool.mypy]
 python_version = "3.11"
-files = ["src/harness"]
-# `examples/` is type-checked too, but as its OWN unit rather than co-analysed with core
-# — `tests/test_conformance.py::test_mypy_is_clean_on_the_examples_too` runs
-# `mypy examples/ --ignore-missing-imports`, which is clean and which is what caught two
-# real core defects (ADR-082). Co-analysing them (adding "examples" here) types the
-# cross-module calls exactly instead of as `Any` and surfaces 10 further findings, all
-# pre-existing looseness in demo blocks; closing those is worth doing and is not this
-# change.
+files = ["src/harness", "examples"]
+# `examples/` is CO-ANALYSED with core, not checked as a separate unit. That is the
+# stronger configuration: cross-module calls get their real types instead of `Any`, which
+# is what surfaced the last 10 findings (ADR-087) after the separate-unit run was already
+# clean. Pointing the checker at these files is also what caught two core annotation
+# defects — `Profile.name` declared settable, so no frozen profile satisfied the
+# Protocol, and `Agent.safety` annotated `str` while `__init__` takes a `Literal`
+# (ADR-082).
 ignore_missing_imports = true
 # Not `strict`.  Round 39 took mypy from 112 errors to a documented remainder, and the
 # value was never the count: it was that **a user running mypy on `agent.name` was told

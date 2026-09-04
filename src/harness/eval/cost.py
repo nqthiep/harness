@@ -10,10 +10,33 @@ the axis a bare average invites.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Sequence
+from typing import Any, Protocol, Sequence
 
-if TYPE_CHECKING:
-    from ..result import Result
+
+class Scored(Protocol):
+    """What this module actually needs from a run: an outcome and a cost.
+
+    A `Protocol`, not `Result`, because the docstrings here have always promised the
+    structural contract — "any object shaped the same way (a test double, a record read
+    back from a golden-set run) works too" — while the ANNOTATION said `Sequence[Result]`.
+    mypy proved the mismatch on the exact use the docstring blesses:
+    `examples/coding_bench.py` passes a `list[_Scored]` whose own docstring says the
+    shape is supported deliberately, and got
+    `Argument 1 to "cost_per_success" has incompatible type` (ADR-087).
+
+    Read-only properties rather than plain attribute declarations: `Result` is a frozen
+    `@value` class, and a protocol declaring `ok: bool` demands a settable one.
+
+    `cost` is `Any` on purpose — `_cost_of` accepts `Money`-shaped (`.decimal`), a plain
+    number, or a `"$1.23"` string, and narrowing the annotation here would reject two of
+    the three the function handles.
+    """
+
+    @property
+    def ok(self) -> bool: ...
+
+    @property
+    def cost(self) -> Any: ...
 
 #: z-scores for the confidence levels this function actually supports — a lookup
 #: table, not `scipy.stats.norm.ppf`, so this stays a stdlib-only module (NFR-05: core
@@ -60,7 +83,7 @@ def _wilson_interval(successes: int, n: int, z: float) -> tuple[float, float]:
     return (max(0.0, center - margin), min(1.0, center + margin))
 
 
-def _cost_of(run: "Result") -> float:
+def _cost_of(run: Scored) -> float:
     """Accepts anything with a `.cost` that is `Money`-shaped (has `.decimal`) or a
     plain number/`$`-prefixed string — decoupled from a hard `Money` import so a test
     double doesn't need to construct a real one."""
@@ -72,7 +95,7 @@ def _cost_of(run: "Result") -> float:
     return float(str(cost).lstrip("$"))
 
 
-def cost_per_success(runs: "Sequence[Result]", *, confidence: float = 0.95) -> CostPerSuccess:
+def cost_per_success(runs: "Sequence[Scored]", *, confidence: float = 0.95) -> CostPerSuccess:
     """`total_cost / P(success)` — never a bare number, always accompanied by a
     confidence interval (§45: "thà nói 'chưa đủ evidence' còn hơn đoán" applies to a
     single point estimate over a small sample exactly as much as it applies to a
@@ -82,10 +105,10 @@ def cost_per_success(runs: "Sequence[Result]", *, confidence: float = 0.95) -> C
     a range on cost-per-success — a decreasing function of the success rate, so the
     rate's LOW bound gives cost-per-success's HIGH bound and vice versa.
 
-    `runs` needs only `.ok: bool` and a `Money`-shaped-or-numeric `.cost` — `Result`
-    satisfies this without a hard import here at module scope (only under
-    `TYPE_CHECKING`), and any object shaped the same way (a test double, a record read
-    back from a golden-set run) works too.
+    `runs` needs only `.ok: bool` and a `Money`-shaped-or-numeric `.cost`, which is now
+    what the signature SAYS as well as what the body does: `Scored` above. `Result`
+    satisfies it structurally, with no import of it here at all, and so does any object
+    shaped the same way (a test double, a record read back from a golden-set run).
     """
     if confidence not in _Z_SCORES:
         raise ValueError(

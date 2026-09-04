@@ -161,9 +161,13 @@ def main() -> None:
     print("\nRunning:")
     r = agent.try_run("Order A-4471, delivered 08/20, has a broken key -- I want a refund.")
 
+    # `Result.value` is `object | None` (ADR-022) — the harness cannot know your type,
+    # so narrowing is the caller's job, and doing it with `isinstance` is what turns a
+    # wrong `returns=` into a visible "-" instead of an `AttributeError` mid-print.
+    answer = r.value if isinstance(r.value, Conclusion) else None
     print(f"\nTyped answer      : {r.value}")
-    print(f"  .refund_approved : {r.value.refund_approved if r.value else '-'}")
-    print(f"  .amount          : {r.value.amount:,}" if r.value else "")
+    print(f"  .refund_approved : {answer.refund_approved if answer else '-'}")
+    print(f"  .amount          : {answer.amount:,}" if answer else "")
     print(f"Stopped: {r.stop_reason.value}  .  {r.steps} steps  .  {r.cost}")
 
     print("\nLog (every decision is recorded):")

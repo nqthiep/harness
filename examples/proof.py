@@ -7,7 +7,8 @@ isn't met**. Nothing here is just described in prose and nodded through.
 
 Three requirements CANNOT be proven with code, and this file says so plainly at the end
 instead of skipping them: SC-1b (measured with real children), OI-10 (a real OpenViking
-server), OI-11 (a real Anthropic API).
+server), OI-11 (a FUNDED Anthropic key — the transport and the error path
+now have live evidence, ADR-085).
 """
 from __future__ import annotations
 
@@ -180,19 +181,23 @@ from harness.models.pricing import MAX_OUTPUT, price                   # noqa: E
 L = Ledger(Budget.parse("$0.05"))
 mt = L.size_call(1200, price("claude-opus-5"), MAX_OUTPUT["claude-opus-5"])
 res = L.reserve(1200, mt, price("claude-opus-5"))
-assert res.estimate.decimal <= Budget.parse("$0.05").usd
+ceiling = Budget.parse("$0.05").usd
+assert ceiling is not None                  # `usd=None` means unlimited (S-20)
+assert res.estimate.decimal <= ceiling
 passed("SI.2", "Budget is RESERVED before every call, not reconciled after",
        f"$0.05 -> max_tokens auto-derived = {mt}, estimate ${res.estimate.decimal} <= "
        f"ceiling (ADR-017)")
 
 broken = 0
 for usd in ("$0.01", "$0.05", "$1"):
+    usd_cap = Budget.parse(usd).usd     # not `cap`: SIII below reuses that name for an
+    assert usd_cap is not None          # int line count, and this is a `Decimal | None`
     for tok in (200, 5000, 20000):
         for m in ("claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"):
             l2 = Ledger(Budget.parse(usd))
             try:
                 t = l2.size_call(tok, price(m), MAX_OUTPUT[m])
-                if l2.reserve(tok, t, price(m)).estimate.decimal > Budget.parse(usd).usd:
+                if l2.reserve(tok, t, price(m)).estimate.decimal > usd_cap:
                     broken += 1
             except Exception:
                 pass
@@ -385,12 +390,16 @@ except Exception as e:
 
 try:
     Agent(name="X", job="j", model="fake", provider=FakeModel([]),
-          returns=Conclusion("a", "b"), budget="$1")
+          # The mistake IS the demonstration: `returns=` takes a TYPE, and this rung
+          # exists to show what happens when an instance is passed instead. Silenced
+          # rather than fixed — fixing it would delete the rung.
+          returns=Conclusion("a", "b"),  # type: ignore[arg-type]
+          budget="$1")
 except Exception as e:
     ladder.append(("Construction", "returns= given an instance", str(e).splitlines()[0]))
 
 try:
-    Money(1.5)
+    Money(1.5)      # type: ignore[arg-type]  # the mistake IS the rung: IDL-01 bans float
 except TypeError as e:
     ladder.append(("Call-time", "float used as currency", str(e)))
 
@@ -517,5 +526,5 @@ print("  The three remaining items need an environment this one doesn't have, no
 print("    * SC-1b -- real 10-12 year old children")
 print("    * OI-10 -- a real openviking-server (needs an embedding model + a wizard "
       "that requires a TTY)")
-print("    * OI-11 -- a real Anthropic API (needs ANTHROPIC_API_KEY)")
+print("    * OI-11 -- a FUNDED Anthropic key. The transport and the 401 path are\n              now proven live (tests/live_probe.py); the PAYLOAD shape is not,\n              because the key is rejected before the payload is validated")
 print("\n  Every + item above is a running assertion: break the library and this file breaks.")
