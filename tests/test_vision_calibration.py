@@ -10,8 +10,9 @@ needed here, because the numbers are the fixture.
 import unittest
 
 from harness.memory.inmemory import InMemoryStore
-from vision_tools import (DEFAULT_MARGIN, DEFAULT_THRESHOLD, Calibration, IdentityLedger,
-                          calibrate)
+from vision_tools import (DEFAULT_MARGIN, DEFAULT_THRESHOLD, NATIVE_LIBRARIES,
+                          NATIVE_LIBRARY_INSTALL, Calibration, IdentityLedger,
+                          MediaPipeDetector, calibrate)
 
 #: Cosine scores between two embeddings of the SAME person, measured by
 #: `tests/vision_probe.py` on `mediapipe` 1.0.1 with `mobilenet_v3_small`. The first
@@ -121,6 +122,54 @@ class BuildingALedgerFromAMeasurement(unittest.IsolatedAsyncioTestCase):
         await ledger.enroll("Nghia", (1.0, 0.0, 0.0))
         self.assertEqual((await ledger.match((1.0, 0.0, 0.0))).name, "Nghia")
         self.assertIsNone((await ledger.match((0.0, 1.0, 0.0))).name)
+
+
+class TheNativeLibraryDiagnosis(unittest.TestCase):
+    """MediaPipe `dlopen`s its C bindings when the first task is created, so a missing
+    `libEGL.so.1` surfaces as an `OSError` from `ctypes.CDLL` naming a library — which
+    reads like a broken install or a bad model path and is neither. That diagnosis is
+    what this whole capability was parked behind for three commits (ADR-092).
+    """
+
+    def test_preflight_answers_before_any_model_file_exists(self):
+        """The point of it: callable at startup, with no model, no camera, no frame."""
+        missing = MediaPipeDetector.preflight()
+        self.assertIsInstance(missing, tuple)
+        self.assertLessEqual(set(missing), set(NATIVE_LIBRARIES),
+                             "preflight must only report libraries it actually checks")
+
+    def test_an_oserror_at_task_construction_becomes_actionable(self):
+        """Asserted by making construction fail the way a slim container makes it fail,
+        rather than by uninstalling a system library in a test."""
+        class Slim(MediaPipeDetector):
+            def _build(self, kind, path):
+                raise OSError("libEGL.so.1: cannot open shared object file: "
+                              "No such file or directory")
+
+        det = Slim(face_model="/nonexistent/face.tflite")
+        with self.assertRaises(RuntimeError) as ctx:
+            det.detect_faces(object())
+        message = str(ctx.exception)
+        self.assertIn("native libraries", message)
+        self.assertIn(NATIVE_LIBRARY_INSTALL, message)
+        self.assertIn("not Python packages", message)
+        # The labelled line, not just the substring: when the libraries ARE loadable —
+        # which is the state of this machine, and the reason a test cannot reach the
+        # other one — the summary falls back to the exception text and would satisfy a
+        # bare `assertIn` on its own, leaving this line untested.
+        self.assertIn("Original error: libEGL.so.1: cannot open shared object file",
+                      message)
+
+    def test_a_real_error_is_not_dressed_up_as_a_missing_library(self):
+        """`_task` catches `OSError` only. A `ValueError` from an unknown task kind, or
+        anything else MediaPipe raises, must still arrive as itself."""
+        class Broken(MediaPipeDetector):
+            def _build(self, kind, path):
+                raise ValueError("model file is corrupt")
+
+        det = Broken(face_model="/nonexistent/face.tflite")
+        with self.assertRaises(ValueError):
+            det.detect_faces(object())
 
 
 class TheCalibrationValueType(unittest.TestCase):

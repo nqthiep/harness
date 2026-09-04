@@ -3695,6 +3695,52 @@ raises naming `THINKING_SHAPE`. Full suite 1113 passed.
 **What is still open.** Everything above is offline agreement with documentation. A funded
 key remains the only thing that can prove the endpoint agrees — OI-11.
 
+### ADR-092 — A missing system library is a diagnosis, not a docstring note
+
+**Status:** Accepted.
+
+**Context.** `MediaPipeDetector` had never run, and ADR-090 found that the reason was not
+the missing model files everyone assumed. MediaPipe 1.0.1's C bindings `dlopen`
+`libEGL.so.1` and `libGLESv2.so.2` when the FIRST task is created, and a slim container
+image has neither. The failure:
+
+```
+OSError: libEGL.so.1: cannot open shared object file: No such file or directory
+  ... in ctypes.CDLL, from mediapipe/tasks/python/core/mediapipe_c_bindings.py
+```
+
+That reads like a broken MediaPipe install or a bad model path, and is neither. It is two
+`apt` packages. A whole capability sat parked behind that diagnosis for three commits, and
+ADR-090 recorded the fix in a docstring — which helps exactly the person who has already
+read the docstring, i.e. not the person hitting the error.
+
+**Decision.** Two mechanisms instead of a note.
+
+`MediaPipeDetector.preflight()` returns the names of whatever cannot be loaded, `()` when
+all can. It needs no model file, no camera and no frame, so a program can check it at
+startup and fail with something actionable instead of at the first frame with something
+opaque. `tests/vision_probe.py` calls it first and stops with the install command.
+
+`_task` catches `OSError` — only `OSError`, so a corrupt model file still arrives as
+itself — and re-raises with the library names, the install command, a sentence saying
+these are system libraries `pip` does not bring, and the original error kept verbatim.
+The distribution command names one family (Debian/Ubuntu, `libegl1 libgles2`) because
+that is the only one that has been tried; a guess at the others would be exactly the
+confident wrong answer the message exists to replace. Two of the three plausible package
+names on Ubuntu noble — `libglesv2` and `libgles2-mesa` — do not exist, which is measured,
+not remembered.
+
+**Test.** Five tests in `tests/test_vision_calibration.py::TheNativeLibraryDiagnosis`, and
+the interesting constraint is that this machine now HAS the libraries, so the failure state
+is unreachable: the translation is tested by making `_build` fail the way a slim container
+makes it fail, not by uninstalling a system library inside a test. Five mutations, each
+caught: not translating the `OSError`, translating every exception instead, dropping the
+install command, swallowing the original error, and reporting a library `preflight` never
+checks. The swallowed-original mutation needed a sharper assertion first — with the
+libraries present the summary falls back to the exception text, so a bare
+`assertIn("libEGL.so.1", …)` passed either way; the test now asserts the labelled
+`Original error:` line.
+
 | # | Decision | Rationale |
 |---|---|---|
 | IDL-01 | `Decimal` for all money; `float` banned in `budget/` by lint | A rounding error in a spend ceiling is a real bug class |

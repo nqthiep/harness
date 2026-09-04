@@ -10,10 +10,10 @@ then does the measurement the identity threshold always needed and never had.
 What it needs, none of which the test suite may assume:
 
     network       storage.googleapis.com (models and images)
-    system libs   libEGL.so.1 and libGLESv2.so.2 — a bare container has neither, and
-                  MediaPipe fails at task construction with an OSError from
-                  ctypes.CDLL, which looks nothing like a missing model
-                  (Debian/Ubuntu: apt-get install libegl1 libgles2)
+    system libs   libEGL.so.1 and libGLESv2.so.2 — a bare container has neither.
+                  Checked up front by `MediaPipeDetector.preflight()`, which exists
+                  because the raw failure is an OSError from ctypes.CDLL that looks
+                  nothing like a missing system library (ADR-092)
 
 Run it deliberately:
 
@@ -72,6 +72,12 @@ def main(into: Path) -> int:
     import cv2
 
     from vision_tools import MediaPipeDetector, calibrate, cosine
+
+    missing = MediaPipeDetector.preflight()
+    if missing:
+        print(f"  MediaPipe cannot load {', '.join(missing)} — nothing below will run.")
+        print("  Fix: apt-get install -y --no-install-recommends libegl1 libgles2")
+        return 1
 
     files = fetch(into)
     det = MediaPipeDetector(

@@ -528,12 +528,15 @@ class MediaPipeDetector:
     **The model files are still not bundled and must be supplied.** `mediapipe` 1.0.1
     ships no `.task` or `.tflite` anywhere in the package, `mediapipe.solutions` no longer
     exists (the legacy API is gone), and the namespace that works is
-    `mediapipe.tasks.python.vision`. The runtime also needs `libEGL.so.1` and
-    `libGLESv2.so.2` present — a bare container has neither, and the failure is an
-    `OSError` from `ctypes.CDLL` at task-construction time, nothing to do with the model
-    file. Each capability is independent: pass only the models you have and the
-    corresponding method returns empty rather than raising, so a face-only setup is a
-    supported configuration.
+    `mediapipe.tasks.python.vision`. Each capability is independent: pass only the models
+    you have and the corresponding method returns empty rather than raising, so a
+    face-only setup is a supported configuration.
+
+    **The runtime also needs `libEGL.so.1` and `libGLESv2.so.2`, which are system
+    libraries `pip` does not install.** Call `MediaPipeDetector.preflight()` at startup —
+    it needs no model, no camera and no frame, and returns the names of whatever cannot
+    be loaded. Skip it and the first `detect` raises with the same advice instead
+    (ADR-092).
 
     What remains unverified: a live camera (`cv2.VideoCapture(0)` has no device here), and
     accuracy on faces other than the handful of public test photographs above.
@@ -564,6 +567,17 @@ class MediaPipeDetector:
         path = self._paths.get(kind)
         if not path:
             return None
+        try:
+            return self._build(kind, path)
+        except OSError as exc:
+            # MediaPipe 1.0.1 `dlopen`s its C bindings when the FIRST task is created,
+            # and the failure surfaces as an `OSError` from `ctypes.CDLL` naming a
+            # library — which reads like a broken install or a bad model path and is
+            # neither. This whole capability sat parked behind that diagnosis for three
+            # commits (ADR-092).
+            raise RuntimeError(_native_library_advice(exc)) from exc
+
+    def _build(self, kind: str, path: str) -> Any:
         mp, BaseOptions, mpv = self._mp()
         base = BaseOptions(model_asset_path=path)
         if kind == "face":
@@ -585,6 +599,16 @@ class MediaPipeDetector:
             raise ValueError(f"unknown task {kind!r}")
         self._tasks[kind] = built
         return built
+
+    @staticmethod
+    def preflight() -> tuple[str, ...]:
+        """Which of MediaPipe's native libraries cannot be loaded here — `()` when all
+        of them can.
+
+        Callable before any model file exists, so a program can fail at startup with an
+        actionable message instead of at the first frame with an opaque one.
+        """
+        return missing_native_libraries()
 
     @staticmethod
     def _image(frame: Any) -> Any:
@@ -646,6 +670,49 @@ class MediaPipeDetector:
             if closer is not None:
                 closer()
         self._tasks.clear()
+
+
+#: The shared libraries MediaPipe's C bindings `dlopen`. Not Python packages: `pip
+#: install mediapipe` brings neither, and a slim container image has neither. On
+#: Debian/Ubuntu they are `libegl1` and `libgles2` (`libgles2-mesa` and `libglesv2` are
+#: both wrong names on noble — measured while getting this to run).
+NATIVE_LIBRARIES = ("libEGL.so.1", "libGLESv2.so.2")
+
+#: Per-distribution install command. Only the one family is listed, because it is the
+#: only one that has been tried here; a guess for the others would be exactly the kind of
+#: confident wrong answer the message exists to replace.
+NATIVE_LIBRARY_INSTALL = "apt-get install -y --no-install-recommends libegl1 libgles2"
+
+
+def missing_native_libraries() -> tuple[str, ...]:
+    """Which of `NATIVE_LIBRARIES` cannot be loaded, in order. `()` when all can.
+
+    Loads them directly rather than asking a package manager: what matters is whether
+    THIS process can `dlopen` them, which is the same question MediaPipe asks.
+    """
+    import ctypes
+    missing = []
+    for name in NATIVE_LIBRARIES:
+        try:
+            ctypes.CDLL(name)
+        except OSError:
+            missing.append(name)
+    return tuple(missing)
+
+
+def _native_library_advice(exc: OSError) -> str:
+    missing = missing_native_libraries()
+    named = ", ".join(missing) if missing else str(exc)
+    return (
+        f"MediaPipe could not load its native libraries: {named}\n\n"
+        f"  These are system shared libraries, not Python packages — `pip install "
+        f"mediapipe`\n  does not bring them, and a slim container image has neither. "
+        f"Nothing is wrong\n  with your model file or your code.\n\n"
+        f"  Fix (Debian/Ubuntu):  {NATIVE_LIBRARY_INSTALL}\n\n"
+        f"  Check before you run: MediaPipeDetector.preflight() -> "
+        f"{missing or ()}\n\n"
+        f"  Original error: {exc}"
+    )
 
 
 def _crop(frame: Any, box: tuple[int, int, int, int]) -> Any:
