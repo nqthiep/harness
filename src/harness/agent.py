@@ -16,7 +16,8 @@ from .context.linter import PrefixWatcher, check_determinism
 from .credentials import resolve_provider
 from .guards import (_check_subagent_safety, _check_tool_set,
                      _refuse_if_loosened, check_grant_names, check_safety)
-from .errors import (ConfigError, SyncInAsyncContextError, ToolContractError)
+from .errors import (ConfigError, SharedPolicyStateError,
+                     SyncInAsyncContextError, ToolContractError)
 from .middleware import _run_scope
 from .observe.console import ConsoleExporter
 from .observe.events import EventBus
@@ -330,11 +331,11 @@ class Agent:
                 result = await RunEngine(self, provider, ledger, engine, taint, self._asm,
                                          bus, self._watch).run(message, messages=_history,
                                                                on_delta=on_delta)
-            _check_shared_policy_state(self.policies, user_policies, before)
+            _check_shared_policy_state(self.policies, user_policies,
+                                       before, bus, result)
             return result
         finally:
-            if writer is not None:
-                writer.close()
+            _close_exporters(exporters)
 
     async def arun(self, message: str, *, on_delta=None) -> Result:
         r = await self.atry_run(message, on_delta=on_delta)
@@ -430,8 +431,7 @@ class Agent:
         )
 
         async def close() -> None:
-            if writer is not None:
-                writer.close()
+            _close_exporters(exporters)
             if own_conn is not None:
                 await own_conn.close()
 
@@ -978,18 +978,73 @@ def _is_factory(p) -> bool:
     return not inspect.ismethod(getattr(p, "check", None))
 
 
+def _close_exporters(exporters) -> None:
+    """`Exporter.close()` is declared in `observe/events.py` and documented in
+    docs/04 §…, and until now only `TranscriptWriter` — the exporter this library
+    constructs for itself — was ever closed.  Measured on both backends: a user-supplied
+    exporter saw `close() called: False`.
+
+    `OtelExporter.close()` exists specifically to end spans a crashed run left open, so
+    the leak it prevents was not being prevented, and every other implementer was stubbing
+    a method for nothing (an ISP complaint with teeth).
+
+    One exporter raising must not stop the others closing: they are independent sinks, and
+    the whole point of closing is to flush.  The same isolation `EventBus.emit` already
+    applies to emitting.
+    """
+    for e in exporters:
+        close = getattr(e, "close", None)
+        if close is None:
+            continue
+        try:
+            close()
+        except Exception:                 # noqa: BLE001 - a sink that cannot close is
+            pass                          # not a reason to lose the other sinks' flush
+
+
+def _class_data(cls) -> dict[str, str]:
+    """Data attributes a policy's CLASS carries, which are shared by every instance.
+
+    `p.__dict__` misses them entirely, and a counter kept there is the widest possible
+    leak — not one Agent's runs bleeding into each other but every Agent in the process:
+
+        run 1: SneakyPolicy.seen = 1   (no error)
+        run 2: SneakyPolicy.seen = 2   (no error)   <- two separate Agent instances
+
+    Methods, properties and the dunders are skipped: they are the class's definition, not
+    its state, and their reprs carry addresses that would make every snapshot differ from
+    itself.  A class attribute that legitimately changes mid-run — a memo cache, say — is
+    reported by this too, and correctly so: a cache on a shared class IS cross-run state,
+    whatever it was meant for.
+    """
+    import inspect
+    out = {}
+    for klass in reversed(cls.__mro__):
+        if klass is object:
+            continue
+        for k, v in vars(klass).items():
+            if k.startswith("__") or inspect.isroutine(v) or inspect.isdatadescriptor(v):
+                continue
+            if isinstance(v, (staticmethod, classmethod, type)):
+                continue
+            out[f"{klass.__name__}.{k}"] = repr(v)
+    return out
+
+
 def _policy_state(policies) -> dict[int, str]:
-    """A cheap snapshot of each policy's mutable attributes."""
+    """A cheap snapshot of each policy's mutable state, instance AND class."""
     out = {}
     for p in policies:
         d = getattr(p, "__dict__", None)
         if d is None:
             d = {s: getattr(p, s, None) for s in getattr(type(p), "__slots__", ())}
-        out[id(p)] = repr(sorted((k, repr(v)) for k, v in d.items()))
+        items = sorted((k, repr(v)) for k, v in d.items())
+        items += sorted(_class_data(type(p)).items())
+        out[id(p)] = repr(items)
     return out
 
 
-def _check_shared_policy_state(declared, used, before) -> None:
+def _check_shared_policy_state(declared, used, before, bus=None, r=None) -> None:
     """A shared policy that mutated during a run carries state into the next one.
 
     Detected here rather than guessed at construction: `EgressPolicy` holds configuration
@@ -1001,7 +1056,15 @@ def _check_shared_policy_state(declared, used, before) -> None:
         if _is_factory(original):
             continue                      # a factory: fresh each run, nothing to share
         if before.get(id(live)) != after.get(id(live)):
-            raise ConfigError(
+            # Emitted BEFORE raising. This is the one setup mistake that cannot be seen
+            # until a run has happened, so by now the model has been called and the run
+            # has been billed — and an exception is not an audit record. The exporters
+            # get the finding whether or not the caller catches what follows.
+            if bus is not None:
+                from .observe.events import EventKind
+                bus.emit(EventKind.ERROR_RAISED, error="SharedPolicyStateError",
+                         detail=f"policy {type(live).__name__} mutated during the run")
+            raise SharedPolicyStateError(
                 f"the policy {type(live).__name__!r} changed while it ran, and this agent "
                 f"reuses the same instance on every run.\n\n"
                 f"  The next request would inherit this one's progress — one customer's "
@@ -1009,7 +1072,7 @@ def _check_shared_policy_state(declared, used, before) -> None:
                 f"  Pass the class instead of an instance, so each run gets a fresh one:\n\n"
                 f"      policies=[{type(live).__name__}]        ← not "
                 f"{type(live).__name__}()\n\n"
-                f"  -> docs/06-safety.md#4-least-privilege"
+                f"  -> docs/06-safety.md#4-least-privilege", r
             )
 
 
