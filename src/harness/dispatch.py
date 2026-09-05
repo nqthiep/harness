@@ -1,9 +1,9 @@
 """Tool dispatch — split out of run.py in Round 28.
 
-IDL-13 caps this file at 252 code lines (examples/proof.py SIII; G-17 pushed it two past
-run.py's own 251-bump precedent — `_tool_error`'s middleware-vs-tool distinction is this
-loop's own responsibility, not logic to extract elsewhere) and calls an overrun a design
-signal rather than something to refactor around.  Subagent budget binding pushed it over.
+IDL-13 caps this file at 256 code lines (examples/proof.py SIII) — 250 originally, +2 for
+G-17's `_tool_error` distinction, +4 for H-7's `_bounded` re-check (design/review-
+architect-round3.md), both this loop's own dispatch-decision logic, not extractable, and
+calls an overrun a design signal rather than something to refactor around.
 """
 from __future__ import annotations
 
@@ -201,16 +201,31 @@ class Dispatcher:
 
         # The executed set, recorded where execution is actually decided.  Anything that
         # `continue`d above — unknown tool, DENY, duplicate — never reaches here (Round 38).
-        # `serial` is added to below, per call, once the S-27 recheck confirms it will
-        # actually run — not here, since that recheck can now still turn one into a DENY.
-        self.ran.extend(spec.name for _, _, spec in parallel)
+        # Neither bucket is recorded here anymore: both `parallel` (H-7 below) and
+        # `serial` (S-27, right below) can still turn a planned call into a DENY, so
+        # each is only added to `self.ran` once its own re-check actually lets it run.
 
         if parallel:
+            # H-7, design/review-architect-round3.md: `EXTERNAL` is `parallel_safe` AND
+            # a confidentiality sink (`max_confidentiality=PUBLIC`, same as `WRITE`) —
+            # but only `serial` (below) got S-27's re-check. Two `external` calls in one
+            # batch: the first raises the label to SECRET, the second — already
+            # scheduled into this SAME `gather` — ran anyway, un-gated, and could return
+            # exactly what the first one just read. `_bounded` now re-checks
+            # `check_flow` itself, right before its own `_invoke` — the parallel
+            # equivalent of `serial`'s re-check, reading `self._e._taint.label` live at
+            # the moment of the check as `serial` already does, so ordering inside the
+            # batch resolves itself the same way. `self.ran` is only extended from
+            # `zip(parallel, done)` below — `asyncio.gather` returns results in the
+            # ORDER ITS AWAITABLES WERE PASSED, not completion order, so "in order"
+            # (`Result.tools_run`'s own contract, IDL-49) still holds even though the
+            # calls themselves may finish out of order.
             done = await asyncio.gather(
                 *(self._bounded(b, spec, step) for _, b, spec in parallel),
                 return_exceptions=False)
-            for (i, _, _), r in zip(parallel, done):
+            for (i, _, spec), (r, executed) in zip(parallel, done):
                 out[i] = r
+                if executed: self.ran.append(spec.name)
         for i, b, spec in serial:
             # S-27: `d` above was decided against the label from BEFORE this batch ran —
             # a fixed snapshot taken once, at the top of this function. The parallel
@@ -234,12 +249,22 @@ class Dispatcher:
             out[i] = {**out[origin], "tool_use_id": planned[i][0]["id"]}
         return out
 
-    async def _bounded(self, b: Mapping[str, Any], spec: ToolSpec, step: int) -> dict[str, Any]:
+    async def _bounded(self, b: Mapping[str, Any], spec: ToolSpec,
+                       step: int) -> "tuple[dict[str, Any], bool]":
         """NFR-09: parallelism is bounded, so a fan-out cannot fork-bomb a downstream
         service.  The semaphore was specified and the parameter stored, but nothing read
         it until Round 26 measured peak concurrency at 30 against a limit of 4."""
+        # H-7, design/review-architect-round3.md: the parallel-batch equivalent of
+        # `serial`'s S-27 re-check below — `check_flow` re-read against the LIVE
+        # `self._e._taint.label` right here, at the moment this call actually runs, not
+        # the pre-batch snapshot. `(result, executed)`: the caller decides `self.ran`
+        # membership from this return value rather than from `_bounded` mutating shared
+        # state itself, which N concurrent tasks doing so would make order-dependent.
         async with self._e._sem:
-            return await self._invoke(b, spec, step)
+            gate = check_flow(self._e._taint.label, spec, self._e._a._grants)
+            if gate.verdict is Verdict.DENY:
+                return err(b["id"], f"denied by policy: {gate.reason}"), False
+            return await self._invoke(b, spec, step), True
 
     async def _invoke(self, b: Mapping[str, Any], spec: ToolSpec, step: int) -> dict[str, Any]:
         # T-6.3: attempts is 1 for write/danger — always exactly one try, ever. Retrying
