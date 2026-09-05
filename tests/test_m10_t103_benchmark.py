@@ -9,7 +9,9 @@ import unittest
 
 sys.path.insert(0, "src")
 
+from harness.errors import ConfigError
 from harness.eval.benchmark import BenchmarkReport, benchmark, import_cold_start_ms
+from harness.result import Money
 
 
 class Benchmark(unittest.TestCase):
@@ -84,6 +86,67 @@ class Benchmark(unittest.TestCase):
                            "mutation (bỏ Semaphore) phải cho đỉnh concurrency VƯỢT 3 — "
                            "nếu nó cũng không vượt, test này không còn phân biệt được "
                            "bản đúng và bản có lỗi")
+
+
+class NganSachTongTheH3(unittest.TestCase):
+    """H-3, design/review-architect-round3.md: G-14 gave `run_golden_set` an aggregate
+    ceiling but not `benchmark()`, named in the same original finding. `total_budget=`
+    needs `cost_of=` too, since `run_fn` is opaque -- nothing else can turn its return
+    value into a price."""
+
+    def test_khong_truyen_total_budget_hanh_vi_khong_doi(self):
+        async def call():
+            return Money("0.10")
+
+        report = asyncio.run(benchmark(call, n=5, concurrency=1))
+        self.assertEqual(report.n, 5)
+        self.assertFalse(report.budget_exhausted)
+
+    def test_total_budget_khong_co_cost_of_thi_raise(self):
+        async def call():
+            return Money("0.10")
+
+        with self.assertRaises(ConfigError):
+            asyncio.run(benchmark(call, n=5, total_budget="$1"))
+
+    def test_total_budget_can_dung_giua_bo_dung_som(self):
+        async def call():
+            return Money("0.10")
+
+        # Mỗi lần gọi tốn $0.10, concurrency=1 nên tuần tự. Cái được kiểm TRƯỚC mỗi lần
+        # gọi là "còn > 0", không phải "đủ cho lần tới" (giống hệt run_golden_set) --
+        # nên $0.35 vẫn cho phép lần gọi thứ 4 bắt đầu (remaining=$0.05 > 0 lúc đó), chỉ
+        # dừng ở lần thứ 5.
+        report = asyncio.run(benchmark(call, n=10, concurrency=1,
+                                       total_budget="$0.35", cost_of=lambda r: r))
+        self.assertEqual(report.n, 4,
+                         "phải dừng SỚM sau đúng 4 lần gọi -- không chạy hết cả 10")
+        self.assertTrue(report.budget_exhausted)
+        self.assertEqual(len(report.latencies_ms), 4)
+
+    def test_total_budget_qua_nho_cho_ca_lan_dau_van_tra_ve_bao_cao_rong(self):
+        """Không giống `run_golden_set` (raise khi 0 case chạy), `benchmark()` là công
+        cụ đo lường, không phải cổng đúng/sai -- trả về báo cáo suy biến (n=0), không
+        raise, không chia 0 cho 0."""
+        async def call():
+            return Money("0.10")
+
+        report = asyncio.run(benchmark(call, n=5, total_budget="$0",
+                                       cost_of=lambda r: r))
+        self.assertEqual(report.n, 0)
+        self.assertTrue(report.budget_exhausted)
+        self.assertEqual(report.p50_ms, 0.0)
+
+    def test_total_budget_khong_gioi_han_van_chay_het(self):
+        from harness.budget.ledger import Budget
+
+        async def call():
+            return Money("0.10")
+
+        report = asyncio.run(benchmark(call, n=5, total_budget=Budget(usd=None),
+                                       cost_of=lambda r: r))
+        self.assertEqual(report.n, 5)
+        self.assertFalse(report.budget_exhausted)
 
 
 class ColdStartImportThat(unittest.TestCase):
