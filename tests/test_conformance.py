@@ -265,6 +265,43 @@ class StaticChecks(unittest.TestCase):
         r = self._tool("mypy")
         self.assertEqual(r.returncode, 0, r.stdout[-2000:])
 
+    def test_every_cited_adr_exists(self):
+        """763 citations across this repository address a decision by NUMBER. Two of them
+        — ADR-098 and ADR-099 — were cited from five modules and from commit messages
+        while having no section at all: the reasoning went into the commit and the log was
+        never updated. A citation that resolves to nothing is worse than no citation, and
+        nothing checked (ADR-103)."""
+        import pathlib as _p
+        import re
+
+        log = _p.Path("docs/12-decision-logs.md").read_text()
+        defined = set(re.findall(r"^### (ADR-\d{3})", log, re.M))
+        cited = set()
+        for root in ("src", "tests", "examples", "docs", "design"):
+            for f in _p.Path(root).rglob("*"):
+                if f.suffix in (".py", ".md") and "__pycache__" not in str(f):
+                    cited |= set(re.findall(r"ADR-\d{3}", f.read_text()))
+        self.assertEqual(sorted(cited - defined), [],
+                         "cited somewhere, defined nowhere")
+
+    def test_the_adr_index_is_complete_and_the_numbers_are_unique(self):
+        """The index is the only thing that turns a number back into a subject without
+        scrolling 4,000 lines, so it is worth nothing the moment it is stale."""
+        import collections
+        import pathlib as _p
+        import re
+
+        log = _p.Path("docs/12-decision-logs.md").read_text()
+        sections = re.findall(r"^### (ADR-\d{3})", log, re.M)
+        index_block = log.split("## 0. Index", 1)[1].split("\n---", 1)[0]
+        indexed = re.findall(r"^\| \[(ADR-\d{3})\]", index_block, re.M)
+
+        counts = collections.Counter(sections)
+        self.assertEqual([n for n, c in counts.items() if c > 1], [],
+                         "two sections share one ADR number")
+        self.assertEqual(sorted(indexed), sorted(sections),
+                         "the index and the sections disagree")
+
     def test_mypy_co_analyses_the_examples_with_core(self):
         """`examples/` is 6,780 lines that other files in this repo import, so "it is
         only an example" stopped being true a while ago (ADR-082). `test_mypy_is_clean`

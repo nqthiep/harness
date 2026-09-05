@@ -6,6 +6,119 @@ the choice, never the cost of the alternative.
 
 ---
 
+## 0. Index
+
+99 decisions. The NUMBER is the address — 763 citations across this repository
+use `ADR-NNN` and only ten name this file — so this table turns a number back into a
+subject without scrolling, and is why the log is indexed rather than split (ADR-103).
+`tests/test_conformance.py` asserts it stays complete and that nothing cites an ADR that
+was never written: two were cited from five modules before anybody noticed they had no
+section.
+
+| # | Decision | Status |
+|---|---|---|
+| [ADR-001](#adr-001--the-harness-owns-the-agent-loop) | The harness owns the agent loop | Accepted (Round 2) · **Supersedes:** the Round 1 baseline |
+| [ADR-002](#adr-002--five-plugin-seams-everything-else-core) | Five plugin seams, everything else core | Accepted (Round 2) |
+| [ADR-003](#adr-003--effect-classes-are-required-and-derive-five-behaviors) | Effect classes are required, and derive five behaviors | Accepted (Round 5) |
+| [ADR-004](#adr-004--agent-is-immutable-tools-and-prompt-are-frozen) | `Agent` is immutable; tools and prompt are frozen | Accepted (Round 5) |
+| [ADR-005](#adr-005--budget-is-a-pre-flight-ceiling-with-finite-defaults) | Budget is a pre-flight ceiling with finite defaults | Accepted (Round 5) |
+| [ADR-006](#adr-006--strong-default-model-no-automatic-routing-in-v1) | Strong default model; no automatic routing in v1 | Accepted (Round 0, reaffirmed Round 6) |
+| [ADR-007](#adr-007--async-core-sync-facade) | Async core, sync facade | Accepted (Round 3) |
+| [ADR-008](#adr-008--plugin-discovery-is-opt-in) | Plugin discovery is opt-in | Accepted (Round 7) |
+| [ADR-009](#adr-009--job-not-system-prompt) | `job=`, not `system_prompt=` | Accepted (Round 4) |
+| [ADR-010](#adr-010--tools-with-no-can-alias) | `tools=`, with no `can=` alias | Accepted (Round 4) · *Recorded as a loss for the Beginner Advocate* |
+| [ADR-011](#adr-011--taint-lattice-instead-of-injection-detection) | Taint lattice instead of injection detection | Accepted (Round 7) · **The central safety decision** |
+| [ADR-012](#adr-012--the-beginner-requirement-is-literal) | The beginner requirement is literal | Accepted (Round 13) · **Supersedes:** the Round 0 resolution of A0 |
+| [ADR-013](#adr-013--credentials-are-a-guided-command-not-a-shell-instruction) | Credentials are a guided command, not a shell instruction | Accepted (Round 14) |
+| [ADR-014](#adr-014--feedback-and-results-are-shaped-for-a-terminal) | Feedback and results are shaped for a terminal | Accepted (Round 14) |
+| [ADR-015](#adr-015--tracebacks-are-filtered-locally-never-globally) | Tracebacks are filtered locally, never globally | Accepted (Round 14) |
+| [ADR-016](#adr-016--session-spend-is-a-warning-the-real-ceiling-belongs-at-the-provider) | Session spend is a warning; the real ceiling belongs at the provider | Accepted (Round 14) |
+| [ADR-017](#adr-017--max-tokens-is-derived-from-the-remaining-budget) | `max_tokens` is derived from the remaining budget | Accepted (Round 17) · **Fixes a defect in ADR-005 as originally specified** |
+| [ADR-018](#adr-018--no-token-by-token-streaming-to-the-terminal-by-default) | No token-by-token streaming to the terminal by default | Rejected (Round 17) · *recorded so it is not re-proposed as an oversight* |
+| [ADR-019](#adr-019--closed-enums-that-mirror-an-external-protocol-carry-an-exhaustiveness-test) | Closed enums that mirror an external protocol carry an exhaustiveness test | Accepted (Round 18) · **Fixes a defect in the Round 8 `StopReason` design** |
+| [ADR-020](#adr-020--a-chat-has-one-ledger-for-the-session) | A `Chat` has one ledger for the session | Accepted (Round 18) |
+| [ADR-021](#adr-021--approval-is-a-resolution-step-not-a-policy) | Approval is a resolution step, not a policy | Accepted (Round 19) · **Fixes a contradiction between the Round 2 and Round 5 specs** |
+| [ADR-022](#adr-022--strict-tool-arguments-and-optional-structured-output) | Strict tool arguments and optional structured output | Accepted (Round 21) · **Reverses OI-03** |
+| [ADR-023](#adr-023--no-planner-reflection-or-self-critique-loop) | No planner, reflection, or self-critique loop | Rejected (Round 21) · *recorded so it is not re-proposed as an obvious omission* |
+| [ADR-024](#adr-024--the-secret-registry-is-an-id-keyed-weakref-map-not-a-weakset) | The secret registry is an id-keyed weakref map, not a WeakSet | Accepted (Round 24) · **Fixes an incompatibility between IDL-32 and IDL-33** |
+| [ADR-025](#adr-025--cache-determinism-is-checked-free-in-two-places) | Cache determinism is checked free, in two places | Accepted (Round 24) · **Supersedes IDL-17** |
+| [ADR-026](#adr-026--the-budget-has-two-guarantees-not-one) | The budget has two guarantees, not one | Accepted (Round 24) · **Restates SC-2; corrects RISK-03's mitigation** |
+| [ADR-027](#adr-027--value-replaces-bare-dataclass-frozen-true-slots-true) | `@value` replaces bare `@dataclass(frozen=True, slots=True)` | Accepted (Round 25) · **Amends IDL-05** |
+| [ADR-028](#adr-028--redaction-retention-is-scoped-to-the-run) | Redaction retention is scoped to the run | Accepted (Round 25) · **Fixes a security defect created by ADR-024 + IDL-33** |
+| [ADR-029](#adr-029--cache-breakpoints-keep-a-rolling-read-point) | Cache breakpoints keep a rolling read point | Accepted (Round 26) · **Completes §07 |
+| [ADR-030](#adr-030--a-subagent-holds-parent-headroom-it-does-not-read-it) | A subagent holds parent headroom; it does not read it | Accepted (Round 28) · **Fixes an unenforced claim in §06 |
+| [ADR-031](#adr-031--underscore-prefixed-tool-parameters-are-never-model-facing) | Underscore-prefixed tool parameters are never model-facing | Accepted (Round 28) |
+| [ADR-032](#adr-032--langgraph-is-the-loop-and-it-is-an-optional-extra) | LangGraph is the loop, and it is an optional extra | Accepted |
+| [ADR-033](#adr-033--every-exit-routes-through-one-finish-node) | Every exit routes through one `finish` node | Accepted |
+| [ADR-034](#adr-034--redaction-is-scoped-at-the-write-boundary-never-around-the-caller) | Redaction is scoped at the write boundary, never around the caller | Accepted |
+| [ADR-035](#adr-035--a-context-database-is-a-store-and-its-recall-is-external) | A context database is a `Store`, and its recall is `external` | Accepted |
+| [ADR-036](#adr-036--on-a-checkpointed-backend-the-thread-s-state-is-the-only-memory) | On a checkpointed backend, the thread's state is the only memory | Accepted |
+| [ADR-037](#adr-037--stop-reason-is-cleared-by-the-budget-gate-and-only-there) | `stop_reason` is cleared by the budget gate, and only there | Accepted |
+| [ADR-038](#adr-038--one-stop-reason-table-imported-by-both-backends) | One stop-reason table, imported by both backends | Accepted |
+| [ADR-039](#adr-039--refusal-fallbacks-are-on-by-default-and-off-by-one-flag) | Refusal fallbacks are on by default, and off by one flag | Accepted |
+| [ADR-040](#adr-040--value-declares-itself-to-type-checkers) | `@value` declares itself to type checkers | Accepted |
+| [ADR-041](#adr-041--budget-unlimited-is-the-taxonomy-s-16th-kind-added-for-s-20) | `budget.unlimited` is the taxonomy's 16th kind, added for S-20 | Accepted (S-20 fix) |
+| [ADR-042](#adr-042--retry-is-bounded-backed-off-and-reads-effectprofile-retryable) | Retry is bounded, backed off, and reads `EffectProfile.retryable` | Accepted (M6/T-6 |
+| [ADR-043](#adr-043--execute-once-is-built-as-a-standalone-contract-not-wired-in-yet) | `execute_once` is built as a standalone contract, not wired in yet | Accepted (M6/T-6 |
+| [ADR-044](#adr-044--provider-failures-are-caught-and-returned-as-a-result-never-raised) | Provider failures are caught and returned as a `Result`, never raised | Accepted (M6/T-6 |
+| [ADR-045](#adr-045--workspace-confinement-rejects-it-never-escapes) | Workspace confinement rejects, it never escapes | Accepted (M7/T-7 |
+| [ADR-046](#adr-046--allowed-hosts-defaults-to-deny-all-none-is-the-explicit-escape-hatch) | `allowed_hosts` defaults to deny-all; `None` is the explicit escape hatch | Accepted (M7/T-7 |
+| [ADR-047](#adr-047--sandbox-is-a-sixth-plugin-seam-extending-adr-002) | `Sandbox` is a sixth plugin seam, extending ADR-002 | Accepted (M7/T-7 |
+| [ADR-048](#adr-048--envelope-v1-event-carries-schema-version-trace-id-tenant-id-session-id) | Envelope v1: `Event` carries `schema_version`, `trace_id`, `tenant_id`, `session_id` | Accepted (M8/T-8 |
+| [ADR-049](#adr-049--decision-gains-policy-version-approvalrecord-was-already-built) | `Decision` gains `policy_version`; `ApprovalRecord` was already built | Accepted (M8/T-8 |
+| [ADR-050](#adr-050--otelexporter-follows-docs-10-2-s-already-published-mapping-not-a-fresh-design) | `OtelExporter` follows docs/10 §2's already-published mapping, not a fresh design | Accepted (M8/T-8 |
+| [ADR-051](#adr-051--cost-per-success-reports-a-wilson-scored-interval-never-a-bare-number) | `cost_per_success` reports a Wilson-scored interval, never a bare number | Accepted (M8/T-8 |
+| [ADR-052](#adr-052--agent-stream-yields-real-event-s-deltas-stay-on-on-delta) | `agent.stream()` yields real `Event`s; deltas stay on `on_delta=` | Accepted (M8/T-8 |
+| [ADR-053](#adr-053--session-names-what-round-37-already-isolated-scoped-to-the-classic-backend) | `Session` names what Round 37 already isolated; scoped to the classic backend | Accepted (M8/T-8 |
+| [ADR-054](#adr-054--harness-mcp-classifies-third-party-tools-itself-hints-are-a-default-never-the-decision) | `harness.mcp` classifies third-party tools itself; hints are a default, never the decision | Accepted (M9/T-9 |
+| [ADR-055](#adr-055--harness-server-an-asgi-service-api-and-execute-once-s-first-real-caller) | `harness.server`: an ASGI Service API, and `execute_once`'s first real caller | Accepted (M9/T-9 |
+| [ADR-056](#adr-056--one-canonical-event-to-dict-transcriptwriter-had-drifted-from-envelope-v1) | One canonical `Event.to_dict()`; `TranscriptWriter` had drifted from envelope v1 | Accepted (M9/T-9 |
+| [ADR-057](#adr-057--trajectory-contract-eight-assertions-one-pure-function) | `Trajectory` contract: eight assertions, one pure function | Accepted (M10/T-10 |
+| [ADR-058](#adr-058--golden-set-reuses-cost-per-success-s-wilson-interval-doesn-t-reinvent-it) | Golden set reuses `cost_per_success`'s Wilson interval, doesn't reinvent it | Accepted (M10/T-10 |
+| [ADR-059](#adr-059--benchmark-bounded-concurrency-cold-start-needs-a-fresh-process) | Benchmark: bounded concurrency, cold start needs a fresh process | Accepted (M10/T-10 |
+| [ADR-060](#adr-060--tenant-id-threaded-into-runcontext-ctx-not-just-eventbus) | `tenant_id` threaded into `RunContext`/`_Ctx`, not just `EventBus` | Accepted (N-9, found while re-running `tests/test_roadmap |
+| [ADR-061](#adr-061--advisor-consultation-is-a-policy-gate-never-a-grant) | Advisor consultation is a `Policy` gate, never a grant | Accepted (user request: "a strong model to handle hard problems |
+| [ADR-062](#adr-062--stall-detection-is-mechanical-and-free-stalled-is-its-own-stop-reason-the-check-sits-in-the-budget-gate) | Stall detection is mechanical and free; `STALLED` is its own stop reason; the check sits in the budget gate | Accepted |
+| [ADR-063](#adr-063--the-decision-log-is-an-append-only-jsonl-journal-and-the-classic-loop-finally-has-one) | The decision log is an append-only JSONL journal, and the classic loop finally has one | Accepted |
+| [ADR-064](#adr-064--execute-once-gets-its-caller-the-langgraph-backend-only-and-only-for-write-danger) | `execute_once` gets its caller: the LangGraph backend only, and only for `write`/`danger` | Accepted (supersedes ADR-043's "not wired yet", and corrects one line of T-6 |
+| [ADR-065](#adr-065--codetools-confinement-needs-a-root-so-it-needs-a-constructor-and-read-file-stops-being-an-exfiltration-primitive) | `CodeTools`: confinement needs a root, so it needs a constructor; and `read_file` stops being an exfiltration primitive | Accepted |
+| [ADR-066](#adr-066--compaction-drops-whole-steps-it-does-not-summarize-and-it-is-driven-by-the-ratio-not-by-editing-running-dry) | Compaction drops whole steps; it does not summarize, and it is driven by the ratio, not by editing running dry | Accepted |
+| [ADR-067](#adr-067--tools-called-ever-requirebeforepolicy-survives-real-compaction-on-the-durable-backend) | `tools_called_ever`: `RequireBeforePolicy` survives real compaction on the durable backend | Accepted (integrity audit of a large concurrent merge that landed ADR-061's |
+| [ADR-072](#adr-072--refresh-codebase-docs-openwiki-code-mode-as-an-explicit-codetools-tool-never-an-automatic-step) | `refresh_codebase_docs`: OpenWiki "code mode" as an explicit `CodeTools` tool, never an automatic step | Accepted |
+| [ADR-073](#adr-073--agent-with-profile-a-profile-is-sugar-over-with-held-to-the-same-only-tightens-rule-as-policy-subagent-safety) | `Agent.with_profile()`: a `Profile` is sugar over `with_()`, held to the same only-tightens rule as `Policy`/subagent safety | Accepted |
+| [ADR-074](#adr-074--agent-with-profile-refuses-a-second-profile-by-default-profiles-bookkeeping-added) | `Agent.with_profile()` refuses a second profile by default; `_profiles` bookkeeping added | Accepted |
+| [ADR-075](#adr-075--shellcommandpolicy-gains-mode-allowlist-denylist-mode-s-threat-model-stated-honestly) | `ShellCommandPolicy` gains `mode="allowlist"`; denylist mode's threat model stated honestly | Accepted |
+| [ADR-076](#adr-076--codingprofile-apply-shares-one-store-a-caller-that-builds-many-agents-owns-closing-it) | `CodingProfile.apply()` shares one `Store`; a caller that builds many agents owns closing it | Accepted |
+| [ADR-077](#adr-077--camera-face-body-identity-and-scene-ship-as-a-plain-profile-the-safety-engine-decides-the-agent-s-shape-not-the-profile) | Camera, face/body, identity and scene ship as a plain `Profile`; the safety engine decides the agent's shape, not the profile | Accepted |
+| [ADR-078](#adr-078--a-profile-s-parameters-are-its-domain-s-vocabulary-the-conventions-on-top-of-profile-are-written-down-and-checked-across-every-profile-at-once) | A profile's parameters are its domain's vocabulary; the conventions on top of `Profile` are written down and checked across every profile at once | Accepted |
+| [ADR-079](#adr-079--refuse-if-loosened-also-checks-a-dropped-sensitive-before-model-s-docstring-stops-claiming-a-control-that-does-not-exist) | `_refuse_if_loosened` also checks a dropped `sensitive`; `before_model`'s docstring stops claiming a control that does not exist | Accepted |
+| [ADR-080](#adr-080--runtime-events-are-served-by-priority-over-four-existing-channels-the-driver-is-caller-owned-not-core) | Runtime events are served by PRIORITY over four existing channels; the `Driver` is caller-owned, not core | Accepted |
+| [ADR-081](#adr-081--camerasensor-a-camera-is-an-event-source-only-once-it-reports-differences-resolves-identity-out-of-band-and-gets-its-priority-from-structure) | `CameraSensor`: a camera is an event source only once it reports DIFFERENCES, resolves identity out of band, and gets its priority from structure | Accepted |
+| [ADR-082](#adr-082--harness-contrib-ship-what-you-don-t-want-re-derived-copy-paste-what-you-want-edited) | `harness.contrib`: ship what you don't want re-derived, copy-paste what you want edited | Accepted |
+| [ADR-083](#adr-083--four-defects-in-harness-contrib-driver-two-of-them-shipped-and-critical) | Four defects in `harness.contrib.driver`, two of them shipped and critical | Accepted |
+| [ADR-084](#adr-084--a-profile-may-not-re-declare-an-existing-tool-name-under-a-weaker-effect) | A profile may not re-declare an existing tool NAME under a weaker effect | Accepted |
+| [ADR-085](#adr-085--oi-11-halved-with-a-dead-key-the-live-endpoint-at-zero-cost-and-no-credential) | OI-11 halved with a dead key: the live endpoint, at zero cost and no credential | Accepted (partial — the authenticated half stays open) |
+| [ADR-086](#adr-086--the-first-run-key-path-had-never-been-executed-end-to-end) | The first-run key path had never been executed end to end | Accepted |
+| [ADR-087](#adr-087--co-analyse-examples-with-core-and-fix-what-that-finds) | Co-analyse `examples/` with core, and fix what that finds | Accepted |
+| [ADR-088](#adr-088--chat-asay-and-the-cancelled-turn-nobody-was-billing) | `Chat.asay()`, and the cancelled turn nobody was billing | Accepted |
+| [ADR-089](#adr-089--sensor-earns-part-c-of-the-plugin-test-and-still-is-not-a-seam) | `Sensor` earns part (c) of the plugin test, and still is not a seam | Accepted |
+| [ADR-090](#adr-090--the-vision-detector-ran-for-real-and-the-identity-threshold-was-the-wrong-question) | The vision detector ran for real, and the identity threshold was the wrong question | Accepted |
+| [ADR-091](#adr-091--the-payload-is-per-model-and-one-of-five-was-wrong) | The payload is per-model, and one of five was wrong | Accepted |
+| [ADR-092](#adr-092--a-missing-system-library-is-a-diagnosis-not-a-docstring-note) | A missing system library is a diagnosis, not a docstring note | Accepted |
+| [ADR-093](#adr-093--session-asay-and-one-session-is-driven-sync-or-async-never-both) | `Session.asay()`, and one session is driven sync or async, never both | Accepted |
+| [ADR-094](#adr-094--the-whole-perception-pipeline-on-real-decoded-frames) | The whole perception pipeline, on real decoded frames | Accepted (the hardware half stays open) |
+| [ADR-095](#adr-095--landmark-geometry-better-still-not-usable-and-the-measurement-moved-when-the-code-path-did) | Landmark geometry: better, still not usable, and the measurement moved when the code path did | Accepted |
+| [ADR-096](#adr-096--oi-10-against-a-real-server-three-defects-and-the-wizard-that-never-existed) | OI-10 against a real server: three defects, and the wizard that never existed | Accepted (the key-value path closes; search stays open) |
+| [ADR-097](#adr-097--the-four-command-cold-start-executed-rather-than-described) | The four-command cold start, executed rather than described | Accepted |
+| [ADR-098](#adr-098--core-does-not-import-its-own-entry-points-and-has-no-import-cycles) | Core does not import its own entry points, and has no import cycles | Accepted |
+| [ADR-099](#adr-099--parity-by-set-invariant-and-the-seam-that-revealed) | Parity by set invariant, and the seam that revealed | Accepted |
+| [ADR-100](#adr-100--a-lost-update-is-detected-not-argued-away) | A lost update is detected, not argued away | Accepted (detection, not prevention — the gap is named and tested) |
+| [ADR-101](#adr-101--the-tier-rule-applied-to-everything-instead-of-once) | The tier rule, applied to everything instead of once | Accepted |
+| [ADR-102](#adr-102--two-self-critiques-acted-on) | Two self-critiques, acted on | Accepted |
+| [ADR-103](#adr-103--the-decision-log-gets-an-index-and-its-citations-get-checked) | The decision log gets an index, and its citations get checked | Accepted (indexed and checked; deliberately NOT split) |
+
+---
+
 ## Design Decision Log (architecture)
 
 ### ADR-001 — The harness owns the agent loop
@@ -4242,6 +4355,136 @@ an invalid mode, a fork that does not inherit) and two in `test_vision_calibrati
 (a default's refusal carries its provenance; a chosen gate's does not). Three mutations,
 each caught: a fork inheriting the mode, any string accepted as a mode, and the
 provenance never firing. Full suite 1193 passed.
+
+### ADR-098 — Core does not import its own entry points, and has no import cycles
+
+**Status:** Accepted.
+
+**Context.** Two layering violations, both invisible because nothing looked.
+`agent._resolve_provider` did `from .cli import api_key` — core's run path importing the
+CLI package. Credential resolution is a domain concern the CLI *consumes*, not one it
+owns: a library used with no CLI at all still has to find a key. And
+`middleware.with_middleware` reached `agent._resolve_provider` from inside a function to
+dodge the cycle with `agent.py`, which imports `middleware._run_scope` at module level.
+
+**Decision.** `harness/credentials.py` holds credential resolution and
+`resolve_provider`; `cli`, `agent` and `middleware` all import it downward, and `cli`
+re-exports the names so `from harness.cli import api_key` still resolves.
+
+`harness/guards.py` holds the construction-time refusals — `_check_tool_set`,
+`_check_subagent_safety`, `_refuse_if_loosened`, `_effect_loosenings`. They were in
+`agent.py`, which made `harness.lg` import the FACADE to reach them while `agent.py`
+deferred its own import of `lg` into a function body. The safety engine was living inside
+the thing it guards. Only these four moved, and the criterion is that they decide
+REFUSAL: `_output_format`, `_guard_sync` and friends are plumbing for one facade and a
+second backend has no use for them. `agent.py` 1214 → 1007 lines.
+
+**`tests/test_layering.py` is the point, and writing it taught more than the fixes.**
+
+* Its first version resolved every relative import to a name that does not exist, found
+  **zero** edges, and passed every assertion by measuring nothing. Caught by mutation:
+  re-introducing the `middleware -> agent` import changed no test result. The anchor for
+  `from .x` depends on whether the importing module is a package, which it now computes
+  from which files are `__init__.py`.
+* With 239 real edges it found **four** cycles, not none. Three are `TYPE_CHECKING`-only —
+  erased at runtime, and how Python spells a mutual type reference; `policy/base.py`
+  documents its own. Excluding them is what makes the remainder real.
+* The fourth was real, and was the `agent ⟷ lg` cycle above.
+
+Core now has **zero runtime import cycles**, asserted at both readings — module-level and
+counting function-local imports, since a cycle deferred into a function body is still a
+cycle and is exactly the one that was there.
+
+**Test.** 10 tests. Three mutations, each caught: re-importing the CLI from core, contrib
+reaching into the examples tier, and `lg` importing the facade again.
+
+
+### ADR-099 — Parity by set invariant, and the seam that revealed
+
+**Status:** Accepted.
+
+**Context.** `test_parity.py` runs hand-picked scenarios through three backends. Nothing
+forced a NEW rule to get a row, and every row compares an OUTCOME.
+
+**A correction first.** My architecture review claimed `dispatch.py` re-checks
+`check_flow` before execution while the durable path relies only on `TaintPolicy`. Wrong:
+`lg/runtime.py` has `_regate`, the same discipline under a different name, defending
+resume-from-checkpoint instead of same-batch staleness. I had grepped for a function name
+instead of for a behaviour.
+
+**What the set comparison did find.** Driving every scenario through all three backends
+and comparing the UNION of emitted `EventKind`s showed `error.raised` emitted by the
+classic loop and **not** by graph or durable on an unknown stop reason — and by none of
+the three on an endless pause. Every existing row compared `stop_reason`, on which all
+three agreed, so the observability difference was invisible: an operator filtering the
+stream for failures saw a successful-looking run that had failed, on the backend you would
+pick for production. Fixed at three emit sites and pinned as an invariant rather than a
+row — *a run that ends in ERROR says so in the event stream, on every backend*.
+
+**And a structural fix where a behavioural test cannot reach.** Both engines constructed
+the builtin policy tuple themselves. No test fails when a rule is merely ABSENT from one
+backend — measured: dropping `TaintPolicy` from one place breaks 9 tests, dropping it from
+both breaks the same 9. `policy.builtin.builtins_for()` is now the single source, asserted
+structurally.
+
+**The ceiling did its job.** Those two `ERROR_RAISED` emits pushed `run.py` to 256 code
+lines against its 250 ceiling. IDL-13 says an overrun means splitting the file, never
+raising the cap — so `run.py` split at the seam this work had just exposed:
+`harness/stop.py` holds the stop-reason vocabulary both engines speak. `lg/runtime.py` had
+been importing it FROM `run.py`, the durable backend reaching into the classic loop's
+module for a table.
+
+The split surfaced two duplications the sharing was meant to prevent: `MAX_PAUSES = 5`
+defined twice (`run.py` and `lg/graph.py`, beside a table whose own docstring says two
+copies is how backends drift), and `canonical_len` defined byte-identically in `run.py`
+and `dispatch.py`. One definition each now; `canonical_len` went to
+`context/assembler.py`, whose job it is. `run.py` 256 → 217 lines.
+
+**Two mistakes of my own in the tests, both caught by mutation.** `assertIs` on two
+`MAX_PAUSES = 5` passes because CPython interns small integers — and the docstring claimed
+identity was *why* it worked. It reads the source now. And the event-union floor was a
+guess (12) rather than a measurement (14 of 17, with the three unreachable ones named).
+
+**Test.** `test_parity.py` 18 → 24 rows. Full suite 1171 passed.
+
+### ADR-103 — The decision log gets an index, and its citations get checked
+
+**Status:** Accepted (indexed and checked; deliberately NOT split).
+
+**Context.** 98 decisions, 4,000+ lines, one file, no index, ordered by insertion. Finding
+"what decides X" was a grep rather than a lookup, and a correction chain like
+ADR-077 → ADR-090 → ADR-095 was something a reader had to reassemble.
+
+**The measurement that decided the shape of the fix.** 763 citations of `ADR-NNN` across
+this repository; **ten** of them name this file. The address is the NUMBER, not the path.
+So the problem is lookup, not file size: splitting into eight files would leave every one
+of those 763 citations needing an index anyway to answer "which file is ADR-057 in?" —
+the index is load-bearing either way, and the split adds churn on top of it. Indexed, not
+split, and the reason is written here so the next person does not re-open it as an
+oversight.
+
+**What the check found immediately.** ADR-098 and ADR-099 were cited from five modules
+(`credentials.py`, `guards.py`, `middleware.py`, `cli/__init__.py`, `lg/__init__.py`,
+`policy/builtin.py`, `run.py`) and from two commit messages — and **had no sections at
+all.** The reasoning had gone into the commit message and the log was never updated. A
+citation that resolves to nothing is worse than no citation: it looks like a decision was
+recorded. Both are now written.
+
+Then the check caught the same mistake again, one commit later and mine again: this ADR
+was cited from the index and from the test's own docstring before it existed. That is the
+test working, on the first day, on its author.
+
+**Decision.** A generated index at the top — number, subject, status — plus two
+conformance tests: every `ADR-NNN` cited anywhere in `src`, `tests`, `examples`, `docs` or
+`design` has a section; and the index matches the sections exactly, with no duplicate
+numbers. Status comes from each ADR's own `**Status:**` line, so a supersession recorded
+in the section shows up in the index without a second place to update.
+
+**What is deliberately not automated.** Whether a citation points at the RIGHT ADR, and
+whether a superseded decision is being cited as current. Both need judgment about meaning,
+and a test that guesses at meaning is a test that will be silenced. The index makes them
+visible instead — ADR-077's own section carries its "Superseded by ADR-090" note inline,
+which is where a reader is.
 
 | # | Decision | Rationale |
 |---|---|---|
