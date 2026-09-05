@@ -18,6 +18,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import interrupt
 
+from .. import audit
 from ..budget.ledger import Ledger
 from ..dispatch import MAX_ATTEMPTS, RETRY_BACKOFF_MAX_S, RETRY_BACKOFF_S
 from ..errors import BudgetExceeded, ToolContractError
@@ -28,8 +29,7 @@ from ..middleware import _call_scope
 from ..observe.events import EventBus, EventKind
 from ..policy.base import Ruling, ToolCall, Verdict
 from ..policy.builtin import emits_of
-from ..policy.decision import (POLICY_ENGINE_VERSION, Actor, AuthEvidence, Decision,
-                              DecisionLog, Scope, actor_json, evidence_json)
+from ..policy.decision import Actor, AuthEvidence, DecisionLog
 from ..policy.engine import PolicyEngine
 from ..progress import STALL_AFTER, ProgressLedger, stall_reason
 from ..policy.label import Grants, Integrity, Label
@@ -364,9 +364,22 @@ class Runtime:
             d = self._engine_for(_run_id(state)).decide(
                 ToolCall(c["id"], c["name"], c.get("args", {}), spec,
                         idempotency_key(_run_id(state), c["id"])), ctx)
-            self._emit(state, EventKind.POLICY_DECIDED, step=state.get("step", 0),
-                       tool=c["name"], call_id=c["id"], verdict=d.verdict.name,
-                       reason=d.reason, policy=d.policy)
+            # F8: emitted AND, when it is a refusal, recorded. This node is where a
+            # DENY from `EffectPolicy`/`TaintPolicy`/`EgressPolicy`/
+            # `RequireBeforePolicy`/a user policy is decided, and until `audit.decided`
+            # existed the only `Decision` this backend ever wrote came out of
+            # `approval_gate` — so a refusal that never reached an approver left the
+            # approval book empty (measured: `decision rows: []`).
+            #
+            # An ASK is deliberately NOT announced here, and the classic loop does not
+            # announce one either: it is not a decision (`Decision.__post_init__`
+            # refuses to store it) and `approval_gate` emits the verdict it becomes, one
+            # node later. What that row would have carried and the resolved one does not
+            # — the name of the policy that raised the question — rides along as
+            # `asked_by` instead, so nothing is lost and the two engines put the same
+            # number of rows on the stream (F10b).
+            if d.verdict is not Verdict.ASK:
+                self._decided(state, d, c["name"], c["id"], c.get("args", {}), spec)
             if d.verdict is Verdict.DENY:
                 denied.append(ToolMessage(content=f"denied by policy: {d.reason}",
                                           tool_call_id=c["id"], status="error"))
@@ -375,7 +388,9 @@ class Runtime:
                 # checkpointed, and a ToolSpec holds a callable that no serializer can
                 # write.  The spec is runtime configuration, looked up on use (Round 35).
                 pending.append({"call": c, "tool": c["name"],
-                                "verdict": int(d.verdict), "reason": d.reason})
+                                "verdict": int(d.verdict), "reason": d.reason,
+                                "asked_by": d.policy if d.verdict is Verdict.ASK
+                                else None})
         return {"_pending": pending, "messages": denied}
 
     def approval_gate(self, state) -> dict:
@@ -427,32 +442,24 @@ class Runtime:
                     self._engine_for(_run_id(state)).resolve(
                         Ruling(Verdict.ASK, p["reason"], "policy"), call, ctx, self._approve,
                         require_evidence=self._require_approval_evidence))
-            self._emit(state, EventKind.POLICY_DECIDED, step=state.get("step", 0),
-                       tool=p["tool"], call_id=p["call"]["id"], verdict=d.verdict.name,
-                       reason=d.reason, policy=d.policy,
-                       actor=actor_json(reported_actor), evidence=evidence_json(reported_evidence))
             # Phê duyệt là một SỰ KIỆN, không phải một cờ. Ghi nó ra sổ, scoped tới đúng
             # lời gọi này: `call_id` khác None nên grant không sống quá lượt — "duyệt vĩnh
             # viễn" không biểu diễn được (policy/decision.py).
-            self._decisions.record(Decision(
-                id=f"dec-{p['call']['id']}", verdict=d.verdict,
-                scope=Scope(tool=p["tool"], args=dict(p["call"].get("args", {})),
-                            server=spec.server if spec is not None else None,
-                            call_id=p["call"]["id"]),
-                # S-11, đã sửa: `reported_actor` is real identity ONLY when the
-                # `approve=` callback returned `Approval(ok, actor=...)` instead of a
-                # plain `bool` — the common case still falls back to this placeholder,
-                # which is a self-declared "someone called the callback", not verified
-                # identity. `reported_evidence` (also from `Approval`) is the proof, when
-                # the callback supplied one — `require_approval_evidence=True` is what
-                # actually enforces it being present for a `human` actor (`resolve()`
-                # already downgraded `d.verdict` to DENY above if it wasn't).
-                actor=(reported_actor if reported_actor is not None else
-                       (Actor.human("approver", via="callback")
-                        if self._approve is not None else Actor.policy(d.policy))),
-                evidence=reported_evidence,
-                decided_at=_now(), expires_at=None, run_id=_run_id(state), reason=d.reason,
-                policy_version=POLICY_ENGINE_VERSION))
+            #
+            # S-11, đã sửa: `reported_actor` is real identity ONLY when the `approve=`
+            # callback returned `Approval(ok, actor=...)` instead of a plain `bool` — the
+            # common case still falls back to the placeholder below, which is a
+            # self-declared "someone called the callback", not verified identity.
+            # `reported_evidence` (also from `Approval`) is the proof, when the callback
+            # supplied one — `require_approval_evidence=True` is what actually enforces
+            # it being present for a `human` actor (`resolve()` already downgraded
+            # `d.verdict` to DENY above if it wasn't).
+            if reported_actor is None and self._approve is not None:
+                reported_actor = Actor.human("approver", via="callback")
+            self._decided(state, d, p["tool"], p["call"]["id"],
+                          p["call"].get("args", {}), spec, actor=reported_actor,
+                          evidence=reported_evidence, resolved_ask=True,
+                          asked_by=p.get("asked_by"))
             out.append({**p, "verdict": int(d.verdict), "reason": d.reason})
         denied = [ToolMessage(content=f"declined: {p['call']['name']}",
                               tool_call_id=p["call"]["id"], status="error")
@@ -519,15 +526,15 @@ class Runtime:
             # `ForeverAllow` — `Decision.__post_init__` đòi `scope.call_id` khi không có
             # `expires_at`) — sổ giờ có một hàng cho mỗi lần thực thi, không chỉ một hàng
             # cho lần cấp gốc.
-            self._decisions.record(Decision(
-                id=f"dec-{p['call']['id']}-reuse", verdict=Verdict.ALLOW,
-                scope=Scope(tool=p["tool"], args=dict(p["call"].get("args", {})),
-                            server=spec.server if spec is not None else None,
-                            call_id=p["call"]["id"]),
-                actor=Actor.policy("decision-log-reuse"), decided_at=_now(),
-                expires_at=None, run_id=_run_id(state),
-                reason="grant còn sống trong sổ, tái dùng cho lời gọi này",
-                policy_version=POLICY_ENGINE_VERSION))
+            audit.record(
+                self._decisions,
+                Ruling(Verdict.ALLOW, "grant còn sống trong sổ, tái dùng cho lời gọi này",
+                       "decision-log-reuse"),
+                run_id=_run_id(state), tool=p["tool"], call_id=p["call"]["id"],
+                args=p["call"].get("args", {}),
+                server=spec.server if spec is not None else None,
+                actor=Actor.policy("decision-log-reuse"),
+                row_id=f"{p['call']['id']}-reuse")
             return Ruling(Verdict.ALLOW, "grant còn sống trong sổ", "decision-log")
         return Ruling(Verdict.DENY,
                       "không có grant còn hiệu lực cho lời gọi này "
@@ -551,10 +558,11 @@ class Runtime:
         for p in state.get("_pending", []):
             gate = self._regate(p, state, label)
             if gate.verdict is not Verdict.ALLOW:
-                self._emit(state, EventKind.POLICY_DECIDED, step=state.get("step", 0),
-                           tool=p["tool"], call_id=p["call"]["id"],
-                           verdict=gate.verdict.name, reason=gate.reason,
-                           policy=gate.policy)
+                # Its own row id: the ALLOW this overturns may already have written one
+                # under the plain call id (`approval_gate`, or the reuse row above).
+                self._decided(state, gate, p["tool"], p["call"]["id"],
+                              p["call"].get("args", {}), self._tools.get(p["tool"]),
+                              row_id=f"{p['call']['id']}-regate")
                 msgs.append(ToolMessage(content=f"declined: {gate.reason}",
                                         tool_call_id=p["call"]["id"], status="error"))
                 called_now.append(p["tool"])
@@ -864,6 +872,16 @@ class Runtime:
         from_messages = frozenset(tc.get("name") for m in msgs if isinstance(m, AIMessage)
                                   for tc in (m.tool_calls or []) if tc.get("id") in done_ids)
         return from_messages | frozenset(state.get("tools_called_ever") or ())
+
+    def _decided(self, state, d: Ruling, tool: str, call_id: str, args, spec,
+                 **kw) -> None:
+        """Every verdict this engine reaches goes through `audit.decided` — one call
+        shape for `policy.decided` AND the `Decision` row, shared with `dispatch.py` so
+        a rule about the audit trail cannot land on one engine only (`audit.py`)."""
+        audit.decided(self._bus_for(_run_id(state)), self._decisions, d,
+                      run_id=_run_id(state), step=state.get("step", 0), tool=tool,
+                      call_id=call_id, args=args,
+                      server=spec.server if spec is not None else None, **kw)
 
     def _bus_for(self, run_id: str) -> EventBus:
         if run_id not in self._bus_cache:

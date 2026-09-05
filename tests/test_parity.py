@@ -21,8 +21,9 @@ So the rows below also compare, per scenario:
   * every field of the `Result` the caller actually receives — `steps`, `tools_run`,
     `cost`, `usage`, `detail`, `stop_reason`, `text` (`RESULT_BACKENDS`, the two that
     build one; `on_graph` hands back raw graph state by design);
-  * the `policy.decided` stream as a SEQUENCE of `(tool, verdict, policy, reason)`,
-    with its count and order — the artifact an operator filters for refusals;
+  * the `policy.decided` stream as a SEQUENCE of
+    `(tool, verdict, policy, asked_by, reason)`, with its count and order — the
+    artifact an operator filters for refusals;
   * the `Decision` rows written to the approval book (`loop` and `graph`; see
     `on_durable` for why the third cannot be handed one).
 """
@@ -148,11 +149,13 @@ class Collector:
 def decided_rows(collector):
     """The audit stream an operator actually filters, as a sequence.
 
-    `(tool, verdict, policy, reason)` and nothing else: `call_id` and `step` are the
-    scenario's own scaffolding, and `actor`/`evidence` are compared by the decision-log
-    row this same verdict writes."""
+    `(tool, verdict, policy, asked_by, reason)` and nothing else: `call_id` and `step`
+    are the scenario's own scaffolding, and `actor`/`evidence` are compared by the
+    decision-log row this same verdict writes.  `asked_by` is in because it is the only
+    place the trail says WHICH policy sent a call to a human — the resolved row's own
+    `policy` reads `approval` for every one of them."""
     return [(e.data.get("tool"), e.data.get("verdict"), e.data.get("policy"),
-             e.data.get("reason") or "")
+             e.data.get("asked_by"), e.data.get("reason") or "")
             for e in collector.events if e.kind.value == "policy.decided"]
 
 
@@ -664,6 +667,77 @@ class Parity(unittest.TestCase):
                     self.assertIn("broken", loop,
                                   "the loop must keep obeying IDL-49")
 
+
+    def test_the_policy_decided_stream_agrees_on_every_backend(self):
+        """Not the SET of event kinds — the sequence of payloads.
+
+        The set comparison two rows up cannot see an audit row vanish: deleting the
+        durable re-gate's `POLICY_DECIDED` emit left the whole suite green, because
+        the earlier gate already contributes `policy.decided` to the set.  An operator
+        filtering for `verdict == "DENY"` reads this sequence, so this is what has to
+        match: same tools, same verdicts, same deciding policy, same reasons, same
+        count, same order.
+        """
+        for name, script, kw in SCENARIOS:
+            with self.subTest(scenario=name):
+                got = self.both(script, input_tokens=PINNED_INPUT_TOKENS, **kw)
+                self.assertSame(got, "decided")
+
+    def test_every_refusal_reaches_the_approval_book_on_both_engines(self):
+        """docs/05 §1, restated by `policy/decision.py` itself: "an audit log that
+        records only what was permitted cannot answer 'what did we refuse, and why'".
+
+        Measured before the fix: a run whose taint policy refused a `write` produced
+        `decision rows: []` on BOTH engines — the classic loop recorded a row only
+        inside its `ASK` branch, and the graph only inside `approval_gate`.  A DENY
+        from `EffectPolicy`, `TaintPolicy`, `EgressPolicy`, `RequireBeforePolicy` or
+        any user policy became a `policy.decided` event and nothing durable.
+
+        Three claims, per scenario and per engine:
+
+          1. every DENY on the event stream has a matching row in the book, and the
+             book invents none — the two artifacts tell one story;
+          2. the DENY rows are IDENTICAL across the engines, in order, with reasons;
+          3. every row, refusal or grant, is scoped to one `call_id`, carries a reason,
+             and names a non-model actor (D-1: `Actor` has no `Model` variant, and the
+             reason a row exists is to say what was refused *and why*).
+
+        The ALLOW row COUNT is deliberately not compared, and this is the one place in
+        this file where a difference is structural rather than a drift: the graph
+        re-consults the BOOK at the point of consumption (`_regate`, S-29 — one row per
+        execution under a grant, not one per grant) while the loop re-consults the
+        LABEL there (`check_flow`, S-27) and never looks the grant up a second time.  So
+        an approved `danger` call leaves one row on the loop and two on the graph.  Both
+        satisfy D-2; neither can lose a refusal, which is what claims 1-3 pin down.
+        """
+        for name, script, kw in SCENARIOS:
+            with self.subTest(scenario=name):
+                got = self.both(script, input_tokens=PINNED_INPUT_TOKENS, book=True,
+                                **kw)
+                refusals = {}
+                for label in BOOK_BACKENDS:
+                    book = got[label]["decisions"]
+                    on_stream = sorted((t, r) for t, v, _p, _a, r
+                                       in got[label]["decided"] if v == "DENY")
+                    booked = sorted((t, r) for t, v, r, *_ in book if v == "DENY")
+                    self.assertEqual(
+                        on_stream, booked,
+                        f"{name}/{label}: the event stream and the approval book "
+                        f"disagree about what was refused")
+                    refusals[label] = [r for r in book if r[1] == "DENY"]
+                    for tool_, verdict, reason, kind, ident, call_id in book:
+                        self.assertIsNotNone(
+                            call_id, f"{name}/{label}: {tool_} {verdict} row is not "
+                                     f"scoped to a call — a standing grant")
+                        self.assertTrue(reason,
+                                        f"{name}/{label}: {tool_} {verdict} row has no "
+                                        f"reason, so it cannot answer 'why'")
+                        self.assertIn(kind, ("human", "operator", "policy"),
+                                      f"{name}/{label}: actor kind {kind!r} (D-1)")
+                        self.assertTrue(ident, f"{name}/{label}: actor has no id")
+                a, b = BOOK_BACKENDS
+                self.assertEqual(refusals[a], refusals[b],
+                                 f"{name}: the engines record different refusals")
 
 
 class DependencyWeight(unittest.TestCase):
