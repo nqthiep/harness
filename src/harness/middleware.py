@@ -59,6 +59,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Iterator, Mapping, Sequence
 
 from ._value import value
+from .credentials import resolve_provider
 from .models.base import ModelRequest, ModelResponse
 
 if TYPE_CHECKING:
@@ -267,14 +268,15 @@ def with_middleware(agent: "Agent", *middlewares: Middleware) -> "Agent":
     """
     if not middlewares:
         return agent
-    # `_resolve_provider`, not a fourth copy of "build the default provider". Its
-    # docstring says it exists so the classic and durable paths could not drift; this
-    # was a third site that had already drifted, and the drift was visible: with no key
-    # configured, `with_middleware()` produced a live agent that failed mid-run with
+    # `resolve_provider`, not a fourth copy of "build the default provider". It exists
+    # so the classic and durable paths could not drift; this was a third site that had
+    # drifted anyway, and the drift was visible: with no key configured,
+    # `with_middleware()` produced a live agent that failed mid-run with
     # `ProviderError: TypeError: "Could not resolve authentication method..."`, where
     # the same agent unwrapped raises `ConfigError: ... Run: harness setup` (ADR-086).
-    from .agent import _resolve_provider              # function-local: agent.py imports us
-    provider = _resolve_provider(agent.provider)
+    # Imported at MODULE level now: it lives in `credentials`, so reaching it no longer
+    # means reaching back into `agent.py`, which imports this module (ADR-098).
+    provider = resolve_provider(agent.provider)
     return agent.with_(
         provider=_MiddlewareProvider(provider, middlewares),
         tools=[_wrap_tool(t, middlewares) for t in agent.toolset],

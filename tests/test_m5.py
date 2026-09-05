@@ -312,9 +312,10 @@ class TheKeyActuallyReachesTheProvider(unittest.TestCase):
         would have failed before the fix."""
         from unittest.mock import patch
 
-        from harness.agent import _resolve_provider
-        with patch("harness.cli.api_key", return_value=("sk-ant-from-file", ".env file")):
-            provider = _resolve_provider(None)
+        from harness.credentials import resolve_provider
+        with patch("harness.credentials.api_key",
+                   return_value=("sk-ant-from-file", ".env file")):
+            provider = resolve_provider(None)
         self.assertEqual(provider._client.api_key, "sk-ant-from-file")
 
     def test_a_provider_with_no_credential_at_all_refuses_to_construct(self):
@@ -340,7 +341,7 @@ class TheKeyActuallyReachesTheProvider(unittest.TestCase):
                 return call.request
 
         agent = Agent(name="A", job="hi")
-        with patch("harness.cli.api_key", return_value=(None, "")):
+        with patch("harness.credentials.api_key", return_value=(None, "")):
             with self.assertRaises(ConfigError) as bare:
                 agent.run("hi")
             with self.assertRaises(ConfigError) as wrapped:

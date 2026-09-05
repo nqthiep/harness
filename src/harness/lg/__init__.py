@@ -16,7 +16,9 @@ from ..policy.builtin import EffectPolicy, EgressPolicy, TaintPolicy
 from ..policy.decision import DecisionLog
 from ..policy.label import Grants
 from ..tools.registry import ToolSet
-from ..agent import _check_subagent_safety, _check_tool_set
+# From `guards`, not from `agent`: importing the facade to reach the guards was the
+# last real import cycle in core (ADR-098).
+from ..guards import _check_subagent_safety, _check_tool_set
 from .graph import GUARDED, INTERRUPT, build, unguarded_paths
 from .runtime import Runtime
 from .state import AgentState
