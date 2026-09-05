@@ -15,6 +15,7 @@ import the `mcp` SDK, same rule as `graph`/`viking`/`otel` (ADR-032).
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import field
 from typing import Any, Awaitable, Callable, Mapping, NewType
 
@@ -63,6 +64,24 @@ class McpServerPolicy:
     #: `None` = every tool the server publishes. A non-`None` set is an allowlist: any
     #: `tools/list` entry not in it is silently skipped by `connect()`, never classified.
     allow: frozenset[str] | None = None
+    #: G-13, design/review-architect.md — the K-12-compatible version of the
+    #: `fingerprint` this class's own docstring says v1 deferred (deferred because
+    #: nothing PINS one endpoint over its lifetime; this is narrower: pinning one
+    #: TOOL's *shape* at the moment it was reviewed, not the server's identity). Keyed
+    #: by the tool's PROTOCOL name, value a `tool_fingerprint()` hash the operator
+    #: computed once, offline, after actually reading that tool's description,
+    #: inputSchema and annotations. `None` (the default) changes nothing — `trusted`
+    #: still governs hint-based classification exactly as before this field existed.
+    #: Once set, it closes design/03 §5.4's remaining gap: classification is "chốt tại
+    #: thời điểm bind" per RUN, but nothing stopped the SERVER from rug-pulling a tool's
+    #: description or schema between two different runs, each of which re-classifies
+    #: correctly against whatever `tools/list` says *at that bind*. A tool whose live
+    #: shape no longer matches its pinned hash — or that was never reviewed at all —
+    #: is treated as `trusted=False`: it falls back to `default_effect`, never to a
+    #: hint the (possibly rug-pulled) server itself supplied. `effects` (M-1's explicit
+    #: per-tool override) is untouched by this — an operator's own stated classification
+    #: outranks a hint either way, pinned or not.
+    reviewed_tools: Mapping[str, str] | None = None
 
 
 def _effect_from_hints(ann: Any) -> Effect:
@@ -91,12 +110,48 @@ def _effect_from_hints(ann: Any) -> Effect:
     return Effect.DANGER
 
 
+def tool_fingerprint(tool: Any) -> str:
+    """A canonical hash of everything about a tool's SHAPE that classification reads —
+    `name`, `description`, `inputSchema`, `annotations` — G-13, design/review-architect.md.
+    Deterministic given equal content, independent of dict/attribute iteration order.
+
+    An operator calls this once, offline, on a tool they actually reviewed, and pins the
+    result into `McpServerPolicy.reviewed_tools`. Never imports `mcp.types` (ADR-032):
+    reads only the same duck-typed attributes `classify_mcp_tool`/`_effect_from_hints`
+    already rely on, so it works on the real SDK's `mcp.types.Tool` and on a bare stub
+    alike (`tests/test_m9_t91_mcp.py`'s `_tool()` fixture, among others).
+    """
+    ann = getattr(tool, "annotations", None)
+    if ann is None:
+        ann_repr: Any = None
+    elif hasattr(ann, "model_dump"):
+        ann_repr = ann.model_dump(mode="json", exclude_none=True)
+    else:
+        ann_repr = {k: getattr(ann, k, None) for k in
+                   ("title", "readOnlyHint", "destructiveHint",
+                    "idempotentHint", "openWorldHint")}
+    material = json.dumps(
+        {"name": tool.name, "description": tool.description,
+         "inputSchema": dict(tool.inputSchema), "annotations": ann_repr},
+        sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.blake2b(material.encode("utf-8"), digest_size=16).hexdigest()
+
+
 def _effect_for(tool: Any, policy: McpServerPolicy) -> Effect:
-    """M-1..M-2: policy override > (trusted ? hint : default) > default."""
+    """M-1..M-2: policy override > (trusted AND (unpinned OR verified) ? hint : default)
+    > default. The middle clause is G-13: once `reviewed_tools` is set, a hint is only
+    trusted for a tool that was BOTH reviewed (`tool.name` is a key in it) AND has not
+    changed shape since (`tool_fingerprint(tool)` still matches the pinned hash) —
+    anything else, including a tool the operator never reviewed at all, is treated
+    exactly like `trusted=False`."""
     if tool.name in policy.effects:
         return policy.effects[tool.name]
     if not policy.trusted:
         return policy.default_effect
+    if policy.reviewed_tools is not None:
+        pinned = policy.reviewed_tools.get(tool.name)
+        if pinned is None or pinned != tool_fingerprint(tool):
+            return policy.default_effect
     return _effect_from_hints(getattr(tool, "annotations", None))
 
 
