@@ -89,20 +89,30 @@ _CURRENT: contextvars.ContextVar[RunIdentity] = contextvars.ContextVar(
     "harness_middleware_identity", default=_EMPTY_IDENTITY)
 
 
+#: Where an argument rewrite gets reported. A callable rather than the `EventBus`
+#: itself: this module sits above `observe` in the layering and must not learn its
+#: types to make a record (the `EgressPolicy`-shaped mistake of a low layer importing
+#: a high one). `Agent` sets it for the run; nothing set means nothing to tell.
+_AMEND: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "harness_middleware_amend", default=None)
+
+
 def _identity() -> RunIdentity:
     return _CURRENT.get()
 
 
 @contextlib.contextmanager
 def _run_scope(*, run_id: str, session_id: str | None,
-               tenant_id: str | None) -> Iterator[None]:
+               tenant_id: str | None, on_amend: Any = None) -> Iterator[None]:
     """Entered once, by `Agent`, around the whole run — classic (`atry_run`) or durable
     (`_atry_run_durable`). Not part of the public API."""
     token = _CURRENT.set(RunIdentity(run_id=run_id, session_id=session_id,
                                      tenant_id=tenant_id))
+    amend_token = _AMEND.set(on_amend)
     try:
         yield
     finally:
+        _AMEND.reset(amend_token)
         _CURRENT.reset(token)
 
 
@@ -225,6 +235,15 @@ class Middleware:
         `ShortCircuit(result)` to skip the tool's own function and use `result`
         instead.
 
+        **Returning modified kwargs changes the call the verdict was about.** The hook
+        cannot reach a call `Policy` denied, so it cannot bypass a verdict — but it can
+        change the subject of one, and that is a trust boundary rather than a detail:
+        a middleware is as privileged as the policy set. Every rewrite emits
+        `tool.arguments_amended` naming this class, so "what was approved" and "what ran"
+        stay two comparable facts in the transcript instead of one that quietly changed.
+        docs/02 §4 said stacking hooks "can only add restriction or observation, never
+        bypass one"; the parenthetical was right and the conclusion was not.
+
         Fires once per RETRY attempt, not once per logical call: a `read`/`external`
         tool gets up to `MAX_ATTEMPTS` tries on failure (`dispatch.py`/`lg/runtime.py`,
         T-6.3), and every attempt re-enters this hook with the SAME `call.identity.
@@ -339,11 +358,22 @@ def _wrap_tool(spec: "ToolSpec", middlewares: Sequence[Middleware]) -> "ToolSpec
     @functools.wraps(fn)
     async def wrapped(**kwargs: Any) -> Any:
         identity = _identity()
+        amend = _AMEND.get()
         for mw in middlewares:
             try:
+                before = kwargs
                 kwargs = dict(mw.before_tool(ToolInvocation(name, kwargs, identity=identity)))
             except ShortCircuit as sc:
                 return sc.result
+            # A hook cannot bypass the VERDICT — it never sees a call `Policy` denied —
+            # but it can change the call the verdict was about, and until this existed
+            # the transcript then positively asserted an argument set that never ran.
+            # Measured: `policy.decided fetch ALLOW` for
+            # `{"url": "http://docs.python.org/x"}` while the tool was called with
+            # `http://evil.example/exfil`. Reporting it does not stop it; a rewrite is a
+            # documented, useful power (redaction, defaulting). Silence was the defect.
+            if amend is not None and kwargs != before:
+                amend(name, type(mw).__name__, before, kwargs)
         result = await fn(**kwargs)
         for mw in middlewares:
             result = mw.after_tool(ToolInvocation(name, kwargs, result, identity=identity))

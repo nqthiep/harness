@@ -327,7 +327,8 @@ class Agent:
         # out — wide enough to redact, narrow enough not to retain (Round 25, RT-13).
         try:
             with redaction_scope(), _run_scope(run_id=run_id, session_id=self.session_id,
-                                              tenant_id=self.tenant_id):
+                                              tenant_id=self.tenant_id,
+                                              on_amend=_amender(bus)):
                 result = await RunEngine(self, provider, ledger, engine, taint, self._asm,
                                          bus, self._watch).run(message, messages=_history,
                                                                on_delta=on_delta)
@@ -356,13 +357,18 @@ class Agent:
             )
         from langchain_core.messages import HumanMessage
 
-        graph, close = await self._build_durable_graph()
+        graph, close, runtime = await self._build_durable_graph()
         try:
             thread_id = self.session_id or self._durable_thread_id()
             config = {"configurable": {"thread_id": thread_id}}
             prior = await graph.aget_state(config)
             before = len(prior.values.get("messages") or []) if prior and prior.values else 0
-            with _run_scope(run_id=thread_id, session_id=self.session_id,
+            # `Runtime` keeps ONE bus per run_id (`_bus_for`), and the amendment has to
+            # go through that same one: a second `EventBus` over the same exporters would
+            # start its own `seq` counter and scramble the transcript's order. Private
+            # for now — a public accessor belongs on `Runtime`, not a reach from here.
+            with _run_scope(on_amend=_amender(runtime._bus_for(thread_id)),
+                            run_id=thread_id, session_id=self.session_id,
                             tenant_id=self.tenant_id):
                 out = await graph.ainvoke({"messages": [HumanMessage(message)], "step": 0},
                                           config=config)
@@ -418,7 +424,7 @@ class Agent:
             exporters.append(writer)
         if ConsoleExporter.should_attach():
             exporters.append(ConsoleExporter(self.name))
-        graph, _runtime = build_agent(
+        graph, runtime = build_agent(
             model=model, tools=list(self.toolset), budget=self.budget,
             model_name=self.model, safety=self.safety, policies=self.policies,
             allowed_hosts=self.allowed_hosts,
@@ -435,7 +441,7 @@ class Agent:
             if own_conn is not None:
                 await own_conn.close()
 
-        return graph, close
+        return graph, close, runtime
 
     async def stream(self, message: str, *, on_delta=None):
         """T-8.5, docs/17-research-alignment.md M8 — `async for ev in agent.stream(msg)`
@@ -976,6 +982,23 @@ def _is_factory(p) -> bool:
     class has the attribute too — the first version of this check did exactly that."""
     import inspect
     return not inspect.ismethod(getattr(p, "check", None))
+
+
+def _amender(bus):
+    """How a `Middleware`'s argument rewrite reaches the event stream.
+
+    `middleware.py` sits below `observe` and must not import `EventKind` to make a
+    record, so it calls this instead: the facade is the composition root and is allowed
+    to know both. Same shape as every other seam here — the low layer names a callable,
+    not a type.
+    """
+    def amend(tool: str, middleware: str, before, after) -> None:
+        from .observe.events import EventKind
+        changed = sorted(set(before) | set(after))
+        bus.emit(EventKind.TOOL_ARGUMENTS_AMENDED, tool=tool, middleware=middleware,
+                 fields=[k for k in changed if before.get(k) != after.get(k)],
+                 arguments=dict(after))
+    return amend
 
 
 def _close_exporters(exporters) -> None:

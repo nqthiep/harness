@@ -45,6 +45,11 @@ class EventKind(str, Enum):
     TOOL_STARTED = "tool.started";       TOOL_FINISHED    = "tool.finished"
     TAINT_RAISED = "taint.raised";       CONTEXT_MANAGED  = "context.managed"
     ERROR_RAISED = "error.raised"; PROGRESS_STALLED = "progress.stalled"
+    #: A `Middleware.before_tool` returned different kwargs from the ones `Policy`
+    #: ruled on. A separate kind rather than a second `tool.requested`, so a consumer
+    #: counting calls still counts calls, and so "what was approved" and "what ran"
+    #: are two facts an auditor can compare instead of one that quietly changed.
+    TOOL_ARGUMENTS_AMENDED = "tool.arguments_amended"
 
 
 @value

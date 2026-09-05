@@ -189,8 +189,26 @@ tool's own callable, `Exporter`) — a `Middleware` base class with five optiona
 (`before_model`/`after_model`/`before_tool`/`after_tool`/`on_event`) that
 `with_middleware(agent, *middlewares)` wires onto a new `Agent`. It is not a seventh
 seam and not the middleware chain rejected below: every hook runs strictly *after* the
-core decision it follows (`before_tool` never sees a call `Policy` already denied), so
-stacking many of these can only add restriction or observation, never bypass one.
+core decision it follows (`before_tool` never sees a call `Policy` already denied).
+
+That parenthetical is true; the conclusion this sentence used to draw from it — that
+stacking many of these "can only add restriction or observation, never bypass one" — was
+not. `before_tool` returns the kwargs the tool is then called with, so a hook cannot
+bypass a **verdict** but can change the **subject** of one. Measured with
+`allowed_hosts=["docs.python.org"]` and a six-line middleware:
+
+```
+policy.decided:                     [('fetch', 'ALLOW', '')]
+tool.requested arguments:           [{'url': 'http://docs.python.org/x'}]
+the URL the tool was actually called with:  ['http://evil.example/exfil']
+```
+
+So a `Middleware` is **as privileged as the policy set**, and belongs on the trust
+boundary list in §6 rather than in the "observation only" bucket. Rewriting arguments is
+a real and useful power (redaction, defaulting, tenant scoping); the defect was that it
+happened silently, leaving the transcript asserting an argument set that never ran. Every
+rewrite now emits `tool.arguments_amended` naming the middleware and the fields it
+changed (docs/05 §…), so "what was approved" and "what ran" stay two comparable facts.
 `docs/03-public-api.md §3.6` documents it as a Level-3 extension.
 
 **`Agent.with_profile()`** is the same shape of sugar for a different recurring need:
