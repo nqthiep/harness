@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
 from .budget.ledger import Budget, Ledger
 from .context.assembler import ContextAssembler
@@ -887,12 +887,19 @@ def _state_to_result(state: Any, before: int, run_id: str,
         if isinstance(m, AIMessage):
             if isinstance(m.content, str) and m.content:
                 text = m.content
-            u = m.usage_metadata or {}
+            u: Mapping[str, Any] = m.usage_metadata or {}
             details = u.get("input_token_details", {}) or {}
             usage = usage + Usage(u.get("input_tokens", 0), u.get("output_tokens", 0),
                                   details.get("cache_read", 0), details.get("cache_creation", 0))
             for tc in (m.tool_calls or []):
-                call_names[tc.get("id")] = tc.get("name")
+                # A call with no id cannot be correlated with the `ToolMessage` that
+                # carries its result, and the lookup below is by that id — so an
+                # id-less entry was already dead, never matched, never counted.
+                # mypy objecting to `str | None` as a key was pointing at that, not
+                # at a style question.
+                cid, cname = tc.get("id"), tc.get("name")
+                if cid is not None and cname is not None:
+                    call_names[cid] = cname
         elif isinstance(m, ToolMessage):
             called = call_names.get(m.tool_call_id)
             if called and getattr(m, "status", "success") != "error":

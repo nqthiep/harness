@@ -262,7 +262,28 @@ class StaticChecks(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout[-2000:])
 
     def test_mypy_is_clean(self):
-        r = self._tool("mypy")
+        """`sys.executable -m mypy`, never the one on `PATH`, and the difference was 15
+        errors.
+
+        A type checker sees a dependency only if that dependency is installed for the
+        interpreter it is asked about. `shutil.which("mypy")` here resolved to a uv tool
+        venv that does not have `anthropic` in it, so `ignore_missing_imports` erased the
+        entire typed surface of a DECLARED RUNTIME DEPENDENCY and this test reported
+        success over nothing:
+
+            which mypy        /root/.local/bin/mypy (1.19.1)
+            mypy              Success: no issues found in 102 source files
+            python -m mypy    Found 15 errors in 2 files          (2.3.1)
+
+        `pyproject.toml` now turns `ignore_missing_imports` off for `anthropic.*`, which
+        makes the wrong-environment case loud rather than silent — but a config that
+        depends on being run correctly is not a gate, so the invocation is pinned here
+        too. Both halves are needed: the override catches the wrong interpreter, this
+        line stops us asking the wrong interpreter in the first place.
+        """
+        import subprocess
+        import sys
+        r = subprocess.run([sys.executable, "-m", "mypy"], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout[-2000:])
 
     def test_every_cited_adr_exists(self):

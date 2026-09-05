@@ -67,6 +67,12 @@ files = ["src/harness", "examples"]
 # defects — `Profile.name` declared settable, so no frozen profile satisfied the
 # Protocol, and `Agent.safety` annotated `str` while `__init__` takes a `Literal`
 # (ADR-082).
+# Measured before keeping it (ADR-105): turning this OFF produces 18 errors, of which 16
+# are import noise — `mediapipe`, `openviking_sdk`, `langchain_anthropic`, `readability`,
+# the flat `examples/` modules that are on `sys.path` rather than importable as a package,
+# and `jsonschema`, which is installed but ships no `py.typed`. ZERO of the 16 is a type
+# error in this repository's own code, so a global flip buys noise and costs a stub
+# dependency (`types-jsonschema`). It stays — but NOT for `anthropic`; see below.
 ignore_missing_imports = true
 # Not `strict`.  Round 39 took mypy from 112 errors to a documented remainder, and the
 # value was never the count: it was that **a user running mypy on `agent.name` was told
@@ -78,3 +84,18 @@ disable_error_code = [
     # Python's hash invariant.  mypy reads it as assigning None over a method.
     "assignment",
 ]
+
+# The one place `ignore_missing_imports` was actively harmful, and how it hid for a whole
+# round: `anthropic` is a DECLARED RUNTIME DEPENDENCY that ships `py.typed`, and the mypy
+# on `PATH` is a uv tool venv that does not have it installed. The global setting turned
+# the entire SDK into `Any`, `models/anthropic.py` — the only file that touches it — type
+# checked against nothing, and `test_mypy_is_clean` reported success over an erased
+# surface while `python -m mypy` found 13 real errors in that file (ADR-105).
+#
+# Declared dependencies are exactly the imports that must NOT be ignorable: a missing one
+# is a broken environment, not an untyped third party. `jsonschema` cannot join this list
+# without `types-jsonschema` (installed, but no `py.typed`), and `typing-extensions` is
+# vendored into mypy itself, so `anthropic` is the whole of it today.
+[[tool.mypy.overrides]]
+module = ["anthropic.*"]
+ignore_missing_imports = false

@@ -9,13 +9,20 @@ seam real (ADR-002).
 """
 from __future__ import annotations
 
-from typing import Any, Final, Mapping, NamedTuple
+from typing import TYPE_CHECKING, Any, Final, Mapping, NamedTuple, cast
 
 from ..errors import (ProviderAuthError, ProviderBadRequest, ProviderError,
                       ProviderRateLimited, ProviderTimeout, ProviderUnavailable)
 from ..result import Usage
 from . import pricing
 from .base import DeltaFn, ModelRequest, ModelResponse
+
+if TYPE_CHECKING:                        # erased at runtime, so the lazy import stands
+    # The vendor's request TypedDicts.  Naming them here is what makes the three casts
+    # in `count_input_tokens` checkable at all: a cast to a type the SDK has renamed is
+    # an import error, where a `# type: ignore` would rot in silence.
+    from anthropic.types import (MessageCountTokensToolParam, MessageParam,
+                                 TextBlockParam)
 
 #: Errors this adapter maps.  Anything unmapped becomes ProviderError, never a success.
 _STATUS = {401: ProviderAuthError, 403: ProviderAuthError,
@@ -91,7 +98,15 @@ class AnthropicProvider:
                 "  -> docs/15-first-agent.md"
             ) from exc
         self._sdk = anthropic
-        self._client = anthropic.AsyncAnthropic(**({"api_key": api_key} if api_key else {}))
+        # Two calls rather than `**({"api_key": key} if key else {})`: splatting a
+        # `dict[str, str]` typed all fourteen of the SDK's constructor parameters as
+        # `str`, which was ten type errors and bought no reader anything.  The branch is
+        # load-bearing and is preserved exactly — a falsy key (None, or the empty string
+        # a blank `.env` line yields) must pass NO `api_key` at all so the SDK falls back
+        # to the environment, where `api_key=""` would install an empty credential that
+        # the `is None` check below waves straight through.
+        self._client = (anthropic.AsyncAnthropic(api_key=api_key) if api_key
+                        else anthropic.AsyncAnthropic())
         # Caught here rather than on the first request. Without this, a provider with no
         # resolvable credential constructs happily and dies mid-run as
         # `ProviderError: TypeError: "Could not resolve authentication method..."` — an
@@ -149,9 +164,21 @@ class AnthropicProvider:
         if key in self._counts:
             return self._counts[key]
         try:
+            # `ModelRequest` carries vendor-neutral `Mapping[str, Any]` blocks by design
+            # (ADR-002 — nothing outside this file names an `anthropic.*` type) and the
+            # SDK wants its own TypedDicts.  Translating between the two IS the adapter's
+            # job, and no checker can prove a `Mapping[str, Any]` is a `TextBlockParam`,
+            # so the assertion is made once, here, naming the target type.  What the
+            # assembler actually builds matches: `{"type": "text", "text": ...}`
+            # (+ optional `cache_control`) for system — context/assembler.py
+            # ::_system_blocks — and `{"name", "description", "input_schema", "strict"}`
+            # for tools — tools/__init__.py::ToolSpec.to_api — every key of which is
+            # declared on `ToolParam`.
             r = await self._client.messages.count_tokens(
-                model=request.model, system=list(request.system),
-                tools=list(request.tools), messages=list(request.messages))
+                model=request.model,
+                system=cast("list[TextBlockParam]", list(request.system)),
+                tools=cast("list[MessageCountTokensToolParam]", list(request.tools)),
+                messages=cast("list[MessageParam]", list(request.messages)))
             n = int(r.input_tokens)
         except Exception:
             # Never fail a run on a counting call.  Over-estimate from characters, which

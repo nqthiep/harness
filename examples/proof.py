@@ -349,7 +349,11 @@ for f, cap in (("src/harness/run.py", 250), ("src/harness/dispatch.py", 250)):
 passed("SIII", "The loop stays boring -- a 250-line ceiling (IDL-13)",
        "Round 28 hit the ceiling -> split off dispatch.py instead of raising the ceiling")
 
-for cmd in (["ruff", "check", "src", "tests", "examples"], ["mypy"]):
+# `sys.executable -m mypy`, not `mypy`: the one on PATH may be a tool venv without this
+# project's declared dependencies installed, where `ignore_missing_imports` erases the
+# typed surface of `anthropic` and reports success over nothing (15 errors hid that way).
+for cmd in (["ruff", "check", "src", "tests", "examples"],
+            [sys.executable, "-m", "mypy"]):
     rc = subprocess.run(cmd, capture_output=True, text=True)
     assert rc.returncode == 0, rc.stdout[-500:]
 passed("SIII", "ruff clean, mypy clean -- both are CI gates (AC-62/63)",
