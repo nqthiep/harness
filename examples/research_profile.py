@@ -23,10 +23,11 @@ Run it — no API key, scripted model:
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any
 
-sys.path.insert(0, "src")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from harness import Agent
 from harness.tools.web import fetch, search

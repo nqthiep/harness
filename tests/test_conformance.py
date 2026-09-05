@@ -255,7 +255,8 @@ class StaticChecks(unittest.TestCase):
         import shutil, subprocess
         if shutil.which(cmd[0]) is None:
             self.skipTest(f"{cmd[0]} is not installed")
-        return subprocess.run(cmd, capture_output=True, text=True)
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              cwd=str(_paths.ROOT))
 
     def test_ruff_is_clean(self):
         r = self._tool("ruff", "check", "src", "tests", "examples")
@@ -283,7 +284,8 @@ class StaticChecks(unittest.TestCase):
         """
         import subprocess
         import sys
-        r = subprocess.run([sys.executable, "-m", "mypy"], capture_output=True, text=True)
+        r = subprocess.run([sys.executable, "-m", "mypy"], capture_output=True,
+                           text=True, cwd=str(_paths.ROOT))
         self.assertEqual(r.returncode, 0, r.stdout[-2000:])
 
     def test_every_cited_adr_exists(self):
@@ -355,7 +357,7 @@ class StaticChecks(unittest.TestCase):
         import shutil, subprocess, tempfile, pathlib as _p, os
         if shutil.which("mypy") is None:
             self.skipTest("mypy is not installed")
-        src = os.path.abspath("src")
+        src = str(_paths.SRC)
         with tempfile.TemporaryDirectory() as d:
             f = _p.Path(d) / "u.py"
             f.write_text(
@@ -368,8 +370,8 @@ class StaticChecks(unittest.TestCase):
                 "bad = Usage(1, 2, 3, 4, 5)\n"
                 "typo = Usage(input_tokns=1)\n")
             env = {**os.environ, "MYPYPATH": src}
-            r = subprocess.run(["mypy", "u.py", "--ignore-missing-imports",
-                                "--no-error-summary"],
+            r = subprocess.run([sys.executable, "-m", "mypy", "u.py",
+                                "--ignore-missing-imports", "--no-error-summary"],
                                capture_output=True, text=True, env=env, cwd=d)
             own = [l for l in r.stdout.splitlines() if l.startswith("u.py")]
             self.assertTrue(own or r.returncode == 0, r.stdout[-1500:])

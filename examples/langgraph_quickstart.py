@@ -12,7 +12,8 @@ are things you add when you need them, not things you have to learn first.
 """
 import os
 import sys
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src")); sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver

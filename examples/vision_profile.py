@@ -51,11 +51,12 @@ Run it — no camera, no model file, no API key:
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
-sys.path.insert(0, "src")
-sys.path.insert(0, "examples")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
 
 from harness import Agent, Middleware, with_middleware
 from harness.errors import ConfigError

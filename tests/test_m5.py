@@ -65,7 +65,7 @@ class Scaffold(unittest.TestCase):
         cmd_new("joker", cwd=self.d)
         src = (self.d / "joker.py").read_text()
         ns = {}
-        header = (f"import sys; sys.path.insert(0, {os.path.abspath('src')!r})\n"
+        header = (f"import sys; sys.path.insert(0, {str(_paths.SRC)!r})\n"
                   "import harness\n"
                   "from harness.models.fake import FakeModel\n"
                   "_real = harness.Agent\n"
@@ -154,7 +154,7 @@ class TheFourCommandColdStart(unittest.TestCase):
         import tomllib
 
         from harness import cli
-        with open(os.path.join(self._cwd, "pyproject.toml"), "rb") as f:
+        with open(_paths.repo("pyproject.toml"), "rb") as f:
             scripts = tomllib.load(f)["project"]["scripts"]
         self.assertEqual(scripts["harness"], "harness.cli:main")
         module, _, attr = scripts["harness"].partition(":")
@@ -535,7 +535,7 @@ class Readability(unittest.TestCase):
         return out
 
     def test_every_child_facing_error_reads_at_age_ten(self):
-        sys.path.insert(0, "tests")
+        sys.path.insert(0, str(_paths.repo("tests")))
         from readability import grade
         too_hard = {k: grade(v, line_oriented=True)[0] for k, v in self._errors().items()}
         too_hard = {k: g for k, g in too_hard.items() if g > self.LIMIT}
@@ -543,7 +543,7 @@ class Readability(unittest.TestCase):
                          f"messages a ten-year-old cannot read: {too_hard}")
 
     def test_the_tutorial_reads_at_age_ten(self):
-        sys.path.insert(0, "tests")
+        sys.path.insert(0, str(_paths.repo("tests")))
         from readability import grade
         body = DOC[DOC.index("# Make your own AI helper"):DOC.index("## Reviewer notes")]
         g = grade(body)[0]
@@ -553,7 +553,7 @@ class Readability(unittest.TestCase):
         """Prose only.  `accepts_tainted=True` is a parameter name a child copies, not a
         word they have to understand — scanning code for vocabulary flags the wrong thing
         (Round 31)."""
-        sys.path.insert(0, "tests")
+        sys.path.insert(0, str(_paths.repo("tests")))
         from readability import strip_markup
         banned = ["parallel", "retryable", "serial", "untrusted", "reversibly",
                   "auto-allowed", "taint", "ledger", "schema", "protocol", "invariant"]
@@ -670,7 +670,7 @@ class Round30Promises(unittest.TestCase):
         cmd_new("bot", cwd=d)
         # point the scaffold at a fake provider
         f = d / "bot.py"
-        f.write_text(f"import sys; sys.path.insert(0, {os.path.abspath('src')!r})\n"
+        f.write_text(f"import sys; sys.path.insert(0, {str(_paths.SRC)!r})\n"
                      "from harness import Agent\n"
                      "from harness.models.fake import FakeModel\n"
                      "bot = Agent(name='Bot', job='chat', budget='$1',\n"

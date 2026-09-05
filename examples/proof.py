@@ -346,8 +346,9 @@ assert out.returncode == 0
 passed("SI.5", f"`import harness` = {ms:.0f} ms, 3 core dependencies (NFR-01/05)",
        "langgraph (36 packages) and openviking-sdk are EXTRAs; core doesn't pull them in")
 
+_ROOT = Path(__file__).resolve().parents[1]
 for f, cap in (("src/harness/run.py", 250), ("src/harness/dispatch.py", 250)):
-    n = len([l for l in open(f) if l.strip() and not l.strip().startswith("#")])
+    n = len([l for l in open(_ROOT / f) if l.strip() and not l.strip().startswith("#")])
     assert n <= cap, f"{f} = {n}"
 passed("SIII", "The loop stays boring -- a 250-line ceiling (IDL-13)",
        "Round 28 hit the ceiling -> split off dispatch.py instead of raising the ceiling")
@@ -503,12 +504,11 @@ passed("SXV", "OpenViking plugs into the Store seam; `recall` is `external` so i
 
 # =============================================================================
 section("SXIII", "DELIVERABLE -- the nine things section XIII requires")
-import pathlib                                                         # noqa: E402
 import re                                                              # noqa: E402
 
-adr_text = pathlib.Path("docs/12-decision-logs.md").read_text()
-risk_text = pathlib.Path("docs/13-risk-register.md").read_text()
-plan_text = pathlib.Path("docs/14-validation-plan.md").read_text()
+adr_text = (_ROOT / "docs/12-decision-logs.md").read_text()
+risk_text = (_ROOT / "docs/13-risk-register.md").read_text()
+plan_text = (_ROOT / "docs/14-validation-plan.md").read_text()
 def count_unique(text: str, pat: str) -> int:
     r"""`\b` matters: without it `R-(\d+)` also matches the "R-" inside "ADR-004",
     and this file would print a count it had not measured."""

@@ -7,6 +7,7 @@ import os
 import unittest
 
 from harness.eval.benchmark import BenchmarkReport, benchmark, import_cold_start_ms
+import _paths
 
 
 class Benchmark(unittest.TestCase):
@@ -85,7 +86,7 @@ class Benchmark(unittest.TestCase):
 
 class ColdStartImportThat(unittest.TestCase):
     def test_do_duoc_mot_so_duong(self):
-        env = {**os.environ, "PYTHONPATH": "src"}
+        env = {**os.environ, "PYTHONPATH": str(_paths.SRC)}
         ms = import_cold_start_ms(env=env)
         self.assertGreater(ms, 0)
         self.assertLess(ms, 5000)          # sanity — import không nên mất nhiều giây

@@ -85,9 +85,10 @@ import re
 import shlex
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Final, Sequence
 
-sys.path.insert(0, "src")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from harness import Effect, Ruling, ToolCall, Verdict, tool
 from harness.sandbox import Subprocess

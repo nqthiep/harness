@@ -45,11 +45,12 @@ from __future__ import annotations
 import json
 import math
 import sys
+from pathlib import Path
 import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Protocol, Sequence
 
-sys.path.insert(0, "src")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from harness import Effect, tool
 from harness.contrib.calibration import (  # noqa: F401  (re-export)

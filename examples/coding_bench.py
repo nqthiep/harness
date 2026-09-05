@@ -59,8 +59,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Sequence
 
-sys.path.insert(0, "src")
-sys.path.insert(0, "examples")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
 
 from coding_profile import CodingProfile
 from harness import Agent

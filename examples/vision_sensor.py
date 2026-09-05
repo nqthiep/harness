@@ -51,12 +51,13 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
 import time
 from dataclasses import dataclass
 from typing import Callable
 
-sys.path.insert(0, "src")
-sys.path.insert(0, "examples")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
 
 from harness.contrib.driver import Event, Priority
 from vision_tools import (Camera, Detector, IdentityLedger, PerceptionBuffer, Reading,

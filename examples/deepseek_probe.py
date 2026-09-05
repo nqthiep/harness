@@ -11,9 +11,10 @@ of these," not just "how do I call it once and let the process exit anyway."
 """
 import asyncio
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "src")
-sys.path.insert(0, "examples")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
 
 from deepseek_provider import DeepSeekProvider
 from harness import Agent

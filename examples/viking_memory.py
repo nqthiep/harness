@@ -18,7 +18,8 @@ rename; everything else here is this file's own code.
 """
 import asyncio
 import sys
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src")); sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 
 import httpx
 from fake_chat import FakeChat

@@ -116,7 +116,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-sys.path.insert(0, "src")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from harness import Agent, Middleware, Ruling, ToolCall, Verdict, with_middleware
 from harness.eval import GoldenCase, Trajectory, run_golden_set
