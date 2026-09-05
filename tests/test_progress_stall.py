@@ -68,6 +68,48 @@ class SoCoHoc(unittest.TestCase):
             self.assertIsNone(r, f"giết oan ở vòng {i}")
         self.assertEqual(p.stalled_steps, 0)
 
+
+class NeTranhBangThamSoLa(unittest.TestCase):
+    """G-6, đã sửa: một khoá KHÔNG khai (`nonce`) mà `look` không nhận trong chữ ký —
+    trước bản vá, chữ ký hash trên MỌI khoá không bắt đầu bằng `_`, nên mỗi lời gọi khác
+    nhau dù cùng ý định, và bộ đếm không bao giờ tăng. `dispatch.py` cũng bỏ khoá không
+    khai trước khi gọi `spec.fn`, nên MỌI lời gọi kiểu này thật ra đều lỗi — đúng trạng
+    thái bế tắc rõ nhất lại đọc thành "đang tiến triển"."""
+
+    SCHEMA = {"look": frozenset({"path"})}   # đúng `input_schema["properties"]` của `look`
+
+    def call(self, name, **args):
+        return {"name": name, "input": args}
+
+    def test_khong_co_schema_of_bi_ne_vinh_vien(self):
+        p = ProgressLedger(stall_after=6)
+        for i in range(50):
+            r = p.observe([self.call("look", path="a.py", nonce=i)])   # KHÔNG có schema_of
+        self.assertIsNone(r, "hành vi CŨ: không bao giờ dừng — dùng để đối chứng")
+        self.assertEqual(p.stalled_steps, 0)
+
+    def test_co_schema_of_thi_bi_bat_dung_luc(self):
+        p = ProgressLedger(stall_after=6)
+        r = None
+        for i in range(50):
+            r = p.observe([self.call("look", path="a.py", nonce=i)], self.SCHEMA)
+            if r is not None:
+                break
+        self.assertIsNotNone(r, "50 bước cùng path, chỉ khác nonce lạ — vẫn phải bị bắt")
+        self.assertEqual(p.stalled_steps, 6)
+
+    def test_signature_truc_tiep_bo_khoa_khong_khai(self):
+        s1 = signature("look", {"path": "a.py", "nonce": 1}, declared_keys=self.SCHEMA["look"])
+        s2 = signature("look", {"path": "a.py", "nonce": 2}, declared_keys=self.SCHEMA["look"])
+        self.assertEqual(s1, s2, "khoá không khai vẫn đổi được chữ ký")
+
+    def test_khong_khai_declared_keys_thi_giu_hanh_vi_cu(self):
+        """`declared_keys=None` (tool không xác định được) vẫn dùng mọi khoá — bỏ sót còn
+        hơn giết nhầm, đúng hướng an toàn `MAX_TRACKED` đã chọn."""
+        s1 = signature("look", {"path": "a.py", "nonce": 1})
+        s2 = signature("look", {"path": "a.py", "nonce": 2})
+        self.assertNotEqual(s1, s2)
+
     def test_buoc_khong_goi_tool_nao_khong_duoc_tinh(self):
         p = ProgressLedger(stall_after=2)
         p.observe([self.call("look", path="a.py")])
@@ -134,6 +176,23 @@ class VongLapClassic(unittest.TestCase):
                   provider=FakeModel(script)).try_run("go")
         self.assertIs(r.stop_reason, StopReason.COMPLETED)
         self.assertEqual(r.text, "xong")
+
+
+class NeTranhQuaAgentThat(unittest.TestCase):
+    """G-6 nối dây thật qua `Agent`/`run.py`, không chỉ `ProgressLedger` đứng riêng:
+    mỗi bước gọi `look` với một `nonce` lạ — `look(path)` không khai `nonce`, nên
+    `dispatch.py` tự bỏ nó trước khi gọi `spec.fn`, và lời gọi vẫn THÀNH CÔNG (giống hệt
+    lời gọi không có `nonce`) — nhưng trước bản vá, chữ ký khác nhau mỗi lần nên không
+    bao giờ bị bắt bế tắc."""
+
+    def test_them_mot_tham_so_la_khong_ne_duoc_bo_dem(self):
+        script = [FakeModel.tool_call("look", {"path": "a.py", "nonce": i})
+                 for i in range(50)]
+        r = Agent(name="Loop", job="j", tools=[look], budget="$5, 100 steps",
+                  provider=FakeModel(script)).try_run("go")
+        self.assertIs(r.stop_reason, StopReason.STALLED,
+                     "G-6: một khoá không khai vẫn né được bộ đếm")
+        self.assertEqual(r.steps, STALL_AFTER)
 
 
 class BackendGraph(unittest.TestCase):

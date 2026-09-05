@@ -30,7 +30,7 @@ from ..policy.builtin import emits_of
 from ..policy.decision import (POLICY_ENGINE_VERSION, Actor, AuthEvidence, Decision,
                               DecisionLog, Scope, actor_json, evidence_json)
 from ..policy.engine import PolicyEngine
-from ..progress import STALL_AFTER, ProgressLedger, stall_reason
+from ..progress import STALL_AFTER, ProgressLedger, schema_of, stall_reason
 from ..policy.label import Grants, Integrity, Label
 from ..result import Money, StopReason, Usage
 from ..retry import retry_scope
@@ -695,7 +695,7 @@ class Runtime:
         # detects, and `_pending` has already had those calls removed.
         prog = ProgressLedger(seen=state.get("seen_calls", ()),
                               stalled_steps=state.get("stalled_steps", 0))
-        prog.observe(_last_tool_calls(state["messages"]))
+        prog.observe(_last_tool_calls(state["messages"]), schema_of(self._tools))
         return {"messages": msgs + self._manage(state["messages"] + msgs, state),
                 "seen_calls": prog.seen, "stalled_steps": prog.stalled_steps,
                 "tools_called_ever": list(state.get("tools_called_ever") or []) + called_now,

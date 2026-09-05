@@ -32,6 +32,17 @@ ngừng đọc cái gì chưa đọc thì nó mới đếm lên. Đó đúng là
 giữ nguyên văn trong state sẽ phình checkpoint và đưa nội dung người dùng vào một chỗ thứ
 hai không ai chờ đợi nó ở đó. Băm rồi cắt còn 16 ký tự hex: đủ để so sánh bằng nhau, không
 đủ để đọc ngược ra.
+
+**Chữ ký chỉ tính trên tham số TOOL ĐÃ KHAI, không phải mọi khoá model gửi lên — sửa sau
+review đối kháng (G-6, `design/review-architect.md`).** Bản gốc chỉ lọc khoá bắt đầu bằng
+`_`; bất kỳ khoá KHÁC nào model tự thêm (một timestamp, một số đếm tăng dần) vẫn lọt vào
+`canonical(args)`, nên MỖI lời gọi hash khác nhau dù cùng tool cùng ý định — bộ đếm không
+bao giờ tăng, kể cả khi không có tiến triển thật. Không cần model "cố tình lách": chính
+`dispatch.py` đã tự bỏ mọi khoá tool KHÔNG khai trước khi gọi `spec.fn(**kwargs)`, nên một
+khoá lạ khiến MỌI lời gọi đó THẤT BẠI (`TypeError`) — đúng trạng thái bế tắc rõ ràng nhất
+lại là trạng thái bộ đếm này đọc thành "đang tiến triển". Chữ ký giờ lọc xuống đúng tập
+khoá `ToolSpec.input_schema["properties"]` đã khai cho tool đó — một khoá model tự thêm mà
+tool không khai không còn đổi được chữ ký.
 """
 from __future__ import annotations
 
@@ -75,15 +86,35 @@ def stall_reason(stalled_steps: int) -> str:
             f"vì trả tiền cho một vòng lặp không đi tới đâu")
 
 
-def signature(name: str, arguments: Mapping[str, Any]) -> str:
+def schema_of(toolset: "Any") -> "dict[str, frozenset[str]]":
+    """`{tool name -> declared parameter names}`, dùng làm `schema_of` cho `observe()`
+    (G-6). Một hàm dùng chung thay vì để `run.py`/`lg/runtime.py` mỗi bên tự viết lại —
+    cùng lý do `signature()`/`canonical()` đã dùng chung: hai chỗ không thể lệch định
+    nghĩa. Rẻ để gọi lại mỗi bước (`toolset` thường vài chục tool là cùng); không cache ở
+    đây để không thêm một trường trạng thái nào phải theo dõi vòng đời của chính nó."""
+    return {t.name: frozenset(t.input_schema.get("properties", {})) for t in toolset}
+
+
+def signature(name: str, arguments: Mapping[str, Any], *,
+             declared_keys: "frozenset[str] | None" = None) -> str:
     """Chữ ký của một lời gọi tool. Cùng công thức `tool+args` mà dedup T-2.5 dùng
     (`dispatch.py`), qua đúng `canonical()` mà phần còn lại của harness đã dùng để so
-    sánh — nên hai chỗ không thể lệch định nghĩa "cùng một lời gọi"."""
+    sánh — nên hai chỗ không thể lệch định nghĩa "cùng một lời gọi".
+
+    `declared_keys`, khi có (G-6): chỉ giữ lại khoá tool ĐÃ KHAI trong
+    `ToolSpec.input_schema["properties"]` — một khoá model tự thêm mà tool không khai
+    (`dispatch.py` cũng bỏ nó trước khi gọi `spec.fn`, nên nó không bao giờ ảnh hưởng kết
+    quả thật) không còn đổi được chữ ký. `None` (tool không xác định được, ví dụ tên tool
+    lạ) giữ hành vi cũ: dùng mọi khoá — bỏ sót còn hơn giết nhầm, đúng hướng an toàn
+    module này đã chọn cho `MAX_TRACKED`.
+    """
     # Underscore-prefixed keys are stripped before a tool is invoked (`dispatch.py`,
     # `lg/runtime.py`), so two calls differing only there ARE the same call. Dropping
     # them HERE rather than at each call site is the point: counting them as different
     # would hand any caller a trivial way to look busy while standing still.
     args = {k: v for k, v in dict(arguments).items() if not str(k).startswith("_")}
+    if declared_keys is not None:
+        args = {k: v for k, v in args.items() if k in declared_keys}
     raw = f"{name}\x00{canonical(args)}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
@@ -108,17 +139,25 @@ class ProgressLedger:
     def stalled_steps(self) -> int:
         return self._stalled
 
-    def observe(self, calls: Sequence[Mapping[str, Any]]) -> str | None:
+    def observe(self, calls: Sequence[Mapping[str, Any]],
+               schema_of: "Mapping[str, frozenset[str]] | None" = None) -> str | None:
         """Ghi nhận các lời gọi tool của một bước. Trả về `None` nếu còn tiến triển, hoặc
         một câu giải thích nếu đã đứng yên đủ lâu để nên dừng.
 
         Bước không gọi tool nào KHÔNG được tính: đó là model đang viết câu trả lời, và
         một lượt chạy như thế tự kết thúc ngay sau đó — đếm nó vào đây chỉ tạo dương tính
         giả.
+
+        `schema_of` (G-6): tên tool -> tập khoá tham số nó đã khai
+        (`ToolSpec.input_schema["properties"]`). Tool không có trong bảng (tên lạ, hoặc
+        gọi tại chỗ chưa xây được bảng) dùng mọi khoá — hành vi cũ, an toàn theo hướng bỏ
+        sót hơn giết nhầm.
         """
         if not calls:
             return None
-        sigs = [signature(str(c.get("name", "")), arguments_of(c)) for c in calls]
+        sigs = [signature(str(c.get("name", "")), arguments_of(c),
+                          declared_keys=(schema_of or {}).get(str(c.get("name", ""))))
+               for c in calls]
         known = set(self._seen)
         if any(s not in known for s in sigs):
             self._stalled = 0

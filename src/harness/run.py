@@ -19,7 +19,7 @@ from .middleware import _call_scope
 from .models.pricing import MAX_CONTEXT
 from .observe.events import EventBus, EventKind
 from .policy.decision import DecisionLog
-from .progress import ProgressLedger
+from .progress import ProgressLedger, schema_of
 from .retry import with_provider_retry
 #: `RunContext` is re-exported here on purpose — `harness/__init__.py` imports it
 #: from this module, so it is not dead however it looks to a linter (Round 39).
@@ -195,7 +195,7 @@ class RunEngine:
                     # Observed AFTER dispatch, never before: stopping between a
                     # `tool_use` and its `tool_result` would leave the stored
                     # conversation in violation of invariant I-3.
-                    stalled = self._progress.observe(calls)
+                    stalled = self._progress.observe(calls, schema_of(self._a.toolset))
                     if stalled:
                         self._bus.emit(EventKind.PROGRESS_STALLED, step=step,
                                        stalled_steps=self._progress.stalled_steps)
