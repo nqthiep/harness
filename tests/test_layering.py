@@ -228,6 +228,24 @@ class TheTiersPointOneWay(unittest.TestCase):
                                "shell_tools", "research_profile", "examples"},
                         f"{module} imports the examples tier")
 
+    def test_every_tool_contrib_names_is_implemented_by_shipped_code(self):
+        """The inversion that actually happened, and which no import analysis could see:
+        `contrib.driver.PLAN_TOOLS` named `list_findings` as proof that an agent keeps a
+        durable plan, while `FindingsLog` lived in `examples/`. Shipped code depending on
+        a concept only copy-pasted code implements — by NAME, not by import, so the tier
+        tests above were all green (ADR-101)."""
+        import re
+
+        from harness.contrib.driver import PLAN_TOOLS
+
+        shipped = set()
+        for path in CORE.rglob("*.py"):
+            body = path.read_text()
+            shipped |= set(re.findall(r"(?:async )?def (\w+)\(", body))
+        missing = sorted(PLAN_TOOLS - shipped)
+        self.assertEqual(missing, [],
+                         f"contrib names {missing} but nothing in src/harness provides it")
+
     def test_an_example_may_import_contrib(self):
         used = [p.name for p in pathlib.Path("examples").glob("*.py")
                 if "harness.contrib" in p.read_text()]

@@ -4137,6 +4137,57 @@ the no-write is structural and is its own test.
 lands another writer's value at a chosen read — deterministic, no threads, no sleeps. Two
 mutations, each caught by four tests: removing the comparison, and removing the raise.
 
+### ADR-101 — The tier rule, applied to everything instead of once
+
+**Status:** Accepted.
+
+**Context.** ADR-082 created `harness.contrib` with four admission criteria and moved two
+modules. The criteria were then not applied again — including to code written days later.
+`calibrate`/`Calibration` (ADR-095) meet all four and I put them in `examples/` without
+checking the rule I had helped write. A rule applied once is a precedent, not a rule.
+
+**Decision.** Run it over every module in `examples/`, mechanically where possible
+(third-party imports, domain vocabulary density, size) and by judgment where not. Three
+different answers came out, which is the argument for auditing rather than assuming:
+
+**Moved to `contrib`: `calibrate` / `Calibration`.** Domain-neutral — it reads two lists
+of similarity scores and knows nothing about what was compared. No dependency. And the
+safety argument criterion 3 asks for is its whole purpose: it exists to REFUSE, and a
+threshold nobody measured is how an identity system decides who somebody is.
+
+One correction the move forced: `calibrate`'s `margin` defaulted to
+`vision_tools.DEFAULT_MARGIN`, so the "domain-neutral" function carried a domain
+judgment. It now defaults to `MIN_CALIBRATION_GAP`, justified without knowing the domain —
+a difference finer than the gap the threshold itself needs is finer than this measurement
+can see. The identity-specific reasoning stays with the identity-specific constant.
+
+**Moved to CORE, not contrib: `FindingsLog`.** Because of an inversion no import analysis
+could see: `contrib.driver.PLAN_TOOLS` names `list_findings` as proof that an agent keeps
+a durable plan, while the implementation lived in `examples/` — shipped code depending on
+a concept only copy-pasted code provides, by NAME rather than by import, so every tier
+test was green. Core rather than contrib because its twin `TaskLedger` is already there:
+same shape, same reasoning, same seam, and splitting them across two tiers to satisfy a
+filing rule would be the rule serving itself.
+
+Moving it also found the third instance of ADR-100's defect: `FindingsLog.add` was a bare
+get/put pair. The rule established there applies to every ledger on a `Store`, not to the
+two that happened to be in core when it was written.
+
+**Stays in `examples/`, and the reasons are as useful as the moves.** `align_landmarks`
+knows what an eye corner is — criterion 1, failed; the line runs between it and
+`calibrate`, not around the file they shared. `shell_tools.ShellCommandPolicy` is the
+interesting case: its mechanism (read the ACTUAL command, not the tool name) is general
+and its list of dangerous commands is judgment, so it is half-admissible; splitting it is
+real work and it has one consumer, so criterion 3 is not met yet. It is recorded as the
+next candidate rather than moved on a hunch. Everything else is prompts, thresholds and
+domain vocabulary, correctly where it is.
+
+**Test.** `test_every_tool_contrib_names_is_implemented_by_shipped_code` walks
+`PLAN_TOOLS` and asserts every name in it is defined somewhere under `src/harness` — the
+name-level inversion, mechanised, since the import-level tests could not see it. Plus two
+tests for the third ledger's lost-update behaviour. Full suite 1184 passed; the audit
+table lives in `contrib/__init__.py`, next to the criteria it applies.
+
 | # | Decision | Rationale |
 |---|---|---|
 | IDL-01 | `Decimal` for all money; `float` banned in `budget/` by lint | A rounding error in a spend ceiling is a real bug class |

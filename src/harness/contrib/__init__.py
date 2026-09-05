@@ -34,6 +34,19 @@ says so out loud:
 
 Never `from harness import Driver`. The longer path is the disclaimer.
 
+**The audit, run once over all of `examples/` rather than case by case (ADR-101).** The
+rule below had been applied exactly once — when this package was created — and then not
+again, including to code written the same week. Applying it to every module found three
+answers, not one:
+
+| | verdict |
+|---|---|
+| `calibrate` / `Calibration` | **moved here** (`contrib/calibration.py`). Reads two lists of similarity scores and knows nothing about what was compared; exists to REFUSE, which is the safety argument criterion 3 asks for |
+| `FindingsLog` | **moved to CORE** (`harness.findings`), not here — its twin `TaskLedger` was already in core, and `contrib.driver` was naming `list_findings` in `PLAN_TOOLS` while the implementation sat in `examples/`: shipped code depending on a concept only copy-pasted code provided |
+| `align_landmarks` | **stays in `examples/`** — it knows what an eye corner is, so it fails criterion 1. The line runs between it and `calibrate`, not around the file they shared |
+| `shell_tools.ShellCommandPolicy` | **stays, and is the next candidate.** The mechanism (read the actual command, not the tool name) is general; the list of dangerous commands is judgment. Splitting them is real work and it has one consumer, so criterion 3 is not met yet |
+| everything else in `examples/` | judgment: demos, prompts, thresholds, domain vocabulary. Correctly where it is |
+
 **Admission criteria**, so this does not become a junk drawer. All four:
 
 1. Domain-neutral — no opinion about coding, cameras, or any other subject matter.

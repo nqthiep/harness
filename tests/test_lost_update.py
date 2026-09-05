@@ -123,6 +123,27 @@ class TheTaskLedger(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await ledger.all())[0].status, "doing")
 
 
+class TheFindingsLog(unittest.IsolatedAsyncioTestCase):
+    """The third ledger, found when it moved into core: in `examples/` it was a bare
+    get/put pair, and ADR-100's rule applies to every ledger on a `Store`, not to the two
+    that happened to be in core when it was written (ADR-101)."""
+
+    async def test_a_concurrent_write_is_refused(self):
+        from harness.findings import DEFAULT_KEY, FindingsLog
+        store = Interfering(trigger=2, intruder=json.dumps(
+            [{"at": "10:00:00", "text": "theirs"}]))
+        with self.assertRaises(ConcurrentWriteError):
+            await FindingsLog(store, key=DEFAULT_KEY).add("mine")
+
+    async def test_recording_and_reading_back_still_work(self):
+        from harness.findings import FindingsLog
+        log = FindingsLog(InMemoryStore())
+        await log.add("the linter OOMs without NODE_ENV=test")
+        await log.add("that stack trace was a red herring")
+        self.assertEqual(len(await log.all()), 2)
+        self.assertIn("red herring", await log.summary())
+
+
 class TheIdentityLedger(unittest.IsolatedAsyncioTestCase):
     async def test_a_concurrent_enrolment_is_refused(self):
         """The one that matters most: two writers on a biometric record, where the lost

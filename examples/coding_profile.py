@@ -14,7 +14,7 @@ something. This file is that judgment layer, packaged as a `harness.Profile`
 unconditionally — now ships as `harness.contrib.output_shaping`, installed with the
 library rather than copied beside this file. So `coding_profile.py` on its own runs, and
 the only siblings that still have to travel are the two the `enable_` flags reach for:
-`shell_tools.py` (`enable_shell=True`) and `findings_log.py` (`enable_findings=True`).
+`shell_tools.py` (`enable_shell=True`) and `harness.findings` (`enable_findings=True`).
 Neither needs anything from `examples/` beyond itself.
 
 That is the boundary ADR-082 draws, from this file's side: what you are meant to EDIT
@@ -434,7 +434,7 @@ class CodingProfile:
     #: known-shape `CodeTools` ones.
     shell_sandbox: Any = None
     #: OFF by default, same reasoning as `enable_shell`: a durable notebook the model
-    #: writes to costs nothing extra in tokens (`findings_log.py`), but it is still
+    #: writes to costs nothing extra in tokens (`harness.findings`), but it is still
     #: additional surface a profile should not turn on silently.
     enable_findings: bool = False
     extra_middleware: Sequence[Middleware] = field(default_factory=tuple)
@@ -487,7 +487,7 @@ class CodingProfile:
                 max_tokens=SHELL_MAX_RESULT_TOKENS))
             extra_policies.append(self.shell_policy or ShellCommandPolicy())
         if self.enable_findings:
-            from findings_log import FindingsLog
+            from harness.findings import FindingsLog
             # Same `store` TaskLedger uses — different keys (`harness:tasks` vs
             # `harness:findings`), same connection, not a second one.
             findings = FindingsLog(store)

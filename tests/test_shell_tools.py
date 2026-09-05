@@ -1,4 +1,4 @@
-"""`shell_tools.py`/`findings_log.py` (examples) — the pieces that let a `CodingProfile`
+"""`shell_tools.py` (examples) and `harness.findings` — the pieces that let a `CodingProfile`
 run arbitrary commands autonomously while still gating the ones that actually matter.
 `ShellCommandPolicy` is the whole safety story here (module docstring: `run_command`/
 `run_shell` are `effect="write"`, which auto-ALLOWs under `safety="standard"` — so
@@ -265,7 +265,7 @@ class FindingsLogThat(unittest.TestCase):
     def test_add_then_list_round_trips(self):
         import asyncio
 
-        from findings_log import FindingsLog
+        from harness.findings import FindingsLog
         from harness.memory.inmemory import InMemoryStore
 
         log = FindingsLog(InMemoryStore())
@@ -282,7 +282,7 @@ class FindingsLogThat(unittest.TestCase):
         self.assertIn("parser.py", rows[1])
 
     def test_tools_are_correctly_classified(self):
-        from findings_log import FindingsLog
+        from harness.findings import FindingsLog
         from harness import Effect
         from harness.memory.inmemory import InMemoryStore
 
@@ -293,7 +293,7 @@ class FindingsLogThat(unittest.TestCase):
     def test_a_finding_survives_being_read_back_through_the_tool_itself(self):
         import asyncio
 
-        from findings_log import FindingsLog
+        from harness.findings import FindingsLog
         from harness.memory.inmemory import InMemoryStore
 
         log = FindingsLog(InMemoryStore())
