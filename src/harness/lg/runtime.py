@@ -12,6 +12,7 @@ import concurrent.futures
 import dataclasses
 import json
 import time
+from decimal import Decimal
 from typing import Any
 
 from langchain_core.messages import AIMessage, ToolMessage
@@ -223,7 +224,10 @@ class Runtime:
                 self._emit(state, EventKind.BUDGET_UNLIMITED, reason="budget.usd is None")
         self._emit(state, EventKind.STEP_STARTED, step=state.get("step", 0))
         if led.remaining_steps() <= 0:
-            return {"stop_reason": "step_limit", "detail": "reached the step limit",
+            # Same wording as run.py, which names the ceiling that was hit — a caller
+            # reading `Result.detail` should not be able to tell which engine ran.
+            return {"stop_reason": "step_limit",
+                    "detail": f"reached {self._budget.steps} steps",
                     "ledger": led.snapshot(), "asks": asks,
                     "turn_started_at": turn_started_at, "turn_usage": turn_usage,
                     "stalled_steps": stalled_steps, "seen_calls": seen_calls}
@@ -329,7 +333,7 @@ class Runtime:
                "spent_usd": str(led.spent.decimal), "ledger": led.snapshot(),
                "turn_usage": dataclasses.asdict(total_usage)}
         out.update(_classify(raw, bool(getattr(msg, "tool_calls", None)),
-                             state.get("paused", 0)))
+                             state.get("paused", 0), budget_usd=self._budget.usd))
         # `_classify` is pure and has no bus, so the emit belongs to its caller. Without
         # it, an unknown stop reason and an endless pause both ended the run as ERROR on
         # this backend while emitting nothing — the classic loop emitted `ERROR_RAISED`
@@ -919,7 +923,8 @@ def _provider_stop(msg) -> str:
     return str(meta.get("stop_reason") or meta.get("finish_reason") or "")
 
 
-def _classify(raw: str, has_tool_calls: bool, paused: int = 0) -> dict:
+def _classify(raw: str, has_tool_calls: bool, paused: int = 0,
+              budget_usd: "Decimal | None" = None) -> dict:
     """Map the provider's stop reason with the SAME table the hand-written loop uses.
 
     Round 38: this node never looked at the stop reason at all — it only checked whether
@@ -946,7 +951,12 @@ def _classify(raw: str, has_tool_calls: bool, paused: int = 0) -> dict:
         return {"stop_reason": "error", "detail": f"unknown stop reason {raw!r}"}
     if mapped is StopReason.COMPLETED:
         return {"paused": 0}
-    detail = ("the answer got cut off because it reached its token ceiling"
+    # Word for word what run.py says, because `Result.detail` is caller-visible and the
+    # loop's phrasing is the one docs/00-council.md and docs/15-first-agent.md quote.
+    # The two copies are guarded by `test_parity.py`'s per-scenario `Result.detail`
+    # comparison, which is what caught them saying different things (F10).
+    detail = (f"the answer got cut off because it reached its budget of "
+              f"{Money(budget_usd) if budget_usd else 'unlimited'}"
               if mapped is StopReason.TRUNCATED else "the model declined this request")
     return {"stop_reason": mapped.value, "detail": detail}
 
