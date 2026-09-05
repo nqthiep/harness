@@ -267,14 +267,49 @@ class RequireApprovalEvidenceDeny(unittest.TestCase):
         d, actor, evidence = asyncio.run(engine.resolve(decision, call, ctx, approve))
         self.assertEqual(d.verdict, Verdict.ALLOW)
 
-    def test_bool_tran_khong_bi_anh_huong_boi_require_evidence(self):
-        """`require_evidence=True` chỉ áp cho actor `human` báo cáo được — một callback
-        trả `bool` trần (không actor nào) không bị chặn oan."""
+    def test_bool_tran_cung_bi_deny_vi_no_duoc_GHI_la_human(self):
+        """Test này trước đây khẳng định điều ngược lại, và điều ngược lại là cái lỗ.
+
+        Lập luận cũ — "`bool` trần không khai actor nào nên không phải lời tự khai của
+        một `human`, đừng chặn oan" — chỉ đúng nếu bản GHI cũng nói thế. Nó không nói
+        thế: `dispatch.py::_run_batch` (và `lg/runtime.py::_gate`) ghi đúng ca này thành
+
+            actor = Actor.human("approver", via="callback")   # khi actor is None
+                                                              # và có approve=
+
+        nên `bool` trần sinh ra CHÍNH XÁC hàng mà `require_approval_evidence=True` tồn
+        tại để cấm: một ALLOW quy cho con người, không kèm bằng chứng. Đo được trước bản
+        vá, cùng một deployment, ba callback:
+
+            trả True trần                    -> ran=('wipe',)  ALLOW human 'approver' evidence=False
+            Approval(human, không evidence)  -> ran=()         DENY
+            Approval(human, CÓ evidence)     -> ran=('wipe',)  ALLOW human 'alice'    evidence=True
+
+        Phép kiểm cũ trừng phạt sự khai báo: callback nào chịu nêu tên người duyệt thì bị
+        từ chối, callback im lặng thì được cho qua. Sửa theo hướng "ghi thành
+        `Actor.policy`" thì còn tệ hơn — nó quy cái click của một con người cho một
+        policy. Nên fail-closed: deployment đã tuyên bố cần bằng chứng, mà kênh này không
+        cho biết có bằng chứng hay không.
+
+        Đây là thay đổi hành vi với ai đang bật cờ này kèm callback trả `bool`. Cờ là
+        opt-in và mục đích duy nhất của nó là đòi bằng chứng; người đó đang được bảo vệ
+        trên giấy chứ không thật, nên vỡ to còn hơn im lặng.
+        """
         import asyncio
         engine, decision = self._engine_ask()
         call, ctx = self._ctx_call()
         d, actor, evidence = asyncio.run(
             engine.resolve(decision, call, ctx, lambda c, x: True, require_evidence=True))
+        self.assertEqual(d.verdict, Verdict.DENY)
+        self.assertIn("AuthEvidence", d.reason)
+
+    def test_bool_tran_van_qua_khi_deployment_khong_doi_bang_chung(self):
+        """Và cờ vẫn tắt theo mặc định: không có `require_evidence`, không có gì đổi."""
+        import asyncio
+        engine, decision = self._engine_ask()
+        call, ctx = self._ctx_call()
+        d, actor, evidence = asyncio.run(
+            engine.resolve(decision, call, ctx, lambda c, x: True, require_evidence=False))
         self.assertEqual(d.verdict, Verdict.ALLOW)
 
     def test_actor_khong_phai_human_khong_bi_anh_huong(self):
