@@ -83,7 +83,7 @@ def build_agent(*, model, tools: Sequence[Any] = (), budget: Any = None,
     grants = Grants(accepts_tainted=frozenset(accepts_tainted),
                     sensitive=frozenset(sensitive))
     _check_tool_set(toolset, grants)
-    _check_subagent_safety(toolset, safety)
+    _check_subagent_safety(toolset, safety, approve)
     ledger = Ledger(Budget.parse(budget))
     # S-15: KHÔNG dựng `PolicyEngine` một lần ở đây với các instance policy người dùng đưa
     # vào. `build_agent()` chạy đúng MỘT LẦN và `Runtime` nó tạo ra phục vụ MỌI thread sau

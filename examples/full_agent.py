@@ -81,6 +81,19 @@ def refund(order_id: str, amount: int) -> str:
     return f"refunded {amount:,} for order {order_id}"
 
 
+# -- The approver: every `danger` tool asks a real human ---------------------
+# Defined here, ahead of the subagent below, rather than down with the rest of the
+# parent's construction (§6 originally) -- G-15, design/review-architect.md: a subagent
+# runs its OWN atry_run() with its OWN approve=, never the parent's, so `policy_expert`
+# needs this SAME callback too, not just the parent that wraps it. Without one, a call
+# inside it that needed approval would be silently ALLOWED -- exactly the gap
+# `Agent.__init__` now refuses to construct at all.
+def approve(call, ctx) -> bool:
+    print(f"      [requesting approval] {call.name}({dict(call.arguments)}) -- "
+          f"run tainted: {ctx.tainted}")
+    return True
+
+
 # -- 3. Subagent: a policy expert, a cheaper model, its own budget -----------
 policy_expert = Agent(
     name="Policy Expert",
@@ -90,6 +103,7 @@ policy_expert = Agent(
                         "claude-haiku-4-5", input_tokens=400),
     budget="$0.02, 3 steps",               # its own ceiling, inside the parent's
     safety="strict",
+    approve=approve,                       # G-15: the parent has one -- so must this
 )
 ask_policy_expert = policy_expert.as_tool()
 
@@ -166,13 +180,6 @@ class RefundWorkflow:
         return Ruling(Verdict.DENY,
                         f"must be '{needs.label}' first; currently at '{self.step.label}'",
                         self.name)
-
-
-# -- 6. The approver: every `danger` tool asks a real human ------------------
-def approve(call, ctx) -> bool:
-    print(f"      [requesting approval] {call.name}({dict(call.arguments)}) -- "
-          f"run tainted: {ctx.tainted}")
-    return True
 
 
 # -- 7. A TYPED conclusion, not a bare string ---------------------------------

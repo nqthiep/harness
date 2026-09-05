@@ -89,6 +89,7 @@ policy_expert = Agent(
     tools=[read_policy],
     model="claude-haiku-4-5",              # a cheap model for reading
     budget="$0.01",
+    approve=ask_approval,                  # G-15: the parent below has one, so must this
 )
 
 

@@ -341,6 +341,16 @@ class Subagents(unittest.TestCase):
         out = run(graph)
         self.assertGreater(Decimal(out["spent_usd"]), Decimal("0"))
 
+    def test_parent_co_approve_con_khong_co_bi_tu_choi_G15(self):
+        """G-15, design/review-architect.md: `build_agent()`'s own `_check_subagent_safety`
+        call needed the same `approve` check `Agent.__init__` got — same enforcement,
+        two constructors."""
+        sub = self._child().as_tool()
+        with self.assertRaises(Exception) as cm:
+            mk([FakeChat.call(sub.name, {"task": "t"}), FakeChat.text("ok")],
+              tools=[sub], approve=lambda c, x: True)
+        self.assertIn("approve=", str(cm.exception))
+
 
 class Checkpointable(unittest.TestCase):
     """Everything in graph state is written by the checkpointer.  The first version put

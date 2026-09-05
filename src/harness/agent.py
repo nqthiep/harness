@@ -176,7 +176,7 @@ class Agent:
         grants = Grants(accepts_tainted=frozenset(accepts_tainted),
                         sensitive=frozenset(sensitive))
         _check_tool_set(toolset, grants)               # T-1.4, before anything is spent
-        _check_subagent_safety(toolset, safety)       # §06.4, before anything is spent
+        _check_subagent_safety(toolset, safety, approve)  # §06.4, before anything is spent
 
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "job", job)
@@ -874,12 +874,26 @@ def _check_shared_policy_state(declared, used, before) -> None:
 _SAFETY_RANK = {"standard": 0, "strict": 1}
 
 
-def _check_subagent_safety(toolset: ToolSet, parent_safety: str) -> None:
+def _check_subagent_safety(toolset: ToolSet, parent_safety: str, parent_approve: Any) -> None:
     """A subagent inherits restriction only: it may never be laxer than its parent.
 
     Documented in §06.4 since Round 7 and unenforced until Round 28 executed it — a
     strict parent could delegate to a standard child and silently drop the safety level
     for exactly the work it delegated.
+
+    G-15, design/review-architect.md: `safety` was the only axis this ever checked.
+    `dispatch.py::_run_subagent` runs the CHILD's OWN `atry_run` — its OWN `approve=`,
+    never the parent's (`run_child = child.with_(budget=...)` only ever replaces
+    `budget`). `PolicyEngine.resolve()` auto-`ALLOW`s a surviving `ASK` when `approve is
+    None` and the call is neither `safety="strict"` nor `Effect.DANGER` — so a child
+    built with no `approve=` at all, wrapped inside a parent that DOES have a real
+    human-approval callback, silently auto-approves exactly the WRITE-effect-under-
+    `standard`-safety decisions the parent's `approve=` exists to gate. Delegating work
+    to a subagent would be a way to escape not just a safety LEVEL (already checked
+    above) but the approval callback itself. Same restriction-only framing as the
+    safety-rank check: a child needs an `approve=` of its OWN once its parent has one —
+    this does not compare them for equality, only that one exists, matching how
+    `safety` is only ever rank-compared, not required to be identical.
     """
     for spec in toolset:
         child = spec.subagent
@@ -893,6 +907,20 @@ def _check_subagent_safety(toolset: ToolSet, parent_safety: str) -> None:
                 f"less —\n  otherwise delegating work is a way to escape the safety "
                 f"level you chose.\n\n"
                 f'  Fix: Agent(name={child.name!r}, ..., safety="{parent_safety}")\n\n'
+                f"  -> docs/06-safety.md#4-least-privilege"
+            )
+        if parent_approve is not None and child.approve is None:
+            raise UnsafeToolSetError(
+                f"{child.name!r} has no approve= callback, but you are wrapping it in an "
+                f"agent that does.\n\n"
+                f"  A subagent runs its OWN atry_run() with its OWN approve= — not the "
+                f"parent's. Without one, a call inside {child.name!r} that needs approval "
+                f"is silently ALLOWED (no human in the loop), even though the parent "
+                f"clearly wants one for exactly this kind of decision.\n\n"
+                f"  Delegating work to a subagent would otherwise be a way to escape the "
+                f"approval callback you set, the same way it could escape a safety "
+                f"level (checked above).\n\n"
+                f"  Fix: Agent(name={child.name!r}, ..., approve=<the same callback>)\n\n"
                 f"  -> docs/06-safety.md#4-least-privilege"
             )
 

@@ -134,7 +134,8 @@ class GraphSubagentTimeoutTests(unittest.TestCase):
         # starving the parent's own budget for the rest of THIS test — it is not
         # something this bug fix claims to solve, only to isolate from.
         child = Agent(name="child", job="be slow", provider=FakeModel(child_script),
-                      tools=[slow_child_tool], budget="$0.01, 1 steps, 30s")
+                      tools=[slow_child_tool], budget="$0.01, 1 steps, 30s",
+                      approve=lambda c, ctx: True)  # G-15: parent has one, so must this
         subagent_spec = dataclasses.replace(child.as_tool(), timeout_s=0.05,
                                             effect=Effect.WRITE)
 

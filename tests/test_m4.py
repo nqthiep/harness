@@ -164,6 +164,43 @@ class Subagents(unittest.TestCase):
         self.assertIn("stopped", str(r.messages[2]["content"][0]["content"]))
 
 
+class SubagentApproveG15(unittest.TestCase):
+    """G-15, design/review-architect.md: a subagent runs its OWN `atry_run()` with its
+    OWN `approve=` (`dispatch.py::_run_subagent` only ever replaces `budget` via
+    `child.with_(...)`) — never the parent's. `PolicyEngine.resolve()` auto-`ALLOW`s a
+    surviving `ASK` when `approve is None` and the call is neither `safety="strict"` nor
+    `Effect.DANGER`, so a child built with no `approve=` at all, wrapped inside a parent
+    that DOES have one, would silently auto-approve exactly the decisions the parent's
+    `approve=` exists to gate."""
+
+    def test_parent_co_approve_con_khong_co_thi_bi_tu_choi(self):
+        child = Agent(name="Reader", job="read", provider=FakeModel([]), budget="$1")
+        with self.assertRaises(Exception) as cm:
+            Agent(name="Boss", job="delegate", tools=[child.as_tool()],
+                 provider=FakeModel([]), budget="$5", approve=lambda c, ctx: True)
+        self.assertIn("approve=", str(cm.exception))
+
+    def test_con_cung_co_approve_thi_duoc(self):
+        child = Agent(name="Reader", job="read", provider=FakeModel([]), budget="$1",
+                      approve=lambda c, ctx: True)
+        Agent(name="Boss", job="delegate", tools=[child.as_tool()],
+             provider=FakeModel([]), budget="$5", approve=lambda c, ctx: True)  # no raise
+
+    def test_khong_ben_nao_co_approve_thi_khong_sao(self):
+        """`approve=None` ở cả hai phía — không có gì để bất đối xứng, không raise."""
+        child = Agent(name="Reader", job="read", provider=FakeModel([]), budget="$1")
+        Agent(name="Boss", job="delegate", tools=[child.as_tool()],
+             provider=FakeModel([]), budget="$5")  # no raise
+
+    def test_chi_parent_khong_co_approve_con_co_thi_khong_sao(self):
+        """Chiều ngược lại KHÔNG bị chặn — con hạn chế hơn cha luôn được phép (cùng
+        khuôn với safety: chỉ hạn chế hơn mới cần chặn, nới ra mới cần chặn)."""
+        child = Agent(name="Reader", job="read", provider=FakeModel([]), budget="$1",
+                      approve=lambda c, ctx: True)
+        Agent(name="Boss", job="delegate", tools=[child.as_tool()],
+             provider=FakeModel([]), budget="$5")  # no raise
+
+
 class SubagentBudget(unittest.TestCase):
     """§06.4's two budget claims, which Round 28 found documented and unenforced."""
 
