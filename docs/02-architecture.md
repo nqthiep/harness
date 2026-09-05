@@ -7,7 +7,7 @@ executes a small, explicit loop: assemble context → call the model → decide 
 requested tool → execute the allowed ones → append results → repeat. Four services hang
 off that loop — the **Ledger** (may we spend?), the **Policy engine** (may we act?), the
 **Context assembler** (what exactly do we send?), and the **Event bus** (what happened?).
-Five things are pluggable; everything else is core and deliberately not overridable.
+Six things are pluggable; everything else is core and deliberately not overridable.
 
 Immutability of `Agent` is not stylistic. It is what makes the prompt prefix stable, which
 is what makes caching work, which is the single largest cost lever in the system.
@@ -23,8 +23,8 @@ is what makes caching work, which is the single largest cost lever in the system
 ├────────────────────────────────────────────────────────────────┤
 │  L2  Core        RunEngine (the loop) · ToolSet · Transcript   │
 ├────────────────────────────────────────────────────────────────┤
-│  L1  Ports       ModelProvider · Store · Policy · Exporter     │  ← the 5 plugin seams
-│                  (+ Tool, declared at L4 via @tool)            │
+│  L1  Ports       ModelProvider · Store · Policy · Exporter     │  ← the 6 plugin seams
+│                  Sandbox (+ Tool, declared at L4 via @tool)    │
 ├────────────────────────────────────────────────────────────────┤
 │  L0  Adapters    AnthropicProvider · SqliteStore · OtelExporter│
 └────────────────────────────────────────────────────────────────┘
@@ -198,28 +198,53 @@ stacking many of these can only add restriction or observation, never bypass one
 Every module below maps to at least one task in [§11](11-implementation-plan.md). Nothing
 in the plan creates a file that is not on this map.
 
+Kept in sync with the real tree as of H-4, `design/review-architect-round3.md` — the
+prior version was missing roughly a dozen modules added since M6-M10 and named six files
+that never existed (`_typing.py`, `tools/invoke.py`, `context/caching.py`,
+`observe/bus.py`, `observe/redact.py`, `tools/builtin/shell.py`/`math.py`).
+`find src/harness -name '*.py'` is the source of truth if this drifts again.
+
 ```
 src/harness/
   __init__.py           PUBLIC API — the complete stable surface (see §03)
   agent.py              Agent: frozen config, construction-time validation
-  run.py                RunEngine: the loop of §3. ~200 lines. No cleverness allowed.
+  run.py                RunEngine: the loop of §3, capped at 251 non-comment lines
+                        (IDL-13). No cleverness allowed.
+  dispatch.py           Tool dispatch — split out of run.py in Round 28: gating,
+                        parallel/serial scheduling, timeout, truncation, retry wiring.
+                        Same IDL-13 line cap, tracked separately from run.py's.
   result.py             Result, StopReason, Usage, Step
   errors.py             Exception hierarchy (§04.7)
-  _typing.py            Internal type aliases
+  _value.py             @value — the frozen, slotted value-type decorator used by every
+                        data class in the package (clean errors on a typo'd attribute)
   middleware.py         Middleware base class + with_middleware() — sugar composed from
                         ModelProvider/tool/Exporter (§4), not a seventh seam, not the loop
+  retry.py              with_provider_retry() — the ONE place provider-call retry lives,
+                        shared by both backends (rate limit/timeout/unavailable)
+  idempotency.py        execute_once — idempotency key + replay-on-hit, backed by Store
+  progress.py           ProgressLedger — mechanical stuck-agent detection (repeated
+                        tool calls with no new args), no extra model call
+  tasks.py              TaskLedger — durable task list for a long-running session,
+                        backed by Store (not a planner, ADR-023 still stands)
+  session.py            Session — id/owner/TTL/fork over the classic backend's Chat;
+                        the LangGraph backend uses its own checkpointer thread_id instead
+  sandbox.py            Sandbox seam (ADR-047): InProcess / Subprocess, isolation field
+  workspace.py          confine() — resolve-then-check root confinement for file-touching
+                        tools (T-7.1); refuses an escaping path rather than sanitizing it
 
   tools/
-    __init__.py         @tool decorator, Effect, ToolSpec, EFFECT_PROFILES
+    __init__.py         @tool decorator, Effect, ToolSpec (incl. isolation), EFFECT_PROFILES
     schema.py           Python signature → JSON Schema (strict-compatible)
     registry.py         ToolSet: sorted tuple + name index, deterministic serialization
                         (not a frozenset — ToolSpec holds a Mapping and is unhashable)
-    invoke.py           Execution: timeout, truncation, error capture, taint marking
+    code.py             CodeTools — file/search/outline/write/test/git tools confined to
+                        a workspace root, sandbox-routed where they shell out
+    calc.py, files.py, web.py
+                        Backward-compat re-export shims onto tools/builtin/*
     builtin/
       web.py            search, fetch          (effect=external, pre-classified)
       files.py          read_file, write_file  (read / write)
-      shell.py          run_command            (danger)
-      math.py           calculate              (read)
+      calc.py           calculate              (read; bounded Pow, G-4)
 
   models/
     base.py             ModelProvider protocol, ModelRequest/Response, Price
@@ -229,12 +254,12 @@ src/harness/
 
   context/
     assembler.py        Renders tools → system → messages. Deterministic by construction.
-    linter.py           Double-render byte comparison → NonDeterministicPromptError
-    window.py           Growth policy: context editing, then compaction
-    caching.py          cache_control breakpoint placement
+    linter.py            Double-render byte comparison → NonDeterministicPromptError
+    window.py            Growth policy: context editing, then compaction
 
   budget/
-    ledger.py           Budget, Ledger, reserve/settle, worst-case estimation
+    ledger.py           Budget, Ledger, reserve/settle/settle_worst_case/
+                        settle_after_retries, worst-case estimation
 
   policy/
     base.py             Policy protocol, Verdict lattice (ALLOW < ASK < DENY)
@@ -242,7 +267,9 @@ src/harness/
                         then approval resolution for a surviving ASK (ADR-021 —
                         approval is the engine's job; a policy is sync and pure)
     builtin.py          EffectPolicy, TaintPolicy, EgressPolicy
-    taint.py            TaintTracker
+    taint.py            TaintTracker — classic backend's sticky integrity bool
+    decision.py         Decision — append-only approval record; Actor has no Model variant
+    label.py            Label — two-axis integrity × confidentiality lattice
 
   memory/
     base.py             Store protocol
@@ -251,20 +278,43 @@ src/harness/
     sqlite.py           SQLite-backed (default persistent store)
 
   observe/
-    events.py           The closed 15-event taxonomy (§05.1)
-    bus.py              EventBus: sync fan-out, exporter isolation
+    events.py           The closed event taxonomy (§05.1) + EventBus: sync fan-out,
+                        exporter isolation
     transcript.py       Append-only JSONL writer/reader, with redaction
-    redact.py           Secret scrubbing
     console.py          Human-readable exporter
     otel.py             OpenTelemetry exporter (optional extra)
 
   secrets.py            Secret type
 
   plugins/
+    __init__.py         Re-exports PluginRegistry, register
     registry.py         Explicit registration; opt-in entry-point discovery
+
+  lg/                    harness[graph] — the LangGraph-backed second engine (§3.1)
+    __init__.py          build_agent(), unguarded_paths() — the reachability proof
+    graph.py             The compiled enforcement graph's topology
+    runtime.py           Node implementations: budget/model/policy/approve/tools/finish
+    adapter.py           ProviderChatModel — wraps this Agent's own ModelProvider as a
+                        LangChain chat model, one seam for both backends
+    state.py             AgentState — the TypedDict a checkpointer persists
+
+  eval/                  harness.eval (M10) — trajectory contracts, golden sets, benchmarks
+    trajectory.py        Trajectory contract + check_trajectory (pure, given a Result)
+    golden.py            GoldenCase, run_golden_set — pass rate with a Wilson-score CI
+    benchmark.py         benchmark(), import_cold_start_ms() — latency/throughput/cold start
+    cost.py              cost_per_success — Wilson interval math shared by golden.py
+
+  mcp/
+    __init__.py          MCP client — embeds third-party MCP servers as tools; never hosts one
+
+  server/
+    __init__.py          Service API (harness[server]): POST /v1/runs and friends,
+                        single-worker only (G-10) — never imported by `import harness`
 
   testing/
     __init__.py         FakeModel, record, replay, no_network, assert_* helpers
+    chaos.py             Failure injection: provider timeout, tool raise, store dead,
+                        policy raise, garbage model output
 
   cli/
     __init__.py         new · run · trace · cost · doctor
@@ -301,7 +351,7 @@ src/harness/
 A fair challenge to any architecture document. The count:
 
 - **4 public classes** a user can construct (`Agent`, `Budget`, `Secret`, plus decorators).
-- **5 protocols** total, each with ≥ 2 real implementations planned.
+- **6 protocols** total, each with ≥ 2 real implementations planned.
 - **1 loop**, no strategy objects, no middleware chain, no dependency-injection container,
   no plugin lifecycle with hooks.
 - **0 features built "for later"** — every module above is required by a numbered
