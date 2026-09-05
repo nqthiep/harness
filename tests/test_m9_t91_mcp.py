@@ -149,7 +149,10 @@ class DungToolSpec(unittest.TestCase):
         t = _tool(name="search")
         policy = McpServerPolicy(identity=ServerLabel("github"))
         spec = classify_mcp_tool(t, policy, call=lambda n, a: None)
-        self.assertEqual(spec.name, "github_search")
+        # G-12: tên giờ có thêm hậu tố digest (8 hex) sau khi slug — quyết định (không
+        # phải ngẫu nhiên), nên vẫn kiểm được bằng giá trị cụ thể.
+        self.assertEqual(spec.name, "github_search_6d5de845")
+        self.assertTrue(spec.name.startswith("github_search_"))
         self.assertEqual(spec.server, "github")
 
     def test_hai_server_cung_ten_tool_ra_hai_ten_khac_nhau(self):
@@ -182,6 +185,20 @@ class DungToolSpec(unittest.TestCase):
         self.assertEqual(seen["name"], "search")          # KHÔNG phải "github_search"
         self.assertEqual(seen["args"], {"query": "x"})
         self.assertEqual(result, "ok")
+
+    def test_slug_collapse_khong_con_lam_va_cham_ten_G12(self):
+        """G-12, design/review-architect.md: trước bản vá, `slug(f"{identity}__{name}")`
+        một mình tự collapse `_` lặp — `identity="a", tool.name="b_c"` và
+        `identity="a_b", tool.name="c"` đều slug thành `a_b_c`, y hệt nhau, dù đến từ
+        hai server/tool hoàn toàn khác nhau. `tool.name` do SERVER chọn, không phải
+        caller, nên đây là va chạm server nào đó có thể GÂY RA, không chỉ "hiếm gặp"."""
+        s1 = classify_mcp_tool(_tool(name="b_c"), McpServerPolicy(identity=ServerLabel("a")),
+                               call=lambda n, a: None)
+        s2 = classify_mcp_tool(_tool(name="c"), McpServerPolicy(identity=ServerLabel("a_b")),
+                               call=lambda n, a: None)
+        self.assertNotEqual(s1.name, s2.name,
+                            "digest hậu tố phải phân biệt được hai cặp (server, tool) "
+                            "khác nhau dù phần slug trước digest trùng nhau")
 
     def test_mutation_fn_goi_nham_ten_da_gan_tien_to(self):
         """Mutation: `_fn` gọi `call(name, ...)` (tên harness-facing) thay vì
@@ -252,14 +269,14 @@ class ConnectClientThat(unittest.IsolatedAsyncioTestCase):
         session = FakeSession([_tool(name="search"), _tool(name="wipe")])
         policy = McpServerPolicy(identity=ServerLabel("s1"))
         specs = await connect(session, policy)
-        self.assertEqual({s.name for s in specs}, {"s1_search", "s1_wipe"})
+        self.assertEqual({s.name for s in specs}, {"s1_search_f7de2f7d", "s1_wipe_649fdf55"})
         self.assertTrue(all(s.server == "s1" for s in specs))
 
     async def test_allowlist_loc_bot_tool(self):
         session = FakeSession([_tool(name="search"), _tool(name="wipe")])
         policy = McpServerPolicy(identity=ServerLabel("s1"), allow=frozenset({"search"}))
         specs = await connect(session, policy)
-        self.assertEqual({s.name for s in specs}, {"s1_search"})
+        self.assertEqual({s.name for s in specs}, {"s1_search_f7de2f7d"})
 
     async def test_fn_round_trip_qua_session_that(self):
         session = FakeSession([_tool(name="search")], results={"search": "3 kết quả"})

@@ -14,6 +14,7 @@ import the `mcp` SDK, same rule as `graph`/`viking`/`otel` (ADR-032).
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import field
 from typing import Any, Awaitable, Callable, Mapping, NewType
 
@@ -109,13 +110,30 @@ def classify_mcp_tool(tool: Any, policy: McpServerPolicy, call: McpCall) -> Tool
     `tools.registry.ToolSet`'s duplicate-name guard can never silently merge them, and
     the model sees which server each is on. `slug()` (same helper `as_tool()` uses) then
     makes the result a valid tool name regardless of what the server sent — MCP names
-    are not guaranteed to match this harness's `^[a-z][a-z0-9_]{0,63}$`. `slug()`
-    collapses repeated `_`, so two DIFFERENT `(server, tool)` pairs can in theory land on
-    the same slugged name (`"a"`+`"b_c"` and `"a_b"`+`"c"` both become `a_b_c`) — rare in
-    practice, and when it happens `ToolSet`'s own duplicate-name guard raises loudly
-    rather than silently merging the two, same as any other tool-naming collision.
+    are not guaranteed to match this harness's `^[a-z][a-z0-9_]{0,63}$`.
+
+    G-12, design/review-architect.md: `slug()` collapses repeated `_`, so two DIFFERENT
+    `(server, tool)` pairs used to be able to land on the same slugged name (`"a"` +
+    `"b_c"` and `"a_b"` + `"c"` both slugged to `a_b_c`) — and `tool.name` is chosen by
+    the SERVER, not the caller, so this was reachable by a hostile or just carelessly
+    named MCP server, not only "rare in practice." `ToolSet`'s duplicate-name guard
+    catches it (raises `DuplicateToolError` rather than silently merging), but that
+    turns an untrusted server's naming choice into a denial of service against every
+    OTHER server's tool it happens to collide with — collision-resistance belongs here,
+    not one guard downstream. A short `blake2b` digest of the pair, hashed with the same
+    `\x00` domain separator `idempotency.py`'s `call_key` uses for this exact reason
+    (S-23: joining two strings with a plain separator that could itself appear in either
+    string reintroduces the same collision one level up) is appended after slugging, so
+    the slug's own information loss can no longer cause two different pairs to agree.
     """
-    name = slug(f"{policy.identity}__{tool.name}")
+    digest = hashlib.blake2b(f"{policy.identity}\x00{tool.name}".encode("utf-8"),
+                             digest_size=4).hexdigest()
+    # Truncate the slugged base ourselves, to a length that leaves room for the
+    # digest — `slug()`'s own `[:64]` truncates from the END and would otherwise be
+    # free to cut the digest itself off for a long identity/tool.name pair, defeating
+    # the whole point.
+    base = slug(f"{policy.identity}__{tool.name}")[:55]
+    name = f"{base}_{digest}"[:64]
     description = tool.description or tool.name
 
     async def _fn(**kwargs: Any) -> str:
