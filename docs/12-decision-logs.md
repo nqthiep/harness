@@ -8,7 +8,7 @@ the choice, never the cost of the alternative.
 
 ## 0. Index
 
-113 decisions. The NUMBER is the address — 763 citations across this repository
+114 decisions. The NUMBER is the address — 763 citations across this repository
 use `ADR-NNN` and only ten name this file — so this table turns a number back into a
 subject without scrolling, and is why the log is indexed rather than split (ADR-103).
 `tests/test_conformance.py` asserts it stays complete and that nothing cites an ADR that
@@ -130,6 +130,7 @@ section.
 | [ADR-115](#adr-115--a-gate-is-not-satisfied-by-its-prerequisite-failing) | A gate is not satisfied by its prerequisite failing | Accepted |
 | [ADR-116](#adr-116--export-the-three-seams-that-had-no-export) | Export the three seams that had no export | Accepted (48 → 55 names, plus the test register #8 claimed existed) |
 | [ADR-117](#adr-117--four-things-the-extension-surface-promised-and-did-not-do) | Four things the extension surface promised and did not do | Accepted |
+| [ADR-118](#adr-118--both-pinned-parity-defects-unpinned) | Both pinned parity defects, unpinned | Accepted (`test_parity.py` carries no documented differences again) |
 
 ---
 
@@ -5109,3 +5110,64 @@ check — explicitly **not** the general entropy classifier, which false-positiv
 base64 payloads and hashes. Its own negative tests were then found to be shielded by
 `redact()`'s marker prefilter (a pattern widened into that classifier would never be
 reached on those inputs); the patterns are now asserted directly.
+
+---
+
+### ADR-118 — Both pinned parity defects, unpinned
+
+**Status:** Accepted (`test_parity.py` carries no documented differences again).
+
+**Context.** ADR-111 strengthened the parity harness to compare the `Result` the caller
+actually receives, and two fields would not compare. Rather than exclude them quietly,
+they were pinned as named open defects with the fix and its blocker written down. This is
+those two rows being deleted, which is what a pinned defect is supposed to end as.
+
+**`Result.steps` was in a unit nothing else in the package uses.** The loop reported its
+`while` cursor: `model_calls - 1` on any run that leaves from the middle, `model_calls` on
+one that leaves from the top. `Ledger.count_step()` fires once per model call and
+`Budget(steps=)` is a ceiling over THAT count, so `result.steps` and `budget.steps` did
+not measure the same thing on the classic backend. The durable path already reported
+model calls and was right.
+
+```
+                 before              after
+text only        loop=0 durable=1    1 / 1
+one tool call    loop=1 durable=2    2 / 2
+two tool steps   loop=2 durable=3    3 / 3
+```
+
+The blocker was named in advance and behaved exactly as predicted:
+`tests/test_progress_stall.py` asserted `r.steps == STALL_AFTER`, which holds only for
+the cursor. `ProgressLedger` counts REPEATS, so the first model call has nothing to
+repeat and a run stalled at repeat number `STALL_AFTER` has made `STALL_AFTER + 1` calls.
+Measured: both backends emit 7 `model.request` events for that scenario and both now
+report `steps=7`.
+
+**A small irony worth recording.** `Ledger.steps_taken` was deleted one commit earlier as
+dead code — correctly, since nothing read it. It is restored here, with a consumer. Dead
+code is a fact about the present, not a verdict on the accessor.
+
+**`Result.tools_run` dropped a tool that ran and raised, on the durable side only.**
+IDL-49 settles the rule: `tools_run` records what EXECUTED, not what succeeded. A tool a
+policy blocked is absent; a tool that was allowed to run and then raised is present,
+because it ran and its side effects may well have landed —
+`harness.testing.assert_no_tool` is built on that reading, and the other answer lets a
+`wipe` that raised half way through pass an assertion whose whole job is to prove it did
+not run.
+
+The classic loop gets this for free: `Dispatcher.ran` is appended at the point of
+invocation, after the re-gate. The durable backend could not, because on that side a
+refusal and a failure are both a `ToolMessage` with `status="error"` and nothing told
+them apart — so `_state_to_result` filtered out every error and lost the tools that ran.
+
+**Rejected: a thread-wide `tools_executed_ever` state field**, mirroring
+`tools_called_ever`. It answers a different question: `Result` is built from THIS turn's
+messages, and a list that accumulates across the thread would over-report on the second
+turn. The mark goes on the message, at the two points where a tool has actually been
+invoked.
+
+**What this closes.** `test_parity.py`'s own rule — *"a row that differs is a defect,
+never a documented difference"* — holds again with no exceptions. That matters beyond
+these two fields: two engines cost roughly 700 statements of duplicated rules, and this
+file is the entire insurance policy on that duplication (ADR-111). An insurance policy
+with two named exclusions is worth less than one with none.

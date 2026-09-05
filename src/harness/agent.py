@@ -910,7 +910,12 @@ def _state_to_result(state: Any, before: int, run_id: str,
                     call_names[cid] = cname
         elif isinstance(m, ToolMessage):
             called = call_names.get(m.tool_call_id)
-            if called and getattr(m, "status", "success") != "error":
+            # The `executed` stamp, not `status != "error"`. On this backend a refusal
+            # and a failure are both `status="error"`, so filtering on it dropped every
+            # tool that ran and raised — while the classic loop kept them (IDL-49:
+            # `tools_run` records what EXECUTED). `_stamp_executed` is set at the two
+            # points where a tool has actually been invoked.
+            if called and m.additional_kwargs.get("executed"):
                 tools_run.append(called)
     # N-3: `lg/runtime.py::finish()` already validated this (and downgraded `stop`/
     # `detail` above if it didn't fit) BEFORE `run.finished` fired — this re-parse just

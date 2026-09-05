@@ -262,14 +262,19 @@ class RunEngine:
                 stop, detail = StopReason.ERROR, str(exc)
                 self._bus.emit(EventKind.ERROR_RAISED, step=step, where="returns",
                                type="ToolContractError", message=detail, retryable=False)
-        self._bus.emit(EventKind.RUN_FINISHED, stop_reason=stop.value, steps=step,
+        # MODEL CALLS, not the `while` cursor. The cursor is `model_calls - 1` on any
+        # run that leaves the loop from the middle and `model_calls` on one that leaves
+        # from the top, so it was neither backend-agreeing nor in the same unit as
+        # `Budget(steps=)` — which `Ledger.count_step()` counts, once per model call.
+        self._bus.emit(EventKind.RUN_FINISHED, stop_reason=stop.value,
+                       steps=self._l.steps_taken,
                        cost_usd=str(self._l.spent), tainted=self._taint.tainted,
                        duration_s=time.monotonic() - run_t0,
                        input_tokens=usage_total.input_tokens,
                        output_tokens=usage_total.output_tokens,
                        cache_read_tokens=usage_total.cache_read_input_tokens,
                        cache_creation_tokens=usage_total.cache_creation_input_tokens)
-        return Result(text, stop, step, self._l.spent, usage_total, run_id,
+        return Result(text, stop, self._l.steps_taken, self._l.spent, usage_total, run_id,
                       self._taint.tainted, tuple(msgs), value, detail,
                       tuple(self._dispatch.ran))
 

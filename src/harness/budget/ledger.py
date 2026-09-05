@@ -132,6 +132,16 @@ class Ledger:
     def spent(self) -> Money: return self._spent
     @property
     def budget(self) -> Budget: return self._b
+    @property
+    def steps_taken(self) -> int:
+        """Model calls billed so far — the unit `Budget(steps=)` is a ceiling over.
+
+        Deleted in ADR-113's sweep as dead code, which it then was: nothing read it.
+        Restored here with a consumer, because it is the unit `Result.steps` should have
+        been reporting all along (ADR-118). `count_step()` fires once per model call, so
+        this and `remaining_steps()` are the two ends of the same count.
+        """
+        return self._steps
 
     def _committed(self) -> Money:
         """Chi tiêu THẬT cộng mọi reservation đang mở, chưa `settle()`.

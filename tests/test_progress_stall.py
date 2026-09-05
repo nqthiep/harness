@@ -103,7 +103,13 @@ class VongLapClassic(unittest.TestCase):
         r = agent.try_run("go")
         self.assertIs(r.stop_reason, StopReason.STALLED)
         self.assertFalse(r.ok)
-        self.assertEqual(r.steps, STALL_AFTER)
+        # STALL_AFTER + 1, và con số này chính là thứ đã chặn ADR-118 suốt một vòng.
+        # `ProgressLedger` đếm số lần LẶP LẠI, nên lượt gọi model đầu tiên chưa có gì để
+        # lặp: một run bị chặn ở lần lặp thứ STALL_AFTER đã gọi model STALL_AFTER + 1
+        # lần. Kỳ vọng cũ (`== STALL_AFTER`) chỉ đúng với con trỏ `while` của vòng lặp,
+        # tức đúng vì `Result.steps` đang ở SAI đơn vị. Đo được: cả hai backend đều phát
+        # 7 sự kiện `model.request` cho kịch bản này, và giờ cả hai đều báo steps=7.
+        self.assertEqual(r.steps, STALL_AFTER + 1)
         # Lý do phải đọc được, không phải một mã lỗi trơ.
         self.assertIn("không có lời gọi tool nào mới", r.detail)
 

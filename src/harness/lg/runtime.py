@@ -691,8 +691,10 @@ class Runtime:
                 self._emit(state, EventKind.ERROR_RAISED, step=state.get("step", 0),
                            where="tool", type=spec.name, message=reason,
                            retryable=retryable)
-                msgs.append(ToolMessage(content=redact(reason),
-                                        tool_call_id=call["id"], status="error"))
+                ran_msg = ToolMessage(content=redact(reason),
+                                      tool_call_id=call["id"], status="error")
+                _stamp_executed(ran_msg)
+                msgs.append(ran_msg)
                 continue
             limit = spec.max_result_tokens * 4
             if len(payload) > limit:
@@ -709,6 +711,7 @@ class Runtime:
                            source_tool=spec.name)
             result_msg = ToolMessage(content=redact(payload), tool_call_id=call["id"])
             _stamp_label(result_msg, emitted)
+            _stamp_executed(result_msg)
             msgs.append(result_msg)
             called_now.append(spec.name)
             self._emit(state, EventKind.TOOL_FINISHED, step=state.get("step", 0),
@@ -1014,6 +1017,27 @@ def _msg_label(msg) -> Label:
     from ..policy.label import Confidentiality
     return Label(Integrity[i] if i else Integrity.TRUSTED,
                 Confidentiality[c] if c else Confidentiality.PUBLIC)
+
+
+def _stamp_executed(msg) -> None:
+    """Mark a `ToolMessage` as one whose tool actually RAN.
+
+    `Result.tools_run` records what executed, not what succeeded (IDL-49) — a tool a
+    policy blocked is absent, a tool that was allowed to run and then raised is present,
+    because it ran and its side effects may well have landed.
+    `harness.testing.assert_no_tool` is built on that reading, so the other answer lets a
+    `wipe` that raised half way through pass an assertion whose whole job is to prove it
+    did not run.
+
+    The classic loop gets this for free: `Dispatcher.ran` is appended at the point of
+    invocation, after the re-gate. This backend could not, because on this side both a
+    refusal and a failure are a `ToolMessage` with `status="error"` and nothing told them
+    apart — so `agent.py::_state_to_result` filtered out every error and dropped the
+    tools that ran. Marked on the message rather than kept in state because `Result` is
+    built from THIS turn's messages, and a thread-wide list would answer a different
+    question (that is `tools_called_ever`, which answers the gate's).
+    """
+    msg.additional_kwargs["executed"] = True
 
 
 def _stamp_label(msg, label: Label) -> None:

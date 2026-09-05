@@ -61,9 +61,11 @@ class AgentState(TypedDict, total=False):
     #: `finish`), unlike `RUN_STARTED` (once per thread, ever) — the two were already
     #: asymmetric before this field existed; `duration_s` matches the one that repeats.
     turn_started_at: float
-    #: Compaction-immune record of tool names that have COMPLETED (in the same sense
-    #: `Runtime._tools_called()` already used: any matching `ToolMessage` exists, success
-    #: or not), ever, on this thread — mirrors `dispatch.py::Dispatcher.ran` on the
+    #: Compaction-immune record of tool names that have SUCCEEDED, ever, on this thread.
+    #: ("Succeeded", not "got any `ToolMessage`" — ADR-115: this feeds
+    #: `RequireBeforePolicy`, and a gate satisfied by its prerequisite failing is worse
+    #: than no gate. `Result.tools_run` asks the other question and is answered by the
+    #: `executed` stamp on the message instead.) — mirrors `dispatch.py::Dispatcher.ran` on the
     #: classic backend, which is a plain list appended-to for the life of one run and
     #: never pruned. Before this field existed, `_tools_called()` re-derived its answer
     #: by scanning `state["messages"]` on every call — which real compaction

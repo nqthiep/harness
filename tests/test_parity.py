@@ -592,9 +592,14 @@ class Parity(unittest.TestCase):
         file agreed on `stop_reason` throughout, so none of it was visible.
 
         `cost`/`usage` compare only under `PINNED_INPUT_TOKENS` — see its comment.
-        `steps` and `tools_run` are compared by the two rows below instead, because
-        closing those needs a file this change does not own; those rows fail the day
-        each fix lands, which is how the exclusion here gets deleted rather than kept.
+        `steps` and `tools_run` joined this list in ADR-118. `run.py` now reports
+        `Ledger.steps_taken` (model calls, the unit `Budget(steps=)` is a ceiling over)
+        rather than the `while` cursor, and the durable backend marks a `ToolMessage`
+        whose tool actually ran, so it can tell a refusal from a failure — both are
+        `status="error"` on that side, which is why filtering on it dropped every tool
+        that ran and raised. The two rows that pinned those gaps are gone, which is what
+        a pinned defect is supposed to end as. This file's rule holds again with no
+        exceptions: a row that differs is a defect, never a documented difference.
         """
         for name, script, kw in SCENARIOS:
             with self.subTest(scenario=name):
@@ -602,71 +607,10 @@ class Parity(unittest.TestCase):
                 fields = {k: v["result"] for k, v in got.items()
                           if k in RESULT_BACKENDS}
                 for field in ("stop", "cost", "usage", "detail", "text", "tainted",
-                              "value"):
+                              "value", "steps", "tools_run"):
                     vals = {k: v[field] for k, v in fields.items()}
                     self.assertEqual(len(set(map(repr, vals.values()))), 1,
                                      f"Result.{field} differs: {vals}")
-
-    def test_result_steps_is_a_loop_cursor_on_one_backend_and_model_calls_on_the_other(self):
-        """A known open defect, pinned so it cannot drift or be forgotten (F10).
-
-        Measured: `Result.steps` on the durable path equals the number of `model.request`
-        events, always.  On the loop it is the `while` cursor — `model_calls - 1` on any
-        run that leaves the loop from the middle, `model_calls` on one that leaves from
-        the top (a step or wall-clock ceiling).  That is not a unit anything else in the
-        package uses: `Ledger.count_step()` fires once per model call and `Budget(steps=)`
-        is the ceiling over THAT count, so `result.steps` and `budget.steps` are in
-        different units on the loop.  The durable backend is right.
-
-        The one-line fix (count model calls in `run.py` and report that) is not made here
-        because it also moves `tests/test_progress_stall.py`'s
-        `assertEqual(r.steps, STALL_AFTER)`: a stalled run makes STALL_AFTER + 1 model
-        calls (the detector counts REPEATS), so that equality holds only for the cursor.
-        Both backends already report 7 model calls for it; only the loop's `Result` says
-        6.  When that expectation moves, this row fails, and its assertion becomes the
-        `steps` entry in the row above.
-        """
-        for name, script, kw in SCENARIOS:
-            with self.subTest(scenario=name):
-                got = self.both(script, input_tokens=PINNED_INPUT_TOKENS, **kw)
-                loop, durable = (got[b]["result"]["steps"] for b in RESULT_BACKENDS)
-                self.assertIn(durable - loop, (0, 1),
-                              f"{name}: the gap between the loop's cursor and the "
-                              f"durable backend's model-call count is no longer 0 or 1 "
-                              f"({loop} vs {durable}) — this is worse than the defect "
-                              f"this row was written to pin")
-
-    def test_tools_run_disagrees_only_about_a_tool_that_ran_and_then_raised(self):
-        """The other known open defect, pinned the same way (F10).
-
-        IDL-49 settles the rule: `Result.tools_run` records what EXECUTED, not what
-        succeeded — a tool policy blocked is absent, a tool that was allowed to run and
-        then raised is present, because it ran and its side effects may well have landed.
-        `harness.testing.assert_no_tool` is built on exactly that reading, so the other
-        answer would let a `wipe` that raised half way through pass an assertion whose
-        whole job is to prove it did not run.  The loop obeys IDL-49
-        (`tests/test_m6_t64_chaos.py` asserts it); `agent.py::_state_to_result` counts
-        only `ToolMessage`s whose `status != "error"`, so the durable path drops them.
-
-        The fix belongs in `agent.py`, which this change does not own.  Until it lands:
-        the two engines must agree on every scenario WITHOUT a raising tool, and differ
-        by exactly the raised names on the two that have one.
-        """
-        raising = {"a tool that raises",
-                   "one ok and one raising tool in the same turn"}
-        for name, script, kw in SCENARIOS:
-            with self.subTest(scenario=name):
-                got = self.both(script, input_tokens=PINNED_INPUT_TOKENS, **kw)
-                loop, durable = (got[b]["result"]["tools_run"] for b in RESULT_BACKENDS)
-                if name not in raising:
-                    self.assertEqual(loop, durable)
-                else:
-                    self.assertEqual(tuple(t for t in loop if t != "broken"), durable,
-                                     "the only difference must still be the tool that "
-                                     "raised; anything else is a new defect")
-                    self.assertIn("broken", loop,
-                                  "the loop must keep obeying IDL-49")
-
 
     def test_the_policy_decided_stream_agrees_on_every_backend(self):
         """Not the SET of event kinds — the sequence of payloads.
