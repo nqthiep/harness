@@ -15,7 +15,13 @@ trên CẢ HAI backend, không phải thêm một khoá vào `AgentState` rồi 
 có; (c) không thêm tham số nào vào `Agent(...)`/`build_agent(...)` — người viết agent chỉ
 thấy vài tool mới, đúng ràng buộc "không đổi coding interface".
 
-**Vì sao read-modify-write ở đây an toàn.** Mọi tool sửa sổ đều `effect="write"`, và
+**Vì sao read-modify-write ở đây an toàn — và vì sao lập luận đó không đủ.**
+*(Lập luận dưới đây đúng, nhưng nó chỉ đúng chừng nào KHÔNG có người ghi thứ hai;
+`harness.contrib.Driver` chạy một pump nền, đúng là người ghi thứ hai đó. Mọi
+thao tác ghi giờ đi qua `read_modify_write`, phát hiện mất-cập-nhật thay vì tin
+vào lập luận — ADR-100.)*
+
+ Mọi tool sửa sổ đều `effect="write"`, và
 `EFFECT_PROFILES[Effect.WRITE].parallel_safe` là `False` — harness đã tuần tự hoá chúng
 trong một bước, nên không có hai lời gọi nào cùng đọc-sửa-ghi đè lên nhau. Đây là lý do
 module này không cần khoá riêng; nếu ngày nào đó `write` thành parallel-safe thì chỗ này
@@ -25,11 +31,11 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Final, Sequence
+from typing import Any, Final
 
 from ._value import value
 from .errors import HarnessError
-from .memory.base import Store
+from .memory.base import Store, read_modify_write
 from .tools import tool
 
 #: Từ vựng đóng, không mở rộng được từ phía model — cùng lý do `Effect` đóng ở bốn giá
@@ -104,33 +110,66 @@ class TaskLedger:
             ) from None
         return tuple(_from_dict(r) for r in rows)
 
-    async def _save(self, tasks: Sequence[Task]) -> None:
-        await self._store.put(self._key, json.dumps([_to_dict(t) for t in tasks],
-                                                    ensure_ascii=False))
+    async def _update(self, change) -> None:
+        """Read, transform, write — through `read_modify_write`, so two writers racing on
+        this key is an error instead of a silently discarded update.
+
+        The paragraph at the top of this module explains why the race could not happen:
+        every mutating tool is `effect="write"`, which is not `parallel_safe`, so they
+        serialise within a step. That is still true and it stops being true the moment
+        anything ELSE writes — `harness.contrib.Driver` runs a background pump, which is
+        exactly that (ADR-100). An argument for why a race cannot happen is worth less
+        than a check that says so when it does.
+        """
+        def mutate(raw: str | None) -> str | None:
+            current = tuple(_from_dict(r) for r in json.loads(raw)) if raw else ()
+            after = change(current)
+            return (None if after is None
+                    else json.dumps([_to_dict(t) for t in after], ensure_ascii=False))
+
+        await read_modify_write(self._store, self._key, mutate,
+                                what="this agent's task list")
 
     async def add(self, title: str) -> Task:
-        tasks = await self.all()
         now = time.time()
-        t = Task(f"t{len(tasks) + 1}", title, "todo", "", now, now)
-        await self._save([*tasks, t])
-        return t
+        made: list[Task] = []
+
+        def change(current):
+            # The id derives from the rows read INSIDE the protected section, not from a
+            # separate earlier read. Two concurrent `add`s used to compute `t{n+1}` from
+            # their own stale counts and produce the same id (ADR-100).
+            task = Task(f"t{len(current) + 1}", title, "todo", "", now, now)
+            made.append(task)
+            return [*current, task]
+
+        await self._update(change)
+        return made[0]
 
     async def set_status(self, task_id: str, status: str, note: str = "") -> Task:
         if status not in STATUSES:
             raise UnknownStatusError(
                 f"{status!r} không phải trạng thái hợp lệ. Chọn một trong: "
                 f"{', '.join(STATUSES)}")
-        tasks = list(await self.all())
-        for i, t in enumerate(tasks):
-            if t.id == task_id:
-                updated = Task(t.id, t.title, status, note or t.note, t.created_at,
-                               time.time())
-                tasks[i] = updated
-                await self._save(tasks)
-                return updated
+        done: list[Task] = []
+        known: list[str] = []
+
+        def change(current):
+            known[:] = [t.id for t in current]
+            rows = list(current)
+            for i, t in enumerate(rows):
+                if t.id == task_id:
+                    rows[i] = Task(t.id, t.title, status, note or t.note, t.created_at,
+                                   time.time())
+                    done.append(rows[i])
+                    return rows
+            return None                      # not found: write nothing
+
+        await self._update(change)
+        if done:
+            return done[0]
         raise UnknownTaskError(
             f"không có task {task_id!r} trong sổ. Đang có: "
-            f"{', '.join(t.id for t in tasks) or '(sổ trống)'}")
+            f"{', '.join(known) or '(sổ trống)'}")
 
     async def summary(self) -> str:
         """Toàn bộ sổ, dạng model đọc được. Đây là thứ khiến việc nén context an toàn:

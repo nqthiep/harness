@@ -52,6 +52,7 @@ from typing import Any, Mapping, Protocol, Sequence
 sys.path.insert(0, "src")
 
 from harness import Effect, tool
+from harness.memory.base import read_modify_write
 
 Vector = Sequence[float]
 
@@ -370,13 +371,15 @@ class IdentityLedger:
     vectors per person on purpose: one enrolment is one angle in one light, and matching
     takes the best of them.
 
-    **Single-writer.** `Store` is whole-blob get/put with no compare-and-swap
-    (`memory/base.py`), so a read-modify-write here is only safe because the tools that
-    mutate it are `effect="danger"`, which is not `parallel_safe`
-    (`EFFECT_PROFILES[Effect.DANGER].parallel_safe is False`) and is therefore
-    serialised within a step — the same argument `tasks.py` documents for itself, and it
-    fails the moment a background thread also writes. A perception loop must NOT cache
-    recognitions in here; it publishes `Reading`s and nothing else.
+    **Single-writer, checked rather than argued.** `Store` is whole-blob get/put with no
+    compare-and-swap (`memory/base.py`), so a read-modify-write here used to be safe only
+    because the tools that mutate it are `effect="danger"`, which is not `parallel_safe`
+    (`EFFECT_PROFILES[Effect.DANGER].parallel_safe is False`) and is therefore serialised
+    within a step. That argument was true and its own last clause named its expiry date —
+    "it fails the moment a background thread also writes" — which `harness.contrib.Driver`
+    then became. `enroll` and `forget` now go through `read_modify_write`, which detects a
+    lost update instead of trusting the argument (ADR-100). A perception loop still must
+    NOT cache recognitions in here; it publishes `Reading`s and nothing else.
     """
 
     KEY = "harness:identities"
@@ -430,7 +433,13 @@ class IdentityLedger:
                    margin=calibration.margin, key=key)
 
     async def _rows(self) -> list[dict[str, Any]]:
-        raw = await self._store.get(self._key)
+        return self._parse(await self._store.get(self._key))
+
+    def _parse(self, raw: str | None) -> list[dict[str, Any]]:
+        """Sync, and separate from the read, so `read_modify_write` can call it on the
+        raw string it already holds — the mutating half must not re-read the store, or
+        the lost-update check would be comparing against its own second read (ADR-100).
+        """
         if not raw:
             return []
         try:
@@ -456,27 +465,40 @@ class IdentityLedger:
             raise ValueError("an enrolled identity needs a name")
         if not vec:
             raise ValueError("an enrolled identity needs a face embedding")
-        rows = await self._rows()
-        for row in rows:
-            if row["name"].casefold() == name.casefold():
-                row["vectors"].append([float(x) for x in vec])
-                total = len(row["vectors"])
-                break
-        else:
-            rows.append({"name": name, "vectors": [[float(x) for x in vec]]})
-            total = 1
-        await self._store.put(self._key, json.dumps(rows, ensure_ascii=False))
+        total = 0
+
+        def mutate(raw: str | None) -> str:
+            nonlocal total
+            rows = self._parse(raw)
+            for row in rows:
+                if row["name"].casefold() == name.casefold():
+                    row["vectors"].append([float(x) for x in vec])
+                    total = len(row["vectors"])
+                    break
+            else:
+                rows.append({"name": name, "vectors": [[float(x) for x in vec]]})
+                total = 1
+            return json.dumps(rows, ensure_ascii=False)
+
+        await read_modify_write(self._store, self._key, mutate,
+                                what="the enrolled identities")
         return total
 
     async def forget(self, name: str) -> bool:
         """Remove someone entirely. Present because a biometric record somebody can
         never delete is a different product than the one this is meant to be."""
-        rows = await self._rows()
-        keep = [r for r in rows if r["name"].casefold() != name.strip().casefold()]
-        if len(keep) == len(rows):
-            return False
-        await self._store.put(self._key, json.dumps(keep, ensure_ascii=False))
-        return True
+        removed = False
+
+        def mutate(raw: str | None) -> str | None:
+            nonlocal removed
+            rows = self._parse(raw)
+            keep = [r for r in rows if r["name"].casefold() != name.strip().casefold()]
+            removed = len(keep) != len(rows)
+            return json.dumps(keep, ensure_ascii=False) if removed else None
+
+        await read_modify_write(self._store, self._key, mutate,
+                                what="the enrolled identities")
+        return removed
 
     async def match(self, vec: Vector) -> Match:
         rows = await self._rows()

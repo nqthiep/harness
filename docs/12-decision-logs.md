@@ -4087,6 +4087,56 @@ amount of engineering substitutes for that, and the kit is deliberately explicit
 the fix for a failure is "explain it better", the API is wrong. What this ADR changes is
 that the instrument now works when somebody picks it up. Full suite 1155 passed.
 
+### ADR-100 — A lost update is detected, not argued away
+
+**Status:** Accepted (detection, not prevention — the gap is named and tested).
+
+**Context.** `Store` is whole-blob get/put with **no compare-and-swap** — that is the
+protocol's documented shape. Both ledgers built on it therefore do read-modify-write, and
+both carried a paragraph explaining why two writers could not collide:
+
+> a read-modify-write here is only safe because the tools that mutate it are
+> `effect="danger"`, which is not `parallel_safe` … and is therefore serialised within a
+> step — the same argument `tasks.py` documents for itself, **and it fails the moment a
+> background thread also writes.**
+
+The argument was correct and its own last clause named its expiry date.
+`harness.contrib.Driver` (ADR-080) runs a background pump. An argument for why a race
+cannot happen is worth less than a check that says so when it does.
+
+**Decision.** One `read_modify_write(store, key, mutate)` in `memory/base.py`, used by
+`TaskLedger` and `IdentityLedger` alike: read, transform, **re-read and compare**, write.
+A value that changed in between raises `ConcurrentWriteError` naming the key and the
+record, rather than overwriting somebody's change.
+
+Raised rather than retried, deliberately: the caller knows what its change meant and this
+module does not. Re-applying an `enroll` after a conflict is right; re-applying a `forget`
+after somebody re-enrolled that person is not.
+
+**The window it cannot close is named, and tested.** A write landing between the
+verification read and the `put` is still lost. `test_the_window_it_cannot_close_is_named_and_real`
+asserts exactly that — the limitation is a measured fact, not a modest-sounding sentence,
+so nobody builds on this thinking it is CAS. Closing it properly means adding
+compare-and-swap to the `Store` protocol, which is a change to a seam and a bigger
+decision than this one.
+
+**Two defects found by writing the test rather than by reading the code.**
+
+The first was mine, from this change: `TaskLedger.add` read the book once for the count
+and again inside the write, so the id `t{n+1}` came from a read OUTSIDE the protected
+section — two concurrent `add`s would mint the same id. Noticed because the test's
+interference trigger did not line up with the number of reads. Both mutations now derive
+everything from the rows read inside the section.
+
+The second: `set_status` on a missing task used to raise AFTER loading, having written
+nothing — correct, but by luck of ordering rather than by construction. The mutation now
+returns `None` for "not found", which `read_modify_write` treats as "write nothing", so
+the no-write is structural and is its own test.
+
+**Test.** `tests/test_lost_update.py`, 13 tests, driven by an `Interfering` store that
+lands another writer's value at a chosen read — deterministic, no threads, no sleeps. Two
+mutations, each caught by four tests: removing the comparison, and removing the raise.
+
 | # | Decision | Rationale |
 |---|---|---|
 | IDL-01 | `Decimal` for all money; `float` banned in `budget/` by lint | A rounding error in a spend ceiling is a real bug class |
@@ -4149,6 +4199,7 @@ that the instrument now works when somebody picks it up. Full suite 1155 passed.
 | IDL-58 | A path-confining tool is constructed with its root; a module-level tool function confines to the CWD or not at all | `confine()` existed unused for two milestones because the tools that needed it had no root to pass — the missing constructor was the bug, not the missing call (ADR-065) |
 | IDL-59 | An escalating policy escalates on the SIGNAL, never on "the cheaper rung ran out of work" | Editing always has one more stale result to blank, so compaction gated on that would never have run once (ADR-066) |
 | IDL-60 | Context size is measured over the whole request payload, arguments included — never over `message.content` alone | A LangChain `AIMessage` carrying only tool calls has empty `content`; the arguments are the part that never gets blanked, and they measured as zero (ADR-066) |
+| IDL-67 | A read-modify-write on a `Store` goes through `read_modify_write`, never a bare get/put pair | `Store` has no compare-and-swap, so two writers silently lose one update. Both ledgers documented an argument for why that could not happen to them; the argument expired when a background pump was added (ADR-100) |
 | IDL-66 | A stub transport verifies the SDK's shapes, never a CONVENTION the other end owns | `test_search_is_scoped_to_the_namespace` asserted `viking://memories/...` and passed for the life of the module; a real server rejects that scope outright. A stub cannot disagree with you (ADR-096) |
 | IDL-65 | A measurement is taken through the code path that ships, never through a scratch script beside it | Landmark geometry measured on full frames reported "separable, gap +0.0083"; the same feature through `landmark_model=` does not separate at all, because the shipped path crops and because the scratch run silently excluded the photograph that breaks it (ADR-095) |
 | IDL-64 | A concurrency test must use a provider that actually `await`s | `FakeModel.complete` is `async def` with no await inside, so two "concurrent" calls never interleave and the test passes with the lock removed (ADR-093) |
