@@ -16,6 +16,17 @@ from pathlib import Path
 from ..credentials import (  # noqa: F401  (re-export)
     NO_KEY_MESSAGE, api_key, key_status, read_env_file, write_env)
 
+#: Where a scaffolded agent keeps its transcript.  `.harness/` and not the working
+#: directory, matching `agent.py`'s own `.harness/checkpoints/` for local state, and
+#: `TranscriptWriter` creates the directory itself (`observe/transcript.py:35`).
+TRANSCRIPT_DIR = ".harness"
+
+
+def transcript_path(var: str) -> str:
+    """The transcript a scaffolded agent writes, and the argument `harness trace` takes."""
+    return f"{TRANSCRIPT_DIR}/{var}.jsonl"
+
+
 SCAFFOLD = '''from harness import Agent
 
 # This is your helper. Change the words to make it do something else!
@@ -23,13 +34,20 @@ SCAFFOLD = '''from harness import Agent
     name="{name}",
     job="Tell funny jokes for kids. Keep them short and silly.",
     budget="$0.05",     # It will never spend more than 5 cents on one answer.
+    transcript="{transcript}",   # Writes down what it did, so you can read it later.
 )
 
 print({var}.run("Tell me a joke about a cat"))
+
+# Two commands read the file it just wrote:
+#     harness trace {transcript}   <- every step, in order
+#     harness cost {transcript}    <- what it spent
 '''
 
 GITIGNORE = """# Keeps your secret key from being uploaded by accident.
 .env
+# What your agent did.  Kept on your computer, not shared by accident.
+.harness/
 __pycache__/
 *.pyc
 """
@@ -40,12 +58,26 @@ def cmd_new(name: str, *, cwd: Path | None = None) -> list[Path]:
 
     One command, both files.  A protection that is a separate step is a protection that
     gets skipped (register #36).
+
+    **The scaffold sets `transcript=`, and it did not before.**  Measured on the default
+    it used to write: `Agent(...)` with no `transcript=` and no `exporters=` leaves
+    nothing behind at all — `EventBus.events` is in memory and discarded, `DecisionLog`
+    defaults to a fresh in-memory instance per run, and `ConsoleExporter` attaches only
+    when `sys.stdout.isatty()` (`observe/console.py:26`), so under systemd or a pipe not
+    even the progress lines survive.  Asked "is there anything an operator could do that
+    leaves no trace?", the honest answer was: the default.  Meanwhile `harness trace
+    <transcript>` and `harness cost <transcript>` both consume a file nothing created —
+    two of the seven commands were unreachable from the scaffold the other one wrote.
+
+    This does not change what `Agent(...)` does when called directly; it changes what the
+    library HANDS you.  The three-line diff to the default itself belongs with `Agent`.
     """
     root = Path(cwd or Path.cwd())
     from ..tools import slug
     var = slug(name, fallback="helper")
     agent_file = root / f"{var}.py"
-    agent_file.write_text(SCAFFOLD.format(var=var, name=name.capitalize()))
+    agent_file.write_text(SCAFFOLD.format(var=var, name=name.capitalize(),
+                                          transcript=transcript_path(var)))
 
     gitignore = root / ".gitignore"
     existing = gitignore.read_text() if gitignore.exists() else ""
@@ -155,17 +187,33 @@ def cmd_trace(path: str, *, out=print) -> int:
 
 
 def cmd_cost(path: str, *, out=print) -> int:
-    """Spend and realized cache hit rate — the two numbers a cost regression shows up in."""
+    """Spend and realized cache hit rate — the two numbers a cost regression shows up in.
+
+    **The cache numbers used to read a key shape nothing emits.**  Found by running this
+    command against a transcript the scaffold had just produced, rather than against a
+    fixture.  It looked for `data["usage"]["cache_read_input_tokens"]`; both engines emit
+    the fields FLAT and under different names (`run.py:145-150`,
+    `lg/runtime.py:323-327`):
+
+        {"input_tokens": 2000, "cache_read_tokens": 1500, "cache_creation_tokens": 0,
+         "output_tokens": 300, "cost_usd": "$0.0182", ...}
+
+    There is no `usage` sub-dict on `model.response` anywhere in the package, so every
+    run reported `cache reads : 0 of 0 input tokens` and the "Low." warning below — the
+    pointer to the cache linter, and the whole reason this command has a second number —
+    could never fire.  `.get()` on a missing key is why it printed a plausible zero
+    instead of raising.
+    """
     from ..observe.transcript import read
     events = list(read(path))
     finished = [e for e in events if e["kind"] == "run.finished"]
     reads = writes = fresh = 0
     for e in events:
         if e["kind"] == "model.response":
-            u = e["data"].get("usage", {})
-            reads += u.get("cache_read_input_tokens", 0)
-            fresh += u.get("input_tokens", 0)
-            writes += u.get("cache_creation_input_tokens", 0)
+            d = e["data"]
+            reads += d.get("cache_read_tokens", 0)
+            fresh += d.get("input_tokens", 0)
+            writes += d.get("cache_creation_tokens", 0)
     total = reads + fresh
     out(f"runs        : {len(finished)}")
     out(f"spent       : {finished[-1]['data'].get('cost_usd', '?') if finished else '?'}")
@@ -230,8 +278,14 @@ def main(argv: list[str] | None = None) -> int:                 # pragma: no cov
                             validate=lambda k: AnthropicProvider(api_key=k).check_credentials()))
             return 0
         if cmd == "new":
-            for p in cmd_new(rest[0] if rest else "helper"):
+            written = cmd_new(rest[0] if rest else "helper")
+            for p in written:
                 print(f"wrote {p.name}")
+            script = next(p for p in written if p.suffix == ".py")
+            print(f"\nRun it:    python {script.name}")
+            print("Then read what it did:")
+            print(f"  harness trace {transcript_path(script.stem)}")
+            print(f"  harness cost {transcript_path(script.stem)}")
             return 0
         if cmd == "chat":   return cmd_chat(rest[0])
         if cmd == "run":
