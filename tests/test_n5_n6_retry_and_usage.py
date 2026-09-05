@@ -10,6 +10,7 @@ sys.path.insert(0, "src")
 
 from harness import Agent
 from harness.errors import ProviderBadRequest, ProviderRateLimited
+from harness.models import pricing
 from harness.models.fake import FakeModel
 
 
@@ -34,6 +35,16 @@ class FlakyThenOk:
         if self._n <= self._fail:
             raise self._exc("transient", retry_after_s=self._retry_after_s)
         return await self._inner.complete(request, on_delta=on_delta)
+
+
+class FlakyThenOkPriced(FlakyThenOk):
+    """`FlakyThenOk`, but priced like a real model. `FakeModel.price()` always returns
+    `pricing.price("fake")` — every rate `Decimal(0)` — so a `Ledger.settle()` against it
+    can never move `spent` off zero, and G-8's fix (`Ledger.settle_worst_case()`) would
+    look like a no-op through that fixture no matter whether it actually ran. This is
+    the minimal change needed to observe it: same script/failure behaviour, a real
+    (non-zero) `Price` so a settled worst-case estimate shows up in `Result.cost`."""
+    def price(self, m): return pricing.price("claude-haiku-4-5")
 
 
 class Recorder:
@@ -110,6 +121,37 @@ class ProviderRetry(unittest.TestCase):
         self.assertEqual(r.stop_reason.value, "error")
         retryable = rec.retry_attempts()
         self.assertEqual(len(retryable), retry_module.MAX_ATTEMPTS - 1)
+
+    def test_classic_settles_worst_case_spend_on_retry_exhaustion(self):
+        """G-8, design/review-architect.md: `reserve()` opens ONE `Reservation` for the
+        whole `with_provider_retry` call, but before this fix `settle()` only ran on a
+        SUCCESSFUL final attempt — every failed attempt is still a real vendor call (a
+        rate-limited/timed-out request can still be billed), and on total exhaustion the
+        reservation was simply abandoned in `Ledger._open`, understating spend by every
+        attempt actually made. `Result.cost` comes straight from `Ledger.spent`
+        (`run.py`'s `Result(text, stop, step, self._l.spent, ...)`), so a real settlement
+        must show up there even though the run itself ends in `StopReason.ERROR`."""
+        provider = FlakyThenOkPriced([FakeModel.text("hi")], fail_times=999)
+        a = Agent(name="p", job="x", provider=provider, model="claude-haiku-4-5")
+        r = a.try_run("go")
+        self.assertFalse(r.ok)
+        self.assertEqual(r.stop_reason.value, "error")
+        self.assertGreater(r.cost.decimal, 0)
+
+    def test_durable_settles_worst_case_spend_on_retry_exhaustion(self):
+        """Same as the classic-backend test above, ported to `lg/runtime.py`'s node
+        failure branch — `call_model()`'s `except` clause needed BOTH the
+        `settle_worst_case()` call and (since each node rebuilds its `Ledger` from
+        checkpointed state) returning `"spent_usd"`/`"ledger"` in its failure dict, or the
+        settlement never survives past that one node."""
+        provider = FlakyThenOkPriced([FakeModel.text("hi")], fail_times=999)
+        db = tempfile.mktemp(suffix=".sqlite3")
+        a = Agent(name="p", job="x", provider=provider, model="claude-haiku-4-5",
+                 durable=True, checkpoint=db, allowed_hosts=None)
+        r = a.try_run("go")
+        self.assertFalse(r.ok)
+        self.assertEqual(r.stop_reason.value, "error")
+        self.assertGreater(r.cost.decimal, 0)
 
     def test_retry_never_outlives_the_runs_wall_clock_budget(self):
         """A run whose wall-clock budget is already nearly exhausted must not retry past

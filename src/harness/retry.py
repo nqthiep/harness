@@ -100,6 +100,12 @@ async def with_provider_retry(fn: Callable[[], Awaitable[T]], *, deadline_s: flo
     A non-`RETRYABLE` exception (including a real `asyncio.CancelledError`, which is not
     an `Exception` subclass and so is never caught here at all — T-6.2 still holds)
     propagates on the first attempt, exactly as if this wrapper weren't here.
+
+    **G-8**: the exception this raises on final failure carries `.attempts_made` — the
+    number of REAL calls to `fn()` that were attempted (1 if the very first call failed
+    non-retryably or the deadline was already gone). A caller holding an open `Reservation`
+    across this whole call (`run.py`) needs this to settle a worst-case estimate for
+    every attempt actually made, not just the one `reserve()` accounted for.
     """
     attempt = 0
     remaining = deadline_s
@@ -110,6 +116,7 @@ async def with_provider_retry(fn: Callable[[], Awaitable[T]], *, deadline_s: flo
             attempt += 1
             wait = _backoff(exc, attempt)
             if attempt >= MAX_ATTEMPTS or remaining <= 0 or wait > remaining:
+                exc.attempts_made = attempt        # type: ignore[attr-defined]
                 raise
             if on_retry is not None:
                 on_retry(exc, attempt, wait)

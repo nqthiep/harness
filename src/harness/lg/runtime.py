@@ -311,7 +311,13 @@ class Runtime:
             self._emit(state, EventKind.ERROR_RAISED, step=state.get("step", 0),
                        where="provider", type=type(exc).__name__, message=str(exc),
                        retryable=False)
-            return {"stop_reason": "error", "detail": f"{type(exc).__name__}: {exc}"}
+            # G-8, ported from run.py's identical fix: every attempt `with_provider_retry`
+            # made inside `_generate()` (lg/adapter.py) is real spend nothing settles on
+            # a total failure otherwise.
+            led.settle_worst_case(_RESERVED(state.get("max_tokens", 0)),
+                                  getattr(exc, "attempts_made", 1), self._price)
+            return {"stop_reason": "error", "detail": f"{type(exc).__name__}: {exc}",
+                   "spent_usd": str(led.spent.decimal), "ledger": led.snapshot()}
         _stamp_label(msg, label_at_generation)
         u = _usage_of(msg)
         led.settle(_RESERVED(state.get("max_tokens", 0)), u, self._price)

@@ -176,8 +176,27 @@ class Ledger:
 
     @property
     def overshoot(self) -> Money:
-        """How far a settled call pushed spend past the budget.  Bounded by one call."""
+        """How far a settled call pushed spend past the budget. Bounded by one call, TIMES
+        the retry attempts actually made (G-8, `design/review-architect.md`) — sửa lại
+        docstring này vì `retry.py` (N-5) làm cho câu cũ không còn đúng: một lần gọi có
+        thể là tới 5 lần thử THẬT trước khi thất bại hẳn, mỗi lần một chi phí thật."""
         return self._overshoot
+
+    def settle_worst_case(self, reservation: Reservation, attempts: int, price) -> Money:
+        """G-8: `reserve()` mở MỘT `Reservation` cho cả chuỗi retry (`with_provider_retry`),
+        và `settle()` bình thường chỉ chạy khi lần thử CUỐI thành công. Khi mọi lần thử
+        đều thất bại — provider timeout/rate-limit, mỗi lần vẫn có thể đã được vendor
+        tính tiền dù client không bao giờ nhận được response — `reservation` bị bỏ lại
+        trong `_open` mãi mãi, và `remaining_usd()` báo sai vì `_committed()` vẫn cộng nó.
+
+        Dùng lại ĐÚNG công thức `reserve()` đã dùng để ước lượng một lần gọi
+        (`reservation.estimate`: input tính theo giá `cache_write` — nhánh đắt hơn, worst
+        case — và `max_tokens` cho output), nhân với `attempts` — một `Usage` giả lập rồi
+        gọi `settle()` thật, không phải một đường tính tiền riêng phải giữ đồng bộ với
+        công thức kia."""
+        worst = Usage(cache_creation_input_tokens=reservation.input_tokens * attempts,
+                     output_tokens=reservation.max_tokens * attempts)
+        return self.settle(reservation, worst, price)
 
     def size_call(self, input_tokens: int, price, model_max: int) -> int:
         """Derive max_tokens from what is left (ADR-017)."""

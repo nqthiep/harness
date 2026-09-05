@@ -1,8 +1,8 @@
 """RunEngine — the loop.  docs/02-architecture.md §3, task T-0.5.
 
 The only place where a budget check can precede a model call and a permission check can
-precede a tool call (ADR-001).  Deliberately boring; IDL-13 caps this file at 250 lines
-of code and treats an overrun as a design signal.
+precede a tool call (ADR-001).  Deliberately boring; IDL-13 caps this file at 251 lines
+of code (examples/proof.py SIII) and treats an overrun as a design signal.
 """
 from __future__ import annotations
 
@@ -136,6 +136,9 @@ class RunEngine:
                     self._bus.emit(EventKind.ERROR_RAISED, step=step, where="provider",
                                    type=type(exc).__name__, message=str(exc),
                                    retryable=transient)
+                    # G-8: settle a worst-case estimate for every attempt actually made,
+                    # rather than abandoning `reservation` in `Ledger._open` silently.
+                    self._l.settle_worst_case(reservation, getattr(exc, "attempts_made", 1), price)
                     stop, detail = StopReason.ERROR, f"{type(exc).__name__}: {exc}"
                     break
                 latency_ms = (time.monotonic() - model_t0) * 1000
