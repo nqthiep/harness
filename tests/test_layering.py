@@ -276,3 +276,101 @@ class TheTiersPointOneWay(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+#: L1 in each adapter package: the Protocol, not an implementation of it. Everything else
+#: under `models/`, `memory/` and `observe/` is an L0 adapter.
+_PROTOCOL_MODULES = {"harness.models.base", "harness.memory.base",
+                     "harness.observe.events"}
+
+#: Not adapters, whatever package they live in. `models/pricing.py` is a price TABLE —
+#: shared vendor-neutral data every backend needs to compute a cost, and no
+#: implementation of any seam. Filing it as an L0 adapter would make `run.py` a layering
+#: violation for knowing what a token costs, which is not what the rule is protecting.
+_NOT_ADAPTERS = {"harness.models.pricing"}
+_ADAPTER_PACKAGES = ("harness.models.", "harness.memory.", "harness.observe.")
+
+#: Modules allowed to name a concrete adapter, each with the reason it is allowed.
+#: A composition root is SUPPOSED to know concrete types — that is its whole job, and
+#: forbidding it would only move the wiring somewhere else behind a factory nobody asked
+#: for (`docs/02 §8` rejects exactly that). What the rule protects is everything else.
+_COMPOSITION_ROOTS = {
+    "harness.agent": "the facade: it builds the exporters a run gets",
+    "harness.server": "an entry point, by definition a composition root",
+    "harness.credentials": "resolves a provider name to the provider that serves it",
+    "harness.testing": "the testing kit's job is to hand out fakes",
+    "harness.testing.chaos": "same",
+    "harness.lg.runtime": "the durable engine's default for a seam it also EXPOSES "
+                          "(`idempotency_store=`) — a default, not a hard-wiring",
+    # Not a composition root, and recorded as the exception it is: `dispatch` hard-wires
+    # the same store WITHOUT exposing the seam, so the classic engine cannot be given a
+    # different one while the durable engine can. Same capability, two backends, one
+    # switch. Held here rather than quietly excluded so it reads as a defect with a
+    # reason, not as an approved shape.
+    "harness.dispatch": "KNOWN GAP: hard-wires InMemoryStore for idempotency dedup with "
+                        "no `idempotency_store=` to override it, unlike lg.runtime",
+    "harness.tools.code": "KNOWN GAP: picks `Subprocess` directly rather than taking a "
+                          "Sandbox; `sandbox.py` also declares the Protocol beside the "
+                          "implementations, so the import alone cannot distinguish them",
+    "harness.cli": "an entry point, by definition a composition root",
+    "harness.contrib.driver": "KNOWN GAP: imports FakeModel for the 245-line demo it "
+                              "ships, which `contrib/__init__.py`'s own tier rule says "
+                              "belongs in `examples/` — closing that closes this",
+}
+
+
+class L2NeverNamesAnL0Adapter(unittest.TestCase):
+    """`docs/02 §2` has said since Round 7 that this is *"enforced by an import-linter
+    rule in CI (§09.6), not by discipline."* Measured: `grep -rn "import-linter"` hits
+    three `.md` files and nothing else — no `.importlinter`, nothing in `pyproject.toml`,
+    not in the dev dependencies. `docs/09 §…` lists the gate and `docs/14` carries it as
+    AC-01. The property was real in most of the tree and unenforced in all of it.
+
+    Deleting the claim was the other option and the smaller one. This is better: the
+    property holds everywhere except the two places named above, and naming those two is
+    worth more than a deleted sentence — a KNOWN GAP with a reason is a finding a reader
+    can act on, where silence is not.
+    """
+
+    def test_only_a_composition_root_imports_a_concrete_adapter(self):
+        offenders = {}
+        for module, path in modules().items():
+            if module in _COMPOSITION_ROOTS:
+                continue
+            # A module inside an adapter package may name its own siblings:
+            # `models/anthropic.py` reading `models/pricing.py` is that package's
+            # internals, not L2 reaching down into L0.
+            #
+            # The first version of this computed `module.rsplit(".", 1)[0] + "."`, which
+            # for a TOP-LEVEL module like `harness.session` is `"harness."` — so it
+            # exempted every `harness.*` import and the check was vacuous for every
+            # module in core's root, which is most of core. Caught by mutation: adding
+            # `from .memory.sqlite import SqliteStore` to `session.py` left this file
+            # green. The exemption has to name the adapter package, not the importer's
+            # parent.
+            pkg = next((a for a in _ADAPTER_PACKAGES
+                        if module == a.rstrip(".") or module.startswith(a)), None)
+            hits = sorted(
+                imp for imp in imports_of(path, module, module_level_only=False)
+                if imp.startswith(_ADAPTER_PACKAGES)
+                and imp not in _PROTOCOL_MODULES and imp not in _NOT_ADAPTERS
+                and not (pkg is not None and imp.startswith(pkg)))
+            if hits:
+                offenders[module] = hits
+        self.assertEqual(offenders, {},
+                         "L2 must know the L1 protocols and never the L0 adapters. If one "
+                         "of these is genuinely a composition root, add it to "
+                         "_COMPOSITION_ROOTS with the reason.")
+
+    def test_the_allowlist_does_not_outlive_its_entries(self):
+        """An exception nobody has to justify any more is an exception nobody reads. Each
+        entry must still be importing something, or it goes."""
+        known = modules()
+        stale = [m for m in _COMPOSITION_ROOTS if m not in known]
+        self.assertEqual(stale, [], f"_COMPOSITION_ROOTS names modules that are gone: {stale}")
+
+    def test_the_known_gaps_are_exactly_these(self):
+        """So that closing one is visible, and adding a fourth is not free."""
+        gaps = sorted(m for m, why in _COMPOSITION_ROOTS.items() if why.startswith("KNOWN GAP"))
+        self.assertEqual(gaps, ["harness.contrib.driver", "harness.dispatch",
+                                "harness.tools.code"])

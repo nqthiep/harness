@@ -116,7 +116,7 @@ against slow architectural drift, which no ordinary test catches.
 
 | ID | Asserts | ADR |
 |---|---|---|
-| AC-01 | No module in L2 imports an L0 adapter (import-linter) | §02.2 |
+| AC-01 | No module in L2 imports an L0 adapter, composition roots excepted by name and three KNOWN GAPs recorded (`test_layering.py::L2NeverNamesAnL0Adapter`) | §02.2 |
 | AC-02 | No public API accepts `parallel_safe` / `retryable` / `requires_approval` | ADR-003 |
 | AC-03 | `Agent` has no public setter; all fields frozen | ADR-004 |
 | AC-04 | Every `provider.complete` call site is immediately preceded by `ledger.reserve` (AST analysis) | ADR-005, I-1 |

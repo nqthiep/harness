@@ -31,8 +31,24 @@ is what makes caching work, which is the single largest cost lever in the system
 ```
 
 Dependencies point **downward only**. L2 knows the L1 protocols and never the L0 adapters —
-this is what makes the whole system testable with fakes, and it is enforced by an
-import-linter rule in CI ([§09.6](09-testing.md)), not by discipline.
+this is what makes the whole system testable with fakes, and it is enforced by
+`tests/test_layering.py::L2NeverNamesAnL0Adapter`, not by discipline.
+
+That sentence used to name an **import-linter rule in CI**, and there was no such rule:
+`grep -rn "import-linter"` hit three `.md` files and nothing else — no `.importlinter`,
+nothing in `pyproject.toml`, not in the dev dependencies. The property held nearly
+everywhere and was checked nowhere. Two things are true about it that a bare "never" hid:
+
+* A **composition root** is supposed to know concrete types — `agent.py` building the
+  exporters a run gets, `cli`, `server`, `credentials` resolving a provider name, the
+  `testing` kit handing out fakes. Forbidding that would only move the wiring behind the
+  factory §8 below rejects.
+* Three modules are neither composition roots nor compliant, and the test names them as
+  KNOWN GAPs rather than excluding them quietly: `dispatch.py` hard-wires
+  `InMemoryStore` for idempotency dedup **without** exposing `idempotency_store=`, which
+  `lg/runtime.py` does — the same capability, two backends, one switch; `tools/code.py`
+  picks `Subprocess` rather than taking a `Sandbox`; and `contrib/driver.py` imports
+  `FakeModel` for the demo its own tier rule says belongs in `examples/`.
 
 ## 3. The run loop
 

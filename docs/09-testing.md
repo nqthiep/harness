@@ -117,7 +117,7 @@ Every gate below must pass before merge. Each maps to a requirement or invariant
 | `mypy --strict` | 0 errors | NFR-04 |
 | `ruff check` + `ruff format --check` | clean | — |
 | Public-API snapshot | `__all__` diff requires an explicit changelog entry | API stability |
-| Import-linter | L2 must not import L0 adapters | Layering ([§02.2](02-architecture.md)) |
+| `test_layering.py` | L2 must not import L0 adapters, composition roots excepted by name; no import cycle in core; the tiers point one way | Layering ([§02.2](02-architecture.md)). Was listed as an import-linter rule that did not exist |
 | No-float-in-budget lint | 0 hits | Register #31 |
 | Docstring examples | every `__all__` symbol has a runnable example, executed | NFR-10 |
 | Pricing freshness | `as_of` within 90 days | Register #33 |
