@@ -48,6 +48,7 @@ máy không cài thì tool trả lỗi đọc được, không phải một trư
 from __future__ import annotations
 
 import ast
+import dataclasses
 import os
 import re
 from pathlib import Path
@@ -335,6 +336,12 @@ class CodeTools:
             cmd = ["openwiki", "--update" if (me.root / "openwiki").is_dir() else "--init"]
             return await me._run(cmd)
 
+        # H-2, design/review-architect-round3.md: these five actually reach
+        # `self.sandbox` (via `_run`) — stamp the real `isolation` onto each `ToolSpec`
+        # so `dispatch.py`'s `TOOL_FINISHED` can carry it, closing the gap `06 §C`'s own
+        # row claimed was already closed.
+        sandboxed = [run_tests, git_status, git_diff, git_commit, refresh_codebase_docs]
+        isolation = getattr(self.sandbox, "isolation", "none")   # pre-G-7 Sandbox, or a test double
+        sandboxed = [dataclasses.replace(s, isolation=isolation) for s in sandboxed]
         return [list_files, read_source, search_code, outline, write_source,
-                edit_source, run_tests, git_status, git_diff, git_commit,
-                refresh_codebase_docs]
+                edit_source, *sandboxed]

@@ -1,9 +1,8 @@
 """Tool dispatch — split out of run.py in Round 28.
 
-IDL-13 caps this file at 256 code lines (examples/proof.py SIII) — 250 originally, +2 for
-G-17's `_tool_error` distinction, +4 for H-7's `_bounded` re-check (design/review-
-architect-round3.md), both this loop's own dispatch-decision logic, not extractable, and
-calls an overrun a design signal rather than something to refactor around.
+IDL-13 caps this file at 257 code lines (examples/proof.py SIII) — 250 originally, +2 G-17,
++4 H-7, +1 H-2 (all design/review-architect-round3.md, this loop's own dispatch-decision
+logic) — and calls an overrun a design signal rather than something to refactor around.
 """
 from __future__ import annotations
 
@@ -324,7 +323,8 @@ class Dispatcher:
                     self._e._bus.emit(EventKind.TAINT_RAISED, step=step, source_tool=spec.name)
                 self._e._bus.emit(EventKind.TOOL_FINISHED, step=step, tool=spec.name, call_id=b["id"],
                                duration_ms=(time.monotonic() - t0) * 1000, is_error=False,
-                               truncated=truncated, replayed=replayed)
+                               truncated=truncated, replayed=replayed,
+                               isolation=spec.isolation)          # H-2
                 return {"type": "tool_result", "tool_use_id": b["id"], "content": redact(payload)}
             except asyncio.CancelledError:
                 raise                                            # never a tool error
@@ -396,7 +396,8 @@ class Dispatcher:
                        where=("middleware" if mw else "tool"),
                        retryable=(False if mw else EFFECT_PROFILES[spec.effect].retryable))
         self._e._bus.emit(EventKind.TOOL_FINISHED, step=step, tool=spec.name, call_id=b["id"],
-                       duration_ms=(time.monotonic() - t0) * 1000, is_error=True, truncated=False)
+                       duration_ms=(time.monotonic() - t0) * 1000, is_error=True,
+                       truncated=False, isolation=spec.isolation)          # H-2
         return err(b["id"], msg)
 
 

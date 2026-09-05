@@ -128,6 +128,13 @@ class ToolSpec:
     #: a grant to this same string, so approving `search(query="x")` on one server never
     #: approves the same-named tool on another (design/03 §5.3 M-4).
     server: str | None = None
+    #: H-2, design/review-architect-round3.md — `None` for a tool that never touches a
+    #: `Sandbox`. A tool provider that does (`CodeTools`, `tools/code.py`) sets this to
+    #: `self.sandbox.isolation` (`"none"`/`"process"`/`"container"`, `sandbox.py`) after
+    #: building its `ToolSpec`s. `dispatch.py` reads it straight onto `TOOL_FINISHED` —
+    #: the previously-missing link `06-poka-yoke-matrix.md §C`'s own row promised and
+    #: G-7 never actually built.
+    isolation: str | None = None
 
     def to_api(self) -> dict[str, Any]:
         """Provider tool definition.  strict:true — ADR-022."""

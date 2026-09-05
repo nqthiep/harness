@@ -333,7 +333,7 @@ assert out.returncode == 0
 passed("SI.5", f"`import harness` = {ms:.0f} ms, 3 core dependencies (NFR-01/05)",
        "langgraph (36 packages) and openviking-sdk are EXTRAs; core doesn't pull them in")
 
-for f, cap in (("src/harness/run.py", 251), ("src/harness/dispatch.py", 256)):
+for f, cap in (("src/harness/run.py", 251), ("src/harness/dispatch.py", 257)):
     n = len([l for l in open(f) if l.strip() and not l.strip().startswith("#")])
     assert n <= cap, f"{f} = {n}"
 passed("SIII", "The loop stays boring -- a ~250-line ceiling (IDL-13)",
@@ -348,7 +348,9 @@ passed("SIII", "The loop stays boring -- a ~250-line ceiling (IDL-13)",
        "real confidentiality bypass (parallel-batch tool calls had no same-batch taint "
        "re-check, unlike serial's S-27 fix) needed `_bounded` to re-check `check_flow` "
        "per call, and a new return shape to keep `tools_run`'s ordering correct under "
-       "concurrent calls -- dispatch.py -> 256")
+       "concurrent calls -- dispatch.py -> 256. H-2 needed one more: `isolation` "
+       "riding onto `TOOL_FINISHED` off a new optional `ToolSpec.isolation` field -- "
+       "dispatch.py -> 257")
 
 for cmd in (["ruff", "check", "src", "tests", "examples"], ["mypy"]):
     rc = subprocess.run(cmd, capture_output=True, text=True)

@@ -409,6 +409,66 @@ class CapNhatWikiBangOpenwiki(Base):
         self.assertEqual(sb.calls, [], "tạo CodeTools/lấy tools() không được tự chạy gì")
 
 
+class IsolationTrenToolSpecH2(unittest.TestCase):
+    """H-2, design/review-architect-round3.md: `06 §C`'s own row claimed an audit event
+    could already show `isolation` — false until this fix. `ToolSpec.isolation` is the
+    structural link that makes it true: set on the five tools that actually reach
+    `CodeTools.sandbox`, `None` on the six that never do."""
+
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.root = self._d.name
+
+    def tearDown(self):
+        self._d.cleanup()
+
+    def test_nam_tool_qua_sandbox_mang_dung_isolation_that(self):
+        ct = CodeTools(self.root)          # Subprocess() mặc định -> isolation="process"
+        T = {t.name: t for t in ct.tools()}
+        for name in ("run_tests", "git_status", "git_diff", "git_commit",
+                    "refresh_codebase_docs"):
+            self.assertEqual(T[name].isolation, "process", name)
+
+    def test_sau_tool_khong_qua_sandbox_khong_mang_isolation(self):
+        ct = CodeTools(self.root)
+        T = {t.name: t for t in ct.tools()}
+        for name in ("list_files", "read_source", "search_code", "outline",
+                    "write_source", "edit_source"):
+            self.assertIsNone(T[name].isolation, name)
+
+    def test_sandbox_khong_khai_isolation_thi_ve_none(self):
+        """Backward-compat: một `Sandbox` viết trước G-7 (không có `.isolation`) không
+        được làm hỏng `tools()` — rơi về `"none"`, không raise."""
+        ct = CodeTools(self.root, sandbox=GiaLapSandbox())
+        T = {t.name: t for t in ct.tools()}
+        self.assertEqual(T["run_tests"].isolation, "none")
+
+    def test_isolation_toi_dung_su_kien_TOOL_FINISHED(self):
+        """Đầu-cuối: `isolation` phải thật sự đi tới sự kiện, không chỉ nằm trên
+        `ToolSpec` — đúng thứ H-2 nói `06 §C` đã lỡ khẳng định có sẵn."""
+        import sys
+        sys.path.insert(0, "src")
+        from harness import Agent
+        from harness.models.fake import FakeModel
+
+        events = []
+
+        class Rec:
+            def emit(self, e): events.append((e.kind.value, dict(e.data)))
+            def close(self): ...
+
+        ct = CodeTools(self.root)
+        run_tests = ct.tools()[6]          # index của run_tests trong tools()
+        self.assertEqual(run_tests.name, "run_tests")
+        script = [FakeModel.tool_call("run_tests", {}), FakeModel.text("xong")]
+        agent = Agent(name="A", job="j", provider=FakeModel(script), tools=[run_tests],
+                      budget="$5", approve=lambda c, ctx: True, exporters=[Rec()])
+        agent.try_run("chạy test")
+        finished = [d for k, d in events if k == "tool.finished" and d.get("tool") == "run_tests"]
+        self.assertEqual(len(finished), 1)
+        self.assertEqual(finished[0]["isolation"], "process")
+
+
 def _co_git() -> bool:
     from shutil import which
     return which("git") is not None
