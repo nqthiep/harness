@@ -30,6 +30,21 @@ if TYPE_CHECKING:
 
 _SAFETY_RANK = {"standard": 0, "strict": 1}
 
+
+def _is_factory(p: object) -> bool:
+    """A Policy *instance* carries `check` as a bound method; a class or a lambda does
+    not.  Testing `hasattr(p, "check")` treats the class itself as an instance, because a
+    class has the attribute too — the first version of this check did exactly that.
+
+    Defined once, here, because both engines need it and both had their own copy:
+    `agent.py` and `lg/__init__.py` carried byte-identical definitions, which is the
+    shape `test_parity.py::test_one_definition_of_every_shared_constant` exists to catch
+    and did not, because its list was written by hand. `guards.py` is where the two
+    engines already meet (ADR-098).
+    """
+    import inspect
+    return not inspect.ismethod(getattr(p, "check", None))
+
 _SAFETY_HELP = (
     "  standard  the everyday level\n"
     "  strict    also asks before writing or fetching\n"

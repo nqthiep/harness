@@ -449,7 +449,7 @@ proven.
 
 - **What.** The memory seam and its two implementations.
 - **Where.** `memory/`.
-- **How.** Schema in [§05.5](05-data-and-state.md#5-memory-schema-sqlite). `STRICT` tables, WAL, busy timeout, FTS5 search, expiry enforced on read as well as by sweep, `schema_meta.version` checked at open.
+- **How.** Schema in [§05.5](05-data-and-state.md#5-memory-schema-sqlite). `STRICT` tables, WAL, busy timeout, a linear substring scan for `search` (FTS5 was planned here and never built — ADR-113), expiry enforced on read as well as by sweep, `schema_meta.version` checked at open.
 - **Depends.** T-0.1
 - **Contract.** [§04.5](04-interfaces.md#5-store).
 - **Failure.** A newer schema raises rather than guessing. A locked database retries within the busy timeout, then raises a clear error.

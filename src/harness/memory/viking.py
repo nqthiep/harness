@@ -1,7 +1,10 @@
 """OpenViking store — Round 36, task T-4.4.
 
-[§04.5](../../../docs/04-interfaces.md#5-store) has said since Round 7 that FTS5 keyword
-search is *not* semantic recall and that **"a user who wants it implements `Store`"**.
+[§04.5](../../../docs/04-interfaces.md#5-store) has said since Round 7 that the SQLite
+store's `search` is *not* semantic recall and that **"a user who wants it implements
+`Store`"**. (It also called that search FTS5 until ADR-113; it is a linear substring
+scan, which changes nothing about this module's reason to exist and everything about
+what the sentence above was worth.)
 This is that implementation: OpenViking is a context database for agents, and it lands on
 a seam the design already reserved rather than needing a new one.
 

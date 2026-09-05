@@ -132,8 +132,6 @@ class Ledger:
     def spent(self) -> Money: return self._spent
     @property
     def budget(self) -> Budget: return self._b
-    @property
-    def steps_taken(self) -> int: return self._steps
 
     def _committed(self) -> Money:
         """Chi tiêu THẬT cộng mọi reservation đang mở, chưa `settle()`.

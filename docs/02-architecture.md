@@ -243,79 +243,125 @@ tools, a citation-and-skepticism prompt, no subagent, no write tools).
 
 ## 5. Module map
 
-Every module below maps to at least one task in [§11](11-implementation-plan.md). Nothing
-in the plan creates a file that is not on this map.
+Every module in `src/harness/` is below, and nothing is below that is not in
+`src/harness/`. That is now a test — `tests/test_gates_module_map.py` parses this block
+and diffs it against the tree — because the sentence that used to be here, *"Nothing in
+the plan creates a file that is not on this map,"* had stopped being true and nothing
+said so:
+
+| | measured before ADR-114 |
+|---|---|
+| on the map, not on disk | 7 — `_typing.py`, `context/caching.py`, `observe/bus.py`, `observe/redact.py`, `tools/invoke.py`, `tools/builtin/math.py`, `tools/builtin/shell.py` |
+| on disk, not on the map | 47 — including `guards.py`, `dispatch.py`, `audit.py`, `credentials.py`, `policy/decision.py`, `sandbox.py`, `session.py`, `stop.py`, and the whole of `lg/`, `server/`, `mcp/`, `eval/` and `contrib/` |
+
+Every safety-critical module added after roughly Round 28 was absent, including
+`guards.py` — the module ADR-098 is *about*. A map that omits the guards is worse than no
+map, because a reader who consults it concludes they do not exist.
+
+The one-line descriptions are the first line of each module's own docstring, so they
+cannot drift from the module either.
 
 ```
 src/harness/
-  __init__.py           PUBLIC API — the complete stable surface (see §03)
-  agent.py              Agent: frozen config, construction-time validation
-  run.py                RunEngine: the loop of §3. ~200 lines. No cleverness allowed.
-  result.py             Result, StopReason, Usage, Step
-  errors.py             Exception hierarchy (§04.7)
-  _typing.py            Internal type aliases
-  middleware.py         Middleware base class + with_middleware() — sugar composed from
-                        ModelProvider/tool/Exporter (§4), not a seventh seam, not the loop
-
-  tools/
-    __init__.py         @tool decorator, Effect, ToolSpec, EFFECT_PROFILES
-    schema.py           Python signature → JSON Schema (strict-compatible)
-    registry.py         ToolSet: sorted tuple + name index, deterministic serialization
-                        (not a frozenset — ToolSpec holds a Mapping and is unhashable)
-    invoke.py           Execution: timeout, truncation, error capture, taint marking
-    builtin/
-      web.py            search, fetch          (effect=external, pre-classified)
-      files.py          read_file, write_file  (read / write)
-      shell.py          run_command            (danger)
-      math.py           calculate              (read)
-
-  models/
-    base.py             ModelProvider protocol, ModelRequest/Response, Price
-    anthropic.py        The v1 implementation
-    pricing.py          Per-model $/MTok table with `as_of`; cost arithmetic in Decimal
-    fake.py             FakeModel — re-exported by harness.testing
-
-  context/
-    assembler.py        Renders tools → system → messages. Deterministic by construction.
-    linter.py           Double-render byte comparison → NonDeterministicPromptError
-    window.py           Growth policy: context editing, then compaction
-    caching.py          cache_control breakpoint placement
-
+  __init__.py         Harness — build agents that are cheap to run, hard to misuse, and easy to …
+  _value.py           `@value` — the frozen value-type decorator used throughout the package
+  agent.py            Agent — the public facade
+  audit.py            The audit trail — the one place a verdict becomes an artifact
+  credentials.py      Where a credential comes from, and which provider that yields — one module…
+  dispatch.py         Tool dispatch — split out of run.py in Round 28
+  errors.py           Exception hierarchy — docs/04-interfaces.md §7
+  findings.py         `FindingsLog` — the other half of what a long exploratory session needs to…
+  guards.py           Construction-time guards — the rules that decide whether an `Agent` may ex…
+  idempotency.py      T-6.1 — idempotency key + `execute_once` contract, docs/17-research-alignm…
+  middleware.py       Middleware — compose behavior around every model/tool call, framework-mana…
+  profile.py          `Profile` — a named, reusable way to turn one `Agent` into another
+  progress.py         `ProgressLedger` — phát hiện agent đứng yên, bằng dữ liệu harness đã có, k…
+  result.py           Core value types — docs/04-interfaces.md §0
+  retry.py            Provider-level retry — N-5, docs/10-observability-ops.md §3
+  run.py              RunEngine — the loop
+  sandbox.py          T-7.3/T-7.4 — the `Sandbox` seam, docs/17-research-alignment.md M7
+  secrets.py          Secret — docs/06-safety.md §5
+  session.py          T-8.6 — `Session` as a first-class resource, docs/17-research-alignment.md…
+  stop.py             Stop reasons, the ceiling on pauses, and the `returns=` parser — the vocab…
+  tasks.py            `TaskLedger` — sổ công việc bền cho một phiên chạy dài
+  workspace.py        T-7.1 — workspace root confinement, docs/17-research-alignment.md M7
   budget/
-    ledger.py           Budget, Ledger, reserve/settle, worst-case estimation
-
-  policy/
-    base.py             Policy protocol, Verdict lattice (ALLOW < ASK < DENY)
-    engine.py           Composition: max() of verdicts, short-circuit on DENY,
-                        then approval resolution for a surviving ASK (ADR-021 —
-                        approval is the engine's job; a policy is sync and pure)
-    builtin.py          EffectPolicy, TaintPolicy, EgressPolicy
-    taint.py            TaintTracker
-
-  memory/
-    base.py             Store protocol
-    viking.py           OpenViking — semantic recall; `recall` is `external` (ADR-035)
-    inmemory.py         Dict-backed
-    sqlite.py           SQLite-backed (default persistent store)
-
-  observe/
-    events.py           The closed 15-event taxonomy (§05.1)
-    bus.py              EventBus: sync fan-out, exporter isolation
-    transcript.py       Append-only JSONL writer/reader, with redaction
-    redact.py           Secret scrubbing
-    console.py          Human-readable exporter
-    otel.py             OpenTelemetry exporter (optional extra)
-
-  secrets.py            Secret type
-
-  plugins/
-    registry.py         Explicit registration; opt-in entry-point discovery
-
-  testing/
-    __init__.py         FakeModel, record, replay, no_network, assert_* helpers
-
+    __init__.py       
+    ledger.py         Budget and Ledger — docs/04-interfaces.md §4, task T-1.5
   cli/
-    __init__.py         new · run · trace · cost · doctor
+    __init__.py       The CLI — tasks T-0.8 and T-5.1
+  context/
+    __init__.py       
+    assembler.py      Deterministic prefix rendering — task T-2.2
+    linter.py         Cache determinism checking — task T-2.3, revised by ADR-025
+    window.py         Context growth policy — task T-2.6
+  contrib/
+    __init__.py       Shipped, reusable, and explicitly NOT covered by the compatibility promise…
+    calibration.py    A threshold from labelled pairs — or the refusal to hand one over
+    driver.py         `Driver` — runtime events handled by PRIORITY: preempt what matters, queue…
+    output_shaping.py Fixes a real, measured bug in the "long, exploratory, many trial-and-error…
+    sensors.py        Two more `Sensor` implementations, so the abstraction is tested by more th…
+  eval/
+    __init__.py       
+    benchmark.py      T-10.3 — performance benchmark, docs/17-research-alignment.md M10 / Y-05
+    cost.py           T-8.4 — cost per successful task, docs/17-research-alignment.md M8 / S-06
+    golden.py         T-10.2 — golden set + pass rate with a confidence interval, docs/17-resear…
+    trajectory.py     T-10.1 — trajectory contract, docs/17-research-alignment.md M10
+  lg/
+    __init__.py       LangGraph backend — Round 35
+    adapter.py        `Agent(durable=True)` — the LangGraph backend behind the classic backend's…
+    graph.py          The enforcement graph — Round 35
+    runtime.py        Node implementations — Round 35
+    state.py          State the graph carries — Round 35
+  mcp/
+    __init__.py       MCP client — a harness EMBEDS third-party MCP servers as tools; it never h…
+  memory/
+    __init__.py       
+    base.py           Store protocol — docs/04-interfaces.md §5, task T-4.2
+    inmemory.py       Dict-backed Store
+    sqlite.py         SQLite-backed Store — schema in docs/05-data-and-state.md §5
+    viking.py         OpenViking store — Round 36, task T-4.4
+  models/
+    __init__.py       
+    anthropic.py      The Anthropic provider — task T-0.4
+    base.py           ModelProvider protocol and request/response types — docs/04-interfaces.md …
+    fake.py           FakeModel — task T-0.7
+    pricing.py        Per-model prices — task T-2.1
+  observe/
+    __init__.py       
+    console.py        Human-readable progress — ADR-014
+    events.py         Event taxonomy and bus — docs/05-data-and-state.md §1, task T-3.1
+    otel.py           T-8.3 — a real OTel exporter, docs/10-observability-ops.md §2 (already spe…
+    transcript.py     Append-only JSONL transcript — task T-3.2
+  plugins/
+    __init__.py       
+    registry.py       Plugin registry — task T-4.1, ADR-008
+  policy/
+    __init__.py       
+    base.py           Verdict lattice and Policy protocol — docs/04-interfaces.md §3
+    builtin.py        Built-in policies — docs/04-interfaces.md §3
+    decision.py       Bản ghi phê duyệt — design/00-foundation.md §4, design/02-safety-engine.md
+    engine.py         Policy composition — docs/04-interfaces.md §3
+    label.py          Label — nhãn hai chiều, design/00-foundation.md §3.2, design/02-safety-eng…
+    taint.py          Taint tracking cho backend cổ điển — ADR-011, nâng cấp lên `Label` hai trục
+  server/
+    __init__.py       Service API — `POST /v1/runs`, `GET /v1/runs/{id}`, `GET /v1/runs/{id}/eve…
+  testing/
+    __init__.py       Test helpers — task T-0.7
+    chaos.py          M6/T-6.4 — failure injection, docs/17-research-alignment.md
+  tools/
+    __init__.py       @tool, Effect, ToolSpec — docs/04-interfaces.md §1, tasks T-0.2 and T-1.1
+    calc.py           
+    code.py           `CodeTools` — bộ tool cho một agent làm việc với code, đã phân loại effect…
+    files.py          
+    registry.py       ToolSet — task T-0.3
+    schema.py         Python signature -> JSON Schema — docs/04-interfaces.md §1, task T-0.2
+    web.py            `from harness.tools.web import search` — the import §15 tells a child to w…
+    builtin/
+      __init__.py     Pre-classified starter tools
+      calc.py         Arithmetic, evaluated without `eval`
+      files.py        Local file tools
+      web.py          Web tools — effect="external", so their output taints the run (ADR-011)
 ```
 
 ## 6. Concurrency model

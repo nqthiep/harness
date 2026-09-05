@@ -8,7 +8,7 @@ the choice, never the cost of the alternative.
 
 ## 0. Index
 
-99 decisions. The NUMBER is the address — 763 citations across this repository
+113 decisions. The NUMBER is the address — 763 citations across this repository
 use `ADR-NNN` and only ten name this file — so this table turns a number back into a
 subject without scrolling, and is why the log is indexed rather than split (ADR-103).
 `tests/test_conformance.py` asserts it stays complete and that nothing cites an ADR that
@@ -116,6 +116,20 @@ section.
 | [ADR-101](#adr-101--the-tier-rule-applied-to-everything-instead-of-once) | The tier rule, applied to everything instead of once | Accepted |
 | [ADR-102](#adr-102--two-self-critiques-acted-on) | Two self-critiques, acted on | Accepted |
 | [ADR-103](#adr-103--the-decision-log-gets-an-index-and-its-citations-get-checked) | The decision log gets an index, and its citations get checked | Accepted (indexed and checked; deliberately NOT split) |
+| [ADR-104](#adr-104--the-three-spellings-that-were-only-annotated-get-checked) | The three spellings that were only annotated get checked | Accepted (validated at construction, with a did-you-mean) |
+| [ADR-105](#adr-105--ask-the-projects-own-interpreter-about-types) | Ask the project's own interpreter about types | Accepted (`sys.executable -m mypy`, plus a targeted override) |
+| [ADR-106](#adr-106--three-policy-gates-were-narrower-than-the-sentence-describing-them) | Three policy gates were narrower than the sentence describing them | Accepted |
+| [ADR-107](#adr-107--an-empty-measurement-must-fail-not-pass) | An empty measurement must fail, not pass | Accepted (three guards, because no one of them is enough) |
+| [ADR-108](#adr-108--close-every-exporter-report-a-leaking-policy-without-discarding-the-run) | Close every exporter; report a leaking policy without discarding the run | Accepted |
+| [ADR-109](#adr-109--a-middleware-may-rewrite-an-approved-call-and-must-say-so) | A middleware may rewrite an approved call, and must say so | Accepted (`tool.arguments_amended` joins the taxonomy) |
+| [ADR-110](#adr-110--build-the-layering-gate-four-documents-said-was-already-running) | Build the layering gate four documents said was already running | Accepted (with three KNOWN GAPs named) |
+| [ADR-111](#adr-111--write-down-what-we-refused-and-why-on-both-engines) | Write down what we refused, and why, on both engines | Accepted (`src/harness/audit.py` split out to stay under the ceiling) |
+| [ADR-112](#adr-112--stop-the-transcript-dying-quietly) | Stop the transcript dying quietly | Accepted (refuse the path at construction; re-raise mid-run) |
+| [ADR-113](#adr-113--the-fts5-index-that-never-existed-and-the-lock-the-store-never-had) | The FTS5 index that never existed, and the lock the store never had | Accepted (claim deleted, not implemented; connection serialised) |
+| [ADR-114](#adr-114--the-module-map-becomes-a-test) | The module map becomes a test | Accepted |
+| [ADR-115](#adr-115--a-gate-is-not-satisfied-by-its-prerequisite-failing) | A gate is not satisfied by its prerequisite failing | Accepted |
+| [ADR-116](#adr-116--export-the-three-seams-that-had-no-export) | Export the three seams that had no export | Accepted (48 → 55 names, plus the test register #8 claimed existed) |
+| [ADR-117](#adr-117--four-things-the-extension-surface-promised-and-did-not-do) | Four things the extension surface promised and did not do | Accepted |
 
 ---
 
@@ -4555,3 +4569,543 @@ which is where a reader is.
 | IDL-63 | A payload claim is asserted per MODEL, never once and generalised | "`budget_tokens` is a 400 on every model this package prices" was a test docstring, tested on one model, and false for another — `claude-haiku-4-5` requires it. A false generalisation with one passing witness stops anyone asking again (ADR-091) |
 | IDL-62 | A credential is resolved by ONE function that returns its VALUE and its source, never by a boolean "is one configured" | Two answers to that question is how `.env` came to report "found" while nothing loaded the file; the run then died on an SDK internal (ADR-086) |
 | IDL-61 | An external doc-generation CLI (`openwiki`) is wired in as a tool the model must call, never a step the harness runs on its own | Every other seam in this library runs on nothing but an explicit call; `--update` is itself a paid model call, so auto-running it would bill every run for a wiki nobody asked to re-read (ADR-072) |
+
+---
+
+### ADR-104 — The three spellings that were only annotated get checked
+
+**Status:** Accepted (validated at construction, with a did-you-mean).
+
+**Context.** `effect=` has had a typo message since Round 4. Three fields of the same
+shape beside it had none: short closed vocabularies, typed by hand, matched by exact
+string far from where they were written.
+
+**Measured.** One `write` tool, no `approve=`:
+
+```
+safety='strict'          tools_run=()          write refused — correct
+safety='stict'           tools_run=('save',)   the whole strict regime, off
+safety='STRICT'          tools_run=('save',)
+sensitive=['payroll']    tools_run=('payroll',)             the sink refused
+sensitive=['payrol']     tools_run=('payroll','publish')    the salary went out
+```
+
+`Literal["standard","strict"]` is an annotation; `EffectPolicy.check` reads
+`ctx.safety == "strict"`, so every other spelling took the `standard` branch with no
+exception, no event, and nothing in the transcript recording that the level asked for
+was not the level applied.
+
+**The trap this closes.** `accepts_tainted=` *looked* covered. A typo there leaves the
+`external`+`danger` pair unmatched, so the trifecta rule refuses the whole set — a
+property of that rule, not a check on the grant. Remove the `external` tool and the same
+typo goes through in silence. Relying on it was relying on an accident.
+
+**Decision.** Refuse at construction, all three, with `difflib`'s suggestion matched on a
+lowered copy so a case typo gets the answer and not just the refusal. Both guards rank
+`safety` through `_rank`, which routes an unknown value back through the same message
+instead of the bare `KeyError: 'stict'` a guard used to raise about the very input it
+exists to reject.
+
+**Rejected: validating in `Policy` instead.** It is a seam; widening it to carry
+vocabulary checks costs every implementer. The facade already validates `returns=` and
+`effect=` — this belongs beside them.
+
+**The narrow exemption, and why it is safe.** An agent with no tools is exempt: a
+profile's caller writes the grant before the profile supplies the tool
+(`examples/vision_profile.py`). Every path that adds tools rebuilds the whole `Agent`
+through `__init__`, so the check runs the moment there is a toolset to check against.
+
+---
+
+### ADR-105 — Ask the project's own interpreter about types
+
+**Status:** Accepted (`sys.executable -m mypy`, plus a targeted override).
+
+**Context.** `test_mypy_is_clean` and `examples/proof.py` both shelled out to whatever
+`mypy` was on `PATH`.
+
+**Measured.**
+
+```
+which mypy        /root/.local/bin/mypy (1.19.1, a uv tool venv)
+mypy              Success: no issues found in 102 source files
+python -m mypy    Found 15 errors in 2 files          (2.3.1)
+```
+
+`anthropic` is a declared runtime dependency that ships `py.typed` and is not installed
+in that tool venv, so `ignore_missing_imports = true` turned the whole SDK into `Any`.
+The only file that touches it type checked against nothing, and two CI gates reported
+success over an erased surface while `docs/01` NFR-04 promised `mypy --strict` → 0.
+
+**Decision.** Two halves, because either alone still fails. `[[tool.mypy.overrides]]
+module = ["anthropic.*"] ignore_missing_imports = false` — a missing declared dependency
+is a broken environment, not an untyped third party — and both call sites pinned to
+`sys.executable -m mypy`, because a config that depends on being run correctly is not a
+gate.
+
+**Measured before keeping the global setting.** Turning `ignore_missing_imports` off
+entirely yields 18 errors, 16 of them import noise (`mediapipe`, `openviking_sdk`,
+`langchain_anthropic`, `readability`, the flat `examples/` modules, `jsonschema` which
+ships no `py.typed`) and **none** a type error in this repository's own code. It stays.
+
+**What the 15 were.** Ten from splatting `dict[str, str]` into the SDK constructor, which
+typed all fourteen of its parameters as `str`. Three at the adapter boundary, where
+`ModelRequest` carries vendor-neutral `Mapping[str, Any]` by design and the SDK wants its
+own TypedDicts — asserted once with `cast` naming the target types under `TYPE_CHECKING`,
+so a rename becomes an import error rather than an ignore comment rotting in place. Two
+in `agent.py`, and the second was not a style nit: `call_names[tc.get("id")]` stored an
+entry under a `None` key that the lookup below could never match.
+
+---
+
+### ADR-106 — Three policy gates were narrower than the sentence describing them
+
+**Status:** Accepted.
+
+**S-11's evidence backstop exempted the less honest callback.** `engine.py` read
+`ok and require_evidence and actor is not None and actor.kind == "human"`. Measured on
+one deployment with the flag on:
+
+```
+a bare `return True`            ran=('wipe',) ALLOW human 'approver' evidence=False
+Approval(human, no evidence)    ran=()        DENY
+Approval(human, WITH evidence)  ran=('wipe',) ALLOW human 'alice'    evidence=True
+```
+
+Row 1 is the row the flag exists to forbid, and `dispatch.py` is why: with `actor is
+None` and an `approve=` present it records `Actor.human("approver", via="callback")`. The
+check punished disclosure — name your approver and you were denied, say nothing and you
+were let through. **Rejected:** recording it as `Actor.policy` instead, which attributes
+a person's click to a policy and is worse. Fail closed; `operator`/`policy` actors stay
+exempt because neither is a person claiming to have clicked something.
+
+**A user policy's ASK degraded to ALLOW with no approver.** The built-in effect ladder
+has to keep that default — `safety="standard"` must work without an `approve=` — but a
+policy someone wrote in order to ask is making a different statement. `PolicyEngine`
+already knows which names came from the `user=` slot and `Ruling.policy` already carries
+the name, so the two are distinguishable at the point of decision. **Rejected:** widening
+the `Policy` Protocol, which is a seam and would cost every implementer. A user policy
+that shadows a built-in name is treated as a user policy: the failure that direction is a
+loud deny, not a silent allow.
+
+**`EgressPolicy` missed the obvious case it claimed to catch.** With
+`allowed_hosts=["docs.python.org"]`:
+
+```
+"HTTP://evil.example/"    ALLOW   (str.startswith is case-sensitive)
+urls=[...]                ALLOW   (isinstance(value, str) skipped it)
+req={"url": ...}          ALLOW
+danger tool doing egress  ALLOW   (only EXTERNAL was inspected)
+arg named `target`        ALLOW   (kept — see below)
+```
+
+Scheme match is now case-insensitive on both sides, containers are walked breadth-first
+under a **node budget** rather than a depth cap (a depth cap is evadable by nesting one
+level deeper, and `arguments` is model-authored so it must cost O(1) here), and `danger`
+is inspected: `_guess()` assigns effect by NAME, so `send_report(url=...)` was graded
+`danger` for the word "send" and fell out of the allowlist by that same guess.
+
+**Kept, deliberately, and now asserted by a test.** A bare host under an unrecognised
+argument name still passes. Catching it means guessing "is this string a hostname" for
+every string, and `"notes.txt"` becomes a DENY. A known limit on the record beats a
+surprise.
+
+---
+
+### ADR-107 — An empty measurement must fail, not pass
+
+**Status:** Accepted (three guards, because no one of them is enough).
+
+**Context.**
+
+```
+$ cd /tmp && pytest tests/test_layering.py -q
+7 failed, 4 passed
+```
+
+The seven failed loudly. The four that **passed** were the tier boundary, the entry-point
+rule and both import-cycle checks — everything that file exists to prove — because
+`Path("src/harness").rglob("*.py")` on a directory that is not there yields nothing and
+raises nothing. An empty graph has no cycles. And `test_m5.py` read a document at IMPORT
+time, so from another directory the whole suite failed to collect before reaching any of
+it.
+
+**The defect is not the anchor.** The anchor was how it got triggered; the defect is that
+an empty measurement and a clean one were indistinguishable. So: `tests/_paths.py` is the
+only place a repo path is built, anchored on `__file__`, and it **refuses to return a
+path that does not exist**; `modules()` refuses to return an implausibly small graph;
+and `tests/test_gates_paths.py` reads the AST of every test and example for the shape.
+
+**What the third guard then found.** The 136 `sys.path.insert` calls `conftest.py`
+removed had come back through the back door — they survived inside the STRINGS these
+tests hand to a subprocess, where `'src'` is resolved against the CHILD's working
+directory. Thirteen files in `examples/` had the same spelling at module level while four
+others already used the anchored one; a recipe is meant to be copied, so a reader
+inherits whichever it shipped with.
+
+**Two versions of the gate were wrong before this one.** The first matched `"tests"` as a
+substring and flagged `str(_paths.repo("tests"))` — the fix — alongside the defect. The
+second missed `for path in (...): Path(path)`, because the call's first argument is a
+name. Widening to "any repo-shaped literal" was the obvious third move and would have
+flagged `_ROOT / "src/harness/run.py"`, which is also the fix. Two behavioural
+discriminators instead: the literal must name something that exists in THIS repository,
+and it must not already be an operand of a join. A test that cannot tell a repair from
+the thing it repairs is worse than no test.
+
+**Result.** 1340 passed from the repository root and 1340 from `/tmp`.
+
+---
+
+### ADR-108 — Close every exporter; report a leaking policy without discarding the run
+
+**Status:** Accepted.
+
+**`Exporter.close()` was declared, documented, and never called.** Measured on both
+backends with a user-supplied exporter: `close() called: False`. Only `TranscriptWriter`
+— the exporter this library builds for itself — was ever closed.
+`OtelExporter.close()` exists specifically to end spans a crashed run left open, so the
+leak it prevents was not being prevented and every other implementer was stubbing a
+method for nothing. Each exporter is now closed in isolation: they are independent sinks
+and closing is how they flush, so one that cannot flush must not cost the others theirs.
+
+**The shared-policy-state guard missed the widest version of the leak.** It snapshotted
+`p.__dict__`, so state kept on the CLASS was invisible — and that is shared by every
+`Agent` in the process, not just one Agent's runs:
+
+```
+run 1: SneakyPolicy.seen = 1   (no error)
+run 2: SneakyPolicy.seen = 2   (no error)   <- two separate Agent instances
+```
+
+Class-level DATA attributes now count; methods, properties and dunders do not, because
+they are the class's definition rather than its state and their reprs carry addresses
+that would make every snapshot differ from itself.
+
+**And it destroyed the evidence when it fired.** The check runs after `RunEngine.run`
+returns — the policy had counted, the tools had executed, the tokens had been billed —
+and then `try_run()` raised a bare `ConfigError`, discarding the `Result` with its cost,
+its text and the pointer to the transcript that would show what the leaking policy did.
+It now raises `SharedPolicyStateError`, which carries `.partial` exactly as `RunFailed`
+does, and emits `error.raised` **before** raising: an exception is not an audit record,
+and a caller that swallows it should not leave the finding invisible to every exporter.
+
+**Consequence recorded rather than hidden.** `ConfigError`'s docstring promised "always
+raised at import or construction time." This is the one member that cannot be — a policy
+holding configuration and one holding a state machine are indistinguishable until one
+changes — so the docstring names the exception instead of being wrong about it.
+
+---
+
+### ADR-109 — A middleware may rewrite an approved call, and must say so
+
+**Status:** Accepted (`tool.arguments_amended` joins the taxonomy).
+
+**Context.** `docs/02 §4` argued that because `before_tool` never sees a call `Policy`
+denied, stacking hooks "can only add restriction or observation, never bypass one."
+
+**Measured** with `allowed_hosts=["docs.python.org"]` and a six-line middleware:
+
+```
+policy.decided:                    [('fetch', 'ALLOW', '')]
+tool.requested arguments:          [{'url': 'http://docs.python.org/x'}]
+the URL the tool was called with:  ['http://evil.example/exfil']
+```
+
+The premise is true and the conclusion was false. A hook cannot bypass a **verdict**; it
+can change the **subject** of one. `middleware.py`'s own API docstring says so outright
+("Return `call.kwargs` (unchanged or modified)"), so the two documents disagreed and the
+security consequence landed on the architecture document's side.
+
+**Rejected: forbidding the rewrite.** Redaction, defaulting and tenant scoping are why
+`before_tool` returns kwargs at all. The defect was silence, not the power — the
+transcript positively asserted an argument set that never ran, which is the same class as
+the self-admitted `BUDGET_RESERVED(exact=True)` lie one file over.
+
+**Rejected: a second `tool.requested`.** A consumer counting calls would start counting
+amendments.
+
+**Decision.** A new kind naming the middleware and the fields it changed. `arguments`
+rides the existing digest rule (`transcript.py` hashes any `arguments` key at rest),
+which makes the record stronger than expected: an auditor compares two digests and sees
+they differ without either being exposed. `middleware.py` sits below `observe` and must
+not import `EventKind` to make a record, so it calls a sink from a contextvar the facade
+sets. On the durable side that sink must be `Runtime`'s own per-run_id bus — a second
+`EventBus` over the same exporters would start its own `seq` and scramble the order.
+
+`docs/02 §4` now puts `Middleware` on the trust-boundary list, as privileged as the
+policy set, instead of in the observation-only bucket.
+
+---
+
+### ADR-110 — Build the layering gate four documents said was already running
+
+**Status:** Accepted (with three KNOWN GAPs named).
+
+**Context.** `docs/02 §2`: L2 "never" knows the L0 adapters, "enforced by an
+import-linter rule in CI (§09.6), not by discipline." `docs/09 §6` listed the gate,
+`docs/14` carried it as AC-01, `docs/11` promised the contract.
+
+**Measured.** `grep -rn "import-linter\|importlinter"` hits three `.md` files and nothing
+else. No `.importlinter`, nothing in `pyproject.toml`, not in the dev dependencies. A
+named CI gate that does not run is worse than no gate: it is the reason nobody checked by
+hand.
+
+**Rejected: deleting the sentence.** It was the smaller move, and the property is real in
+nearly the whole tree. Writing the gate forced two distinctions the bare "never" hid: a
+**composition root** is supposed to know concrete types (`agent.py` builds the exporters a
+run gets; `cli` and `server` are entry points; `credentials` resolves a provider name;
+the `testing` kit hands out fakes) and forbidding that only moves the wiring behind the
+factory `docs/02 §8` proudly rejected — and `models/pricing.py` is a price TABLE, not an
+implementation of any seam, so filing it as L0 would make `run.py` a violation for
+knowing what a token costs.
+
+**Three modules are neither, and are recorded rather than excluded:** `harness.dispatch`
+hard-wires `InMemoryStore` for idempotency dedup while exposing no `idempotency_store=`,
+which `lg/runtime.py` does — one capability, two backends, one switch; `harness.tools.code`
+picks `Subprocess` rather than taking a `Sandbox`; `harness.contrib.driver` imports
+`FakeModel` for the demo its own tier rule says belongs in `examples/`. A test asserts the
+gap list is exactly those three, so closing one is visible and adding a fourth is not free.
+
+**Its first version was vacuous, and mutation is what said so.** Adding
+`from .memory.sqlite import SqliteStore` to `session.py` left the file green: the
+intra-package exemption computed `module.rsplit(".", 1)[0] + "."`, which for a top-level
+module like `harness.session` is `"harness."` — exempting every `harness.*` import and so
+checking nothing at all for most of core.
+
+---
+
+### ADR-111 — Write down what we refused, and why, on both engines
+
+**Status:** Accepted (`src/harness/audit.py` split out to stay under the ceiling).
+
+**Context.** `policy/decision.py` argues its own reason for existing: *"An audit log that
+records only what was permitted cannot answer 'what did we refuse, and why'."* It
+recorded only resolved ASKs.
+
+**Measured**, on a run whose taint policy blocked an exfiltration:
+
+```
+loop      policy.decided: payroll ALLOW ; publish ALLOW      decision rows: []
+durable   policy.decided: payroll ALLOW ; publish ALLOW ; publish DENY '...'
+```
+
+Two defects behind one symptom. `dispatch.py`'s `_decisions.record(...)` sat inside
+`if d.verdict is Verdict.ASK:`, so a DENY from `EffectPolicy`, `TaintPolicy`,
+`EgressPolicy`, `RequireBeforePolicy` or any user policy never became a `Decision`. And
+the classic backend's S-27 re-gate answered a refusal with a `tool_result` and a
+`continue` — no `POLICY_DECIDED`, no `Decision`, nothing. An operator filtering the
+stream for `verdict == "DENY"` saw **zero** refusals on that run, and the last recorded
+verdict for the blocked call said ALLOW.
+
+**The parity harness was blind to it, and that is the load-bearing part.** Deleting the
+durable backend's re-gate emit left the suite fully green: `test_parity.py` compared the
+**union of event kinds**, and `policy.decided` is present either way. Two engines cost
+roughly 700 statements of duplicated rules (classic 402, durable 697, 42 identical lines)
+and this file is the stated price of admission for that duplication — the repo was paying
+the cost without collecting the insurance. It now compares the `Result` fields and the
+`policy.decided` payloads, counts and order.
+
+**After:** both backends emit `publish DENY` and the `DecisionLog` carries the row.
+
+**IDL-13, applied rather than argued with.** The recording and emitting concern would
+have pushed `dispatch.py` past its 250-line ceiling, so it split into `audit.py` (109
+lines) and `dispatch.py` came out at 249. The rule is to split at a seam, never to raise
+the cap; that is how `stop.py` came to exist.
+
+---
+
+### ADR-112 — Stop the transcript dying quietly
+
+**Status:** Accepted (refuse the path at construction; re-raise mid-run).
+
+**Measured.**
+
+```
+Agent(transcript="/proc/definitely-not-writable/t.jsonl").try_run("go")
+run ok: True    file exists: False    error events: []
+```
+
+A deployment that requires a transcript got a fully successful run, no artifact, and
+nothing distinguishing that from a process that was killed.
+
+**Decision, split by what is knowable when.** A path that cannot be opened is a
+*configuration* mistake and `Agent.__init__` now opens it once and raises `ConfigError`
+(`docs/02 §7`: configuration errors are raised at construction, never at run time). It
+really opens the file rather than guessing from `os.access`, because permission bits,
+read-only mounts, missing parents and "the path is a directory" all fail differently and
+only an open tells the truth about all four.
+
+**The second silence was underneath it.** With a real ENOSPC injected mid-run the writer
+went quiet after one line and `bus error.raised` was EMPTY — and `EventBus.emit` has
+isolated broken exporters and recorded the failure since Round 27. `TranscriptWriter`
+swallowed the `OSError` before the bus could see it, so the one error class its own
+comment named ("a full disk must never kill a run") was the one class that passed
+unnoticed; a `ValueError` surfaced fine. It now sets `disabled` first and re-raises: the
+flag stops the next event retrying, and the bus turns that single raise into one
+`error.raised`.
+
+**And a third, found while fixing the second.** The bus APPENDED that notice to
+`self.events` and never exported it — so with a transcript plus a console exporter, the
+transcript could die and the console, the only thing an operator was watching, showed
+nothing. The notice now goes out through the normal path after `_broken` is updated, so
+the failing sink is skipped and a single surviving sink cannot recurse.
+
+A full disk still does not kill a run. What it must not do is pass unnoticed.
+
+---
+
+### ADR-113 — The FTS5 index that never existed, and the lock the store never had
+
+**Status:** Accepted (claim deleted, not implemented; connection serialised).
+
+**Context.** `docs/05 §5` gave the schema as
+`CREATE VIRTUAL TABLE memos_fts USING fts5(...)`, `docs/04 §5` said `search` "is FTS5
+keyword search", `docs/11` listed it as delivered, and `memory/viking.py` cited the claim
+in its own opening paragraph. `memory/sqlite.py` has no virtual table: it selects every
+row for the agent and scores substrings in Python.
+
+**Measured**, five searches averaged:
+
+| memos | search |
+|---|---|
+| 1,000 | 2.7 ms |
+| 10,000 | 29.5 ms |
+| 50,000 | 171.7 ms |
+
+Linear, about 3.4 µs a memo.
+
+**Decision: delete the claim, keep the scan.** That is fine for the per-agent scratchpad
+this is and not fine as a corpus index, and adding FTS5 is a schema migration nobody has
+asked for. Recording it as a decision matters more than the code change: a silent
+deferral is how the claim survived seven rounds.
+
+**A defect the measurement found on the way.** `sqlite3.connect(..., check_same_thread=
+False)` hands one connection to every worker thread `asyncio.to_thread` happens to use,
+and `sqlite3.Connection` is not safe for concurrent use. Reachable from ordinary code —
+the classic dispatcher runs tools with `asyncio.gather`, so two tools writing memory in
+one batch is a normal shape. Over three trials of 200 concurrent `put`s, **zero** were
+clean: `OperationalError: cannot start a transaction within a transaction` twice,
+`DatabaseError: no more rows available` once, and an earlier run took the interpreter
+down with `SystemError: error return without exception set`. A `threading.Lock` around
+the connection; WAL and `busy_timeout` already handle a second *process*. 5/5 clean
+after.
+
+---
+
+### ADR-114 — The module map becomes a test
+
+**Status:** Accepted.
+
+**Context.** `docs/02 §5` said *"Nothing in the plan creates a file that is not on this
+map."*
+
+**Measured.** 7 modules on the map and not on disk; **47** on disk and not on the map —
+`guards.py`, `dispatch.py`, `credentials.py`, `policy/decision.py`, `sandbox.py`,
+`session.py`, `stop.py`, and the whole of `lg/`, `server/`, `mcp/`, `eval/` and
+`contrib/`. Every safety-critical module added after roughly Round 28 was missing,
+including the one ADR-098 is *about*. A map that omits the guards is worse than no map,
+because a reader who consults it concludes they do not exist.
+
+**Decision.** `tests/test_gates_module_map.py` parses the section's tree by indentation
+and diffs it against `src/harness/`, in both directions. The one-line descriptions come
+from each module's own docstring, checked loosely against it, so they cannot drift
+either. A document that describes the code drifts unless something compares the two.
+
+The parser carries the vacuity guard learnt from ADR-107: fewer than twenty modules
+parsed is a parse failure, not a clean run.
+
+---
+
+### ADR-115 — A gate is not satisfied by its prerequisite failing
+
+**Status:** Accepted.
+
+**Context.** `RequireBeforePolicy` documents `ctx.tools_called` as "populated from
+**completed** calls earlier in the run." Both engines populated it from *attempted* ones.
+
+**Measured**, with an advisor that raises `RuntimeError` on every attempt:
+
+```
+loop     'RuntimeError: advisor is down' | 'deployed to prod'
+durable  'RuntimeError: advisor is down' | 'deployed to prod'
+```
+
+Both shipped to prod after the gate errored out three times. `tests/test_advisor_gate.py`
+only ever exercised an advisor that worked.
+
+**Enumerating the readers first is what shaped the fix.** `dispatch.py`'s `self.ran` has
+two: the gate, and `run.py` → `Result.tools_run`. Those are different questions and
+collapsing them breaks one or the other — *what SUCCEEDED* is the only thing that can
+mean "consulted", while *what EXECUTED* is what `Result.tools_run` answers (IDL-49) and
+what `assert_tool_called` should say about a tool that ran and raised. So a second list,
+not a filter on the first.
+
+Recorded once the results exist, at the end of the batch. Within a batch the gate still
+sees only earlier steps, which is the honest answer: a prerequisite called in the same
+batch as its dependent has not finished when the dependent is ruled on, so counting it
+would be the same lie one turn smaller.
+
+**Both halves on the durable side, because either alone is undone by the other.**
+`called_now` no longer takes the declined, tool-is-gone or errored branches, AND
+`_tools_called`'s message scan excludes `status="error"` — the two are unioned, so fixing
+one lets the other restore what it dropped. Mutation-tested separately.
+
+---
+
+### ADR-116 — Export the three seams that had no export
+
+**Status:** Accepted (48 → 55 names, plus the test register #8 claimed existed).
+
+**Measured.** Of six declared seams, three had no public name: `Store` (and `Memo`),
+`Exporter` (and `Event`, `EventKind`), `Sandbox` (and `Completed`). Nineteen of twenty
+files in `examples/` imported from outside `__all__`. Poka-yoke register #8 claims *"a CI
+test fails if any example or doc imports outside it"*; `grep -rn "__all__" tests/*.py`
+returned nothing.
+
+Not cosmetic: an independent reviewer implementing the `Store` seam hit
+`from harness import Store` → `ImportError` as their first friction. Implementing a
+declared seam required the exact failure mode register #8 names.
+
+**Decision.** Export them, and write the test. A register entry describing a test that
+does not exist is worse than no entry, because it is read as coverage.
+
+---
+
+### ADR-117 — Four things the extension surface promised and did not do
+
+**Status:** Accepted.
+
+**`build_agent()` printed advice that then crashed.** Passing a shipped, parameterised
+built-in policy was refused with a message saying to pass the CLASS instead of an
+instance; following it exactly gives `TypeError: __init__() missing 2 required
+keyword-only arguments`. The spelling that works (`lambda:` / `functools.partial`) is in
+`docs/06` and in the tests and was not in the message a user hits. Worse, the refusal was
+LAZY — factories are built on first tool request, so a run with no tool calls returned
+`stop=completed` and the misconfiguration never surfaced, inverting `docs/02 §7`.
+Factories are now called once at construction and the message prints what runs.
+
+**`contrib.Driver` said "each is enforced here, not just documented" about four rules,
+and two were not.** Rule 2 (never cancel while a `write`/`danger` tool is in flight) read
+`self.write_in_flight is not None and ...` with a `None` default, so the default `Driver`
+cancels mid-write. Rule 3 (only an agent with a durable plan may be preempted) matched
+three string literals, and accepted an agent whose only "durable plan" was a tool *named*
+`list_tasks` that stores nothing. The counter-argument was taken seriously —
+`WriteInFlight` is a `Middleware` and `Driver` receives a frozen `Agent`, so it may
+genuinely be unable to self-wire — and the resolution is the shape rule 3 already uses:
+refuse at construction rather than pretend.
+
+**The default configuration produced no durable artifact at all.** `EventBus.events` is
+in memory and discarded, `DecisionLog` defaults to a fresh in-memory instance per run,
+`ConsoleExporter` attaches only when `sys.stdout.isatty()` — never under systemd or a
+pipe. `harness new` scaffolded exactly that while `harness trace` and `harness cost`
+consume a file the default path never creates. Asked "is there anything an operator could
+do that leaves no trace?", the honest answer was: yes, the default. The scaffold now
+names a transcript.
+
+**The entropy scan `docs/06` promised did not exist.** `grep -rni "entropy" src/` → zero
+hits, and `sk-ant-api03-…` passed through the redactor unchanged into a tool result the
+model received. Implemented as format-anchored prefix matching with a length and charset
+check — explicitly **not** the general entropy classifier, which false-positives on
+base64 payloads and hashes. Its own negative tests were then found to be shielded by
+`redact()`'s marker prefilter (a pattern widened into that classifier would never be
+reached on those inputs); the patterns are now asserted directly.

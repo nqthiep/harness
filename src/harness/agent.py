@@ -14,7 +14,7 @@ from .budget.ledger import Budget, Ledger
 from .context.assembler import ContextAssembler
 from .context.linter import PrefixWatcher, check_determinism
 from .credentials import resolve_provider
-from .guards import (_check_subagent_safety, _check_tool_set,
+from .guards import (_check_subagent_safety, _check_tool_set, _is_factory,
                      _refuse_if_loosened, check_grant_names, check_safety)
 from .errors import (ConfigError, SharedPolicyStateError,
                      SyncInAsyncContextError, ToolContractError)
@@ -976,14 +976,6 @@ def _raise_if_failed(r: Result) -> None:
     if not r.ok:
         from .errors import RunFailed
         raise RunFailed(r.detail or f"run stopped: {r.stop_reason.value}", r)
-
-
-def _is_factory(p) -> bool:
-    """A Policy *instance* carries `check` as a bound method; a class or a lambda does
-    not.  Testing `hasattr(p, "check")` treats the class itself as an instance, because a
-    class has the attribute too — the first version of this check did exactly that."""
-    import inspect
-    return not inspect.ismethod(getattr(p, "check", None))
 
 
 def _probe_transcript(path) -> None:

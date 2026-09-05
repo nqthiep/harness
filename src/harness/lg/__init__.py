@@ -18,7 +18,7 @@ from ..policy.label import Grants
 from ..tools.registry import ToolSet
 # From `guards`, not from `agent`: importing the facade to reach the guards was the
 # last real import cycle in core (ADR-098).
-from ..guards import _check_subagent_safety, _check_tool_set
+from ..guards import _check_subagent_safety, _check_tool_set, _is_factory
 from .graph import GUARDED, INTERRUPT, build, unguarded_paths
 from .runtime import Runtime
 from .state import AgentState
@@ -272,6 +272,4 @@ def _lc_tool(spec) -> dict:
             "parameters": dict(spec.input_schema)}
 
 
-def _is_factory(p) -> bool:
-    import inspect
-    return not inspect.ismethod(getattr(p, "check", None))
+

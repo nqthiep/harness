@@ -127,9 +127,14 @@ CREATE TABLE memos (
   expires_at  REAL
 ) STRICT;
 
-CREATE VIRTUAL TABLE memos_fts USING fts5(key, value, content='memos', content_rowid='rowid');
 CREATE INDEX idx_memos_agent   ON memos(agent);
 CREATE INDEX idx_memos_expires ON memos(expires_at) WHERE expires_at IS NOT NULL;
+
+<!-- This block listed a `CREATE VIRTUAL TABLE memos_fts USING fts5(...)` from Round 7
+     until ADR-113 and no such table has ever been created. `search` is a linear scan
+     scored in Python: 2.7 ms at 1,000 memos, 171.7 ms at 50,000. Fine for a per-agent
+     scratchpad; adding FTS5 would be a schema migration nobody asked for, so the claim
+     went instead of the code. -->
 
 CREATE TABLE schema_meta (version INTEGER NOT NULL) STRICT;
 ```
