@@ -15,7 +15,7 @@ from .context.assembler import ContextAssembler
 from .context.linter import PrefixWatcher, check_determinism
 from .credentials import resolve_provider
 from .guards import (_check_subagent_safety, _check_tool_set,
-                     _refuse_if_loosened)
+                     _refuse_if_loosened, check_grant_names, check_safety)
 from .errors import (ConfigError, SyncInAsyncContextError, ToolContractError)
 from .middleware import _run_scope
 from .observe.console import ConsoleExporter
@@ -195,6 +195,16 @@ class Agent:
         toolset = ToolSet(tools)
         grants = Grants(accepts_tainted=frozenset(accepts_tainted),
                         sensitive=frozenset(sensitive))
+        # Three spellings, checked before anything reads them. `safety=` first, because
+        # `_check_subagent_safety` and `_refuse_if_loosened` RANK it and a rank of an
+        # unknown word has no answer — that lookup used to be the bare `_SAFETY_RANK[...]`
+        # that turned `safety="stict"` into `KeyError: 'stict'` out of the guard whose
+        # whole job is a readable refusal. Every path that can set `safety=`,
+        # `accepts_tainted=` or `sensitive=` — `with_()`, and so `with_profile()` and
+        # every `Profile.apply` written in terms of it — rebuilds the whole `Agent`
+        # through this constructor, so checking here covers all of them once.
+        check_safety(safety)
+        check_grant_names(toolset, grants)
         _check_tool_set(toolset, grants)               # T-1.4, before anything is spent
         _check_subagent_safety(toolset, safety)       # §06.4, before anything is spent
 

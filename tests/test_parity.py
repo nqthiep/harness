@@ -54,6 +54,17 @@ def refund(ma: str) -> str:
 TOOLS = {"look": look, "fetch": fetch, "wipe": wipe, "refund": refund,
          "per_request": per_request}
 
+#: `refund` is the one `danger` tool in this file, and S-16 says its `accepts_tainted`
+#: switch belongs to the caller rather than the decorator — so every scenario used to
+#: pass the same grant, including the many whose `tools=` does not contain `refund`.
+#: A grant naming a tool the agent does not have is now refused at construction, because
+#: a misspelled grant is not a smaller grant: it is no grant, and nothing said so.
+#: Scoping the grant to the scenario's own toolset is not a workaround for that rule —
+#: the scenarios without `refund` were never granting anything, and now they say so.
+def granted(tools):
+    return [t for t in ("refund",) if t in tools]
+
+
 #: Both backends must bill the same, or a budget comparison measures the fixture.
 #: FakeModel prices everything at zero, so the loop can never exhaust a USD budget
 #: with it; PricedFake is the shipped fixture that bills at a real model's rates.
@@ -87,7 +98,7 @@ def on_old(script, *, tools, budget, approve=None):
     a = Agent(name="p", job="parity", model=MODEL,
               provider=PricedFake([one(s) for s in script], MODEL),
               tools=[TOOLS[t] for t in tools], budget=budget, approve=approve,
-              accepts_tainted=["refund"], exporters=[COLLECTOR], allowed_hosts=None)
+              accepts_tainted=granted(tools), exporters=[COLLECTOR], allowed_hosts=None)
     # try_run, not run: the loop raises RunFailed on a non-completed stop while the
     # graph returns state.  That is an API-surface difference, deliberate and documented;
     # the rules below are what must not differ.
@@ -116,7 +127,7 @@ def on_durable(script, *, tools, budget, approve=None):
     a = Agent(name="p", job="parity", model=MODEL,
               provider=PricedFake([one(s) for s in script], MODEL),
               tools=[TOOLS[t] for t in tools], budget=budget, approve=approve,
-              accepts_tainted=["refund"], exporters=[COLLECTOR], allowed_hosts=None,
+              accepts_tainted=granted(tools), exporters=[COLLECTOR], allowed_hosts=None,
               durable=True, checkpoint=":memory:")
     r = a.try_run("go")
     written = [b.get("content", "") for m in r.messages
@@ -148,7 +159,7 @@ def on_graph(script, *, tools, budget, approve=None):
     chat = StoppingChat(script=[one(s) for s in script], stops=stops)
     g, _ = build_agent(model=chat, model_name=MODEL,
                        tools=[TOOLS[t] for t in tools], budget=budget, approve=approve,
-                       accepts_tainted=["refund"], exporters=[COLLECTOR],
+                       accepts_tainted=granted(tools), exporters=[COLLECTOR],
                        allowed_hosts=None)
     out = g.invoke({"messages": [HumanMessage("go")], "step": 0})
     from langchain_core.messages import ToolMessage
