@@ -115,15 +115,30 @@ lead = Agent(name="Lead", job="...", tools=[*code.tools(), git_push],
 | tool | effect | why |
 |---|---|---|
 | `list_files`, `read_source`, `search_code`, `outline`, `git_status`, `git_diff` | `read` | look, don't change anything the agent can't just look at again |
-| `write_source`, `edit_source`, `git_commit`, `run_tests`, `refresh_codebase_docs` | `write` | changes something, but undoable (`git reset`, overwrite again) |
+| `write_source`, `edit_source`, `git_commit` | `write` | changes something, but undoable (`git reset`, overwrite again) |
+| `run_tests`, `refresh_codebase_docs` | `danger` | **executes** code, not just files it — see below |
 | `git_push` — **yours, not the module's** | `danger` | not reliably undoable once someone else has pulled |
 
 Two of those deserve their reasons said out loud.
 
-**`run_tests` is `write`, not `read`** — an earlier draft of this document had it as
-`read`, and that was wrong. A test run writes caches and artifacts, and two runs in
-parallel fight over them. `write` is the only class that states all three facts at once
-(not parallel-safe, never auto-retried, still auto-allowed outside `safety="strict"`).
+**`run_tests`/`refresh_codebase_docs` are `danger`, not `write` — fixed after an
+adversarial review found the earlier classification let the model execute arbitrary code
+with no approval (`design/review-architect.md` G-1).** Two prior drafts of this document
+each got this wrong in a different direction: the first had `run_tests` as `read` (a test
+run writes caches/artifacts, and two parallel runs fight over them — genuinely not
+read-only); the fix for that landed on `write`, which is *closer* but still wrong, because
+`write` auto-allows at `safety="standard"`. The real problem `write` doesn't solve:
+`write_source` lets the model write *any* content to a `.py` file, and `run_tests` then
+**imports** that file to run it — importing a test file is executing whatever is at its
+module scope. `write_source` (writes a file) followed by `run_tests` (imports and runs it)
+is unapproved code execution assembled from two `write`-classified tools, demonstrated
+concretely: a test file whose body runs `os.system(...)`, executed with the harness
+process's own privileges, with nobody asked. `danger`'s floor is `ASK` at *both* safety
+levels — the one class that actually requires approval before a model-authored program
+runs. `refresh_codebase_docs` shells out to an external binary for the same reason.
+`run_tests`'s own `target`/`git_diff`'s own `path` arguments are also now confined to the
+workspace root (`design/review-architect.md` G-2) — they used to reach `argv` unchecked,
+unlike every other path-taking tool in this module.
 
 **`edit_source` replaces an exact string and refuses when it matches more than once.**
 Rewriting a whole file costs tokens proportional to the file and is the number-one source

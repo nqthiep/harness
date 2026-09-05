@@ -85,6 +85,35 @@ class NhotTrongWorkspace(Base):
         with self.assertRaises(WorkspaceEscapeError):
             asyncio.run(write_file.fn(path="../ra-ngoai.txt", text="x"))
 
+    def test_run_tests_target_bi_nhot_giong_moi_tool_khac(self):
+        """G-2, đã sửa: trước bản vá, `target` đi thẳng vào argv mà không qua
+        `confine()` — cùng chuỗi `"../outside"` mà `read_source` từ chối đúng lại
+        chạy được qua `run_tests`. Giờ cả hai đều từ chối như nhau."""
+        with self.assertRaises(WorkspaceEscapeError):
+            self.call("read_source", path="../outside")
+        with self.assertRaises(WorkspaceEscapeError):
+            self.call("run_tests", target="../outside")
+
+    def test_run_tests_target_voi_node_id_pytest_van_di_qua(self):
+        """`target="file.py::test_name"` (chọn một test cụ thể) là cú pháp hợp lệ của
+        pytest — confine() chỉ validate PHẦN ĐƯỜNG DẪN trước `::`, không round-trip cả
+        chuỗi qua Path() (sẽ làm sai cú pháp node-id)."""
+        out = self.call("run_tests", target="pkg/a.py::test_khong_ton_tai")
+        self.assertFalse(out.startswith("exit 0"), out)   # test không tồn tại -> lỗi
+        self.assertNotIn("Traceback", out)                # không phải crash của tool
+
+    def test_run_tests_target_bat_dau_bang_gach_ngang_bi_tu_choi(self):
+        """G-2: `target` bắt đầu bằng `-` có thể bị hiểu như một cờ dòng lệnh
+        (`--rootdir=...`, `-p ...`) thay vì một đường dẫn — từ chối trước khi tới argv."""
+        out = self.call("run_tests", target="--rootdir=/")
+        self.assertIn("bắt đầu bằng", out)
+
+    def test_git_diff_path_bi_nhot(self):
+        """G-2, đã sửa: `git_diff`'s `path` cũng đi thẳng vào argv trước bản vá, cùng lỗ
+        như `run_tests`."""
+        with self.assertRaises(WorkspaceEscapeError):
+            self.call("git_diff", path="../outside")
+
 
 class DieuHuongRe(Base):
     def test_outline_cho_ban_do_kem_so_dong_khong_phai_ca_file(self):
@@ -160,23 +189,62 @@ class PhanLoaiEffectNoiDungSuThat(Base):
         for name in ("list_files", "read_source", "search_code", "outline",
                      "git_status", "git_diff"):
             self.assertIs(got[name], Effect.READ, name)
-        for name in ("write_source", "edit_source", "run_tests", "git_commit",
-                     "refresh_codebase_docs"):
+        for name in ("write_source", "edit_source", "git_commit"):
             self.assertIs(got[name], Effect.WRITE, name)
+        # G-1, đã sửa: hai tool này THỰC THI code (chạy pytest / một binary ngoài), không
+        # chỉ ghi file — `danger` là lớp duy nhất buộc duyệt trước khi chạy.
+        for name in ("run_tests", "refresh_codebase_docs"):
+            self.assertIs(got[name], Effect.DANGER, name)
 
-    def test_khong_co_tool_danger_nao_trong_module_nay(self):
-        """Nhập module này không bao giờ tự nó tạo ra bộ ba chết người: `git_push`,
-        `deploy` là tool của người viết agent, tự khai `danger`."""
-        self.assertNotIn(Effect.DANGER, {t.effect for t in self.ct.tools()})
+    def test_khong_co_tool_external_nao_trong_module_nay(self):
+        """Không tool nào trong module này tự tra cứu mạng — `search_code`/`outline` chỉ
+        đọc filesystem cục bộ trong workspace."""
         self.assertNotIn(Effect.EXTERNAL, {t.effect for t in self.ct.tools()})
 
-    def test_run_tests_la_write_khong_phai_read(self):
-        """Một lượt chạy test ghi cache, sinh artefact, và hai lượt song song giẫm lên
-        nhau. `write` là lớp duy nhất nói đúng cả ba (không song song, không tự retry)."""
+    def test_danger_chi_dung_o_hai_tool_thuc_thi_code(self):
+        """G-1, đã sửa: bộ ba chết người (external + danger trong cùng agent) vẫn không
+        tự động xảy ra khi import module này — module không có tool `external` nào — dù
+        giờ nó CÓ hai tool `danger`. `git_push`/`deploy` vẫn là việc của người viết agent
+        tự khai thêm."""
+        danger = {t.name for t in self.ct.tools() if t.effect is Effect.DANGER}
+        self.assertEqual(danger, {"run_tests", "refresh_codebase_docs"})
+
+    def test_run_tests_la_danger_khong_phai_write(self):
+        """G-1, đã sửa: `run_tests` IMPORT rồi chạy bất kỳ code Python nào trong file
+        test — kể cả file model vừa tự ghi bằng `write_source`. `danger`'s floor là ASK
+        ở cả hai mức safety; `write` thì auto-ALLOW ở mức standard."""
         from harness.tools import EFFECT_PROFILES
-        self.assertIs(self.T["run_tests"].effect, Effect.WRITE)
-        self.assertFalse(EFFECT_PROFILES[Effect.WRITE].parallel_safe)
-        self.assertFalse(EFFECT_PROFILES[Effect.WRITE].retryable)
+        self.assertIs(self.T["run_tests"].effect, Effect.DANGER)
+        self.assertFalse(EFFECT_PROFILES[Effect.DANGER].parallel_safe)
+        self.assertFalse(EFFECT_PROFILES[Effect.DANGER].retryable)
+        self.assertIs(EFFECT_PROFILES[Effect.DANGER].decision_standard,
+                     EFFECT_PROFILES[Effect.DANGER].decision_strict)
+
+    def test_rce_qua_write_source_roi_run_tests_bi_chan_boi_agent_that(self):
+        """G-1, kịch bản thật `design/review-architect.md` dùng để chứng minh lỗ hổng —
+        ghi một file test chứa code thực thi lệnh hệ thống, rồi chạy nó qua `run_tests`.
+        Trước bản vá: hai lời gọi `write`+`write` chạy tuột qua, không ai hỏi. Sau bản
+        vá: đi qua một `Agent` THẬT (không có `approve=`) thì `run_tests` là `danger`,
+        `PolicyEngine.resolve()` không có callback thì DENY — file test được ghi, nhưng
+        không bao giờ được chạy."""
+        from harness import Agent
+        from harness.models.fake import FakeModel
+
+        canary = Path(self.root, "PWNED.txt")
+        script = FakeModel([
+            FakeModel.tool_call("write_source", {
+                "path": "test_pwned.py",
+                "text": f"import os\nos.system('touch {canary}')\ndef test_x(): pass\n"}),
+            FakeModel.tool_call("run_tests", {"target": "test_pwned.py"}),
+            FakeModel.text("done"),
+        ])
+        agent = Agent(name="A", job="j", tools=self.ct.tools(), provider=script,
+                      budget="$1, 10 steps")
+        r = agent.try_run("write a test and run it")
+        self.assertIn("write_source", r.tools_run)
+        self.assertNotIn("run_tests", r.tools_run, "run_tests chạy dù không ai duyệt")
+        self.assertFalse(canary.exists(), "code trong file test đã thực thi mà không ai "
+                                          "duyệt — đúng lỗ hổng G-1")
 
 
 class ChayLenhThat(Base):
@@ -319,8 +387,9 @@ class CapNhatWikiBangOpenwiki(Base):
         asyncio.run(T["refresh_codebase_docs"].fn())
         self.assertEqual(sb.calls, [("openwiki", "--update")])
 
-    def test_effect_la_write(self):
-        self.assertIs(self.T["refresh_codebase_docs"].effect, Effect.WRITE)
+    def test_effect_la_danger(self):
+        """G-1, đã sửa: chạy một binary ngoài (`openwiki`) là thực thi, không chỉ ghi."""
+        self.assertIs(self.T["refresh_codebase_docs"].effect, Effect.DANGER)
 
     def test_khong_co_openwiki_tren_may_thi_bao_loi_doc_duoc_khong_crash(self):
         """Không mock: máy test này (như hầu hết máy) không cài `openwiki`. IDL-30 fail

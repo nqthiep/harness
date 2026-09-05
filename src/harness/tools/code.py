@@ -22,10 +22,17 @@ kích thước thay đổi. Nhưng nó chỉ an toàn khi chuỗi cũ xuất hi�
 chỗ nghĩa là model không thực sự biết nó đang sửa chỗ nào, nên ở đây là lỗi có hướng dẫn,
 không phải "sửa đại chỗ đầu tiên".
 
-**Không có tool `danger` nào trong module này.** `git_push`, `deploy`, `rm -rf` là việc của
-người viết agent tự khai, với đầy đủ ý thức về những gì `effect="danger"` kéo theo (duyệt
-tay, không chạy song song, và luật lethal-trifecta lúc dựng agent). Nhập module này không
-bao giờ tự nó tạo ra bộ ba chết người.
+**`run_tests`/`refresh_codebase_docs` là `danger`, không phải `write` — sửa sau một review
+đối kháng (G-1, `design/review-architect.md`).** Bản nháp đầu tiên phân loại cả hai là
+`write` với lý do đúng một nửa: chạy test ghi cache/artefact, không song song được. Cái nó
+bỏ sót: `write_source`/`edit_source` cho phép model ghi BẤT KỲ nội dung nào vào một file
+`.py`, và `run_tests` sau đó IMPORT chính file đó để chạy pytest — import một file test
+CHÍNH LÀ thực thi bất kỳ code nào ở top-level của nó. Hai bước đều `write` (auto-ALLOW ở
+`safety="standard"`) ghép lại thành RCE không cần duyệt: `write_source` ghi
+`os.system(...)` vào `test_x.py`, `run_tests` chạy nó. Bị chứng minh bằng kịch bản thật
+(`id > PWNED.txt`, chạy với quyền của tiến trình harness). `danger`'s floor là `ASK` ở cả
+hai mức safety — đúng cái cần cho "thực thi code do model viết ra". `git_push`, `deploy`
+vẫn là việc của người viết agent tự khai thêm bên ngoài module này.
 
 **Vì sao `refresh_codebase_docs` là một tool tường minh, không phải một bước tự động
 trước mỗi run.** OpenWiki "code mode" sinh wiki kiến trúc (`openwiki/`) với bằng chứng
@@ -246,14 +253,29 @@ class CodeTools:
             p.write_text(src.replace(old, new), encoding="utf-8")
             return f"đã sửa {path} ({len(old)} ký tự → {len(new)})"
 
-        @tool(effect="write")
+        @tool(effect="danger")
         async def run_tests(target: str = "") -> str:
             """Chạy bộ test của dự án. `target` (tuỳ chọn) giới hạn ở một file hay một test.
 
-            Phân loại `write` chứ không phải `read`: một lượt chạy test ghi cache, sinh
-            artefact, và hai lượt chạy song song giẫm lên nhau — `write` là lớp duy nhất
-            nói đúng cả ba điều đó (không song song, không tự retry).
+            Phân loại `danger`, không phải `write` (G-1, đã sửa): chạy test là IMPORT rồi
+            THỰC THI bất kỳ code Python nào nằm trong file test — kể cả file model vừa tự
+            ghi bằng `write_source`. `danger` là lớp duy nhất buộc duyệt trước khi chạy.
+
+            `target` bị `confine()` (G-2, đã sửa): trước bản vá này, `target` đi thẳng vào
+            argv mà không qua `me.path()` như mọi tool khác trong lớp này — một
+            `target="../ngoai-workspace"` chạy test NGOÀI thư mục gốc, trên chính đường
+            dẫn mà `read_source` đã từ chối đúng.
             """
+            if target:
+                if target.startswith("-"):
+                    return (f"{target!r} bắt đầu bằng '-' — có thể bị hiểu như một cờ "
+                            f"dòng lệnh của test runner, không phải một đường dẫn. Từ chối.")
+                # `::test_name` (chọn một test cụ thể) là hợp lệ ở pytest — validate phần
+                # đường dẫn TRƯỚC dấu `::`, không round-trip qua Path() (sẽ làm sai lệch
+                # cú pháp node-id), rồi vẫn dùng `target` NGUYÊN VĂN trong argv.
+                path_part = target.split("::", 1)[0]
+                if path_part:
+                    me.path(path_part)              # G-2: chỉ để validate containment
             cmd = list(me.test_command) + ([target] if target else [])
             return await me._run(cmd)
 
@@ -265,6 +287,11 @@ class CodeTools:
         @tool(effect="read")
         async def git_diff(path: str = "") -> str:
             """Xem nội dung thay đổi chưa commit."""
+            if path:
+                if path.startswith("-"):
+                    return (f"{path!r} bắt đầu bằng '-' — có thể bị hiểu như một cờ dòng "
+                            f"lệnh của git, không phải một đường dẫn. Từ chối.")
+                me.path(path)                       # G-2: validate containment
             return await me._run(["git", "diff"] + ([path] if path else []))
 
         @tool(effect="write")
@@ -276,11 +303,15 @@ class CodeTools:
                 return add
             return await me._run(["git", "commit", "-m", message])
 
-        @tool(effect="write")
+        @tool(effect="danger")
         async def refresh_codebase_docs() -> str:
             """Cập nhật wiki mô tả kiến trúc repo (thư mục `openwiki/`) qua OpenWiki
             "code mode" — mỗi khẳng định gắn bằng chứng dòng code cụ thể, tự đối chiếu
             lại khi code đổi, nên KHÔNG lỗi thời âm thầm như tài liệu viết tay.
+
+            Phân loại `danger`, không phải `write` (G-1, đã sửa): chạy một binary ngoài
+            (`openwiki`) với quyền của tiến trình harness — cùng lý do `run_tests` không
+            còn là `write` nữa.
 
             Tuỳ chọn thật sự: `openwiki` không phải dependency của harness (không có
             trong `pyproject.toml` — cùng khuôn `viking` extra, ADR-035: chạy như tiến

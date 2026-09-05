@@ -101,9 +101,17 @@ async def _sh(argv: list[str], *, timeout: float = 30.0):
                              timeout=timeout)
 
 
-@tool(effect="read")
+@tool(effect="danger")
 async def run_tests() -> str:
-    """Run the workspace's test suite, returning the result."""
+    """Run the workspace's test suite, returning the result.
+
+    `danger`, not `read` or `write` (design/review-architect.md G-1): running pytest
+    IMPORTS every test file in the workspace, including whatever `write_source` just
+    wrote — importing a file is executing whatever code sits at its module scope. A
+    `write_source` call followed by this one is unapproved code execution if either is
+    classified below `danger`. See `src/harness/tools/code.py::CodeTools.run_tests` for
+    the same fix applied to the library's own equivalent tool.
+    """
     r = await _sh(["python3", "-m", "pytest", "-q"], timeout=120.0)
     return f"returncode={r.returncode}\n{r.stdout[-2000:]}\n{r.stderr[-500:]}"
 
@@ -123,8 +131,8 @@ async def git_push(remote: str, branch: str) -> str:
     return r.stdout or r.stderr
 
 
-print("  6 tools: list_files/read_source/run_tests (read), write_source/git_commit "
-     "(write), git_push (danger)")
+print("  6 tools: list_files/read_source (read), write_source/git_commit (write), "
+     "run_tests/git_push (danger)")
 print(f"  temp workspace: {WORKSPACE}")
 
 
@@ -186,9 +194,16 @@ else:
 
     from fake_chat import FakeChat
 
-    def approve_git_push(call, ctx) -> bool:
-        print(f"    [needs human approval] {call.name}({call.arguments}) -> defaults to DENY in this example")
-        return False
+    def approve_danger_calls(call, ctx) -> bool:
+        # `run_tests` executes model-authored code (design/review-architect.md G-1) —
+        # approved here, same as a real operator watching a coding session would. Any
+        # OTHER danger tool (concretely, `git_push`, not in this agent's toolset but
+        # checked defensively) defaults to DENY: this example approves running tests,
+        # never pushing.
+        ok = call.name == "run_tests"
+        print(f"    [needs human approval] {call.name}({call.arguments}) -> "
+             f"{'approved' if ok else 'DENY (default, not run_tests)'}")
+        return ok
 
     graph, _rt = build_agent(
         model=get_model([FakeChat.call("write_source", {"path": "hello.py",
@@ -202,7 +217,7 @@ else:
         # failure -> edit again -> ...) until it's done or the budget runs out. The
         # default (20 steps, 5 minutes) suits a question; a coding task needs far more.
         budget="$5, 300 steps, 45m",
-        approve=approve_git_push,
+        approve=approve_danger_calls,
         checkpointer=MemorySaver(),          # for real use, SqliteSaver/PostgresSaver —
                                              # survives the process exiting, not just
                                              # multiple invoke() calls in ONE process
@@ -244,6 +259,7 @@ eval_agent = ClassicAgent(
     name="Coder", job="Fix bugs and commit.",
     tools=[write_source, run_tests, git_commit],
     budget="$5, 300 steps, 45m", exporters=[collector],
+    approve=lambda call, ctx: True,      # run_tests is `danger` now (G-1) — approve it
     provider=FakeModel([FakeModel.tool_call("write_source",
                                             {"path": "hello.py", "text": "print('hi v3')"}),
                         FakeModel.tool_call("run_tests", {}),
@@ -251,12 +267,12 @@ eval_agent = ClassicAgent(
                         FakeModel.text("Done.")]))
 eval_result = eval_agent.try_run("Fix hello.py and commit.")
 report = check_trajectory(
-    Trajectory(must_call=frozenset({"write_source", "git_commit"}),
+    Trajectory(must_call=frozenset({"write_source", "run_tests", "git_commit"}),
               must_not_call=frozenset({"git_push"}),      # this task was never approved to push
               no_duplicate_side_effects=True),
     eval_result, collector.events,
     effect_of={"write_source": "write", "git_commit": "write",
-              "git_push": "danger", "run_tests": "read"})
+              "git_push": "danger", "run_tests": "danger"})
 print(f"  trajectory.ok = {report.ok}  (tools_run = {eval_result.tools_run})")
 
 
