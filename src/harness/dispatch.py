@@ -11,9 +11,10 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from . import audit
+from .audit import utcnow as _utcnow
 from .context.assembler import canonical as _canonical
 from .errors import ToolContractError
 from .idempotency import execute_once, idempotency_key
@@ -22,8 +23,7 @@ from .middleware import _call_scope
 from .observe.events import EventKind
 from .policy.base import Ruling, ToolCall, Verdict
 from .policy.builtin import check_flow, emits_of
-from .policy.decision import (POLICY_ENGINE_VERSION, Actor, Decision, Scope,
-                              actor_json, evidence_json)
+from .policy.decision import Actor
 from .policy.label import Integrity, Label
 from .secrets import redact
 from .tools import EFFECT_PROFILES, ToolSpec
@@ -117,10 +117,10 @@ class Dispatcher:
             call = ToolCall(b["id"], b["name"], b.get("input", {}), spec,
                            idempotency_key(run_id, b["id"]))
             d = self._e._engine.decide(call, ctx)
+            actor = evidence = None
+            asked_by = d.policy if d.verdict is Verdict.ASK else None
             if d.verdict is Verdict.ASK:
                 self._e._asks += 1
-            actor = evidence = None
-            if d.verdict is Verdict.ASK:
                 # S-25(b): approval fatigue is a channel the model controls — injected
                 # content can make it call a `write` tool 40 times with slightly
                 # different args, 40 ASKs later the 41st gets approved on reflex. A cap
@@ -157,25 +157,22 @@ class Dispatcher:
                         d = Ruling(prior, "a live row in the decision log answers this",
                                   "decision-log")
                         actor = Actor.policy("decision-log-reuse")
-                # Every resolved ASK becomes a row — including the ask-cap denial. An
-                # audit log that records only what was permitted cannot answer "what did
-                # we refuse, and why" (docs/05 §1, the same rule `policy.decided` follows
-                # by being emitted for ALLOW as well as DENY). Scoped to THIS call_id, so
-                # a grant here never silently covers the next call: `Decision` refuses to
-                # be constructed any other way without an `expires_at` (ForeverAllow).
-                self._e._decisions.record(Decision(
-                    id=f"dec-{b['id']}", verdict=d.verdict,
-                    scope=Scope(tool=b["name"], args=dict(b.get("input", {})),
-                                server=spec.server, call_id=b["id"]),
-                    actor=(actor if actor is not None else
-                           (Actor.human("approver", via="callback")
-                            if self._e._a.approve is not None else Actor.policy(d.policy))),
-                    decided_at=_utcnow(), expires_at=None, run_id=run_id, reason=d.reason,
-                    policy_version=POLICY_ENGINE_VERSION, evidence=evidence))
-            self._e._bus.emit(EventKind.POLICY_DECIDED, step=step, tool=b["name"],
-                           call_id=b["id"], verdict=d.verdict.name, reason=d.reason,
-                           policy=d.policy,
-                           actor=actor_json(actor), evidence=evidence_json(evidence))
+                # Every resolved ASK becomes a row — including the ask-cap denial.
+                # Scoped to THIS call_id, so a grant here never silently covers the next
+                # call: `Decision` refuses to be constructed any other way without an
+                # `expires_at` (ForeverAllow).
+                if actor is None and self._e._a.approve is not None:
+                    actor = Actor.human("approver", via="callback")
+            # One row per call at this gate, carrying the FINAL verdict — an ASK is not
+            # one (`Decision.__post_init__` refuses to store it) and `asked_by` is how
+            # the policy that raised the question survives into the trail anyway. F8:
+            # `audit.decided` is also what records a refusal, so a DENY from
+            # `EffectPolicy`/`TaintPolicy`/`EgressPolicy`/`RequireBeforePolicy`/a user
+            # policy finally reaches the book — before this the only `record()` in this
+            # file sat inside the ASK branch above, and every other refusal was an event
+            # and nothing durable.
+            self._decided(d, b, spec, step, run_id, actor=actor, evidence=evidence,
+                          resolved_ask=asked_by is not None, asked_by=asked_by)
             planned.append((b, spec, d))
 
         # I-3: every tool_use gets exactly one tool_result, in the model's call order.
@@ -226,6 +223,14 @@ class Dispatcher:
             # (lg/runtime.py, I-1/S-2): a gate re-checked at the point of consumption.
             gate = check_flow(self._e._taint.label, spec, self._e._a._grants)
             if gate.verdict is Verdict.DENY:
+                # F7: this refusal used to be a `tool_result` and nothing else — no
+                # `policy.decided`, no `Decision`, no `tool.started`/`tool.finished`. An
+                # operator filtering the stream for DENY saw zero refusals on a run where
+                # the lattice had just blocked an exfiltration, and the last recorded
+                # verdict for the call said ALLOW. Its own row id: the ALLOW this
+                # overturns may already have written one under the plain call id.
+                self._decided(gate, b, spec, step, run_id,
+                              row_id=f"{b['id']}-regate")
                 out[i] = err(b["id"], f"denied by policy: {gate.reason}")
                 continue
             self.ran.append(spec.name)
@@ -233,6 +238,15 @@ class Dispatcher:
         for i, origin in dupes:
             out[i] = {**out[origin], "tool_use_id": planned[i][0]["id"]}
         return out
+
+    def _decided(self, d: Ruling, b: Mapping[str, Any], spec: ToolSpec, step: int,
+                 run_id: str, **kw) -> None:
+        """Every verdict this file reaches goes through `audit.decided` — which emits
+        `policy.decided` and records anything that is not an ALLOW. One call shape, so a
+        new branch cannot forget half of the trail (`audit.py`)."""
+        audit.decided(self._e._bus, self._e._decisions, d, run_id=run_id, step=step,
+                      tool=b["name"], call_id=b["id"], args=b.get("input", {}),
+                      server=spec.server, **kw)
 
     async def _bounded(self, b: Mapping[str, Any], spec: ToolSpec, step: int) -> dict[str, Any]:
         """NFR-09: parallelism is bounded, so a fan-out cannot fork-bomb a downstream
@@ -360,10 +374,6 @@ class Dispatcher:
         self._e._bus.emit(EventKind.TOOL_FINISHED, step=step, tool=spec.name, call_id=b["id"],
                        duration_ms=(time.monotonic() - t0) * 1000, is_error=True, truncated=False)
         return err(b["id"], msg)
-
-
-def _utcnow():
-    return datetime.now(timezone.utc)
 
 
 def err(call_id: str, message: str) -> dict[str, Any]:
