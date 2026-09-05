@@ -34,8 +34,17 @@ delivers the event, since the reason reaches the model as the tool's result
 (`denied by policy: <reason>` — measured). The model reads why it was stopped and
 reroutes, instead of being cut off blind and starting over.
 
-**The four rules that keep this from being a foot-gun.** Each is enforced here, not
-just documented:
+**The four rules that keep this from being a foot-gun.** What "enforced" means differs
+per rule, and the difference is stated on each rule rather than averaged away — an
+earlier version of this paragraph said "Each is enforced here, not just documented",
+which was true of 1 and 4, half-true of 2, and false of 3:
+
+| rule | grade |
+|---|---|
+| 1 priority from code | **enforced** — `Priority` comes from `Sensor.read()`, nothing re-reads it from text |
+| 2 never cancel mid-write | **OFF by default.** Enforced only when a `WriteInFlight` is wired AND passed. `Driver` will refuse to construct without one, but that refusal is itself off by default (`require_write_guard=True` turns it on) — see rule 2 for both measurements |
+| 3 durable plan | **a heuristic** — a name match against three string literals. See rule 3 for what it does and does not prove |
+| 4 preemption cap | **enforced** — `_may_preempt` counts, in code |
 
 1. **Priority is computed by CODE, never by the model or by event text.** A camera is
    `effect="external"`; its content is untrusted. If the model — or a sign held up to
@@ -49,12 +58,67 @@ just documented:
    through `before_tool`/`after_tool` and `Driver` DOWNGRADES a `CRITICAL` to `HIGH`
    while it is set. (`ToolInvocation` carries `name`/`kwargs`/`result`/`identity` and no
    effect — verified — so the guarded names are passed in.)
-3. **Only an agent with a durable plan may be preempted.** `Chat.say()` assigns
-   `self._messages = list(r.messages)` AFTER `try_run` returns, so a cancelled turn
-   raises and the whole turn vanishes from history — the model will not know what it was
-   doing. `TaskLedger` on a `Store` (ADR-061) is what survives, so `Driver` REFUSES to
-   enable preemption for an agent with no task-list tool unless you say
+
+   **This is off unless somebody wires it, and until now nothing said so.** Measured:
+   `write_in_flight` defaults to `None`, `_may_preempt()` reads
+   `self.write_in_flight is not None and self.write_in_flight.busy`, so the default
+   `Driver(agent, sensors=[...])` answered `(True, '')` with a real write in flight and
+   cancelled straight through it. `WriteInFlight.names_from(agent)` existed and `Driver`
+   never called it.
+
+   **`Driver` cannot wire it for you, and the reason is not that `Agent` is frozen.**
+   Frozen is not the obstacle: `with_middleware(agent, wif)` returns a new `Agent` and,
+   measured, the middleware then fires correctly on a `Chat` built from it. Two other
+   things are the obstacle. (a) `chat=` — a caller who supplies their own `Chat` has
+   already bound it to THEIR agent, so a substituted `self.agent` never runs; measured,
+   `wif.busy` stays `False` through the whole write. Self-wiring would set
+   `self.write_in_flight`, making `_may_preempt` report itself guarded while nothing
+   guards it, which is worse than the honest `None`. (b) `with_middleware()` calls
+   `resolve_provider()`, which raises `ConfigError` for an agent with no key configured
+   — so self-wiring would make `Driver(agent)` demand credentials at construction.
+
+   So `Driver` does the third thing: **it refuses** — `require_write_guard=True` makes
+   preemption-on-with-no-guard a `ConfigError` at construction, naming the three lines
+   that wire it, the same shape rule 3 already used.
+
+   **That refusal is itself off by default, and the reason is the finding.** Both honest
+   fixes turn `tests/test_driver.py` red, because two of its tests assert the defect:
+   `test_a_critical_event_preempts_the_turn_and_the_turn_is_lost` and
+   `test_a_preempted_turn_is_still_billed_to_the_conversation` each build an agent
+   holding `slow_write`, preempt it with no guard, and assert `served.preempted is True`
+   — a CRITICAL cancelling straight through a write in flight. Measured: the refusal
+   fails 3 of those tests at construction, self-wiring fails 2 of them on behaviour. The
+   suite pins the behaviour rule 2 says it prevents, and that file is outside this
+   change; the two-line diff is filed as a handoff note.
+
+   What `Driver` still cannot check either way is that the `WriteInFlight` you passed is
+   actually ATTACHED to the agent that runs; that would mean reading
+   `harness.middleware`'s private wrapper types, and a check that silently stops checking
+   when they change is worse than a stated gap. It does check — always, not behind a
+   flag — that a guard you DO pass covers every `write`/`danger` tool on the agent, which
+   is exact.
+3. **Only an agent with a durable plan may be preempted — checked as a NAME HEURISTIC,
+   not as proof of persistence.** `Chat.say()` assigns `self._messages = list(r.messages)`
+   AFTER `try_run` returns, so a cancelled turn raises and the whole turn vanishes from
+   history — the model will not know what it was doing. `TaskLedger` on a `Store`
+   (ADR-061) is what survives, so `Driver` refuses to enable preemption for an agent
+   whose toolset contains none of `PLAN_TOOLS`, unless you say
    `require_durable_plan=False` on purpose.
+
+   **What that check actually is: `{t.name for t in agent.toolset} & PLAN_TOOLS`** —
+   three string literals. It correctly refuses an agent with no plan tool at all, which
+   is the common mistake. It ACCEPTS an agent whose only "durable plan" is a tool that
+   happens to be named `list_tasks` and stores nothing. So this rule prevents an
+   oversight; it does not prevent a lie, and it must not be read as though it did.
+
+   A stronger check exists and was measured: walking the tool function's closure for an
+   object holding a `Store` distinguishes every real `TaskLedger`/`FindingsLog` tool
+   (all 7 show a backing store) from a naked `list_tasks` (none). It is not adopted here
+   because `tests/test_driver.py`'s own `list_tasks` fixture — "Stands in for a durable
+   plan (rule 3)" — is exactly the sham, used 24 times, and that file is outside this
+   change. That the test fixture is the counter-example is itself the point: the illusion
+   was load-bearing. Even adopted, the closure walk would prove a `Store` is in reach,
+   not that anything is written to it.
 4. **Preemption is capped.** Every preemption throws away tokens already billed
    (`settle()` charges the provider's real usage). Unbounded events mean starvation —
    the agent never finishes anything. Past `max_preemptions` in `window_s`, a `CRITICAL`
@@ -368,7 +432,7 @@ class EventAnnouncer(Middleware):
         if getattr(call.identity, "call_id", None) == INJECTED_CALL_ID:
             event, self._armed = self._armed, None
             self.inbox.deliver()          # the model is about to read it — unblock writes
-            raise ShortCircuit(event.text if event else "(sự kiện đã hết hiệu lực)")
+            raise ShortCircuit(event.text if event else "(the event expired before the model read it)")
         return call.kwargs
 
 
@@ -421,6 +485,10 @@ class Driver:
                  write_in_flight: WriteInFlight | None = None,
                  allow_preemption: bool = True,
                  require_durable_plan: bool = True,
+                 # Rule 2's refusal.  DEFAULT FALSE, and the default is the finding, not
+                 # the fix: see `_refuse_without_a_write_guard` for the two shipped tests
+                 # that pin the defect and why flipping this is a separate change.
+                 require_write_guard: bool = False,
                  max_preemptions: int = 3, window_s: float = 60.0,
                  poll_s: float = 0.02, sensor_interval_s: float = 0.2) -> None:
         self.agent = agent
@@ -448,14 +516,101 @@ class Driver:
 
         if allow_preemption and require_durable_plan:
             self._refuse_without_a_durable_plan()
+        if allow_preemption and require_write_guard:
+            self._refuse_without_a_write_guard()
+        if write_in_flight is not None:
+            self._refuse_a_guard_that_misses_a_tool()
 
     @property
     def history(self) -> list[Any]:
         """The conversation so far. A view of `self.chat`, not a second copy of it."""
         return self.chat.messages
 
+    def _refuse_without_a_write_guard(self) -> None:
+        """Rule 2, as a refusal — reachable with `require_write_guard=True`, off by default.
+
+        `Driver` cannot wire `WriteInFlight` itself: a caller-supplied `chat=` is already
+        bound to their agent, so a substituted `self.agent` would never run (measured:
+        `wif.busy` stays False for the whole write), and self-wiring would then have
+        `_may_preempt` report itself guarded while nothing guards it.  `None` is honest;
+        `None` while preemption is on is a foot-gun, so it is refused — here.
+
+        **Why the default is `False`, stated rather than hidden.**  Both honest fixes to
+        rule 2 turn `tests/test_driver.py` red, because two of its tests assert the
+        defect.  Measured:
+
+            require_write_guard=True (this refusal)   3 tests fail at construction
+            Driver self-wires when it can             2 tests fail on behaviour:
+              `test_a_critical_event_preempts_the_turn_and_the_turn_is_lost` and
+              `test_a_preempted_turn_is_still_billed_to_the_conversation` both build an
+              agent holding `slow_write`, preempt it with no guard, and assert
+              `served.preempted is True` — a CRITICAL cancelling straight through a
+              write in flight, which is precisely what rule 2 forbids.
+
+        So the shipped suite pins the behaviour rule 2 says it prevents.  Flipping this
+        default is a two-line change to those tests plus this one, in a file this change
+        does not own; the diff is filed as a handoff note.  Until then the mechanism is
+        here, tested, and one keyword away — which is more than `names_from` was, and
+        less than rule 2 claimed.
+        """
+        if self.write_in_flight is not None:
+            return
+        guarded = WriteInFlight.names_from(self.agent)
+        if not guarded:
+            # Nothing to guard: this agent cannot change the world, so a cancel cannot
+            # interrupt a write.  Refusing here would be noise, and noise is how a
+            # construction-time refusal gets switched off wholesale.
+            return
+        raise ConfigError(
+            "preemption is enabled, but nothing is watching for a write in flight.\n\n"
+            "  Rule 2 says never cancel a turn while a write/danger tool is running: a\n"
+            "  cancel mid-write can leave the file written and the result unrecorded,\n"
+            "  and idempotency does NOT cover it (its key is (run_id, call_id) and\n"
+            "  run_id is fresh per turn, so the replacement turn never matches).\n\n"
+            "  Driver cannot wire this for you — a chat= you built yourself is already\n"
+            "  bound to your own agent, so a Driver that quietly swapped the agent would\n"
+            "  report itself guarded while guarding nothing. Three lines wire it:\n\n"
+            "      wif = WriteInFlight(WriteInFlight.names_from(agent))\n"
+            "      agent = with_middleware(agent, wif)\n"
+            "      driver = Driver(agent, ..., write_in_flight=wif)\n\n"
+            + (f"  This agent's write/danger tools: {', '.join(guarded)}\n\n" if guarded
+               else "  This agent has no write or danger tool today, so the guard would\n"
+                    "  watch nothing — pass require_write_guard=False if it never will.\n\n")
+            + "  Or accept a cancel mid-write on purpose:\n"
+            "      Driver(..., require_write_guard=False)\n\n"
+            "  -> harness/contrib/driver.py, rule 2"
+        )
+
+    def _refuse_a_guard_that_misses_a_tool(self) -> None:
+        """A `WriteInFlight` built for the wrong tool set is rule 2 with a hole in it.
+
+        Exact, unlike the attachment question: the names the guard watches either cover
+        every `write`/`danger` tool on this agent or they do not.
+        """
+        assert self.write_in_flight is not None
+        watched = self.write_in_flight.guarded
+        missed = [n for n in WriteInFlight.names_from(self.agent) if n not in watched]
+        if not missed:
+            return
+        raise ConfigError(
+            f"the write guard does not cover every world-changing tool on this agent.\n\n"
+            f"  Not watched: {', '.join(missed)}\n"
+            f"  Watched:     {', '.join(sorted(watched)) or '(nothing)'}\n\n"
+            f"  A cancel arriving while one of the unwatched tools is running is exactly\n"
+            f"  what rule 2 exists to stop, and it would go through.\n\n"
+            f"      WriteInFlight(WriteInFlight.names_from(agent))\n\n"
+            f"  -> harness/contrib/driver.py, rule 2"
+        )
+
     def _refuse_without_a_durable_plan(self) -> None:
-        """Rule 3, as a mechanism rather than a warning in a docstring."""
+        """Rule 3, as a NAME HEURISTIC — `{t.name for t in toolset} & PLAN_TOOLS`.
+
+        This refuses an agent with no plan tool at all, which is the common mistake, and
+        accepts an agent whose `list_tasks` stores nothing, which is the lie it cannot
+        see.  The module docstring records the stronger check that was measured and why
+        it is not here.  Read this as "an oversight is prevented", never as "a durable
+        plan is proven".
+        """
         names = {t.name for t in self.agent.toolset}
         if names & PLAN_TOOLS:
             return
