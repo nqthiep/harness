@@ -34,12 +34,12 @@ from ..progress import STALL_AFTER, ProgressLedger, stall_reason
 from ..policy.label import Grants, Integrity, Label
 from ..result import Money, StopReason, Usage
 from ..retry import retry_scope
-from ..run import CONTINUE, _MAP, parse_returns
+from ..stop import CONTINUE, MAX_PAUSES, _MAP, parse_returns
 from ..secrets import redact, redaction_scope
 from ..context.window import CLEARED, COMPACT_AT, EDIT_AT, KEEP_RECENT_STEPS
 from ..models.pricing import MAX_CONTEXT
 from ..tools import EFFECT_PROFILES
-from .graph import INTERRUPT, MAX_PAUSES
+from .graph import INTERRUPT
 
 #: Bao nhiêu message CUỐI được giữ nguyên khi nén. Đếm bằng message chứ không bằng
 #: "bước", vì ở backend này một bước là một `AIMessage` cộng N `ToolMessage` (mỗi lời gọi
@@ -330,6 +330,16 @@ class Runtime:
                "turn_usage": dataclasses.asdict(total_usage)}
         out.update(_classify(raw, bool(getattr(msg, "tool_calls", None)),
                              state.get("paused", 0)))
+        # `_classify` is pure and has no bus, so the emit belongs to its caller. Without
+        # it, an unknown stop reason and an endless pause both ended the run as ERROR on
+        # this backend while emitting nothing — the classic loop emitted `ERROR_RAISED`
+        # for the first of those and neither backend did for the second. Found by
+        # comparing the SET of kinds each backend can reach rather than one scenario's
+        # outcome, which is what the hand-written parity rows compare (ADR-099).
+        if out.get("stop_reason") == StopReason.ERROR.value:
+            self._emit(state, EventKind.ERROR_RAISED, step=state.get("step", 0),
+                       where="provider", type="classified_error",
+                       message=out.get("detail", ""), retryable=False)
         return out
 
     # ── gate 2: nothing reaches a tool without a verdict ─────────────────────

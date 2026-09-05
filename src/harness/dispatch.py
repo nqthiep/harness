@@ -366,13 +366,6 @@ def _utcnow():
     return datetime.now(timezone.utc)
 
 
-def canonical_len(req) -> str:
-    """The serialized request.  Its character count is a hard upper bound on the true
-    input token count — no tokenizer emits more tokens than characters (ADR-026)."""
-    return _canonical({"system": list(req.system), "tools": list(req.tools),
-                       "messages": list(req.messages)})
-
-
 def err(call_id: str, message: str) -> dict[str, Any]:
     # Redacted here rather than only at the transcript: a tool error goes to the MODEL,
     # which is a wider audience than a log file (Round 25, RT-13).

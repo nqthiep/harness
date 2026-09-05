@@ -238,6 +238,130 @@ class Parity(unittest.TestCase):
                          f"only one backend emits {sets['loop'] ^ sets['graph']}")
         self.assertGreaterEqual(len(sets["loop"]), 10)
 
+    def test_every_backend_emits_the_same_kinds_across_every_scenario(self):
+        """The set version of the row above, and the reason it exists: that row proves
+        agreement on ONE scenario, and a kind only some path can reach would not appear
+        in it. This drives every scenario in this file through all three backends and
+        compares the UNIONS — so a kind that only the loop can ever produce is a failure
+        even if no single scenario shows it.
+
+        It also covers `durable`, which the row above does not: it compares `loop` and
+        `graph` only, and there are three backends (ADR-099).
+        """
+        scenarios = [
+            ([C("look", {"ma": "A"}), T("done")], {"tools": ["look"]}),
+            ([C("wipe", {"x": 1}), T("ok")], {"tools": ["wipe"]}),
+            ([C("wipe", {"x": 1}), T("ok")],
+             {"tools": ["wipe"], "approve": lambda c, ctx: True}),
+            ([T("xin chào")], {"tools": ["look"]}),
+            ([S("refusal")], {"tools": ["look"]}),
+            ([S("max_tokens")], {"tools": ["look"]}),
+            ([S("pause_turn"), T("xong")], {"tools": ["look"]}),
+            ([C("look", {"ma": f"A{i}"}, f"c{i}") for i in range(6)],
+             {"tools": ["look"], "budget": "$50, 4 steps"}),
+            ([C("fetch", {"url": "http://e"}), C("refund", {"ma": "A"}, "c2"), T("ok")],
+             {"tools": ["fetch", "refund"], "approve": lambda c, ctx: True}),
+            ([S("con_meo_bay")], {"tools": ["look"]}),
+            ([C("look", {"ma": f"A{i}"}, f"c{i}") for i in range(50)] + [T("d")],
+             {"tools": ["look"], "budget": "$0.02, 40 steps"}),
+        ]
+        union = {label: set() for label in BACKENDS}
+        for script, kw in scenarios:
+            for label, observed in self.both(script, **kw).items():
+                union[label] |= set(observed["events"])
+
+        reference = union["loop"]
+        for label, kinds in union.items():
+            self.assertEqual(
+                kinds, reference,
+                f"{label} and loop disagree on which kinds are reachable: "
+                f"{sorted(kinds ^ reference)}")
+        # 14 of the 17 kinds. The three these scenarios cannot reach, named so the
+        # floor is a measurement rather than a wish: `budget.unlimited` needs
+        # `Budget(usd=None)`, `context.managed` needs compaction, and
+        # `progress.stalled` needs a repeated-identical-call run, which the two
+        # backends trip at different step counts and so cannot be compared this way.
+        self.assertGreaterEqual(len(reference), 14,
+                                "too few kinds reached for this to prove anything")
+
+    def test_a_run_that_ends_in_error_says_so_in_the_event_stream(self):
+        """An invariant over every failure shape, rather than a row per shape.
+
+        Found by the set comparison above, not by any hand-written row: an unknown stop
+        reason ended the run as ERROR and emitted `error.raised` on the classic loop and
+        NOT on the graph or durable backends, and an endless pause emitted it on none of
+        the three. Every existing row compared `stop_reason` — on which all three agreed
+        — so the observability difference was invisible. An operator filtering the stream
+        for failures saw a successful-looking run that had failed, on the backend you
+        would pick for production (ADR-099).
+        """
+        failures = [
+            ("an unknown stop reason", [S("con_meo_bay")], {"tools": ["look"]}),
+            ("an endless pause", [S("pause_turn")] * 20, {"tools": ["look"]}),
+        ]
+        for what, script, kw in failures:
+            got = self.both(script, **kw)
+            for label, observed in got.items():
+                with self.subTest(failure=what, backend=label):
+                    self.assertEqual(observed["stop"], "error")
+                    self.assertIn("error.raised", observed["events"],
+                                  f"{label} ended in error and emitted no error.raised")
+
+    def test_neither_engine_builds_the_builtin_policy_set_itself(self):
+        """A structural check, because the behavioural one cannot be written: no test
+        fails when a rule is merely ABSENT from one backend. Both engines call
+        `policy.builtin.builtins_for`, so a fourth builtin policy lands on both or on
+        neither (ADR-099)."""
+        import pathlib as _p
+        for path in ("src/harness/agent.py", "src/harness/lg/__init__.py"):
+            body = _p.Path(path).read_text()
+            self.assertIn("builtins_for(", body, f"{path} must use the shared set")
+            self.assertNotIn("EffectPolicy()", body,
+                             f"{path} constructs a builtin policy itself")
+
+    def test_one_definition_of_every_shared_constant(self):
+        """`MAX_PAUSES = 5` was defined twice — in `run.py` and again in `lg/graph.py` —
+        beside a stop-reason table whose own docstring says two copies is how the
+        backends drift. Both now read `harness.stop`.
+
+        Asserted on the SOURCE, not on the value, and not on identity either: an earlier
+        version of this test used `assertIs`, which passes for two separate `MAX_PAUSES
+        = 5` assignments because CPython interns small integers. It caught nothing, and
+        its docstring claimed identity was the reason it worked (ADR-099). A re-assignment
+        is a textual fact, so read the text.
+        """
+        import ast
+        import pathlib as _p
+        from harness import stop
+        from harness.lg import graph, runtime
+
+        for module in (graph, runtime):
+            tree = ast.parse(_p.Path(module.__file__).read_text())
+            assigned = {t.id for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                        for t in n.targets if isinstance(t, ast.Name)}
+            for shared in ("MAX_PAUSES", "_MAP", "CONTINUE"):
+                self.assertNotIn(shared, assigned,
+                                 f"{module.__name__} re-declares {shared} instead of "
+                                 f"importing it from harness.stop")
+        # and the values that are objects, where identity does mean something
+        self.assertIs(runtime._MAP, stop._MAP)
+        self.assertIs(runtime.CONTINUE, stop.CONTINUE)
+        self.assertEqual(graph.MAX_PAUSES, stop.MAX_PAUSES)
+
+    def test_the_returns_parser_is_one_function_for_both(self):
+        from harness import stop
+        from harness.lg import runtime
+        self.assertIs(runtime.parse_returns, stop.parse_returns)
+
+    def test_the_shared_builtin_set_is_what_both_engines_actually_run(self):
+        """And the behavioural half of it: the tuple `builtins_for` returns is the one
+        every engine's `PolicyEngine` is given, in order."""
+        from harness.policy.builtin import builtins_for
+        from harness.policy.label import Grants
+        names = [p.name for p in builtins_for(Grants(), ())]
+        self.assertEqual(names, ["effect", "taint", "egress"],
+                         "order is part of the contract: a policy can only restrict")
+
     def test_a_refusal_is_not_reported_as_success_on_either_backend(self):
         """A safety decline arrives as HTTP 200 with no tool calls. The graph backend
         never read the stop reason at all, so it routed to `finish` and answered

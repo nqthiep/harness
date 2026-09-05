@@ -149,3 +149,21 @@ class EgressPolicy:
                         Verdict.DENY,
                         f"{host!r} is not in allowed_hosts", self.name)
         return Ruling(Verdict.ALLOW, "", self.name)
+
+
+def builtins_for(grants: "Grants", allowed_hosts: "Sequence[str] | None") -> tuple:
+    """The three policies EVERY engine runs, built in one place.
+
+    Both engines used to construct this tuple themselves — `agent.py` for the classic
+    loop, `lg/__init__.py` for the durable graph — which made "do both backends enforce
+    the same builtin rules?" a question you answered by reading two files and hoping.
+    A fourth policy added to one and not the other would be invisible: no test fails when
+    a rule is merely absent somewhere.
+
+    Order matters and is asserted by `PolicyEngine`'s `max()` composition (P-2, a policy
+    can only restrict), so it is fixed here rather than repeated: effect first (what the
+    tool IS), then flow (what has happened to the run), then egress (where it may reach).
+
+    `tests/test_parity.py` asserts neither engine builds the tuple itself (ADR-099).
+    """
+    return (EffectPolicy(), TaintPolicy(grants), EgressPolicy(allowed_hosts))

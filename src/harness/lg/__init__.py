@@ -12,7 +12,7 @@ from ..budget.ledger import Budget, Ledger
 from ..memory.base import Store
 from ..models import pricing
 from ..errors import ConfigError
-from ..policy.builtin import EffectPolicy, EgressPolicy, TaintPolicy
+from ..policy.builtin import builtins_for
 from ..policy.decision import DecisionLog
 from ..policy.label import Grants
 from ..tools.registry import ToolSet
@@ -119,7 +119,7 @@ def build_agent(*, model, tools: Sequence[Any] = (), budget: Any = None,
         )
     rt = Runtime(model=model.bind_tools([_lc_tool(s) for s in toolset]) if len(toolset) else model,
                  toolset=toolset, ledger=ledger,
-                 builtins=(EffectPolicy(), TaintPolicy(grants), EgressPolicy(allowed_hosts)),
+                 builtins=builtins_for(grants, allowed_hosts),
                  policy_factories=tuple(policies),
                  price=pricing.price(model_name),
                  max_output=pricing.MAX_OUTPUT.get(model_name, 8_000), model_name=model_name,

@@ -17,6 +17,10 @@ from langgraph.graph import END, START, StateGraph
 
 from ..policy.base import Verdict
 from .state import AgentState
+# One definition, in `harness.stop`. `MAX_PAUSES = 5` was a second copy of the same
+# constant, sitting next to a table whose own docstring says two copies is how the
+# backends drift (ADR-099). Re-exported here because this module's readers expect it.
+from ..stop import MAX_PAUSES  # noqa: F401
 
 BUDGET, MODEL, POLICY, APPROVE, TOOLS = "budget", "model", "policy", "approve", "tools"
 FINISH = "finish"
@@ -66,7 +70,6 @@ def _after_budget(state: AgentState) -> str:
 
 #: A model that pauses forever is a loop the budget would pay for.  Same bound as the
 #: hand-written loop, and loud rather than silent.
-MAX_PAUSES = 5
 
 
 def _after_model(state: AgentState) -> str:

@@ -21,7 +21,7 @@ from .middleware import _run_scope
 from .observe.console import ConsoleExporter
 from .observe.events import EventBus
 from .observe.transcript import TranscriptWriter, read as read_transcript
-from .policy.builtin import EffectPolicy, EgressPolicy, TaintPolicy
+from .policy.builtin import builtins_for
 from .policy.label import Grants
 from .policy.engine import PolicyEngine
 from .policy.taint import TaintTracker
@@ -310,9 +310,8 @@ class Agent:
         # tells people to keep the Agent at module scope for caching (Round 34).
         user_policies = tuple(p() if _is_factory(p) else p for p in self.policies)
         before = _policy_state(user_policies)
-        engine = PolicyEngine(
-            (EffectPolicy(), TaintPolicy(self._grants), EgressPolicy(self.allowed_hosts)),
-            user_policies)
+        engine = PolicyEngine(builtins_for(self._grants, self.allowed_hosts),
+                              user_policies)
         # Open for exactly the window in which a revealed secret can still be written
         # out — wide enough to redact, narrow enough not to retain (Round 25, RT-13).
         try:
@@ -897,7 +896,7 @@ def _state_to_result(state: Any, before: int, run_id: str,
     # too rather than an unhandled exception out of a method documented not to raise.
     value = None
     if stop is StopReason.COMPLETED and returns is not None:
-        from .run import parse_returns
+        from .stop import parse_returns
         try:
             value = parse_returns(returns, text)
         except ToolContractError as exc:
