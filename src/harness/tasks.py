@@ -15,22 +15,54 @@ trên CẢ HAI backend, không phải thêm một khoá vào `AgentState` rồi 
 có; (c) không thêm tham số nào vào `Agent(...)`/`build_agent(...)` — người viết agent chỉ
 thấy vài tool mới, đúng ràng buộc "không đổi coding interface".
 
-**Vì sao read-modify-write ở đây an toàn.** Mọi tool sửa sổ đều `effect="write"`, và
-`EFFECT_PROFILES[Effect.WRITE].parallel_safe` là `False` — harness đã tuần tự hoá chúng
-trong một bước, nên không có hai lời gọi nào cùng đọc-sửa-ghi đè lên nhau. Đây là lý do
-module này không cần khoá riêng; nếu ngày nào đó `write` thành parallel-safe thì chỗ này
-phải xem lại (ghi ra đây để lần đó không im lặng).
+**"read-modify-write ở đây an toàn" — đúng một nửa, sửa sau review đối kháng (G-5,
+`design/review-architect.md`).** Bản gốc lập luận: mọi tool sửa sổ đều `effect="write"`,
+`EFFECT_PROFILES[Effect.WRITE].parallel_safe` là `False`, nên không có hai lời gọi nào
+CÙNG MỘT RUN cùng đọc-sửa-ghi đè lên nhau. Đúng, nhưng phạm vi đó hẹp hơn được tuyên bố:
+`parallel_safe=False` chỉ tuần tự hoá các lời gọi tool TRONG MỘT BATCH của MỘT run — nó
+không nói gì về HAI run khác nhau (hay hai `TaskLedger` khác nhau) cùng ghi vào một
+`Store`. Đo được: hai `TaskLedger` trên cùng một `SqliteStore`, mười lời gọi `add()`
+đồng thời (năm mỗi bên) — kết quả còn lại ĐÚNG MỘT task, chín cái biến mất, không một
+lỗi nào được báo. Nguyên nhân: `SqliteStore.get`/`put` chạy qua `asyncio.to_thread`
+(`memory/sqlite.py`), nên `await self._store.get(...)` trong `all()` là một điểm
+nhường-luồng THẬT giữa phần đọc và phần ghi của một read-modify-write.
+
+**Khoá per-`(store, key)`, cùng khuôn `idempotency.py::_lock_for`.** Không tạo cơ chế
+khoá mới — dùng lại đúng hình dạng `_locks`/`_lock_for` module đó đã có, khoá theo
+`(id(store), key)` để hai `TaskLedger` khác `key` trên cùng một `Store` không chờ nhau
+không cần thiết. `WeakValueDictionary` với cùng lý do: một khoá không cần sống lâu hơn
+mọi caller đang giữ nó. Đây đóng đúng nửa TRONG-MỘT-TIẾN-TRÌNH (nhiều `asyncio.Task`
+cùng tiến trình); hai TIẾN TRÌNH khác nhau ghi cùng key thì `_locks` không giúp được gì —
+cùng giới hạn `idempotency.py` đã tự thừa nhận về chính khoá của nó.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
+import weakref
 from typing import Any, Final, Sequence
 
 from ._value import value
 from .errors import HarnessError
 from .memory.base import Store
 from .tools import tool
+
+#: G-5 — khoá theo `(id(store), key)`, không phải chỉ `key`: hai `Store` KHÁC NHAU dùng
+#: trùng chuỗi `key` không có lý do gì phải chờ nhau. `WeakValueDictionary` cùng lý do
+#: `idempotency.py::_locks` đã dùng: một khoá không cần sống lâu hơn mọi caller đang giữ
+#: nó — module này không có hook vòng đời để tự giải phóng một khoá tường minh.
+_locks: "weakref.WeakValueDictionary[tuple[int, str], asyncio.Lock]" = \
+    weakref.WeakValueDictionary()
+
+
+def _lock_for(store: Store, key: str) -> asyncio.Lock:
+    lock_key = (id(store), key)
+    lock = _locks.get(lock_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _locks[lock_key] = lock
+    return lock
 
 #: Từ vựng đóng, không mở rộng được từ phía model — cùng lý do `Effect` đóng ở bốn giá
 #: trị: một trạng thái tự do sẽ khiến "xong" và "hoàn thành" và "done" thành ba thứ khác
@@ -82,6 +114,11 @@ class TaskLedger:
     riêng để mà lệch nhau. Một phiên coding có hàng chục task, không phải hàng triệu; đổi
     lấy sự đơn giản đó là đúng giá ở quy mô này, và nói ra để lần sau ai cần quy mô khác
     thì biết chỗ phải đổi.
+
+    **Hai `TaskLedger` trên CÙNG một `Store` mà không truyền `key=` khác nhau sẽ CHIA SẺ
+    một sổ** (mặc định `DEFAULT_KEY`) — kể từ G-5, đây không còn là lỗi MẤT DỮ LIỆU (khoá
+    per-`(store, key)` đã đóng phần đó), chỉ còn là một câu hỏi VỀ Ý ĐỊNH: nếu hai phiên
+    thật sự cần hai sổ riêng, truyền `key=` riêng cho mỗi phiên (ví dụ theo `run_id`).
     """
 
     def __init__(self, store: Store, *, key: str = DEFAULT_KEY) -> None:
@@ -109,25 +146,29 @@ class TaskLedger:
                                                     ensure_ascii=False))
 
     async def add(self, title: str) -> Task:
-        tasks = await self.all()
-        now = time.time()
-        t = Task(f"t{len(tasks) + 1}", title, "todo", "", now, now)
-        await self._save([*tasks, t])
-        return t
+        # G-5: khoá bọc TOÀN BỘ chu kỳ đọc-sửa-ghi, không chỉ phần ghi — điểm nhường-luồng
+        # nằm ở `await self.all()` bên trong, không phải ở `_save()`.
+        async with _lock_for(self._store, self._key):
+            tasks = await self.all()
+            now = time.time()
+            t = Task(f"t{len(tasks) + 1}", title, "todo", "", now, now)
+            await self._save([*tasks, t])
+            return t
 
     async def set_status(self, task_id: str, status: str, note: str = "") -> Task:
         if status not in STATUSES:
             raise UnknownStatusError(
                 f"{status!r} không phải trạng thái hợp lệ. Chọn một trong: "
                 f"{', '.join(STATUSES)}")
-        tasks = list(await self.all())
-        for i, t in enumerate(tasks):
-            if t.id == task_id:
-                updated = Task(t.id, t.title, status, note or t.note, t.created_at,
-                               time.time())
-                tasks[i] = updated
-                await self._save(tasks)
-                return updated
+        async with _lock_for(self._store, self._key):          # G-5, cùng lý do trên
+            tasks = list(await self.all())
+            for i, t in enumerate(tasks):
+                if t.id == task_id:
+                    updated = Task(t.id, t.title, status, note or t.note, t.created_at,
+                                   time.time())
+                    tasks[i] = updated
+                    await self._save(tasks)
+                    return updated
         raise UnknownTaskError(
             f"không có task {task_id!r} trong sổ. Đang có: "
             f"{', '.join(t.id for t in tasks) or '(sổ trống)'}")

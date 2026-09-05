@@ -130,6 +130,28 @@ class BenQuaRestart(unittest.TestCase):
         self.assertNotIn("việc của B", a)
         self.assertIn("việc của B", b)
 
+    def test_muoi_lan_them_dong_thoi_khong_mat_task_nao(self):
+        """G-5, đã sửa: trước bản vá, mười lần `add()` đồng thời trên cùng một `Store`
+        (SqliteStore, có điểm nhường-luồng THẬT ở `asyncio.to_thread`) để lại đúng MỘT
+        task — chín cái biến mất, không báo lỗi. Khoá per-`(store, key)` phải đóng chỗ
+        này lại."""
+        with tempfile.TemporaryDirectory() as d:
+            store = SqliteStore(os.path.join(d, "tasks.db"))
+            a = TaskLedger(store)
+            b = TaskLedger(store)   # cùng store, cùng key mặc định — chung một sổ
+
+            async def go():
+                await asyncio.gather(*[a.add(f"A{i}") for i in range(5)],
+                                    *[b.add(f"B{i}") for i in range(5)])
+                tasks = await a.all()
+                await store.close()
+                return tasks
+
+            tasks = asyncio.run(go())
+            self.assertEqual(len(tasks), 10, tasks)
+            self.assertEqual(len({t.id for t in tasks}), 10,
+                             "hai task trùng id — mất update vẫn còn")
+
 
 class ModelDungDuocQuaToolThat(unittest.TestCase):
     """Đường đi thật: `Agent` → tool → `Store`. Không có API key, không có mạng."""
