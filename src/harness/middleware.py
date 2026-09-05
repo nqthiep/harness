@@ -59,6 +59,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Iterator, Mapping, Sequence
 
 from ._value import value
+from .errors import HarnessError
 from .models.base import ModelRequest, ModelResponse
 
 if TYPE_CHECKING:
@@ -66,8 +67,8 @@ if TYPE_CHECKING:
     from .observe.events import Event
     from .tools import ToolSpec
 
-__all__ = ["Middleware", "ModelCall", "RunIdentity", "ToolInvocation", "ShortCircuit",
-          "with_middleware"]
+__all__ = ["Middleware", "MiddlewareHookError", "ModelCall", "RunIdentity",
+          "ToolInvocation", "ShortCircuit", "with_middleware"]
 
 
 @value
@@ -158,6 +159,30 @@ class ShortCircuit(Exception):
 
     def __init__(self, result: Any) -> None:
         self.result = result
+
+
+class MiddlewareHookError(HarnessError):
+    """G-17, design/review-architect.md: `_wrap_tool()`'s `before_tool`/`after_tool`
+    calls are inside the SAME `try` a tool's own `fn()` runs in (`dispatch.py::_invoke`),
+    so a bug in an operator's own `Middleware` subclass — a hook that raises for a
+    reason that has nothing to do with the tool it wraps — used to surface exactly like
+    the tool itself had failed: same retry budget (`EFFECT_PROFILES[effect].retryable`),
+    same `error.raised` event shape, same message. Two problems, not one: (1) a `write`/
+    `danger` tool whose `after_tool` throws AFTER `fn()` already ran and had a real side
+    effect gets reported as a failed call — the caller sees "the tool failed" when it
+    actually succeeded and a hook broke on the way out; (2) a hook bug is DETERMINISTIC
+    (the same input raises the same way every time), so retrying it wastes the tool's
+    entire retry budget on attempts that cannot possibly succeed, before the run ever
+    finds out the real cause.
+
+    `_wrap_tool()` (below) catches a non-`ShortCircuit` exception from `before_tool`/
+    `after_tool` specifically — never from `fn()` itself, which keeps raising whatever
+    it always raised — and re-raises this instead, chaining the original via `__cause__`
+    (`raise ... from exc`, never swallowed). `dispatch.py::_invoke` catches this ahead of
+    its generic `except Exception:`, skips the remaining retry attempts regardless of
+    the tool's own effect class, and tags the resulting event `where="middleware"` with
+    a message that says a hook broke, not that the tool did.
+    """
 
 
 class Middleware:
@@ -305,9 +330,23 @@ def _wrap_tool(spec: "ToolSpec", middlewares: Sequence[Middleware]) -> "ToolSpec
                 kwargs = dict(mw.before_tool(ToolInvocation(name, kwargs, identity=identity)))
             except ShortCircuit as sc:
                 return sc.result
+            except Exception as exc:
+                # G-17: a bug in the OPERATOR's own before_tool, not the tool — never
+                # let it look like fn() failed. fn() hasn't even run yet this attempt.
+                raise MiddlewareHookError(
+                    f"{type(mw).__name__}.before_tool raised for tool {name!r}: {exc}"
+                ) from exc
         result = await fn(**kwargs)
         for mw in middlewares:
-            result = mw.after_tool(ToolInvocation(name, kwargs, result, identity=identity))
+            try:
+                result = mw.after_tool(ToolInvocation(name, kwargs, result, identity=identity))
+            except Exception as exc:
+                # Same reasoning, after fn() already ran (and, for a write/danger tool,
+                # already had its real side effect) — the failure is the HOOK's, not a
+                # reason to treat this call as though the tool itself failed.
+                raise MiddlewareHookError(
+                    f"{type(mw).__name__}.after_tool raised for tool {name!r}: {exc}"
+                ) from exc
         return result
 
     return replace(spec, fn=wrapped)

@@ -214,20 +214,33 @@ class IdentityThreading(unittest.TestCase):
 
     def test_a_retried_call_keeps_the_same_call_id_across_attempts(self):
         """`before_tool` fires once per RETRY ATTEMPT, not once per logical call — a
-        `read` tool gets up to MAX_ATTEMPTS(3) tries. Documented in `before_tool`'s own
-        docstring; this pins the number down so a change to the retry policy shows up
-        here."""
+        `read` tool gets up to MAX_ATTEMPTS(3) tries when the TOOL's own `fn()` is what
+        fails. Verified below with a middleware that modifies `kwargs` (never raises) so
+        the tool itself is what fails on each attempt.
+
+        G-17, design/review-architect.md: `before_tool` ITSELF raising is a different
+        case, no longer covered by this docstring's claim — see
+        `MiddlewareBugIsNeverATailureG17` below. A hook bug is deterministic (the exact
+        same call), so retrying it can never succeed; before that fix, this test's own
+        assertion (`seen == ["c1", "c1", "c1"]`) was pinning down exactly the bug G-17
+        describes: a middleware author's own exception wasted the tool's entire retry
+        budget on three identical, guaranteed-to-fail attempts."""
         seen = []
 
-        class AlwaysFails(Middleware):
+        @tool(effect="read")
+        def flaky(order: str) -> str:
+            """Look up an order, but always fail."""
+            raise ValueError("transient")
+
+        class Peek(Middleware):
             def before_tool(self, call):
                 seen.append(call.identity.call_id)
-                raise KeyError("boom")
+                return call.kwargs
 
-        script = [FakeModel.tool_call("look_up", {"order": "A1"}), FakeModel.text("ok")]
-        a = Agent(name="p", job="x", provider=FakeModel(script), tools=[look_up],
+        script = [FakeModel.tool_call("flaky", {"order": "A1"}), FakeModel.text("ok")]
+        a = Agent(name="p", job="x", provider=FakeModel(script), tools=[flaky],
                  allowed_hosts=None)
-        r = with_middleware(a, AlwaysFails()).try_run("check A1")
+        r = with_middleware(a, Peek()).try_run("check A1")
         self.assertTrue(r.ok)                    # the run itself never crashes
         self.assertEqual(seen, ["c1", "c1", "c1"])
 
@@ -372,6 +385,66 @@ class ShortCircuiting(unittest.TestCase):
         self.assertNotIn("shipped", joined)
 
 
+class MiddlewareBugIsNeverATailureG17(unittest.TestCase):
+    """G-17, design/review-architect.md: a bug in the OPERATOR's own `before_tool`/
+    `after_tool` must never look like the TOOL itself failed — different retry
+    treatment (a hook bug is deterministic, retrying wastes the tool's whole budget for
+    nothing), different audit trail (`where="middleware"`, not `"tool"`), and for a
+    `write`/`danger` tool whose `fn()` already ran, a different truth (the call
+    SUCCEEDED; a hook broke on the way out)."""
+
+    def test_before_tool_bug_khong_lam_ton_het_luot_retry_cua_tool(self):
+        class BuggyBeforeTool(Middleware):
+            def __init__(self): self.calls = 0
+            def before_tool(self, call):
+                self.calls += 1
+                raise KeyError("bug in MY middleware, not the tool")
+
+        mw = BuggyBeforeTool()
+        script = [FakeModel.tool_call("look_up", {"order": "A1"}), FakeModel.text("ok")]
+        a = Agent(name="p", job="x", provider=FakeModel(script), tools=[look_up],
+                 allowed_hosts=None)
+        r = with_middleware(a, mw).try_run("check A1")
+        self.assertTrue(r.ok)                       # the run itself still finishes
+        self.assertEqual(mw.calls, 1,
+                         "a deterministic hook bug must be tried exactly once, not "
+                         "retried against the tool's own retry budget")
+
+    def test_after_tool_bug_khong_bao_that_bai_cho_mot_lan_goi_da_thanh_cong(self):
+        """A `write` tool has attempts=1 (never retried) — this isolates the OTHER half
+        of G-17: `fn()` succeeds, `after_tool` then breaks, and the run must still see
+        this as an error (the model needs to know the RESULT never reached it), but
+        tagged as a middleware failure, not a tool failure."""
+        ran = []
+
+        @tool(effect="write")
+        def save(x: int) -> str:
+            """Save a value."""
+            ran.append(x)
+            return "saved"
+
+        class BuggyAfterTool(Middleware):
+            def after_tool(self, call):
+                raise ValueError("bug in MY middleware, not the tool")
+
+        events = []
+
+        class Rec:
+            def emit(self, e): events.append((e.kind.value, dict(e.data)))
+            def close(self): ...
+
+        script = [FakeModel.tool_call("save", {"x": 1}), FakeModel.text("ok")]
+        a = Agent(name="p", job="x", provider=FakeModel(script), tools=[save],
+                 allowed_hosts=None, exporters=[Rec()])
+        with_middleware(a, BuggyAfterTool()).try_run("save it")
+        self.assertEqual(ran, [1], "fn() DID run and DID succeed")
+        errs = [d for k, d in events if k == "error.raised" and d.get("type") == "save"]
+        self.assertEqual(len(errs), 1)
+        self.assertEqual(errs[0]["where"], "middleware",
+                         "must be attributed to the middleware, not the tool")
+        self.assertFalse(errs[0]["retryable"])
+
+
 class CannotBypassCoreEnforcement(unittest.TestCase):
     """The one property that has to hold or this whole module is a security regression:
     a Middleware only ever sees what the six core seams already allowed through."""
@@ -437,6 +510,27 @@ class ComposesWithAgent(unittest.TestCase):
         self.assertEqual(r.tools_run, ("ask_helper",))
         self.assertFalse(any(c[0] in ("before_tool", "after_tool") for c in rec.calls),
                          "before_tool/after_tool fired for a subagent delegation")
+
+    def test_durable_backend_also_never_retries_a_middleware_bug_G17(self):
+        """G-17, design/review-architect.md, ported to `lg/runtime.py`'s own tool-retry
+        loop — the exact same gap, a second hand-written copy of the retry logic."""
+        import tempfile
+        calls = []
+
+        class BuggyBeforeTool(Middleware):
+            def before_tool(self, call):
+                calls.append(1)
+                raise KeyError("bug in MY middleware, not the tool")
+
+        db = tempfile.mktemp(suffix=".sqlite3")
+        script = [FakeModel.tool_call("look_up", {"order": "A1"}), FakeModel.text("ok")]
+        a = Agent(name="p", job="x", provider=FakeModel(script), tools=[look_up],
+                 durable=True, checkpoint=db, allowed_hosts=None)
+        r = with_middleware(a, BuggyBeforeTool()).try_run("check A1")
+        self.assertTrue(r.ok)
+        self.assertEqual(len(calls), 1,
+                         "a deterministic hook bug must be tried exactly once on the "
+                         "durable backend too, not retried against the tool's own budget")
 
 
 if __name__ == "__main__":

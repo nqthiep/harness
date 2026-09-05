@@ -23,7 +23,7 @@ from ..errors import BudgetExceeded, ToolContractError
 from ..idempotency import execute_once, idempotency_key
 from ..memory.base import Store
 from ..memory.inmemory import InMemoryStore
-from ..middleware import _call_scope
+from ..middleware import MiddlewareHookError, _call_scope
 from ..observe.events import EventBus, EventKind
 from ..policy.base import Ruling, ToolCall, Verdict
 from ..policy.builtin import emits_of
@@ -565,6 +565,7 @@ class Runtime:
             retryable = EFFECT_PROFILES[spec.effect].retryable
             attempts = MAX_ATTEMPTS if retryable else 1
             ok, reason, payload, replayed = False, "", "", False
+            middleware_broke = False   # G-17: distinguishes a hook bug from a tool failure
             # S-4/N-8, parity with dispatch.py::_invoke: `execute_once` keyed on THIS
             # call_id, stable across every attempt below. Without it, a call whose fn()
             # SUCCEEDED but whose json.dumps step right after it raised (or an earlier
@@ -648,6 +649,15 @@ class Runtime:
                     break
                 except asyncio.CancelledError:
                     raise                                            # never a tool error
+                except MiddlewareHookError as exc:
+                    # G-17, design/review-architect.md, parity with dispatch.py::_invoke:
+                    # a bug in the operator's own before_tool/after_tool, not the tool —
+                    # deterministic (retrying it cannot succeed), and for a write/danger
+                    # tool whose fn() already ran, letting this fall through to the
+                    # generic branch below would report a SUCCEEDED call as failed. Stop
+                    # immediately, no retry, regardless of `attempts`.
+                    reason, middleware_broke = str(exc), True
+                    break
                 except TimeoutError:
                     reason = ("timed out: run wall-clock budget reached"
                              if timeout < spec.timeout_s else f"timed out after {spec.timeout_s}s")
@@ -669,8 +679,9 @@ class Runtime:
                         time.sleep(min(RETRY_BACKOFF_S * (2 ** attempt), RETRY_BACKOFF_MAX_S))
             if not ok:
                 self._emit(state, EventKind.ERROR_RAISED, step=state.get("step", 0),
-                           where="tool", type=spec.name, message=reason,
-                           retryable=retryable)
+                           where=("middleware" if middleware_broke else "tool"),
+                           type=spec.name, message=reason,
+                           retryable=(False if middleware_broke else retryable))
                 msgs.append(ToolMessage(content=redact(reason),
                                         tool_call_id=call["id"], status="error"))
                 called_now.append(spec.name)

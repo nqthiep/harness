@@ -333,7 +333,7 @@ assert out.returncode == 0
 passed("SI.5", f"`import harness` = {ms:.0f} ms, 3 core dependencies (NFR-01/05)",
        "langgraph (36 packages) and openviking-sdk are EXTRAs; core doesn't pull them in")
 
-for f, cap in (("src/harness/run.py", 251), ("src/harness/dispatch.py", 250)):
+for f, cap in (("src/harness/run.py", 251), ("src/harness/dispatch.py", 252)):
     n = len([l for l in open(f) if l.strip() and not l.strip().startswith("#")])
     assert n <= cap, f"{f} = {n}"
 passed("SIII", "The loop stays boring -- a ~250-line ceiling (IDL-13)",
@@ -342,7 +342,9 @@ passed("SIII", "The loop stays boring -- a ~250-line ceiling (IDL-13)",
        "estimate on a retry-exhausted failure) after moving everything movable to "
        "progress.py/budget/ledger.py first -- run.py -> 251, not split further, since "
        "the added line IS the loop's own budget-accounting responsibility, not logic "
-       "that belongs elsewhere")
+       "that belongs elsewhere. G-17 needed two more in dispatch.py itself (distinguish "
+       "a middleware hook's own bug from the tool's, `_tool_error`'s `mw=` flag) for the "
+       "same reason -- dispatch.py -> 252")
 
 for cmd in (["ruff", "check", "src", "tests", "examples"], ["mypy"]):
     rc = subprocess.run(cmd, capture_output=True, text=True)

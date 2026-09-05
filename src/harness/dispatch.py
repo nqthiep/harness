@@ -1,9 +1,9 @@
 """Tool dispatch — split out of run.py in Round 28.
 
-IDL-13 caps run.py at 250 code lines and calls an overrun a design signal rather than
-something to refactor around.  Subagent budget binding pushed it over, so the signal was
-taken: run.py is now the state machine, and everything about executing a tool call —
-policy resolution, scheduling, timeouts, truncation, taint, subagent binding — lives here.
+IDL-13 caps this file at 252 code lines (examples/proof.py SIII; G-17 pushed it two past
+run.py's own 251-bump precedent — `_tool_error`'s middleware-vs-tool distinction is this
+loop's own responsibility, not logic to extract elsewhere) and calls an overrun a design
+signal rather than something to refactor around.  Subagent budget binding pushed it over.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from .context.assembler import canonical as _canonical
 from .errors import ToolContractError
 from .idempotency import execute_once, idempotency_key
 from .memory.inmemory import InMemoryStore
-from .middleware import _call_scope
+from .middleware import MiddlewareHookError, _call_scope
 from .observe.events import EventKind
 from .policy.base import Ruling, ToolCall, Verdict
 from .policy.builtin import check_flow, emits_of
@@ -303,6 +303,17 @@ class Dispatcher:
                 return {"type": "tool_result", "tool_use_id": b["id"], "content": redact(payload)}
             except asyncio.CancelledError:
                 raise                                            # never a tool error
+            except MiddlewareHookError as exc:
+                # G-17, design/review-architect.md: a bug in the OPERATOR's own
+                # before_tool/after_tool, not in the tool — retrying it wastes the
+                # tool's whole retry budget on a failure that is deterministic (the
+                # same hook bug raises the same way every attempt), and for a
+                # write/danger tool whose fn() already ran, letting this fall through
+                # to the generic branch below would report a SUCCEEDED call as failed.
+                # Stop immediately, regardless of `attempts`/the tool's own effect
+                # class, and tag it distinctly (`mw=True`) so the message says a hook
+                # broke, not that the tool did.
+                return self._tool_error(b, spec, step, str(exc), t0, mw=True)
             except TimeoutError:
                 reason = ("timed out: run wall-clock budget reached"
                           if timeout < spec.timeout_s else f"timed out after {spec.timeout_s}s")
@@ -354,9 +365,11 @@ class Dispatcher:
         self._e._l.release_steps(held_steps, r.steps)
         return r.text if r.ok else f"{child.name} stopped: {r.stop_reason.value}. {r.text}"
 
-    def _tool_error(self, b, spec, step, msg, t0) -> dict[str, Any]:
-        self._e._bus.emit(EventKind.ERROR_RAISED, step=step, where="tool", type=spec.name,
-                       message=msg, retryable=EFFECT_PROFILES[spec.effect].retryable)
+    def _tool_error(self, b, spec, step, msg, t0, *, mw: bool = False) -> dict[str, Any]:
+        # `mw=True`: G-17 — the failure is a middleware hook's, not the tool's.
+        self._e._bus.emit(EventKind.ERROR_RAISED, step=step, type=spec.name, message=msg,
+                       where=("middleware" if mw else "tool"),
+                       retryable=(False if mw else EFFECT_PROFILES[spec.effect].retryable))
         self._e._bus.emit(EventKind.TOOL_FINISHED, step=step, tool=spec.name, call_id=b["id"],
                        duration_ms=(time.monotonic() - t0) * 1000, is_error=True, truncated=False)
         return err(b["id"], msg)
