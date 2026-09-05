@@ -93,6 +93,14 @@ class Dispatcher:
     def __init__(self, engine) -> None:
         self._e = engine            # the RunEngine, for bus/ledger/policy/taint/agent
         self.ran: list[str] = []
+        #: What SUCCEEDED, which is a different question from what ran. `RequireBeforePolicy`
+        #: documents `ctx.tools_called` as "populated from **completed** calls earlier in
+        #: the run" and both engines fed it from ATTEMPTED ones. Measured with an advisor
+        #: that raises on every attempt: `deploy` ran anyway, on both backends — a gate
+        #: satisfied by its own failure, which is worse than no gate at all.
+        #: `self.ran` is left alone: `Result.tools_run` answers "did my tool execute?"
+        #: (IDL-49), and a tool that raised did execute.
+        self.succeeded: list[str] = []
         # S-4/N-8: a fresh, in-memory store per `Dispatcher` — and a `Dispatcher` is
         # built fresh per `RunEngine` per `atry_run()` (this file's own module docstring
         # + `run.py`'s `self._dispatch = Dispatcher(self)`), so this never leaks across
@@ -105,7 +113,7 @@ class Dispatcher:
         ctx = RunContext(run_id, self._e._a.name, step, self._e._taint.label,
                          self._e._a.safety, self._e._l.remaining_wall_clock(),
                          tenant_id=self._e._a.tenant_id, principal=self._e._a.principal,
-                         tools_called=frozenset(self.ran))
+                         tools_called=frozenset(self.succeeded))
         planned: list[tuple[dict, ToolSpec | None, Ruling | None]] = []
 
         for b in calls:
@@ -201,6 +209,7 @@ class Dispatcher:
         # `serial` is added to below, per call, once the S-27 recheck confirms it will
         # actually run — not here, since that recheck can now still turn one into a DENY.
         self.ran.extend(spec.name for _, _, spec in parallel)
+        executed: list[tuple[int, str]] = [(i, spec.name) for i, _, spec in parallel]
 
         if parallel:
             done = await asyncio.gather(
@@ -234,9 +243,17 @@ class Dispatcher:
                 out[i] = err(b["id"], f"denied by policy: {gate.reason}")
                 continue
             self.ran.append(spec.name)
+            executed.append((i, spec.name))
             out[i] = await self._invoke(b, spec, step)
         for i, origin in dupes:
             out[i] = {**out[origin], "tool_use_id": planned[i][0]["id"]}
+        # Recorded once the results exist, at the end of the batch. Within a batch the
+        # gate still sees only earlier STEPS, which is the honest answer: a prerequisite
+        # called in the same batch as its dependent has not finished when the dependent
+        # is ruled on, so counting it would be the same lie one turn smaller.
+        for i, name in executed:
+            if not out[i].get("is_error"):
+                self.succeeded.append(name)
         return out
 
     def _decided(self, d: Ruling, b: Mapping[str, Any], spec: ToolSpec, step: int,

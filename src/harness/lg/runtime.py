@@ -547,13 +547,19 @@ class Runtime:
         # định (00-foundation §3.2 — nhãn hiệu dụng luôn tính lại, không tích luỹ).
         label = self._effective_label(state)
         msgs: list = []
-        # Compaction-immune companion to `msgs`: one name per call that gets ANY
-        # `ToolMessage` below (declined, gone, errored, or succeeded) — the exact same
-        # criterion `_tools_called()` used to re-derive by scanning `state["messages"]`
-        # for a `ToolMessage` with a matching id (see that method's docstring). Appended
-        # to `state["tools_called_ever"]` at the end of this node instead of replacing
-        # it, so it accumulates across the whole thread the same way
-        # `dispatch.py::Dispatcher.ran` accumulates for the life of a classic-backend run.
+        # Compaction-immune companion to `msgs`: one name per call that SUCCEEDED —
+        # not declined, not missing, not errored. It feeds `_tools_called()`, which feeds
+        # `RequireBeforePolicy`, which documents itself as reading "completed calls."
+        # It used to take any call that got a `ToolMessage` of any kind, and measured
+        # with an advisor raising `RuntimeError` on every attempt the gate opened anyway
+        # and `deploy` reached prod — on both backends. A gate satisfied by its own
+        # prerequisite failing is worse than no gate.
+        #
+        # This is deliberately NOT `Result.tools_run`, which answers a different question
+        # ("did my tool execute?", IDL-49) and still counts a tool that ran and raised.
+        # Appended to `state["tools_called_ever"]` at the end of this node rather than
+        # replacing it, so it accumulates across the thread the way
+        # `dispatch.py::Dispatcher.succeeded` accumulates for a classic-backend run.
         called_now: list[str] = []
         for p in state.get("_pending", []):
             gate = self._regate(p, state, label)
@@ -565,14 +571,12 @@ class Runtime:
                               row_id=f"{p['call']['id']}-regate")
                 msgs.append(ToolMessage(content=f"declined: {gate.reason}",
                                         tool_call_id=p["call"]["id"], status="error"))
-                called_now.append(p["tool"])
                 continue
             call = p["call"]
             spec = self._tools.get(p["tool"])
             if spec is None:                    # tool set changed under a resumed run
                 msgs.append(ToolMessage(content=f"tool {p['tool']!r} is no longer available",
                                         tool_call_id=call["id"], status="error"))
-                called_now.append(p["tool"])
                 continue
             # T-6.3, parity with dispatch.py::_invoke — read/external retry on failure
             # up to MAX_ATTEMPTS, backed off; write/danger get exactly one attempt, ever
@@ -689,7 +693,6 @@ class Runtime:
                            retryable=retryable)
                 msgs.append(ToolMessage(content=redact(reason),
                                         tool_call_id=call["id"], status="error"))
-                called_now.append(spec.name)
                 continue
             limit = spec.max_result_tokens * 4
             if len(payload) > limit:
@@ -855,6 +858,10 @@ class Runtime:
 
         Union of two sources, not just one:
 
+        A call that raised, was declined by the re-gate, or named a tool that is gone
+        does NOT count: those are attempts, and a gate that accepts an attempt is
+        satisfied by its own prerequisite failing (measured — see `_run_tools`).
+
         * `state["tools_called_ever"]` — appended to by `_run_tools`, never pruned. This
           is the source of truth going forward: it survives real compaction
           (`_compact`), which drops old `AIMessage`/`ToolMessage` pairs for a
@@ -868,7 +875,11 @@ class Runtime:
           away yet.
         """
         msgs = state.get("messages") or []
-        done_ids = {m.tool_call_id for m in msgs if isinstance(m, ToolMessage)}
+        # `status="error"` excluded: the scan and `tools_called_ever` have to agree on
+        # what "completed" means, or the union below quietly restores what the other one
+        # was fixed to drop.
+        done_ids = {m.tool_call_id for m in msgs if isinstance(m, ToolMessage)
+                    and getattr(m, "status", "success") != "error"}
         from_messages = frozenset(tc.get("name") for m in msgs if isinstance(m, AIMessage)
                                   for tc in (m.tool_calls or []) if tc.get("id") in done_ids)
         return from_messages | frozenset(state.get("tools_called_ever") or ())
