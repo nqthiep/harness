@@ -77,6 +77,46 @@ def _is_repo_relative(value: str) -> bool:
     return value.split("/")[0] in _REPO_ROOTS or value in _REPO_FILES
 
 
+def _unanchored_repo_paths(tree: ast.AST):
+    """Repo-path literals that are NOT being joined to an anchor.
+
+    `_first_arg_literals` sees `Path("src/harness/agent.py")` and misses
+    `for path in ("src/harness/agent.py", ...): Path(path)` — the call's first argument
+    there is a NAME, not a constant, and that is how two more of these survived the first
+    version of this file. Widening to "any repo-shaped literal" is the obvious next move
+    and it is wrong: `_ROOT / "src/harness/run.py"` is the FIX, and
+    `examples/coding_profile.py` names `src/app.py` in a demo about a user's own project.
+
+    Two discriminators, both behavioural rather than textual:
+
+    * the literal must name something that actually EXISTS in this repository, which
+      `src/app.py` does not;
+    * it must not be an operand of a `/` join or an argument to `os.path.join`, which is
+      what anchoring looks like once it has been done.
+    """
+    anchored = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            anchored |= {id(n) for n in (node.left, node.right)
+                         if isinstance(n, ast.Constant)}
+        elif isinstance(node, ast.Call):
+            fn = node.func
+            if (fn.attr if isinstance(fn, ast.Attribute) else
+                    getattr(fn, "id", "")) in ("join", "repo", "Path"):
+                anchored |= {id(a) for a in node.args[1:] if isinstance(a, ast.Constant)}
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and id(node) not in anchored and "/" in node.value
+                and _is_repo_relative(node.value)
+                # A FILE, not a directory name: `assertIn("src/harness", files)` compares
+                # a string against pyproject's mypy list and opens nothing, and a rule
+                # that cannot tell that apart is a rule people learn to ignore. A bare
+                # `Path("src/harness")` is still caught by `_first_arg_literals`.
+                and pathlib.PurePosixPath(node.value).suffix
+                and (_paths.ROOT / node.value).exists()):
+            yield node.value, node.lineno
+
+
 def _py_files(*dirs):
     for d in dirs:
         for f in sorted(_paths.repo(d).glob("*.py")):
@@ -90,8 +130,10 @@ class EveryRepoPathIsAnchored(unittest.TestCase):
         for _, f in _py_files("tests"):
             if f.name in ("_paths.py", "conftest.py"):
                 continue                      # these ARE the anchor
-            hits = [(v, n) for v, n in _first_arg_literals(ast.parse(f.read_text()))
-                    if _is_repo_relative(v)]
+            tree = ast.parse(f.read_text())
+            hits = sorted({(v, n) for v, n in _first_arg_literals(tree)
+                           if _is_repo_relative(v)}
+                          | set(_unanchored_repo_paths(tree)))
             if hits:
                 offenders[f.name] = hits
         self.assertEqual(

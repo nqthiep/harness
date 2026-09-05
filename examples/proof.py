@@ -22,8 +22,9 @@ import time
 from dataclasses import dataclass
 from decimal import Decimal
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
+_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_ROOT / "src"))
+sys.path.insert(0, str(_ROOT / "tests"))
 
 # Each row is `(requirement_id, requirement, detail)` — unpacked three-wide at the
 # bottom of the file, which is what the annotation has to say.
@@ -207,7 +208,8 @@ assert broken == 0
 passed("SI.2", "27 combinations (price x budget x length) -- none exceeds the ceiling",
        "P-8: the arithmetic is checked by default, not eyeballed (Round 17)")
 
-r = subprocess.run([sys.executable, "tests/bench_cache.py"], capture_output=True, text=True)
+r = subprocess.run([sys.executable, str(_ROOT / "tests/bench_cache.py")],
+                   capture_output=True, text=True)
 line = [l for l in r.stdout.splitlines() if "SC-4" in l]
 assert "PASS" in r.stdout, r.stdout[-400:]
 passed("SI.2", "Cache-safety by construction, measured",
@@ -346,7 +348,6 @@ assert out.returncode == 0
 passed("SI.5", f"`import harness` = {ms:.0f} ms, 3 core dependencies (NFR-01/05)",
        "langgraph (36 packages) and openviking-sdk are EXTRAs; core doesn't pull them in")
 
-_ROOT = Path(__file__).resolve().parents[1]
 for f, cap in (("src/harness/run.py", 250), ("src/harness/dispatch.py", 250)):
     n = len([l for l in open(_ROOT / f) if l.strip() and not l.strip().startswith("#")])
     assert n <= cap, f"{f} = {n}"
@@ -358,7 +359,10 @@ passed("SIII", "The loop stays boring -- a 250-line ceiling (IDL-13)",
 # typed surface of `anthropic` and reports success over nothing (15 errors hid that way).
 for cmd in (["ruff", "check", "src", "tests", "examples"],
             [sys.executable, "-m", "mypy"]):
-    rc = subprocess.run(cmd, capture_output=True, text=True)
+    # cwd, because ruff resolves those three arguments and mypy reads its config
+    # against the working directory — running this file from anywhere else checked
+    # whatever happened to be under the caller's cwd, or nothing.
+    rc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(_ROOT))
     assert rc.returncode == 0, rc.stdout[-500:]
 passed("SIII", "ruff clean, mypy clean -- both are CI gates (AC-62/63)",
        "Round 39: 162 + 112 errors -> 0; every warning suppression carries a reason")

@@ -499,9 +499,8 @@ class Parity(unittest.TestCase):
         fails when a rule is merely ABSENT from one backend. Both engines call
         `policy.builtin.builtins_for`, so a fourth builtin policy lands on both or on
         neither (ADR-099)."""
-        import pathlib as _p
-        for path in ("src/harness/agent.py", "src/harness/lg/__init__.py"):
-            body = _p.Path(path).read_text()
+        for path in ("agent.py", "lg/__init__.py"):
+            body = (_paths.CORE / path).read_text()
             self.assertIn("builtins_for(", body, f"{path} must use the shared set")
             self.assertNotIn("EffectPolicy()", body,
                              f"{path} constructs a builtin policy itself")
