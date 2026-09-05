@@ -169,5 +169,40 @@ class MutationEnvCheckCoTacDung(unittest.TestCase):
         self.assertIn("Secret", str(ctx.exception))
 
 
+class KhaiMucCoLap(unittest.TestCase):
+    """G-7, đã sửa: `isolation` là DỮ LIỆU đọc được, không phải điều phải suy đoán từ
+    tên class."""
+
+    def test_inprocess_khai_dung_khong_co_lap(self):
+        self.assertEqual(InProcess().isolation, "none")
+
+    def test_subprocess_khai_dung_muc_process(self):
+        self.assertEqual(Subprocess().isolation, "process")
+
+    def test_khong_implementation_nao_tu_nhan_la_container(self):
+        """Không cái nào trong module này cô lập thật — tự nhận `"container"` sẽ là một
+        lời hứa giả."""
+        self.assertNotEqual(InProcess().isolation, "container")
+        self.assertNotEqual(Subprocess().isolation, "container")
+
+    def test_sandbox_ben_thu_ba_khong_khai_isolation_van_cam_duoc(self):
+        """Tương thích ngược (T-7.3's Done criterion): một `Sandbox` bên thứ ba viết
+        TRƯỚC bản vá G-7 (không có thuộc tính `isolation`) vẫn thoả `Protocol` và vẫn
+        chạy được — phía gọi phải tự `getattr(sandbox, "isolation", "none")`, không phải
+        `Sandbox` tự ép mọi implementation phải khai."""
+        class SandboxCu:
+            async def run(self, cmd, *, cwd, env, timeout):
+                from harness.sandbox import Completed
+                return Completed(0, "ok", "", False)
+
+        s = SandboxCu()
+        self.assertFalse(hasattr(s, "isolation"))
+        r = _run(s, ["ignored"])
+        self.assertEqual(r.returncode, 0)
+        # Phía gọi phải coi thiếu = "none" — kiểm tra công thức đó, không phải Sandbox
+        # tự thêm thuộc tính vào một instance chưa từng khai nó.
+        self.assertEqual(getattr(s, "isolation", "none"), "none")
+
+
 if __name__ == "__main__":
     unittest.main()

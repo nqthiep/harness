@@ -11,15 +11,33 @@ ADR-047 (docs/12-decision-logs.md).
 What it CAN do without one — an honest "no isolation" option that says so, a
 clean-environment subprocess boundary, and a seam a real sandbox plugs into without
 touching core — is what these two implementations are.
+
+**`isolation` — a declared string, not a name a reader has to trust — sửa sau review đối
+kháng (G-7, `design/review-architect.md`).** Trước bản vá, không có gì ở mức type hay
+runtime phân biệt "một `Sandbox` cô lập thật" với "một object đúng hình `Sandbox` nhưng
+không cô lập gì cả" — cái tên `InProcess`/`Subprocess` là TOÀN BỘ điều một operator có
+để dựa vào, và một cái tên là đúng định nghĩa tier 1 (`06 §A` row 7): tài liệu nói, không
+gì kiểm. `isolation: Literal["none", "process", "container"]` biến câu hỏi đó thành DỮ
+LIỆU đọc được — `getattr(sandbox, "isolation", "none")` ở phía gọi (không ép buộc một
+`Sandbox` bên thứ ba viết trước bản vá này phải khai nó; thiếu thì coi như `"none"`, cùng
+hướng an toàn `MAX_TRACKED`/schema_of đã chọn: bỏ sót quyền, không phải tự cấp quyền).
 """
 from __future__ import annotations
 
 import asyncio
 import subprocess as _subprocess
-from typing import Mapping, Protocol, Sequence
+from typing import Literal, Mapping, Protocol, Sequence
 
 from ._value import value
 from .secrets import Secret
+
+#: G-7 — mức cô lập thật của một `Sandbox`, khai bởi CHÍNH implementation, không suy ra
+#: từ tên class. `"none"`: chung namespace filesystem/mạng với tiến trình harness (vd.
+#: `InProcess`). `"process"`: tiến trình con riêng, môi trường sạch, KHÔNG namespace/cgroup
+#: (vd. `Subprocess`) — một lệnh cố tình vẫn thấy được filesystem/mạng của host. `"container"`:
+#: một ranh giới process/namespace thật (Docker/Firecracker/gVisor) — không implementation
+#: nào trong module này đạt mức này; đây là mức một `Sandbox` bên thứ ba mới khai được.
+Isolation = Literal["none", "process", "container"]
 
 
 @value
@@ -31,6 +49,9 @@ class Completed:
 
 
 class Sandbox(Protocol):
+    #: G-7 — thuộc tính, không phải phương thức: đọc được mà không cần gọi `run()`.
+    isolation: Isolation
+
     async def run(self, cmd: Sequence[str], *, cwd: str, env: Mapping[str, str],
                  timeout: float) -> Completed: ...
 
@@ -65,7 +86,14 @@ class InProcess:
     wants the child to see `PATH` has to pass `PATH` explicitly. Silently inheriting the
     parent's environment is exactly the leak T-7.4 exists to close: this process's own
     `os.environ` can carry the harness's own provider API key.
+
+    **G-7: `Subprocess` below actually dominates this class on every axis they differ
+    on** (a clean-killable process group vs. a bare `kill()`) — nothing this class does
+    is a reason to prefer it over `Subprocess`. Kept for the one caller who has already
+    reviewed both and deliberately wants the plainer of the two; `Subprocess` is the
+    default worth reaching for.
     """
+    isolation: Isolation = "none"
 
     async def run(self, cmd: Sequence[str], *, cwd: str, env: Mapping[str, str],
                  timeout: float) -> Completed:
@@ -96,6 +124,7 @@ class Subprocess:
     shipping this honest version rather than nothing is what makes that seam provable
     today (T-7.3's own Done criterion — a third party plugs in without touching core).
     """
+    isolation: Isolation = "process"
 
     async def run(self, cmd: Sequence[str], *, cwd: str, env: Mapping[str, str],
                  timeout: float) -> Completed:

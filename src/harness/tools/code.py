@@ -91,8 +91,10 @@ class CodeTools:
     `sandbox` mặc định là `Subprocess` — tiến trình con môi trường sạch, `argv` chứ không
     phải chuỗi shell (không có gì để tiêm qua `;`/`&&`), `cwd` cố định, timeout cứng. Đây
     KHÔNG phải cô lập container (§01.5 non-goal): một lệnh cố tình vẫn thấy được filesystem
-    ngoài `cwd` và mạng của host. Truyền `sandbox=` của bạn (Docker/Firecracker) vào đúng
-    chỗ này khi cần thật.
+    ngoài `cwd` và mạng của host — đọc `code.sandbox.isolation` (G-7,
+    `design/review-architect.md`) để biết CHÍNH XÁC mức đang dùng (`"process"` mặc định,
+    không phải `"container"`) thay vì suy đoán từ tên class. Truyền `sandbox=` của bạn
+    (Docker/Firecracker, `isolation="container"`) vào đúng chỗ này khi cần thật.
     """
 
     def __init__(self, root: str | Path, *, sandbox: Any | None = None,
