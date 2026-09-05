@@ -153,6 +153,52 @@ class ProviderRetry(unittest.TestCase):
         self.assertEqual(r.stop_reason.value, "error")
         self.assertGreater(r.cost.decimal, 0)
 
+    def test_classic_bills_worst_case_for_attempts_that_failed_before_a_success_H1(self):
+        """H-1, design/review-architect-round2.md: G-8 only settled a worst-case
+        estimate on total retry EXHAUSTION (the run.py `except` branch above). The
+        SUCCESS path (`self._l.settle_after_retries(...)`, budget/ledger.py) used to
+        settle only the winning attempt's real usage — a call that failed twice then
+        succeeded on the third real provider call was billed identically to one that
+        succeeded immediately, even though `MAX_ATTEMPTS` exists precisely because
+        retrying is expected to often succeed: the common case, not the edge case,
+        was the one left unbilled."""
+        provider0 = FlakyThenOkPriced([FakeModel.text("hi")], fail_times=0)
+        a0 = Agent(name="p", job="x", provider=provider0, model="claude-haiku-4-5")
+        r0 = a0.try_run("go")
+
+        provider2 = FlakyThenOkPriced([FakeModel.text("hi")], fail_times=2)
+        a2 = Agent(name="p", job="x", provider=provider2, model="claude-haiku-4-5")
+        r2 = a2.try_run("go")
+
+        self.assertTrue(r0.ok)
+        self.assertTrue(r2.ok)
+        self.assertGreater(
+            r2.cost.decimal, r0.cost.decimal,
+            "2 real timeouts before a successful call must cost MORE than a call that "
+            "succeeded immediately -- before this fix, both billed identically (only "
+            "the winning attempt's usage ever reached the Ledger)")
+
+    def test_durable_bills_worst_case_for_attempts_that_failed_before_a_success_H1(self):
+        """Same scenario, ported to the durable/LangGraph backend — `attempts` has to
+        survive the `_generate()` -> `.invoke()` -> `call_model()` boundary via
+        `response_metadata` (`lg/adapter.py::_to_aimessage`), not just exist inside
+        `retry.py`'s own return value."""
+        db0 = tempfile.mktemp(suffix=".sqlite3")
+        provider0 = FlakyThenOkPriced([FakeModel.text("hi")], fail_times=0)
+        a0 = Agent(name="p", job="x", provider=provider0, model="claude-haiku-4-5",
+                  durable=True, checkpoint=db0, allowed_hosts=None)
+        r0 = a0.try_run("go")
+
+        db2 = tempfile.mktemp(suffix=".sqlite3")
+        provider2 = FlakyThenOkPriced([FakeModel.text("hi")], fail_times=2)
+        a2 = Agent(name="p", job="x", provider=provider2, model="claude-haiku-4-5",
+                  durable=True, checkpoint=db2, allowed_hosts=None)
+        r2 = a2.try_run("go")
+
+        self.assertTrue(r0.ok)
+        self.assertTrue(r2.ok)
+        self.assertGreater(r2.cost.decimal, r0.cost.decimal)
+
     def test_retry_never_outlives_the_runs_wall_clock_budget(self):
         """A run whose wall-clock budget is already nearly exhausted must not retry past
         it — docs/10-observability-ops.md §3's own promise ("retries cannot outlive the

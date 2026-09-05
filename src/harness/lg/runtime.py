@@ -320,7 +320,13 @@ class Runtime:
                    "spent_usd": str(led.spent.decimal), "ledger": led.snapshot()}
         _stamp_label(msg, label_at_generation)
         u = _usage_of(msg)
-        led.settle(_RESERVED(state.get("max_tokens", 0)), u, self._price)
+        # H-1, design/review-architect-round2.md, parity with run.py's identical fix:
+        # `attempts` (>1 when `_generate()`'s own `with_provider_retry` retried before
+        # succeeding) rides in `response_metadata` (`lg/adapter.py::_to_aimessage`) —
+        # `settle_after_retries` bills a worst-case estimate for every attempt that
+        # failed before this one succeeded, not just the winning call's real usage.
+        attempts = (getattr(msg, "response_metadata", None) or {}).get("attempts", 1)
+        led.settle_after_retries(_RESERVED(state.get("max_tokens", 0)), attempts, u, self._price)
         led.count_step()
         raw = _provider_stop(msg)
         prior_usage = state.get("turn_usage") or {}

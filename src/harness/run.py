@@ -124,7 +124,7 @@ class RunEngine:
                 model_t0 = time.monotonic()
                 try:
                     with _call_scope(step=step):
-                        resp = await with_provider_retry(
+                        resp, attempts = await with_provider_retry(
                             lambda: self._p.complete(req, on_delta=on_delta),
                             deadline_s=self._l.remaining_wall_clock(), on_retry=_on_retry)
                 except Exception as exc:
@@ -142,7 +142,7 @@ class RunEngine:
                     stop, detail = StopReason.ERROR, f"{type(exc).__name__}: {exc}"
                     break
                 latency_ms = (time.monotonic() - model_t0) * 1000
-                self._l.settle(reservation, resp.usage, price)
+                self._l.settle_after_retries(reservation, attempts, resp.usage, price)
                 self._l.count_step()
                 usage_total = usage_total + resp.usage
                 self._bus.emit(EventKind.MODEL_RESPONSE, step=step, stop_reason=resp.stop_reason,

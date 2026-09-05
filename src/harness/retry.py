@@ -89,7 +89,7 @@ def current_on_retry() -> "OnRetry | None":
 
 
 async def with_provider_retry(fn: Callable[[], Awaitable[T]], *, deadline_s: float,
-                              on_retry: OnRetry | None = None) -> T:
+                              on_retry: OnRetry | None = None) -> "tuple[T, int]":
     """Call `fn()`; on a `RETRYABLE` error, wait and call it again — up to `MAX_ATTEMPTS`
     times, never past `deadline_s` seconds of TOTAL wait (the run's remaining
     wall-clock, `Ledger.remaining_wall_clock()` — retries cannot outlive the budget,
@@ -106,12 +106,21 @@ async def with_provider_retry(fn: Callable[[], Awaitable[T]], *, deadline_s: flo
     non-retryably or the deadline was already gone). A caller holding an open `Reservation`
     across this whole call (`run.py`) needs this to settle a worst-case estimate for
     every attempt actually made, not just the one `reserve()` accounted for.
+
+    **H-1, design/review-architect-round2.md**: that was the FAILURE path only. On
+    SUCCESS, the return value now carries the same number as its second element — the
+    total real calls `fn()` took to succeed (1 if it succeeded first try). Before this,
+    a call that timed out twice then succeeded looked, to a caller settling a
+    `Reservation` off the returned result alone, identical to one that succeeded
+    immediately: `MAX_ATTEMPTS` exists because retrying is expected to often succeed, so
+    the success path silently underbilling was the common case, not the edge case the
+    failure-path fix (G-8) alone covered.
     """
     attempt = 0
     remaining = deadline_s
     while True:
         try:
-            return await fn()
+            return await fn(), attempt + 1
         except RETRYABLE as exc:
             attempt += 1
             wait = _backoff(exc, attempt)

@@ -66,11 +66,12 @@ class ProviderChatModel(BaseChatModel):
         # first `RETRYABLE` error, exactly today's pre-N-5 behavior — the fail-safe
         # direction for an unset deadline, not an unbounded one.
         t0 = time.monotonic()
-        resp = asyncio.run(with_provider_retry(
+        resp, attempts = asyncio.run(with_provider_retry(
             lambda: self.provider.complete(req), deadline_s=current_deadline_s(),
             on_retry=current_on_retry()))
         latency_ms = (time.monotonic() - t0) * 1000
-        return ChatResult(generations=[ChatGeneration(message=_to_aimessage(resp, latency_ms))])
+        return ChatResult(generations=[ChatGeneration(
+            message=_to_aimessage(resp, latency_ms, attempts))])
 
 
 def _lc_to_native(messages: Any) -> list[dict]:
@@ -117,7 +118,8 @@ def _lc_to_native(messages: Any) -> list[dict]:
     return out
 
 
-def _to_aimessage(resp: ModelResponse, latency_ms: float | None = None) -> AIMessage:
+def _to_aimessage(resp: ModelResponse, latency_ms: float | None = None,
+                  attempts: int = 1) -> AIMessage:
     text = "".join(b.get("text", "") for b in resp.content if b.get("type") == "text")
     tool_calls = [{"name": b["name"], "args": b.get("input") or {}, "id": b.get("id", "")}
                  for b in resp.content if b.get("type") == "tool_use"]
@@ -129,8 +131,11 @@ def _to_aimessage(resp: ModelResponse, latency_ms: float | None = None) -> AIMes
         # wall-clock of `with_provider_retry`, retries included) rather than in
         # `call_model`, which only sees the finished `.invoke()` call — a request that
         # needed two retries should report the time it actually took, not the time of
-        # just its last attempt.
-        response_metadata={"stop_reason": resp.stop_reason, "latency_ms": latency_ms},
+        # just its last attempt. H-1, design/review-architect-round2.md: `attempts` rides
+        # the same way, for the same reason — `call_model` needs it to settle a
+        # worst-case estimate for every real call that preceded this successful one.
+        response_metadata={"stop_reason": resp.stop_reason, "latency_ms": latency_ms,
+                           "attempts": attempts},
         usage_metadata={"input_tokens": u.input_tokens, "output_tokens": u.output_tokens,
                         "total_tokens": u.input_tokens + u.output_tokens,
                         "input_token_details": {"cache_read": u.cache_read_input_tokens,

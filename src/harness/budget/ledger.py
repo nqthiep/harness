@@ -198,6 +198,28 @@ class Ledger:
                      output_tokens=reservation.max_tokens * attempts)
         return self.settle(reservation, worst, price)
 
+    def settle_after_retries(self, reservation: Reservation, attempts: int,
+                             usage: Usage, price) -> Money:
+        """H-1, design/review-architect-round2.md: the SUCCESS-path twin of
+        `settle_worst_case()` above. `with_provider_retry()` (retry.py) now returns how
+        many real calls it took to succeed, not just how many it took to finally fail —
+        `attempts - 1` of those were real, billable (by the vendor) calls that never
+        reached this caller at all, exactly the same "vendor may have charged for a
+        request the client never got a usable response to" fact `settle_worst_case`
+        already accounts for on total failure. Settles BOTH: a worst-case estimate for
+        the `attempts - 1` failed attempts (zero-cost, thus a no-op, when `attempts == 1`
+        — the common, no-retry case, byte-for-byte the same as a plain `settle()` call),
+        then the real `settle()` for the successful call's own actual `usage`. Two
+        `settle()` calls against the same `Reservation` is safe by construction:
+        `settle()`'s own `self._open.pop(reservation.id, None)` tolerates being called
+        more than once, and each call independently adds its own `actual` to `_spent` —
+        which is exactly the arithmetic wanted here (worst-case-for-failures PLUS
+        real-cost-for-the-win), not a double-count of one amount.
+        """
+        if attempts > 1:
+            self.settle_worst_case(reservation, attempts - 1, price)
+        return self.settle(reservation, usage, price)
+
     def size_call(self, input_tokens: int, price, model_max: int) -> int:
         """Derive max_tokens from what is left (ADR-017)."""
         if self._blocked:
