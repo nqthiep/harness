@@ -36,13 +36,13 @@ import _paths
 _REPO_ROOTS = ("src", "docs", "examples", "tests", "design")
 _REPO_FILES = ("pyproject.toml", "README.md", "HARNESS.md")
 
-#: Offenders that are real and are NOT ours to fix right now: `tests/test_parity.py` is
-#: held by another change in flight. This is an exact match, not a floor — when that
-#: change lands, its paths get anchored and this test fails until the entry is deleted.
-#: A pending item that quietly stops being reported is how the original defect survived a
-#: round of cleanup, so it is named rather than tolerated.
-_PENDING_HANDOFF = frozenset({"test_parity.py"})
-_PENDING_HANDOFF_SCRIPTS = ("tests/test_parity.py",)
+#: Empty, and it did its job on the way here. It held exactly one entry —
+#: `tests/test_parity.py`, which another change had checked out at the time — as an EXACT
+#: match rather than a floor, so the moment that change landed and its paths were anchored
+#: this test failed until the entry was deleted. A debt with a name gets paid; a category
+#: that quietly stops reporting is how the original defect survived a round of cleanup.
+_PENDING_HANDOFF: frozenset[str] = frozenset()
+_PENDING_HANDOFF_SCRIPTS: tuple[str, ...] = ()
 
 #: `sys.path.insert(0, "src")` written INSIDE a string that a child interpreter will run.
 #: The AST of this file sees a string constant there, not a call, so it needs its own

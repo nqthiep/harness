@@ -36,6 +36,7 @@ from harness.models.fake import FakeModel
 from harness.policy.decision import DecisionLog
 from test_properties import PricedFake
 from harness.lg import build_agent
+import _paths
 
 RAN: list = []
 
@@ -747,7 +748,7 @@ class DependencyWeight(unittest.TestCase):
         import subprocess
         out = subprocess.run(
             [sys.executable, "-c",
-             "import sys; sys.path.insert(0, 'src'); import harness;"
+             f"import sys; sys.path.insert(0, {str(_paths.SRC)!r}); import harness;"
              "print([m for m in sys.modules if m.split('.')[0] in "
              "('langchain_core', 'langgraph', 'pydantic', 'openviking_sdk', "
              "'openviking', 'httpx')])"],
@@ -756,8 +757,7 @@ class DependencyWeight(unittest.TestCase):
                          f"the core pulled in the graph extra: {out.stdout.strip()}")
 
     def test_the_graph_backend_is_declared_as_an_extra(self):
-        import pathlib as _p
-        toml = _p.Path("pyproject.toml").read_text()
+        toml = _paths.repo("pyproject.toml").read_text()
         deps = toml.split("dependencies = [", 1)[1].split("]", 1)[0]
         for name in ("langgraph", "openviking"):
             self.assertNotIn(name, deps, f"{name} must not be a core dependency")
@@ -767,8 +767,7 @@ class DependencyWeight(unittest.TestCase):
     def test_the_server_package_is_not_what_we_depend_on(self):
         """`openviking` (the server) is 185 packages; `openviking-sdk` (the client) is 9.
         A database is a process you run, not a library you vendor (ADR-035)."""
-        import pathlib as _p
-        toml = _p.Path("pyproject.toml").read_text()
+        toml = _paths.repo("pyproject.toml").read_text()
         viking = toml.split("viking = [", 1)[1].split("]", 1)[0]
         self.assertIn("openviking-sdk", viking)
         self.assertNotIn('"openviking"', viking)

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import unittest
 
-from harness.secrets import (_KEY_MARKERS, _KEY_PATTERNS, Secret, redact,
+from harness.secrets import (_KEY_MARKERS, _KEY_PATTERNS, _KEY_RE, Secret, redact,
                              redaction_scope, scan_for_unwrapped_keys,
                              unwrapped_key_kinds)
 
@@ -87,6 +87,20 @@ class TheScanStaysInScope(unittest.TestCase):
                 self.assertEqual(redact(sample), sample,
                                  f"{label} was redacted; it is ordinary output")
                 self.assertEqual(scan_for_unwrapped_keys(sample), ())
+
+    def test_the_patterns_themselves_reject_them_not_just_the_prefilter(self):
+        """The same negatives, against the regex directly.
+
+        `redact()` skips the regex when no marker appears, so the check above would still
+        pass if a pattern were widened into the entropy classifier this refuses to be —
+        the widened pattern would simply never be reached on THESE inputs.  Measured:
+        replacing the AWS pattern with `[A-Za-z0-9/+]{40}` left the check above green.
+        This one is the guard on the pattern's shape.
+        """
+        for label, sample in MUST_NOT_FIRE.items():
+            with self.subTest(case=label):
+                found = _KEY_RE.findall(sample)
+                self.assertEqual(found, [], f"a pattern matches {label}: {sample!r}")
 
     def test_the_prefilter_can_reach_every_pattern(self):
         """`redact()` skips the regex unless a marker appears.  A pattern with no marker
