@@ -659,8 +659,14 @@ rationale: ADR-055.
 ```python
 # harness/server/__init__.py
 
-def create_app(agent: Agent, *, store: Store | None = None) -> "starlette.applications.Starlette": ...
+def create_app(agent: Agent, *, authenticate: Authenticator,
+               store: Store | None = None) -> "starlette.applications.Starlette": ...
 ```
+
+`authenticate` is required, no default (`design/review-architect.md` G-3) — called on
+every route before anything else runs; a falsy/raising result is a `401`.
+`authenticate=lambda request: True` is the explicit opt-out for a deployment that already
+sits behind its own gateway auth.
 
 | Route | Contract |
 |---|---|

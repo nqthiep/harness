@@ -12,18 +12,35 @@ Service API is the first real source of one." `POST /v1/runs`'s `Idempotency-Key
 is that source: a client that times out and retries the same key gets back the SAME
 `run_id` instead of starting a second run.
 
-**What this does NOT do, honestly (mirrors `EgressPolicy`'s "say the limit, don't paper
-over it" discipline):**
+**`authenticate=` is required — no default (G-3, `design/review-architect.md`, fixed).**
+`create_app` used to ship with every route open by default, honestly documented as such —
+but a tier-1 mechanism (a docstring saying "put this behind your own auth") is not a
+mechanism: demonstrated concretely, an unauthenticated `POST .../approvals/{call_id}` let
+any network caller approve a `danger` tool, recorded under a self-declared `Actor` name,
+degrading the entire `Decision`/`AuthEvidence` apparatus (`design/06-poka-yoke-matrix.md`
+§A row 1, tier 3 at the model-vs-approver boundary) to "whoever can reach the port." Same
+discipline as `Budget(usd=None)`/`Agent(allowed_hosts=...)`: unrestricted access is still
+possible (`authenticate=lambda request: True`), it just can never be the silent default —
+an operator has to type the word that means it.
 
-- **No authentication.** Every route is open. An operator puts this behind their own
-  auth (API gateway, reverse proxy, a Starlette middleware they add to the returned
-  `app`) — the same posture `EgressPolicy` takes toward real network isolation: this
-  module is not the security boundary.
-- **In-memory run registry, one process.** A run's state (buffered events, pending
-  approvals) does not survive a process restart. No `resume` endpoint ships in v1 for
-  exactly that reason — `Session`/T-8.6 scoped itself the same way (ADR-053): naming a
-  resume contract this module cannot actually keep would be worse than not shipping one.
-  A future version needs a `Store`-backed run registry before `resume` means anything.
+**What this still does NOT do, honestly (mirrors `EgressPolicy`'s "say the limit, don't
+paper over it" discipline):**
+
+- **In-memory run registry, one process — including under multiple workers (G-10,
+  fixed as documentation; the mechanism itself is out of scope for this pass — see
+  `design/06-poka-yoke-matrix.md` §C).** A run's state (buffered events, pending
+  approvals) does not survive a process restart, and **does not survive `--workers > 1`**
+  either: `uvicorn --workers N` runs N separate processes, each with its own
+  `_RunRegistry` and its own in-process idempotency lock (`idempotency.py::_locks`) — the
+  same `Idempotency-Key` sent to two different workers starts two real runs, `GET
+  /v1/runs/{id}` 404s on whichever worker didn't start it, and a pending approval can
+  never be resolved from a different worker than the one awaiting it. No `resume`
+  endpoint ships in v1 for the restart case — `Session`/T-8.6 scoped itself the same way
+  (ADR-053): naming a resume contract this module cannot actually keep would be worse
+  than not shipping one. A future version needs a `Store`-backed run registry (not just
+  a `Store`-backed idempotency check) before either restart or multi-worker means
+  anything; single-process, single-worker is the only deployment this module actually
+  keeps its promises in today.
 - **One `Agent`, shared.** `Agent` is frozen and already builds fresh `Ledger`/
   `TaintTracker`/`run_id` per call (`atry_run()`) — the existing "keep the Agent at
   module scope" guidance applies unchanged; this module does not construct a new `Agent`
@@ -36,12 +53,13 @@ over it" discipline):**
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -56,6 +74,17 @@ from ..observe.events import Event, to_dict
 from ..policy.decision import Actor, Approval, AuthEvidence
 from ..result import Result, StopReason
 from ..secrets import redact
+
+#: G-3 — one caller per route, kept in one place so every route agrees on what
+#: "authenticated" means and none can accidentally skip the check.
+Authenticator = Callable[[Request], "bool | Awaitable[bool]"]
+
+
+async def _is_authenticated(authenticate: Authenticator, request: Request) -> bool:
+    result = authenticate(request)
+    if inspect.isawaitable(result):
+        result = await result
+    return bool(result)
 
 _STATUS_RUNNING = "running"
 _STATUS_WAITING = "waiting_approval"
@@ -279,10 +308,17 @@ class _RunRegistry:
         return list(run.events), q
 
 
-def create_app(agent: Agent, *, store: Store | None = None) -> Starlette:
+def create_app(agent: Agent, *, authenticate: Authenticator, store: Store | None = None,
+               ) -> Starlette:
     """`agent`: one bound `Agent`, shared across every run this app serves (see module
     docstring — this is the same "keep the Agent at module scope" pattern the rest of
     the library already documents, not a new constraint T-9.2 introduces).
+
+    `authenticate`: called with the raw `starlette.requests.Request` on every route,
+    before anything else runs; a falsy/raising result is a 401. Required, no default —
+    G-3, `design/review-architect.md`. `authenticate=lambda request: True` is the
+    explicit, visible way to opt out for a deployment that already sits behind its own
+    gateway auth; the point is that no deployment gets an open Service API by omission.
     """
     registry = _RunRegistry(agent, store=store)
 
@@ -343,6 +379,20 @@ def create_app(agent: Agent, *, store: Store | None = None) -> Starlette:
             evidence = _evidence_from_body(body.get("evidence"))
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
+        # G-11, đã sửa: đoán TRƯỚC chính xác điều kiện `PolicyEngine.resolve()` sẽ áp
+        # dụng (policy/engine.py — `ok and require_evidence and actor.kind=="human" and
+        # evidence is None`; actor ở endpoint này LUÔN là human, xem `_bridge_approvals`)
+        # — một approval sẽ bị từ chối vì thiếu bằng chứng thì trả 400 NGAY, thay vì trả
+        # 200 rồi lặng lẽ DENY ở một task khác mà cả người duyệt lẫn `Result` cuối cùng
+        # đều không thấy được. Cố ý KHÔNG gọi `registry.resolve_approval` ở đây: future
+        # đang chờ chưa bị resolve, nên run vẫn đứng ở `waiting_approval` — người gọi mất
+        # một request, không mất luôn cơ hội gửi lại kèm evidence đúng.
+        if ok and agent.require_approval_evidence and evidence is None:
+            return JSONResponse(
+                {"error": "this agent requires AuthEvidence for a human approval "
+                         "(Agent(require_approval_evidence=True)) — 'evidence' was "
+                         "not supplied. The tool will NOT run without it."},
+                status_code=400)
         resolved = registry.resolve_approval(
             request.path_params["run_id"], request.path_params["call_id"], ok, approved_by,
             evidence)
@@ -350,10 +400,21 @@ def create_app(agent: Agent, *, store: Store | None = None) -> Starlette:
             return JSONResponse({"error": "no such pending approval"}, status_code=404)
         return JSONResponse({"resolved": True, "approve": ok})
 
+    def _guarded(handler):
+        # G-3: one wrapper, applied to every route below, so no route can be added later
+        # without the check — a check repeated by hand in each handler is exactly the
+        # kind of thing one new route quietly forgets.
+        async def wrapped(request: Request):
+            if not await _is_authenticated(authenticate, request):
+                return JSONResponse({"error": "unauthorized"}, status_code=401)
+            return await handler(request)
+        return wrapped
+
     return Starlette(routes=[
-        Route("/v1/runs", start_run, methods=["POST"]),
-        Route("/v1/runs/{run_id}", get_run, methods=["GET"]),
-        Route("/v1/runs/{run_id}/events", stream_events, methods=["GET"]),
-        Route("/v1/runs/{run_id}/cancel", cancel_run, methods=["POST"]),
-        Route("/v1/runs/{run_id}/approvals/{call_id}", resolve_approval, methods=["POST"]),
+        Route("/v1/runs", _guarded(start_run), methods=["POST"]),
+        Route("/v1/runs/{run_id}", _guarded(get_run), methods=["GET"]),
+        Route("/v1/runs/{run_id}/events", _guarded(stream_events), methods=["GET"]),
+        Route("/v1/runs/{run_id}/cancel", _guarded(cancel_run), methods=["POST"]),
+        Route("/v1/runs/{run_id}/approvals/{call_id}", _guarded(resolve_approval),
+             methods=["POST"]),
     ])

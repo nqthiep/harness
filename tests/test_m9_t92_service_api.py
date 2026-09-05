@@ -23,6 +23,13 @@ from harness.server import create_app
 from starlette.testclient import TestClient
 
 
+def _app(agent, **kw):
+    """G-3: `authenticate=` giờ bắt buộc. Mọi test dưới đây kiểm tra HÀNH VI của Service
+    API, không phải cơ chế xác thực — dùng một callback cho qua tất cả, xem
+    `KiemTraXacThuc` cho các test kiểm tra chính `authenticate=`."""
+    return create_app(agent, authenticate=lambda request: True, **kw)
+
+
 def _poll(client, run_id, *, until=("done", "error", "cancelled"), timeout=2.0):
     deadline = time.monotonic() + timeout
     body = None
@@ -53,14 +60,14 @@ def _agent(script, tools=(look,)):
 
 class ChayMotRunDonGian(unittest.TestCase):
     def test_post_tra_ve_202_va_id(self):
-        app = create_app(_agent([FakeModel.tool_call("look", {"x": 1}), FakeModel.text("xong")]))
+        app = _app(_agent([FakeModel.tool_call("look", {"x": 1}), FakeModel.text("xong")]))
         with TestClient(app) as client:
             r = client.post("/v1/runs", json={"message": "hi"})
             self.assertEqual(r.status_code, 202)
             self.assertTrue(r.json()["id"].startswith("run_"))
 
     def test_get_phan_anh_dung_ket_qua(self):
-        app = create_app(_agent([FakeModel.tool_call("look", {"x": 1}), FakeModel.text("xong")]))
+        app = _app(_agent([FakeModel.tool_call("look", {"x": 1}), FakeModel.text("xong")]))
         with TestClient(app) as client:
             run_id = client.post("/v1/runs", json={"message": "hi"}).json()["id"]
             body = _poll(client, run_id)
@@ -70,13 +77,13 @@ class ChayMotRunDonGian(unittest.TestCase):
             self.assertEqual(body["result"]["tools_run"], ["look"])
 
     def test_thieu_message_tra_ve_400(self):
-        app = create_app(_agent([FakeModel.text("x")]))
+        app = _app(_agent([FakeModel.text("x")]))
         with TestClient(app) as client:
             r = client.post("/v1/runs", json={})
             self.assertEqual(r.status_code, 400)
 
     def test_run_khong_ton_tai_tra_ve_404(self):
-        app = create_app(_agent([FakeModel.text("x")]))
+        app = _app(_agent([FakeModel.text("x")]))
         with TestClient(app) as client:
             r = client.get("/v1/runs/run_khong_ton_tai")
             self.assertEqual(r.status_code, 404)
@@ -90,7 +97,7 @@ class IdempotencyKey(unittest.TestCase):
         model = FakeModel([FakeModel.tool_call("look", {"x": 1}), FakeModel.text("xong")])
         agent = Agent(name="A", job="j", model="claude-opus-5", provider=model,
                       tools=[look], budget="$5")
-        app = create_app(agent)
+        app = _app(agent)
         with TestClient(app) as client:
             r1 = client.post("/v1/runs", json={"message": "hi"},
                              headers={"Idempotency-Key": "k1"})
@@ -106,7 +113,7 @@ class IdempotencyKey(unittest.TestCase):
         model = FakeModel([FakeModel.tool_call("look", {"x": 1}), FakeModel.text("xong")])
         agent = Agent(name="A", job="j", model="claude-opus-5", provider=model,
                       tools=[look], budget="$5")
-        app = create_app(agent)
+        app = _app(agent)
         with TestClient(app) as client:
             run_id = client.post("/v1/runs", json={"message": "hi"},
                                  headers={"Idempotency-Key": "k1"}).json()["id"]
@@ -118,7 +125,7 @@ class IdempotencyKey(unittest.TestCase):
                              "một lần replay không được gọi model thêm lần nào")
 
     def test_khac_key_la_hai_run_khac_nhau(self):
-        app = create_app(_agent([FakeModel.text("a"), FakeModel.text("b")], tools=()))
+        app = _app(_agent([FakeModel.text("a"), FakeModel.text("b")], tools=()))
         with TestClient(app) as client:
             r1 = client.post("/v1/runs", json={"message": "hi"},
                              headers={"Idempotency-Key": "k1"})
@@ -127,7 +134,7 @@ class IdempotencyKey(unittest.TestCase):
             self.assertNotEqual(r1.json()["id"], r2.json()["id"])
 
     def test_khong_co_key_moi_lan_la_mot_run_moi(self):
-        app = create_app(_agent([FakeModel.text("a"), FakeModel.text("b")], tools=()))
+        app = _app(_agent([FakeModel.text("a"), FakeModel.text("b")], tools=()))
         with TestClient(app) as client:
             r1 = client.post("/v1/runs", json={"message": "hi"})
             r2 = client.post("/v1/runs", json={"message": "hi"})
@@ -152,7 +159,7 @@ class IdempotencyKey(unittest.TestCase):
         old = server_mod._RunRegistry
         server_mod._RunRegistry = BuggyRegistry
         try:
-            app = create_app(agent)
+            app = _app(agent)
         finally:
             server_mod._RunRegistry = old
         with TestClient(app) as client:
@@ -168,7 +175,7 @@ class IdempotencyKey(unittest.TestCase):
 
 class LuongDuyet(unittest.TestCase):
     def test_tool_danger_dung_o_waiting_approval(self):
-        app = create_app(_agent([FakeModel.tool_call("wipe", {"x": 1}), FakeModel.text("xong")],
+        app = _app(_agent([FakeModel.tool_call("wipe", {"x": 1}), FakeModel.text("xong")],
                                 tools=(wipe,)))
         with TestClient(app) as client:
             run_id = client.post("/v1/runs", json={"message": "hi"}).json()["id"]
@@ -180,7 +187,7 @@ class LuongDuyet(unittest.TestCase):
             self.assertEqual(pending["arguments"], {"x": 1})
 
     def test_duyet_true_chay_tiep_va_hoan_thanh(self):
-        app = create_app(_agent([FakeModel.tool_call("wipe", {"x": 1}), FakeModel.text("xong")],
+        app = _app(_agent([FakeModel.tool_call("wipe", {"x": 1}), FakeModel.text("xong")],
                                 tools=(wipe,)))
         with TestClient(app) as client:
             run_id = client.post("/v1/runs", json={"message": "hi"}).json()["id"]
@@ -194,7 +201,7 @@ class LuongDuyet(unittest.TestCase):
             self.assertEqual(final["result"]["tools_run"], ["wipe"])
 
     def test_duyet_false_tu_choi_khong_chay_tool(self):
-        app = create_app(_agent([FakeModel.tool_call("wipe", {"x": 1}), FakeModel.text("thoi")],
+        app = _app(_agent([FakeModel.tool_call("wipe", {"x": 1}), FakeModel.text("thoi")],
                                 tools=(wipe,)))
         with TestClient(app) as client:
             run_id = client.post("/v1/runs", json={"message": "hi"}).json()["id"]
@@ -206,7 +213,7 @@ class LuongDuyet(unittest.TestCase):
                              "từ chối duyệt không được để tool chạy")
 
     def test_duyet_call_id_khong_ton_tai_tra_ve_404(self):
-        app = create_app(_agent([FakeModel.tool_call("wipe", {"x": 1}), FakeModel.text("xong")],
+        app = _app(_agent([FakeModel.tool_call("wipe", {"x": 1}), FakeModel.text("xong")],
                                 tools=(wipe,)))
         with TestClient(app) as client:
             run_id = client.post("/v1/runs", json={"message": "hi"}).json()["id"]
@@ -233,7 +240,7 @@ class LuongDuyet(unittest.TestCase):
 
 class Huy(unittest.TestCase):
     def test_huy_khi_dang_cho_duyet(self):
-        app = create_app(_agent([FakeModel.tool_call("wipe", {"x": 1}), FakeModel.text("xong")],
+        app = _app(_agent([FakeModel.tool_call("wipe", {"x": 1}), FakeModel.text("xong")],
                                 tools=(wipe,)))
         with TestClient(app) as client:
             run_id = client.post("/v1/runs", json={"message": "hi"}).json()["id"]
@@ -244,7 +251,7 @@ class Huy(unittest.TestCase):
             self.assertEqual(final["status"], "cancelled")
 
     def test_huy_run_da_xong_tra_ve_409(self):
-        app = create_app(_agent([FakeModel.text("x")], tools=()))
+        app = _app(_agent([FakeModel.text("x")], tools=()))
         with TestClient(app) as client:
             run_id = client.post("/v1/runs", json={"message": "hi"}).json()["id"]
             _poll(client, run_id)
@@ -252,7 +259,7 @@ class Huy(unittest.TestCase):
             self.assertEqual(r.status_code, 409)
 
     def test_huy_run_khong_ton_tai_tra_ve_404(self):
-        app = create_app(_agent([FakeModel.text("x")]))
+        app = _app(_agent([FakeModel.text("x")]))
         with TestClient(app) as client:
             r = client.post("/v1/runs/khong-ton-tai/cancel")
             self.assertEqual(r.status_code, 404)
@@ -260,7 +267,7 @@ class Huy(unittest.TestCase):
 
 class SuKienSSE(unittest.TestCase):
     def test_backlog_day_du_thu_tu(self):
-        app = create_app(_agent([FakeModel.tool_call("look", {"x": 1}), FakeModel.text("xong")]))
+        app = _app(_agent([FakeModel.tool_call("look", {"x": 1}), FakeModel.text("xong")]))
         with TestClient(app) as client:
             run_id = client.post("/v1/runs", json={"message": "hi"}).json()["id"]
             _poll(client, run_id)
@@ -274,7 +281,7 @@ class SuKienSSE(unittest.TestCase):
             self.assertIn("tool.requested", kinds)
 
     def test_events_route_run_khong_ton_tai_404(self):
-        app = create_app(_agent([FakeModel.text("x")]))
+        app = _app(_agent([FakeModel.text("x")]))
         with TestClient(app) as client:
             r = client.get("/v1/runs/khong-ton-tai/events")
             self.assertEqual(r.status_code, 404)
@@ -303,7 +310,7 @@ class ChongLoSecretQuaSSE(unittest.TestCase):
             raise ValueError(f"failed while using key {v}")
 
     def test_secret_khong_xuat_hien_nguyen_van_trong_event(self):
-        app = create_app(_agent([FakeModel.tool_call("whoami", {}), FakeModel.text("xong")],
+        app = _app(_agent([FakeModel.tool_call("whoami", {}), FakeModel.text("xong")],
                                 tools=(ChongLoSecretQuaSSE.whoami,)))
         with TestClient(app) as client:
             run_id = client.post("/v1/runs", json={"message": "hi"}).json()["id"]
@@ -340,6 +347,118 @@ class ChongLoSecretQuaSSE(unittest.TestCase):
         self.assertIn("sk-live-topsecret", leaked,
                       "mutation (bỏ redact) phải để lộ secret nguyên văn — nếu nó cũng "
                       "không lộ, test này không còn phân biệt được bản đúng và bản có lỗi")
+
+
+class KiemTraXacThuc(unittest.TestCase):
+    """G-3, đã sửa: `authenticate=` giờ bắt buộc, không có mặc định. Trước bản vá,
+    `create_app(agent)` dựng được một app hoàn toàn mở — ai gọi `POST .../approvals/...`
+    cũng duyệt được tool `danger`."""
+
+    def test_authenticate_la_tham_so_bat_buoc(self):
+        import inspect
+        from harness.server import create_app
+        sig = inspect.signature(create_app)
+        self.assertIn("authenticate", sig.parameters)
+        self.assertIs(sig.parameters["authenticate"].default, inspect.Parameter.empty,
+                     "authenticate= có mặc định — quay lại đúng lỗ hổng G-3")
+
+    def test_authenticate_tra_ve_false_thi_401_moi_route(self):
+        from harness.server import create_app
+        app = create_app(_agent([FakeModel.tool_call("wipe", {"x": 1}),
+                                 FakeModel.text("xong")], tools=(wipe,)),
+                         authenticate=lambda request: False)
+        with TestClient(app) as client:
+            self.assertEqual(client.post("/v1/runs", json={"message": "hi"}).status_code, 401)
+            self.assertEqual(client.get("/v1/runs/khong-quan-trong").status_code, 401)
+            self.assertEqual(client.post("/v1/runs/khong-quan-trong/cancel").status_code,
+                             401)
+            self.assertEqual(
+                client.post("/v1/runs/x/approvals/y", json={"approve": True}).status_code,
+                401)
+
+    def test_authenticate_tra_ve_true_thi_di_qua_binh_thuong(self):
+        app = _app(_agent([FakeModel.tool_call("look", {"x": 1}), FakeModel.text("xong")]))
+        with TestClient(app) as client:
+            r = client.post("/v1/runs", json={"message": "hi"})
+            self.assertEqual(r.status_code, 202)
+
+    def test_authenticate_bat_dong_bo_cung_duoc_ho_tro(self):
+        """`authenticate` có thể là async — vd. tra cứu một session store thật."""
+        from harness.server import create_app
+
+        async def check(request) -> bool:
+            return request.headers.get("x-api-key") == "dung-key"
+
+        app = create_app(_agent([FakeModel.text("xong")], tools=()), authenticate=check)
+        with TestClient(app) as client:
+            self.assertEqual(client.post("/v1/runs", json={"message": "hi"}).status_code,
+                             401)
+            r = client.post("/v1/runs", json={"message": "hi"},
+                            headers={"x-api-key": "dung-key"})
+            self.assertEqual(r.status_code, 202)
+
+
+class DuyetThieuBangChungBiTuChoiNgay(unittest.TestCase):
+    """G-11, đã sửa: trước bản vá, một approval bị `PolicyEngine` DENY vì thiếu
+    `AuthEvidence` vẫn nhận `{"resolved": true, "approve": true}` — người duyệt và
+    `Result` cuối cùng không ai thấy được sự từ chối đó."""
+
+    def test_thieu_evidence_khi_agent_doi_hoi_thi_400_ngay_khong_phai_200(self):
+        agent = Agent(name="A", job="j", model="claude-opus-5",
+                      provider=FakeModel([FakeModel.tool_call("wipe", {"x": 1}),
+                                         FakeModel.text("xong")]),
+                      tools=[wipe], budget="$5", require_approval_evidence=True)
+        app = _app(agent)
+        with TestClient(app) as client:
+            run_id = client.post("/v1/runs", json={"message": "hi"}).json()["id"]
+            body = _poll(client, run_id, until=("waiting_approval",))
+            call_id = body["pending_approvals"][0]["call_id"]
+            r = client.post(f"/v1/runs/{run_id}/approvals/{call_id}",
+                            json={"approve": True, "approved_by": "ai-do"})   # không evidence
+            self.assertEqual(r.status_code, 400)
+            self.assertIn("AuthEvidence", r.json()["error"])
+            # 400 KHÔNG tiêu thụ approval đang chờ — future chưa bị resolve, nên run vẫn
+            # đứng ở waiting_approval, còn cơ hội gửi lại kèm evidence đúng. Coi 400 như
+            # đã "duyệt-thất-bại-âm-thầm" (resolve future, cho DENY âm thầm) mới là hành
+            # vi cũ của G-11: người gọi mất luôn cơ hội sửa.
+            still = client.get(f"/v1/runs/{run_id}").json()
+            self.assertEqual(still["status"], "waiting_approval",
+                             "400 không được tiêu thụ approval đang chờ")
+            self.assertEqual(still["pending_approvals"][0]["call_id"], call_id)
+
+    def test_co_evidence_hop_le_thi_van_chay_binh_thuong(self):
+        agent = Agent(name="A", job="j", model="claude-opus-5",
+                      provider=FakeModel([FakeModel.tool_call("wipe", {"x": 1}),
+                                         FakeModel.text("xong")]),
+                      tools=[wipe], budget="$5", require_approval_evidence=True)
+        app = _app(agent)
+        with TestClient(app) as client:
+            run_id = client.post("/v1/runs", json={"message": "hi"}).json()["id"]
+            body = _poll(client, run_id, until=("waiting_approval",))
+            call_id = body["pending_approvals"][0]["call_id"]
+            r = client.post(f"/v1/runs/{run_id}/approvals/{call_id}",
+                            json={"approve": True, "approved_by": "ai-do",
+                                 "evidence": {"channel": "slack",
+                                            "channel_message_id": "m1",
+                                            "principal": "U123"}})
+            self.assertEqual(r.status_code, 200)
+            final = _poll(client, run_id)
+            self.assertEqual(final["result"]["tools_run"], ["wipe"])
+
+    def test_tu_choi_khong_can_evidence_du_agent_doi_hoi(self):
+        """Từ chối (`approve: false`) không phải hành động cần xác thực danh tính —
+        `require_approval_evidence` chỉ áp cho lượt CHO PHÉP."""
+        agent = Agent(name="A", job="j", model="claude-opus-5",
+                      provider=FakeModel([FakeModel.tool_call("wipe", {"x": 1}),
+                                         FakeModel.text("thoi")]),
+                      tools=[wipe], budget="$5", require_approval_evidence=True)
+        app = _app(agent)
+        with TestClient(app) as client:
+            run_id = client.post("/v1/runs", json={"message": "hi"}).json()["id"]
+            body = _poll(client, run_id, until=("waiting_approval",))
+            call_id = body["pending_approvals"][0]["call_id"]
+            r = client.post(f"/v1/runs/{run_id}/approvals/{call_id}", json={"approve": False})
+            self.assertEqual(r.status_code, 200)
 
 
 if __name__ == "__main__":

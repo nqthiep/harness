@@ -363,8 +363,16 @@ request for a reason you have to reverse-engineer. See ADR-066.
 
 ```python
 from harness.server import create_app
-app = create_app({"coder": lead})   # POST /v1/runs {"agent": "coder", "message": "..."}
+app = create_app(lead, authenticate=your_auth_check)   # POST /v1/runs {"message": "..."}
 ```
+
+`create_app` serves ONE `Agent` (not a name-keyed dict of several — an earlier draft of
+this example showed one, and it never matched the real signature). `authenticate` is
+required, no default (`design/review-architect.md` G-3): called on every route before
+anything else runs, a falsy/raising result is a `401`. Put your own check there — a
+verified API key, a session lookup — or `authenticate=lambda request: True` if this app
+already sits behind a gateway that authenticates for you; the point is that no deployment
+gets an open Service API by omission.
 
 `GET /v1/runs/{id}/events` streams the canonical event feed (SSE) for a live view of a
 long session; `POST /v1/runs/{id}/approvals/{id}` lets a remote human approve a `danger`
