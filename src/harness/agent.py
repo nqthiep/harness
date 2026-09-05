@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+import warnings
 from dataclasses import replace
 from typing import Any, Callable, Literal, Sequence
 
@@ -196,6 +197,23 @@ class Agent:
         object.__setattr__(self, "safety", safety)
         object.__setattr__(self, "approve", approve)
         object.__setattr__(self, "policies", tuple(policies))
+        if allowed_hosts is None:
+            # G-9, design/review-architect.md: `None` is an intentional escape hatch
+            # (same shape as `Budget(usd=None)`, S-20) and stays easy to reach — a second
+            # breaking change to this parameter right after T-7.2's is not warranted. But
+            # "easy" must never mean "silent": an agent that can reach ANY host is a
+            # meaningfully different deployment from the `()` default, and a reviewer
+            # reading the call site alone (no runtime output) has no way to tell it apart
+            # from a typo'd `()` -- warn loudly, every time, rather than trust the arg
+            # spelling to carry that weight on its own.
+            warnings.warn(
+                "Agent(allowed_hosts=None) disables the egress allowlist entirely -- "
+                "this agent's tools can reach ANY external host. This is deliberate and "
+                "supported, not a bug, but it is easy to reach by accident (the default "
+                "is allowed_hosts=(), which allows none). If this is intentional, this "
+                "warning is the only cost; if it isn't, pass an explicit allowlist "
+                "instead.\n\n  -> docs/17-research-alignment.md M7 / design/review-architect.md G-9",
+                UserWarning, stacklevel=2)
         object.__setattr__(self, "allowed_hosts",
                            tuple(allowed_hosts) if allowed_hosts is not None else None)
         object.__setattr__(self, "provider", provider)

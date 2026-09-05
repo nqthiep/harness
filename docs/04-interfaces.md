@@ -415,7 +415,7 @@ final = max(p.check(call, ctx) for p in policies)   # by Verdict value
 |---|---|
 | `EffectPolicy` | Verdict from `EFFECT_PROFILES[spec.effect]` and `ctx.safety`. |
 | `TaintPolicy` | `check_flow(ctx.label, spec, grants)` — two branches, one per `Label` axis. `label.integrity is UNTRUSTED and effect is DANGER and name not in grants.accepts_tainted` → **DENY**; `label.confidentiality is SECRET and max_confidentiality is PUBLIC` → **DENY**. `accepts_tainted` is never a tool-decorator field — only `Agent(accepts_tainted=[...])` / `build_agent(accepts_tainted=[...])` set it (S-16). |
-| `EgressPolicy` | `effect is EXTERNAL` and a host argument is outside `allowed_hosts` → **DENY**. Default `allowed_hosts=()` — an empty allowlist denies every external host (T-7.2). Inactive (unrestricted) only when `allowed_hosts=None` is passed explicitly. |
+| `EgressPolicy` | `effect is EXTERNAL` and a host argument is outside `allowed_hosts` → **DENY**. Default `allowed_hosts=()` — an empty allowlist denies every external host (T-7.2). Inactive (unrestricted) only when `allowed_hosts=None` is passed explicitly — `Agent(...)` emits a `UserWarning` at construction time whenever this is the case, so an unrestricted deployment is never silent (G-9, design/review-architect.md). |
 *(There is no `ApprovalPolicy`. See below — approval is not a policy.)*
 
 ### Opt-in built-ins (`policy/builtin.py`, not in the table above)

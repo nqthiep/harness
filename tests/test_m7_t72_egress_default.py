@@ -105,5 +105,36 @@ class MutationEgressDefaultCoTacDung(unittest.TestCase):
                          "test chính phụ thuộc đúng vào giá trị default mới")
 
 
+class CanhBaoKhiAllowedHostsLaNone(unittest.TestCase):
+    """G-9, design/review-architect.md: `allowed_hosts=None` vẫn là escape hatch hợp
+    lệ (giữ nguyên như trên) — nhưng phải không bao giờ ÂM THẦM. Trước bản vá này,
+    không có tín hiệu nào tại chỗ gọi `Agent(...)` phân biệt được `allowed_hosts=None`
+    (không hạn chế gì) với một lời gọi lẽ ra định để `()` (default, chặn hết) — chỉ
+    khác nhau đúng bốn ký tự."""
+
+    def test_none_tuong_minh_phat_ra_userwarning(self):
+        with self.assertWarns(UserWarning) as cm:
+            Agent(name="A", job="j", model="claude-opus-5",
+                 provider=FakeModel([FakeModel.text("hi")]), budget="$5",
+                 allowed_hosts=None)
+        self.assertIn("allowed_hosts=None", str(cm.warning))
+        self.assertIn("ANY external host", str(cm.warning))
+
+    def test_default_rong_khong_phat_canh_bao_nao(self):
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            Agent(name="A", job="j", model="claude-opus-5",
+                 provider=FakeModel([FakeModel.text("hi")]), budget="$5")
+
+    def test_allowlist_cu_the_khong_phat_canh_bao_nao(self):
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            Agent(name="A", job="j", model="claude-opus-5",
+                 provider=FakeModel([FakeModel.text("hi")]), budget="$5",
+                 allowed_hosts=["example.com"])
+
+
 if __name__ == "__main__":
     unittest.main()
