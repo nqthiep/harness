@@ -78,11 +78,76 @@ class M3(unittest.TestCase):
         self.assertGreater(len(events), 0)
         self.assertTrue(all("kind" in e for e in events))
 
-    def test_an_unwritable_transcript_does_not_kill_the_run(self):
+    def test_an_unwritable_transcript_is_refused_before_the_run_starts(self):
+        """This test used to assert the opposite, under a name that conflated two things.
+
+        "An unwritable transcript must not kill the run" is right about a disk that FILLS
+        while the agent is working — the run is underway and billed, and the next test
+        keeps that. It was wrong about a path that could never have been opened: that is
+        knowable at `Agent(...)`, and answering it with `disabled = True` produced
+
+            run ok: True    file exists: False    error events: []
+
+        A deployment that requires a transcript got a fully successful run, no artifact,
+        and nothing distinguishing that from a process that was killed. docs/02 §7:
+        configuration error -> raised at construction, never at run time.
+        """
+        from harness.errors import ConfigError
         m = FakeModel([FakeModel.text("done")])
-        a = Agent(name="T", job="j", provider=m, budget="$5",
+        with self.assertRaises(ConfigError) as e:
+            Agent(name="T", job="j", provider=m, budget="$5",
                   transcript="/proc/definitely/not/writable/t.jsonl")
-        self.assertTrue(a.run("go").ok)
+        self.assertIn("cannot be opened", str(e.exception))
+
+    def test_a_transcript_that_fails_mid_run_does_not_kill_the_run_but_is_not_silent(self):
+        """The half worth keeping, and the half that was missing.
+
+        Measured with a real ENOSPC injected after the first line: the writer went quiet
+        and `bus error.raised` was EMPTY. `EventBus.emit` already isolates a broken
+        exporter and records the failure — `TranscriptWriter` swallowed the `OSError`
+        before the bus could see it, so the one error class its own comment named ("a
+        full disk") was the one class that passed unnoticed.
+        """
+        import tempfile
+
+        class Rec:
+            def __init__(self): self.errors = []
+            def emit(self, e):
+                if e.kind.value == "error.raised":
+                    self.errors.append(dict(e.data))
+
+        class Full:
+            """A handle that reports ENOSPC after the first line."""
+            def __init__(self, fh): self._fh, self._n = fh, 0
+            def write(self, s):
+                self._n += 1
+                if self._n > 1:
+                    raise OSError(28, "No space left on device")
+                return self._fh.write(s)
+            def __getattr__(self, k): return getattr(self._fh, k)
+
+        from harness.observe import transcript as T
+        import pathlib as _pl
+        path = _pl.Path(tempfile.mkdtemp()) / "t.jsonl"
+        rec = Rec()
+        orig = T.TranscriptWriter.__init__
+
+        def patched(self, *a, **k):
+            orig(self, *a, **k)
+            self._fh = Full(self._fh)
+
+        T.TranscriptWriter.__init__ = patched
+        try:
+            a = Agent(name="T", job="j", tools=[look], budget="$5",
+                      transcript=str(path), exporters=[rec],
+                      provider=FakeModel([FakeModel.tool_call("look", {"x": 1}),
+                                          FakeModel.text("done")]))
+            r = a.try_run("go")
+        finally:
+            T.TranscriptWriter.__init__ = orig
+        self.assertTrue(r.ok, "a full disk must not kill a run")
+        self.assertEqual([e.get("where") for e in rec.errors], ["exporter"])
+        self.assertEqual(len(path.read_text().splitlines()), 1)
 
     def test_policy_decided_is_emitted_for_allows_too(self):
         m = FakeModel([FakeModel.tool_call("look", {"x": 1}), FakeModel.text("ok")])

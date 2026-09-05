@@ -31,11 +31,12 @@ class TranscriptWriter:
         self._n = 0
         self._fh = None
         self.disabled = False
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self._fh = self.path.open("a", encoding="utf-8")
-        except OSError:
-            self.disabled = True        # a full disk must never kill a run
+        # No try/except: a path that cannot be opened is a CONFIGURATION mistake, and
+        # `Agent.__init__` now probes it so this raises there rather than here. Swallowing
+        # it produced a fully successful run with no artifact and no error event —
+        # indistinguishable from a process that was killed.
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._fh = self.path.open("a", encoding="utf-8")
 
     def emit(self, event: Event) -> None:
         if self.disabled or self._fh is None:
@@ -56,7 +57,16 @@ class TranscriptWriter:
             if event.kind in _ALWAYS_FSYNC or self._n % FSYNC_EVERY == 0:
                 self._fh.flush(); os.fsync(self._fh.fileno())
         except OSError:
+            # Disabled FIRST, then re-raised: the flag stops the next event trying again,
+            # and `EventBus.emit` turns this one raise into an `error.raised` that the
+            # surviving exporters actually receive. Swallowing it here defeated a
+            # mechanism that already existed — measured with a real ENOSPC mid-run: the
+            # writer went quiet after one line and `bus error.raised` was empty. The
+            # comment above used to say "a full disk must never kill a run"; a full disk
+            # still does not kill the run, because the bus isolates a broken exporter.
+            # What it must not do is pass unnoticed.
             self.disabled = True
+            raise
 
     def close(self) -> None:
         if self._fh is not None:

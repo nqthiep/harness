@@ -204,6 +204,8 @@ class Agent:
         # `accepts_tainted=` or `sensitive=` — `with_()`, and so `with_profile()` and
         # every `Profile.apply` written in terms of it — rebuilds the whole `Agent`
         # through this constructor, so checking here covers all of them once.
+        if transcript is not None:
+            _probe_transcript(transcript)
         check_safety(safety)
         check_grant_names(toolset, grants)
         _check_tool_set(toolset, grants)               # T-1.4, before anything is spent
@@ -982,6 +984,42 @@ def _is_factory(p) -> bool:
     class has the attribute too — the first version of this check did exactly that."""
     import inspect
     return not inspect.ismethod(getattr(p, "check", None))
+
+
+def _probe_transcript(path) -> None:
+    """Open the transcript once, at construction, so a bad path is a setup error.
+
+    `TranscriptWriter` is built inside `atry_run`, not here, and it used to answer an
+    unopenable path by setting `disabled = True`. Measured:
+
+        Agent(transcript="/proc/definitely-not-writable/t.jsonl").try_run("go")
+        run ok: True   file exists: False   error events: []
+
+    A compliance deployment that requires a transcript got a fully successful run, no
+    artifact, and nothing to distinguish that from a process that was killed. The path is
+    knowable before the run, so this belongs with the other construction-time refusals
+    (docs/02 §7: configuration error -> raised at `Agent(...)`, never at run time).
+
+    It really opens the file rather than guessing from `os.access`: permission bits,
+    read-only mounts, missing parents and a path that is a directory all fail differently
+    and only an open tells the truth about all of them. That leaves an empty file where
+    the caller asked for one, which is the same thing the run would have done a moment
+    later.
+    """
+    import pathlib as _pl
+    p = _pl.Path(path)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8"):
+            pass
+    except OSError as exc:
+        raise ConfigError(
+            f"the transcript path {str(path)!r} cannot be opened for writing: {exc}\n\n"
+            f"  A transcript is the only durable record of what this agent did, so a "
+            f"path that\n  cannot be written is a setup mistake rather than something to "
+            f"discover at 03:00\n  when the volume fills.\n\n"
+            f"  -> docs/05-data-and-state.md"
+        ) from exc
 
 
 def _amender(bus):

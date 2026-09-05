@@ -118,6 +118,10 @@ class EventBus:
     def emit(self, kind: EventKind, *, step: int | None = None, **data: Any) -> Event:
         ev = self._make(kind, step, data)
         self.events.append(ev)
+        # Type name and message, not the exception object: Python deletes the `except`
+        # binding at the end of the block, so keeping `exc` to use after the loop is a
+        # read of a deleted variable (mypy says so, and it is right).
+        failed: list[tuple[str, str]] = []
         for i, ex in enumerate(self._exporters):
             if i in self._broken:
                 continue
@@ -125,8 +129,14 @@ class EventBus:
                 ex.emit(ev)
             except Exception as exc:
                 self._broken.add(i)          # disabled for the rest of the run
-                self.events.append(self._make(
-                    EventKind.ERROR_RAISED, step,
-                    {"where": "exporter", "type": type(exc).__name__,
-                     "message": str(exc), "retryable": False}))
+                failed.append((type(exc).__name__, str(exc)))
+        # Reported to the sinks that still work, not only to `self.events`. Appending the
+        # notice in memory was itself a silence: with a transcript plus a console
+        # exporter, the transcript could die and the console — the only thing an operator
+        # was watching — showed nothing. Emitted after the loop so `_broken` is already
+        # updated and the sink that just failed is skipped, which is also what stops this
+        # recursing when the failing sink is the only one.
+        for kind_name, message in failed:
+            self.emit(EventKind.ERROR_RAISED, step=step, where="exporter",
+                      type=kind_name, message=message, retryable=False)
         return ev
