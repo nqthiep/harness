@@ -87,36 +87,12 @@ def build_agent(*, model, tools: Sequence[Any] = (), budget: Any = None,
     _check_tool_set(toolset, grants)
     _check_subagent_safety(toolset, safety)
     ledger = Ledger(Budget.parse(budget))
-    # S-15: KHÔNG dựng `PolicyEngine` một lần ở đây với các instance policy người dùng đưa
-    # vào. `build_agent()` chạy đúng MỘT LẦN và `Runtime` nó tạo ra phục vụ MỌI thread sau
-    # đó (docstring `Runtime` ở dưới) — nên một policy có state (đếm, cache theo tool) mà
-    # người dùng lỡ truyền instance thay vì factory sẽ bị MỌI thread dùng chung, không
-    # cách nào phát hiện được (không có ranh giới "hết một run" để so trước/sau như backend
-    # cổ điển có, vì graph phục vụ nhiều thread đồng thời, không phải tuần tự).
-    #
-    # Backend cổ điển giải quyết bằng cách dò state thay đổi SAU MỖI run() — "dò ở đây
-    # thay vì đoán lúc dựng" (agent.py, Round 34), vì một static check kiểu "có attribute
-    # là từ chối" sẽ từ chối nhầm `EgressPolicy` (có cấu hình, không có state). Backend này
-    # không có một ranh giới run() sạch để dò như thế, nên đổi chiến lược: BẮT BUỘC mọi
-    # policy người dùng phải là factory, và mỗi THREAD (không phải mỗi node, không phải
-    # mỗi lần build_agent) nhận đúng MỘT instance riêng — xem `Runtime._engine_for`.
-    not_factory = [p for p in policies if not _is_factory(p)]
-    if not_factory:
-        names = ", ".join(type(p).__name__ for p in not_factory)
-        raise ConfigError(
-            f"build_agent() nhận một INSTANCE policy ({names}), không phải một class.\n"
-            f"\n"
-            f"  Trên backend LangGraph, build_agent() chạy đúng MỘT LẦN và agent nó trả về\n"
-            f"  phục vụ MỌI cuộc hội thoại sau đó — một instance policy có state (đếm,\n"
-            f"  cache) sẽ bị mọi khách hàng dùng chung, không cách nào phát hiện được\n"
-            f"  (design/review-security.md S-15).\n"
-            f"\n"
-            f"  Truyền CLASS thay vì instance, để mỗi thread nhận một bản mới:\n"
-            f"\n"
-            f"      policies=[{names}]        ← không {names}()\n"
-            f"\n"
-            f"  -> docs/06-safety.md#4-least-privilege"
-        )
+    # S-15: no `PolicyEngine` is built here from caller-supplied policies. Every entry in
+    # `policies=` must be a FACTORY, and each thread gets exactly one instance of its own
+    # (`Runtime._engine_for`). Every entry is validated here, at construction — see
+    # `_check_policy_factories` for why calling each one is the validation, and for the
+    # three defects the old instance-only check left open.
+    _check_policy_factories(policies)
     rt = Runtime(model=model.bind_tools([_lc_tool(s) for s in toolset]) if len(toolset) else model,
                  toolset=toolset, ledger=ledger,
                  builtins=builtins_for(grants, allowed_hosts),
@@ -133,6 +109,161 @@ def build_agent(*, model, tools: Sequence[Any] = (), budget: Any = None,
     if broken:                                   # cannot happen unless build() changed
         raise AssertionError(f"enforcement gate bypassable: {broken}")
     return compiled, rt
+
+
+#: The two spellings that actually work for a policy that takes arguments — the ones
+#: `docs/06-safety.md:206` and `tests/test_advisor_gate.py:211` use, and the ones the
+#: error message did NOT contain until this was fixed.
+_WORKING_SPELLINGS = (
+    "      policies=[lambda: {name}({args})]\n"
+    "      policies=[functools.partial({name}, {args})]"
+)
+
+
+def _factory_name(p: Any) -> str:
+    """The name to print for something the caller passed as a policy factory."""
+    inner = getattr(p, "func", p)                      # unwrap functools.partial
+    return getattr(inner, "__name__", None) or type(inner).__name__
+
+
+def _required_args(p: Any) -> list[str]:
+    """Best-effort list of the arguments a factory still needs.  Empty if unknowable."""
+    import inspect
+    try:
+        params = inspect.signature(p).parameters.values()
+    except (TypeError, ValueError):                    # C types, exotic callables
+        return []
+    return [q.name for q in params
+            if q.default is inspect.Parameter.empty
+            and q.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)]
+
+
+def _as_call(names: Sequence[str]) -> str:
+    """`['tool', 'requires']` -> `tool=..., requires=...`.
+
+    Keyword form, always: `RequireBeforePolicy`'s parameters are keyword-ONLY, so a
+    message that printed `RequireBeforePolicy(tool, requires)` would be handing the
+    caller a second thing that does not run — which is the whole defect this message
+    was rewritten to stop repeating.
+    """
+    return ", ".join(f"{n}=..." for n in names) or "..."
+
+
+def _check_policy_factories(policies: Sequence[Any]) -> None:
+    """Refuse a bad `policies=` entry HERE, at construction — never on the first tool call.
+
+    S-15 is why every entry must be a factory rather than an instance: `build_agent()`
+    runs exactly once and the `Runtime` it returns serves EVERY thread afterwards
+    (`Runtime` docstring), so one instance with state — a counter, a per-tool cache —
+    would be shared by every customer with no way to notice.  The classic backend probes
+    for changed state after each `run()` ("detect here rather than guess at construction",
+    `agent.py`) because a static "has attributes, therefore refuse" check would wrongly
+    refuse `EgressPolicy`, which is configured but stateless.  A graph serving many
+    threads at once has no clean run() boundary to probe across, so this backend takes
+    the other strategy: require a factory, and give each THREAD exactly one instance
+    (`Runtime._engine_for`).
+
+    This message is English.  Measured across `src/`: 108 raise sites carry a literal
+    message, 99 English and 9 Vietnamese, and this was one of the 9 — a caller who hits
+    it is reading the rest of the package in English.
+
+    The instance check alone was not enough, and got the advice wrong on top of it.
+    Measured before this function existed, on the shipped parameterised built-in
+    `RequireBeforePolicy(tool=..., requires=...)`:
+
+        instance                          ConfigError — telling you to pass the CLASS
+        bare class (following that advice) TypeError from library internals, mid-run
+        functools.partial(...)            works
+        lambda: RequireBeforePolicy(...)  works
+
+    Three separate defects.  The advice was wrong for every parameterised policy the
+    library ships; the failure it produced was a raw `TypeError` rather than a
+    `ConfigError`; and it was LAZY — `_engine_for` builds factories on the first tool
+    request, so a run that happens to call no tool completes normally and the
+    misconfiguration is never seen.  That last one inverts `docs/02-architecture.md:311`:
+    "Configuration error — raised at `Agent(...)` construction or at `@tool` import.
+    Never at run time."
+
+    So every factory is CALLED once, right here.  Calling it is the validation: a
+    signature check would miss `lambda: RequireBeforePolicy()` and anything else that
+    only fails once invoked.  The instance is then discarded — `_engine_for` builds each
+    thread's own, and reusing this one would put back the sharing S-15 forbids.  A
+    factory with side effects therefore runs one extra time at construction; that is the
+    price of the guarantee, and a policy factory that cannot be called twice is already
+    broken on a backend that calls it once per thread.
+
+    [Inference] What this still cannot catch is a factory that succeeds here and fails
+    later — one that raises only on its second call, or only under a condition this
+    build-time call does not reproduce.  Nothing short of calling it per thread would,
+    and that is `_engine_for`'s job.
+    """
+    for p in policies:
+        name = _factory_name(p)
+        if not _is_factory(p):
+            takes_nothing = not _required_args(type(p))
+            bare = (f"  {name} takes no arguments, so the bare class works too:\n"
+                    f"\n      policies=[{name}]\n" if takes_nothing else
+                    f"  A bare class works only when the policy takes no arguments —\n"
+                    f"  {name} takes {', '.join(_required_args(type(p)))}.\n")
+            raise ConfigError(
+                f"build_agent() got a policy INSTANCE ({name}), not something that "
+                f"builds one.\n"
+                f"\n"
+                f"  On the LangGraph backend build_agent() runs exactly ONCE, and the\n"
+                f"  agent it returns serves EVERY later conversation. One instance would\n"
+                f"  be shared by every customer, so any state it keeps — a counter, a\n"
+                f"  per-tool cache — would leak between them with nothing able to notice\n"
+                f"  (design/review-security.md S-15).\n"
+                f"\n"
+                f"  Pass something that BUILDS one, so each thread gets its own:\n"
+                f"\n"
+                + _WORKING_SPELLINGS.format(
+                    name=name, args=_as_call(_required_args(type(p)))) + "\n"
+                "\n"
+                + bare
+                + "\n"
+                "  -> docs/06-safety.md#4-least-privilege"
+            )
+        try:
+            made = p()
+        except TypeError as exc:
+            needs = _required_args(p)
+            raise ConfigError(
+                f"build_agent() got a policy factory that cannot be called with no "
+                f"arguments: {name}.\n"
+                f"\n"
+                f"  Every factory here is called once per conversation, with no\n"
+                f"  arguments"
+                + (f", and {name} still needs: {', '.join(needs)}.\n" if needs else ".\n")
+                + "  Bake the arguments in:\n"
+                "\n"
+                + _WORKING_SPELLINGS.format(name=name, args=_as_call(needs)) + "\n"
+                f"\n"
+                f"  Python said: {exc}\n"
+                f"\n"
+                f"  -> docs/06-safety.md#4-least-privilege"
+            ) from exc
+        except Exception as exc:                       # a factory that raises for its own reasons
+            raise ConfigError(
+                f"build_agent() called the policy factory {name} once, to check it, and "
+                f"it raised {type(exc).__name__}: {exc}\n"
+                f"\n"
+                f"  Every factory is called once per conversation, so this would have\n"
+                f"  failed on the first tool call of every run. It is refused here\n"
+                f"  instead — a configuration error belongs at construction.\n"
+                f"\n"
+                f"  -> docs/06-safety.md#4-least-privilege"
+            ) from exc
+        if not callable(getattr(made, "check", None)):
+            raise ConfigError(
+                f"build_agent() called the policy factory {name} and got back "
+                f"{type(made).__name__}, which has no check() method.\n"
+                f"\n"
+                f"  A policy is anything with check(call, ctx) -> Ruling\n"
+                f"  (harness.Policy). Without it the engine has nothing to ask.\n"
+                f"\n"
+                f"  -> docs/06-safety.md#4-least-privilege"
+            )
 
 
 def _lc_tool(spec) -> dict:
