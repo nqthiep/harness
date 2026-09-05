@@ -20,6 +20,18 @@ from .errors import HarnessError
 #: library is actually built and tested on, IDL-16/NFR-01).
 _WINDOWS_ABS = re.compile(r"^([A-Za-z]:[\\/]|\\\\)")
 
+#: G-16, design/review-architect.md — a blanket `"%" in path` rejection (this module's
+#: first version) refused every legitimate filename that happens to contain a literal
+#: `%` (`"50% off.txt"`, `"report%.csv"` — a perfectly ordinary POSIX filename
+#: character, no different from `#` or `&`), not just an attack. Narrowed to the actual
+#: threat T-7.1's own test list names: a percent-encoded sequence that would DECODE to
+#: something path-traversal-relevant — `.` (`%2e`), `/` (`%2f`), `\` (`%5c`), or a null
+#: byte (`%00`, redundant with the raw null-byte check above but kept explicit) — case-
+#: insensitively, since a real URL-decoder would accept either case. `"100%25.txt"`
+#: (which would decode to a literal `%`) is not on this list and passes: decoding it
+#: introduces no path-relevant character, so there is nothing here to refuse.
+_SUSPICIOUS_PERCENT = re.compile(r"%(?:2e|2f|5c|00)", re.IGNORECASE)
+
 
 class WorkspaceEscapeError(HarnessError):
     """Not a `ConfigError` — AC-06 forbids raising one from inside `RunEngine`, and a
@@ -45,15 +57,17 @@ def confine(root: str | Path, path: str) -> Path:
         raise WorkspaceEscapeError(f"{path!r} is not a usable workspace path")
     if "\x00" in path:
         raise WorkspaceEscapeError("workspace path contains a null byte")
-    if "%" in path:
-        # A raw filesystem path never legitimately needs percent-encoding. The one
-        # place this shape shows up in practice is an encoded ".." trying to survive a
-        # check written for the decoded form (T-7.1's own test list names this case).
+    if _SUSPICIOUS_PERCENT.search(path):
+        # G-16: narrowed from a blanket `"%" in path` (see `_SUSPICIOUS_PERCENT`'s own
+        # comment) — a bare `%` is an ordinary filename character and no longer refused
+        # on its own. What IS still refused: a percent-encoded `.`/`/`/`\`/NUL, the one
+        # shape this check exists for (an encoded ".." trying to survive a check
+        # written for the decoded form — T-7.1's own test list names this case).
         # Reject outright rather than decode-then-check — decoding invites exactly the
         # "did I decode enough times" bug class this whole function exists to avoid.
         raise WorkspaceEscapeError(
-            f"{path!r} contains a percent-encoded sequence, which a workspace path may "
-            "never use — write the literal character instead")
+            f"{path!r} contains a percent-encoded path separator or dot, which a "
+            "workspace path may never use — write the literal character instead")
     if os.path.isabs(path) or _WINDOWS_ABS.match(path):
         raise WorkspaceEscapeError(
             f"{path!r} is an absolute path; workspace paths must be relative to the "

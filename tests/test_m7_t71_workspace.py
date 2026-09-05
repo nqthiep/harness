@@ -33,6 +33,17 @@ class ConfineHopLe(unittest.TestCase):
         p = confine(self.root, "a.txt")
         self.assertTrue(str(p).startswith(str(Path(self.root).resolve())))
 
+    def test_ten_file_co_dau_phan_tram_that_di_qua_G16(self):
+        """G-16, design/review-architect.md: `%` là một ký tự tên file BÌNH THƯỜNG
+        (`"50% off.txt"`) — không phải mọi `%` đều là percent-encoding cần chặn."""
+        p = confine(self.root, "50% off.txt")
+        self.assertEqual(p, Path(self.root).resolve() / "50% off.txt")
+
+    def test_dau_phan_tram_decode_ra_chinh_no_di_qua_G16(self):
+        """`%25` decode ra `%` — không phải `.`/`/`/`\\`, không có gì nguy hiểm để chặn."""
+        p = confine(self.root, "100%25.txt")
+        self.assertEqual(p, Path(self.root).resolve() / "100%25.txt")
+
 
 class ConfineTuChoiThoatRa(unittest.TestCase):
     def setUp(self):
@@ -72,6 +83,20 @@ class ConfineTuChoiThoatRa(unittest.TestCase):
     def test_url_encoded_dot_dot_bi_tu_choi(self):
         with self.assertRaises(WorkspaceEscapeError):
             confine(self.root, "%2e%2e/%2e%2e/etc/passwd")
+
+    def test_url_encoded_dot_dot_chu_hoa_cung_bi_tu_choi(self):
+        """G-16: `_SUSPICIOUS_PERCENT` phải không phân biệt hoa/thường — một decoder
+        URL thật chấp nhận cả hai."""
+        with self.assertRaises(WorkspaceEscapeError):
+            confine(self.root, "%2E%2E/%2E%2E/etc/passwd")
+
+    def test_url_encoded_slash_bi_tu_choi(self):
+        with self.assertRaises(WorkspaceEscapeError):
+            confine(self.root, "a%2fb")
+
+    def test_url_encoded_backslash_bi_tu_choi(self):
+        with self.assertRaises(WorkspaceEscapeError):
+            confine(self.root, "a%5cb")
 
     def test_null_byte_bi_tu_choi(self):
         with self.assertRaises(WorkspaceEscapeError):
