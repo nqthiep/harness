@@ -171,6 +171,28 @@ class TheEvidenceGate(unittest.TestCase):
         self.assertGreater(cal.gap, image_embedder.gap,
                            "geometry should at least be the better of two refusals")
 
+    def test_a_refusal_says_where_its_numbers_came_from(self):
+        """The gates are judgments measured on a two-person sample. Whoever they refuse
+        should learn that from the refusal, not from an ADR they have no reason to open
+        (ADR-102)."""
+        thin = _usable(n=3)
+        self.assertTrue(thin.defaults_used)
+        self.assertIn("DEFAULTS", thin.provenance)
+        self.assertIn("two-person sample", thin.provenance)
+        self.assertIn("min_pairs=", thin.provenance)
+        self.assertIn("DEFAULTS", str(thin))
+
+        with self.assertRaises(ValueError) as ctx:
+            IdentityLedger.from_calibration(InMemoryStore(), thin)
+        self.assertIn("two-person sample", str(ctx.exception))
+
+    def test_gates_the_caller_chose_carry_no_such_caveat(self):
+        chosen = calibrate(same=(0.9,) * 3, different=(0.4,) * 3,
+                           min_pairs=3, min_gap=0.1)
+        self.assertFalse(chosen.defaults_used)
+        self.assertEqual(chosen.provenance, "")
+        self.assertNotIn("DEFAULTS", str(chosen))
+
     def test_the_default_gates_are_the_documented_numbers(self):
         """Pinned, because both are judgments and the reasoning for each is written
         beside it: ten pairs a side so the threshold is a property of the embedder

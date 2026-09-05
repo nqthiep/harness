@@ -153,6 +153,40 @@ class SessionMode(unittest.TestCase):
         with self.assertRaises(SessionModeError):
             s.say("nua")
 
+    def test_a_mode_can_be_fixed_where_the_decision_is_made(self):
+        """`SessionModeError` used to arrive at the first CALL — in a request handler,
+        far from the line that chose wrong. `mode=` fails at the choice instead
+        (ADR-102)."""
+        agent = Agent(name="S", job="j", model="fake",
+                      provider=FakeModel([FakeModel.text("x")]))
+        s = Session(agent, mode="async")
+        with self.assertRaises(SessionModeError):
+            s.say("chao")
+        self.assertEqual(asyncio.run(s.asay("chao")).text, "x")
+
+    def test_sync_and_say_name_the_same_mode(self):
+        agent = Agent(name="S", job="j", model="fake",
+                      provider=FakeModel([FakeModel.text("x")]))
+        self.assertEqual(Session(agent, mode="sync")._mode,
+                         Session(agent, mode="say()")._mode)
+
+    def test_a_mode_that_is_not_a_mode_is_refused_at_construction(self):
+        agent = Agent(name="S", job="j", model="fake",
+                      provider=FakeModel([FakeModel.text("x")]))
+        with self.assertRaises(ValueError) as ctx:
+            Session(agent, mode="whenever")
+        self.assertIn("not a mode", str(ctx.exception))
+
+    def test_a_fork_does_not_inherit_the_mode(self):
+        """Because `SessionModeError` tells the caller to fork in order to go the other
+        way — a fork that carried the mode would make its own error message false."""
+        agent = Agent(name="S", job="j", model="fake",
+                      provider=FakeModel([FakeModel.text("x"), FakeModel.text("y")]))
+        s = Session(agent, mode="sync")
+        s.say("chao")
+        self.assertIsNone(s.fork()._mode)
+        self.assertEqual(asyncio.run(s.fork().asay("nua")).text, "y")
+
     def test_a_fresh_session_has_no_mode_until_the_first_turn(self):
         self.assertIsNone(self._session()._mode)
 

@@ -55,7 +55,8 @@ class SessionModeError(HarnessError):
 class Session:
     def __init__(self, agent: Agent, *, owner: str | None = None,
                  ttl_s: float | None = None, budget: Any | None = None,
-                 id: str | None = None, chat: Chat | None = None) -> None:
+                 id: str | None = None, chat: Chat | None = None,
+                 mode: str | None = None) -> None:
         self.id = id if id is not None else "sess_" + uuid.uuid4().hex[:16]
         self.owner = owner
         self.created_at = time.time()
@@ -78,8 +79,21 @@ class Session:
         # loop closes), so rebinding when the loop changes loses nothing.
         self._alock: asyncio.Lock | None = None
         self._aloop: Any = None
-        #: `"sync"`, `"async"`, or `None` until the first turn — see `SessionModeError`.
-        self._mode: str | None = None
+        #: `"say()"`, `"asay()"`, or `None` until the first turn — see `SessionModeError`.
+        #:
+        #: Settable at CONSTRUCTION, which is where the decision is actually made. Left
+        #: to the first call, the refusal arrives in a request handler far from the line
+        #: that chose wrong — my own review of ADR-093 called that the cheaper mechanism,
+        #: and it was (ADR-102). Both still work: `mode=` fails at the choice, and an
+        #: unset mode still fixes itself on first use for callers who never mix.
+        if mode is not None and mode not in ("say()", "asay()", "sync", "async"):
+            raise ValueError(
+                f"mode={mode!r} is not a mode. Use \"sync\" (or \"say()\") for a "
+                f"session driven with `say()`, \"async\" (or \"asay()\") for one "
+                f"driven with `asay()`.")
+        self._mode: str | None = (
+            None if mode is None
+            else {"sync": "say()", "async": "asay()"}.get(mode, mode))
 
     @property
     def agent(self) -> Agent:
@@ -156,14 +170,18 @@ class Session:
         async with self._async_lock():
             return await self._chat.asay(message, on_delta=on_delta)
 
-    def fork(self, *, owner: str | None = None, ttl_s: float | None = None) -> "Session":
+    def fork(self, *, owner: str | None = None, ttl_s: float | None = None,
+             mode: str | None = None) -> "Session":
         """A NEW `Session` — new id, its own lock — whose history starts as a COPY of
         this one's current messages and spend. A branch point: mutating the fork
         (further `.say()` calls on it) never touches the original, and vice versa
         (T-8.6's own "fork" requirement)."""
+        # The mode is NOT inherited: `SessionModeError` tells the caller to fork in order
+        # to drive the conversation the other way, so a fork that carried the mode with it
+        # would make its own error message false (ADR-102).
         return Session(self.agent, owner=owner if owner is not None else self.owner,
                        ttl_s=ttl_s if ttl_s is not None else self.ttl_s,
-                       chat=self._chat.fork())
+                       chat=self._chat.fork(), mode=mode)
 
     @classmethod
     def resume_from(cls, agent: Agent, transcript: Any, *, owner: str | None = None,

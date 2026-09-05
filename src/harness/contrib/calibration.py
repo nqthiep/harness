@@ -95,6 +95,29 @@ class Calibration:
                 and self.gap >= self.min_gap)
 
     @property
+    def defaults_used(self) -> bool:
+        """Whether the gates that judged this sample are this library's defaults.
+
+        It matters to whoever reads a refusal: the numbers were measured on a
+        two-person sample, in an environment with no face-recognition model, and the ADR
+        that set them says so. A user who hits the gate should learn that from the gate,
+        not from an ADR they have no reason to open (ADR-102).
+        """
+        return (self.min_pairs == MIN_CALIBRATION_PAIRS
+                and self.min_gap == MIN_CALIBRATION_GAP)
+
+    @property
+    def provenance(self) -> str:
+        """Where the gates came from, in one clause. `""` when the caller set them."""
+        if not self.defaults_used:
+            return ""
+        return (f"  These gates ({self.min_pairs} pairs, {self.min_gap} gap) are this "
+                f"library's DEFAULTS.\n  They were measured on a two-person sample and "
+                f"are a starting point, not a\n  calibration of your data — pass "
+                f"`min_pairs=`/`min_gap=` once you have measured\n  your own (ADR-095, "
+                f"ADR-102).")
+
+    @property
     def complaint(self) -> str:
         """Why `enough_evidence` is false, in one clause. `""` when it is true."""
         if not self.separable:
@@ -128,8 +151,9 @@ class Calibration:
                     f"not the number — a generic image embedder encodes the picture, "
                     f"not the person (see DEFAULT_THRESHOLD).")
         assert self.threshold is not None
+        tail = f"\n{self.provenance}" if self.provenance else ""
         return (f"{head}\n  separable at {self.threshold:.4f}, gap {self.gap:+.4f}, but "
-                f"NOT ENOUGH EVIDENCE: {self.complaint}.")
+                f"NOT ENOUGH EVIDENCE: {self.complaint}.{tail}")
 
 def calibrate(same: Sequence[float], different: Sequence[float], *,
               margin: float = DEFAULT_AMBIGUITY_MARGIN,

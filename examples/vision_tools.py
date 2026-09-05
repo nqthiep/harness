@@ -302,7 +302,8 @@ class IdentityLedger:
                 f"  {calibration}\n\n"
                 "  Naming a person on these embeddings would be a coin toss wearing a "
                 "number.\n\n"
-                "  If you have measured this sample and accept it anyway, say so:\n"
+                + (f"{calibration.provenance}\n\n" if calibration.provenance else "")
+                + "  If you have measured this sample and accept it anyway, say so:\n"
                 "      IdentityLedger.from_calibration(store, cal, "
                 "accept_thin_evidence=True)\n\n"
                 "  -> examples/vision_tools.py::DEFAULT_THRESHOLD"

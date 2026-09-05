@@ -4188,6 +4188,61 @@ name-level inversion, mechanised, since the import-level tests could not see it.
 tests for the third ledger's lost-update behaviour. Full suite 1184 passed; the audit
 table lives in `contrib/__init__.py`, next to the criteria it applies.
 
+### ADR-102 — Two self-critiques, acted on
+
+**Status:** Accepted.
+
+**Context.** An architecture review of this repository ended with three criticisms of my
+own recent work. Two were cheap to fix and were left unfixed, which is how a
+self-critique becomes decoration.
+
+**1. `SessionModeError` fired at first use, not at the decision (ADR-093).** A session
+fixes its mode — sync or async — the first time it is driven, so a caller who chose wrong
+learns about it inside a request handler, far from the line that made the choice. The
+review said I had picked the cheaper mechanism, and I had.
+
+`Session(agent, mode="async")` now fixes it at construction, where the decision is
+actually made, and rejects a mode that is not a mode. `"sync"`/`"async"` and
+`"say()"`/`"asay()"` name the same two things, because the caller is choosing between two
+call styles and should not have to guess which vocabulary this constructor wants. The
+first-use claim still works for callers who never mix — this adds a place to be explicit,
+it does not force one.
+
+`fork()` deliberately does NOT inherit the mode: `SessionModeError`'s own message tells
+the caller to fork in order to drive the conversation the other way, so a fork carrying
+the mode with it would make that message false. Asserted, because an error message that
+lies is worse than no error message.
+
+**2. The calibration gates are judgments measured on a two-person sample (ADR-095).**
+`MIN_CALIBRATION_PAIRS = 10` and `MIN_CALIBRATION_GAP = 0.05` each rest on one
+measurement, taken in an environment with no face-recognition model, on two people — and
+the ADR that introduced them says so. They are nonetheless gates in a library, and the
+person who meets one is not reading that ADR.
+
+They now carry their own provenance to whoever they refuse. `Calibration.defaults_used`
+is true when the gates are this library's, and `provenance` renders the caveat into
+`__str__` and into `IdentityLedger.from_calibration`'s refusal: these numbers are
+DEFAULTS, measured on a two-person sample, replace them with `min_pairs=`/`min_gap=` once
+you have measured your own. Gates a caller chose carry no such note — the caveat belongs
+to the default, not to the mechanism.
+
+That is the honest fix rather than deleting the defaults. A library that refuses to ship
+a starting number makes every caller invent one, and an invented number has no
+provenance at all.
+
+**The third criticism is not fixed, and is restated instead.** `contrib/driver.py` is 756
+lines with one real consumer — a lot of shipped surface for a framework whose safety
+argument justifies shipping the four RULES, not necessarily all ten classes. Reducing it
+is a design question about what a `Driver` owns, not a cleanup, and inventing an answer
+under time pressure is how the surface got there. It stays on the record as the open
+item it is.
+
+**Test.** Four in `test_m8_t86_session.py` (construction-time mode, the two vocabularies,
+an invalid mode, a fork that does not inherit) and two in `test_vision_calibration.py`
+(a default's refusal carries its provenance; a chosen gate's does not). Three mutations,
+each caught: a fork inheriting the mode, any string accepted as a mode, and the
+provenance never firing. Full suite 1193 passed.
+
 | # | Decision | Rationale |
 |---|---|---|
 | IDL-01 | `Decimal` for all money; `float` banned in `budget/` by lint | A rounding error in a spend ceiling is a real bug class |
