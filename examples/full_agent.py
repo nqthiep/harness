@@ -16,11 +16,13 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from pathlib import Path
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import IntEnum
 
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 
 import httpx
 from fake_chat import FakeChat

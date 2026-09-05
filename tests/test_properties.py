@@ -7,6 +7,7 @@ from harness.models.base import ModelResponse
 from harness.models.fake import FakeModel
 from harness.models.pricing import PRICES, MAX_OUTPUT, price
 from harness.result import Usage
+import _paths
 
 
 @tool(effect="read")
@@ -121,14 +122,13 @@ class Properties(unittest.TestCase):
         under any default configuration: max_result_tokens(4,000) x steps(20) = 80,000
         tokens against an editing threshold of 120,000 on the smallest window.
         """
-        import pathlib
         from harness.context.window import EDIT_AT
         from harness.models.pricing import MAX_CONTEXT
         smallest = min(w for k, w in MAX_CONTEXT.items() if k != "fake")
         reachable_tokens = 20 * 4_000                      # steps x max_result_tokens
         default_reachable = reachable_tokens >= smallest * EDIT_AT
         if not default_reachable:
-            doc = pathlib.Path("docs/07-cost.md").read_text()
+            doc = (_paths.DOCS / "07-cost.md").read_text()
             self.assertIn("not reachable on the shipped defaults", doc,
                           "context management cannot fire on defaults and the docs do not say so")
 

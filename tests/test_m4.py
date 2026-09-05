@@ -6,6 +6,7 @@ from harness.memory import InMemoryStore, SqliteStore
 from harness.memory.sqlite import SCHEMA_VERSION
 from harness.models.fake import FakeModel
 from harness.plugins import PluginRegistry
+import _paths
 
 
 @tool(effect="read")
@@ -202,8 +203,7 @@ class SubagentBudget(unittest.TestCase):
                                  f"{budget}: delegation overshot by more than the stated bound")
 
     def test_the_bound_compounds_one_level_per_delegation_and_is_documented(self):
-        import pathlib
-        doc = pathlib.Path("docs/07-cost.md").read_text()
+        doc = (_paths.DOCS / "07-cost.md").read_text()
         self.assertIn("compounds one level per delegation", doc,
                       "SC-2b's per-ledger bound composes with depth; the docs must say so")
 

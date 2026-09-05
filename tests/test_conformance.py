@@ -11,6 +11,7 @@ from harness.models.base import ModelRequest, ModelResponse
 from harness.models.fake import FakeModel
 from harness.result import StopReason, Usage
 import harness.testing as T
+import _paths
 
 RAN: list = []
 
@@ -240,9 +241,8 @@ class NotOverEngineered(unittest.TestCase):
     """HARNESS.md §III — the loop staying boring is what keeps it auditable (IDL-13)."""
 
     def test_the_loop_is_still_under_its_ceiling(self):
-        import pathlib
-        for f, cap in (("src/harness/run.py", 250), ("src/harness/dispatch.py", 250)):
-            body = [l for l in pathlib.Path(f).read_text().splitlines()
+        for f, cap in (("run.py", 250), ("dispatch.py", 250)):
+            body = [l for l in (_paths.CORE / f).read_text().splitlines()
                     if l.strip() and not l.strip().startswith("#")]
             self.assertLessEqual(len(body), cap, f"{f} is {len(body)} lines")
 
@@ -295,7 +295,7 @@ class StaticChecks(unittest.TestCase):
         import pathlib as _p
         import re
 
-        log = _p.Path("docs/12-decision-logs.md").read_text()
+        log = (_paths.DOCS / "12-decision-logs.md").read_text()
         defined = set(re.findall(r"^### (ADR-\d{3})", log, re.M))
         cited = set()
         for root in ("src", "tests", "examples", "docs", "design"):
@@ -309,10 +309,9 @@ class StaticChecks(unittest.TestCase):
         """The index is the only thing that turns a number back into a subject without
         scrolling 4,000 lines, so it is worth nothing the moment it is stale."""
         import collections
-        import pathlib as _p
         import re
 
-        log = _p.Path("docs/12-decision-logs.md").read_text()
+        log = (_paths.DOCS / "12-decision-logs.md").read_text()
         sections = re.findall(r"^### (ADR-\d{3})", log, re.M)
         index_block = log.split("## 0. Index", 1)[1].split("\n---", 1)[0]
         indexed = re.findall(r"^\| \[(ADR-\d{3})\]", index_block, re.M)
@@ -342,7 +341,7 @@ class StaticChecks(unittest.TestCase):
         structural contract, so the duck-typed record its own bench passes was rejected.
         """
         import tomllib
-        with open("pyproject.toml", "rb") as f:
+        with open(_paths.repo("pyproject.toml"), "rb") as f:
             files = tomllib.load(f)["tool"]["mypy"]["files"]
         self.assertIn("examples", files,
                       "examples/ dropped out of the checked set; a separate `mypy "
@@ -410,14 +409,14 @@ class TheProofRuns(unittest.TestCase):
         here because an example nobody runs rots — and this one already shipped a broken
         state machine once (Round 41)."""
         import subprocess
-        r = subprocess.run([sys.executable, "examples/full_agent.py"],
+        r = subprocess.run([sys.executable, str(_paths.EXAMPLES / "full_agent.py")],
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout[-2500:] + r.stderr[-1500:])
         self.assertIn("WHICH CAPABILITY ON WHICH BACKEND", r.stdout)
 
     def test_the_proof_passes(self):
         import subprocess
-        r = subprocess.run([sys.executable, "examples/proof.py"],
+        r = subprocess.run([sys.executable, str(_paths.EXAMPLES / "proof.py")],
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout[-3000:] + r.stderr[-2000:])
         self.assertIn("Proven with real running code", r.stdout)

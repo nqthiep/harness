@@ -34,7 +34,8 @@ import asyncio
 import os
 import sys
 
-sys.path.insert(0, "src")               # standalone: `conftest.py` never applies here
+import _paths                           # standalone: `conftest.py` never applies here
+sys.path.insert(0, str(_paths.SRC))
 
 # The SDK reads ANTHROPIC_BASE_URL, and in a Claude Code environment that points at a
 # host-managed gateway holding somebody else's credentials. Pin the real endpoint so the

@@ -13,7 +13,7 @@ import unittest
 
 # Also run directly, outside pytest — README says `python3 tests/test_roadmap.py` —
 # so `tests/conftest.py` cannot be relied on here.
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
+import _paths; sys.path.insert(0, str(_paths.SRC))
 
 from harness import Agent, tool
 from harness.models.fake import FakeModel

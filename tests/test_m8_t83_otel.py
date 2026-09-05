@@ -5,6 +5,8 @@ riêng) bằng SDK OTel THẬT (`InMemorySpanExporter`/`InMemoryMetricReader`), 
 import sys
 import unittest
 
+import _paths
+
 from harness import Agent, tool
 from harness.models.fake import FakeModel
 from harness.observe.otel import OtelExporter
@@ -242,7 +244,7 @@ class KhongCoTracerMeterTuXay(unittest.TestCase):
 class ImportKhongEagerOtel(unittest.TestCase):
     def test_import_harness_khong_keo_theo_opentelemetry(self):
         import subprocess
-        code = ("import sys; sys.path.insert(0, 'src'); import harness; "
+        code = (f"import sys; sys.path.insert(0, {str(_paths.SRC)!r}); import harness; "
                 "print('opentelemetry' in sys.modules)")
         rc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
         self.assertEqual(rc.stdout.strip(), "False", rc.stderr)

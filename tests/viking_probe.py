@@ -38,7 +38,8 @@ The config this was measured against:
 import asyncio
 import sys
 
-sys.path.insert(0, "src")               # standalone: `conftest.py` never applies here
+import _paths                           # standalone: `conftest.py` never applies here
+sys.path.insert(0, str(_paths.SRC))
 
 URL = "http://127.0.0.1:18999"
 

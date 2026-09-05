@@ -5,8 +5,9 @@ from harness import Agent, tool, ConfigError, MissingEffectError, ToolSchemaErro
 from harness.cli import (NO_KEY_MESSAGE, api_key, cmd_new, cmd_setup, key_status,
                          read_env_file, write_env)
 from harness.models.fake import FakeModel
+import _paths
 
-DOC = pathlib.Path("docs/15-first-agent.md").read_text()
+DOC = (_paths.DOCS / "15-first-agent.md").read_text()
 
 
 FENCE = re.compile(r"^```(\w*)\n(.*?)^```", re.S | re.M)
@@ -457,7 +458,7 @@ class TutorialPromises(unittest.TestCase):
         an Agent are executed with a stubbed provider rather than skipped — skipping them
         left the tutorial's headline example untested (Round 29)."""
         ns = {}
-        exec("import sys; sys.path.insert(0, 'src')\n"
+        exec(f"import sys; sys.path.insert(0, {str(_paths.SRC)!r})\n"
              "import harness\nfrom harness import tool\n"
              "from harness.models.fake import FakeModel\n"
              "_real = harness.Agent\n"
@@ -585,8 +586,8 @@ class Round30Promises(unittest.TestCase):
 
     def test_every_harness_module_the_docs_import_exists(self):
         import importlib
-        alldocs = "\n".join(p.read_text() for p in pathlib.Path("docs").glob("*.md"))
-        alldocs += pathlib.Path("README.md").read_text()
+        alldocs = "\n".join(p.read_text() for p in _paths.DOCS.glob("*.md"))
+        alldocs += _paths.repo("README.md").read_text()
         mods = set(re.findall(r"^\s*(?:from|import)\s+(harness[\w.]*)", alldocs, re.M))
         missing = []
         for m in sorted(mods):
@@ -598,7 +599,7 @@ class Round30Promises(unittest.TestCase):
 
     def test_every_cli_command_the_docs_promise_is_implemented(self):
         from harness import cli
-        alldocs = "\n".join(p.read_text() for p in pathlib.Path("docs").glob("*.md"))
+        alldocs = "\n".join(p.read_text() for p in _paths.DOCS.glob("*.md"))
         promised = set(re.findall(r"`harness (\w+)", alldocs))
         have = {n[4:] for n in dir(cli) if n.startswith("cmd_")}
         self.assertEqual(promised - have, set(),
@@ -623,7 +624,7 @@ class Round30Promises(unittest.TestCase):
 
     def test_returns_and_tools_share_one_schema_generator(self):
         """AC-24: no second Python-type-to-schema path may exist."""
-        src = pathlib.Path("src/harness/agent.py").read_text()
+        src = (_paths.CORE / "agent.py").read_text()
         self.assertIn("from .tools.schema import _schema_for", src)
 
     def test_calculate_never_evals_model_supplied_text(self):

@@ -29,8 +29,9 @@ import time
 import urllib.request
 from pathlib import Path
 
-sys.path.insert(0, "src")               # standalone: `conftest.py` never applies here
-sys.path.insert(0, "examples")
+import _paths                           # standalone: `conftest.py` never applies here
+sys.path.insert(0, str(_paths.SRC))
+sys.path.insert(0, str(_paths.EXAMPLES))
 
 MODELS = "https://storage.googleapis.com/mediapipe-models/"
 ASSETS = "https://storage.googleapis.com/mediapipe-assets/"

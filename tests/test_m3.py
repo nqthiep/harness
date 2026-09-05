@@ -7,6 +7,7 @@ from harness.observe.console import ConsoleExporter
 from harness.observe.events import EventKind
 from harness.observe.transcript import read
 from harness.result import StopReason
+import _paths
 
 RAN: list = []
 
@@ -140,8 +141,12 @@ class M3(unittest.TestCase):
         self.assertNotIn("c1", out)
 
     def test_a_piped_run_emits_no_progress_on_stdout(self):
-        script = textwrap.dedent("""
-            import sys; sys.path.insert(0, "src")
+        # The child gets an ABSOLUTE `src`. A relative one is resolved against the
+        # child's cwd, which is how the 136 `sys.path.insert` calls `conftest.py`
+        # removed came back through the back door: they survived inside the strings
+        # these tests hand to a subprocess.
+        script = textwrap.dedent(f"""
+            import sys; sys.path.insert(0, {str(_paths.SRC)!r})
             from harness import Agent
             from harness.models.fake import FakeModel
             a = Agent(name="T", job="j", provider=FakeModel([FakeModel.text("hi")]),
@@ -149,7 +154,7 @@ class M3(unittest.TestCase):
             print(a.run("x"))
         """)
         out = subprocess.run([sys.executable, "-c", script], capture_output=True,
-                             text=True, cwd=".")
+                             text=True, cwd=str(_paths.ROOT))
         self.assertEqual(out.stdout.strip(), "hi", f"stdout polluted: {out.stdout!r}")
 
     # -- taxonomy ---------------------------------------------------------
@@ -164,8 +169,8 @@ class M3(unittest.TestCase):
     def test_every_kind_has_an_emit_site(self):
         """Round 27: three of fifteen kinds were never emitted, and one of them because
         window.manage() was built, tested, and never called from the loop."""
-        import re, pathlib
-        src = "\n".join(p.read_text() for p in pathlib.Path("src").rglob("*.py"))
+        import re
+        src = "\n".join(p.read_text() for p in _paths.SRC.rglob("*.py"))
         sites = set(re.findall(r"emit\(\s*EventKind\.([A-Z_]+)", src))
         missing = [k.value for k in EventKind if k.name not in sites]
         self.assertEqual(missing, [], f"kinds the code can never emit: {missing}")
@@ -245,19 +250,18 @@ class M3(unittest.TestCase):
         """Round 27: max_result_tokens(4,000) x budget.steps(20) = 80,000 tokens, and the
         editing threshold on the smallest window is 120,000.  The feature is dead by
         arithmetic on defaults; the docs must say so rather than imply it is active."""
-        import pathlib
         from harness.context.window import EDIT_AT
         from harness.models.pricing import MAX_CONTEXT
         reachable = 20 * 4_000
         smallest = min(w for k, w in MAX_CONTEXT.items() if k != "fake")
         self.assertLess(reachable, smallest * EDIT_AT)
-        doc = pathlib.Path("docs/07-cost.md").read_text()
+        doc = (_paths.DOCS / "07-cost.md").read_text()
         self.assertIn("not reachable on the shipped defaults", doc,
                       "a feature no default can reach must say so in the docs")
 
     def test_the_enum_and_the_documented_table_agree(self):
-        import re, pathlib
-        doc = pathlib.Path("docs/05-data-and-state.md").read_text()
+        import re
+        doc = (_paths.DOCS / "05-data-and-state.md").read_text()
         table = set(re.findall(r"^\| `([a-z]+\.[a-z_]+)` \|", doc, re.M))
         self.assertEqual(table, {k.value for k in EventKind},
                          "the taxonomy table and the enum have drifted")

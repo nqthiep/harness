@@ -17,11 +17,13 @@ import json
 from typing import Any
 import subprocess
 import sys
+from pathlib import Path
 import time
 from dataclasses import dataclass
 from decimal import Decimal
 
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 
 # Each row is `(requirement_id, requirement, detail)` — unpacked three-wide at the
 # bottom of the file, which is what the annotation has to say.
@@ -336,7 +338,8 @@ warn("SI.4", "NO automatic model routing -- rejected by the council, for a reaso
 section("SI.5 + SIII", "EFFICIENT * SOLID * CLEAN CODE * KISS * NOT OVER-ENGINEERED")
 t0 = time.perf_counter()
 out = subprocess.run([sys.executable, "-c",
-                      "import sys;sys.path.insert(0,'src');import harness"],
+                      "import sys;sys.path.insert(0,%r);import harness"
+                      % str(Path(__file__).resolve().parents[1] / "src")],
                      capture_output=True)
 ms = (time.perf_counter() - t0) * 1000
 assert out.returncode == 0
@@ -429,7 +432,7 @@ for l in ['          from harness import Agent, tool', '',
     print(l)
 print()
 
-sys.path.insert(0, "tests")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 from readability import grade                                          # noqa: E402
 
 grades = {}

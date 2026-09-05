@@ -16,8 +16,9 @@ never breaks a test on its own — it just makes the next one harder to write.
 import ast
 import pathlib
 import unittest
+import _paths
 
-CORE = pathlib.Path("src/harness")
+CORE = _paths.CORE
 
 #: Layers, outermost first. A module may import its own layer and anything BELOW it,
 #: never above. `cli` and `server` are entry points: they exist to be imported BY a user,
@@ -25,11 +26,32 @@ CORE = pathlib.Path("src/harness")
 ENTRY_POINTS = ("harness.cli", "harness.server")
 
 
+#: Below this, `modules()` is not measuring the package — it is measuring a typo.
+#: The number is deliberately far from the real count (102 at the time of writing) and
+#: deliberately not derived from it: a guard that tracks the thing it guards moves every
+#: time the package does and stops meaning anything.
+_MIN_PLAUSIBLE_MODULES = 20
+
+
 def modules() -> dict[str, pathlib.Path]:
+    """Every module in core, by dotted name.
+
+    The guard at the end is the actual fix for what `cd /tmp && pytest` exposed. The
+    anchor being wrong was how it got triggered; the DEFECT is that `rglob` on a
+    directory that is not there yields nothing and raises nothing, so an empty module
+    graph answered every question below with "no cycles, no violations" and four tests
+    passed over nothing. An empty measurement and a clean one have to be
+    distinguishable, or the cheapest way to make this file green is to break it.
+    """
     out = {}
     for f in CORE.rglob("*.py"):
         name = ".".join(f.relative_to(CORE.parent).with_suffix("").parts)
         out[name.removesuffix(".__init__")] = f
+    if len(out) < _MIN_PLAUSIBLE_MODULES:
+        raise AssertionError(
+            f"only {len(out)} modules found under {CORE} — this file cannot prove "
+            f"anything about a package it cannot see, and reporting 'no cycles' over "
+            f"an empty graph is worse than failing.")
     return out
 
 
@@ -247,7 +269,7 @@ class TheTiersPointOneWay(unittest.TestCase):
                          f"contrib names {missing} but nothing in src/harness provides it")
 
     def test_an_example_may_import_contrib(self):
-        used = [p.name for p in pathlib.Path("examples").glob("*.py")
+        used = [p.name for p in _paths.EXAMPLES.glob("*.py")
                 if "harness.contrib" in p.read_text()]
         self.assertTrue(used, "if nothing uses contrib, contrib has no consumer")
 
