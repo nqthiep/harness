@@ -58,7 +58,7 @@ from typing import Any, Sequence
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
 
-from harness import Agent, Middleware, with_middleware
+from harness import Agent, Effect, Middleware, with_middleware
 from harness.errors import ConfigError
 
 from vision_tools import (ENROLL, IDENTIFY, LOOK, Camera, DEFAULT_MARGIN,
@@ -409,7 +409,11 @@ def _demo() -> None:
         provider=FakeModel([FakeModel.tool_call(LOOK, {}),
                             FakeModel.tool_call(LOOK, {}),
                             FakeModel.text("xong")]),
-        tools=list(CodeTools(root=".").tools()),
+        # `write` sinks only. `CodeTools` also ships two `danger` tools (`run_tests`,
+        # `refresh_codebase_docs`), and `look` next to either of those is the lethal
+        # trifecta `_check_tool_set` refuses outright — `private=True` is a flow rule,
+        # it does not answer the toolset question one layer down.
+        tools=[t for t in CodeTools(root=".").tools() if t.effect is not Effect.DANGER],
     ).with_profile(VisionProfile(detector=detector, store=store, private=True,
                                  camera=Camera(capture=FakeCapture())))
     print(f"  sensitive   : {sorted(private_agent._grants.sensitive)}")
