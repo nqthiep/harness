@@ -16,10 +16,15 @@ the full reasoning restated.
 
 ## 0. Status summary
 
-**All 58 original findings have been reviewed. 10 new findings (N-1…N-10): N-1…N-9
+**All 58 original findings have been reviewed. 36 new findings, N-1…N-36:** N-1…N-9
 self-caught while building M6-M10, N-10 closes direct user feedback ("2 API interfaces
-is confusing") that came afterward.** Genuinely still open, today: **1 item**
-(deliberately deferred, not a time shortage) — see `## 7`.
+is confusing") that came afterward, N-11…N-36 renumber three rounds of adversarial
+systems-architect review against the shipped code (`G-1`…`G-17` round 1, `H-1`…`H-9`
+rounds 2-3 — detail in `review-architect.md`/`review-architect-round2.md`/
+`review-architect-round3.md`). Three of those 36 (N-33/H-4, N-35/H-8, N-36/H-9) are
+documentation-only corrections, not code defects; N-31 (H-5) is a documented boundary
+of an inherent interface limit, not a fixable gap. Genuinely still open, today: **1
+item** (deliberately deferred, not a time shortage) — see `## 7`.
 
 ### Security (S-1…S-29)
 
@@ -81,6 +86,45 @@ is confusing") that came afterward.** Genuinely still open, today: **1 item**
 | N-8 | `execute_once` had a real caller but was never wired into tool dispatch | **Fixed** — wired into `Dispatcher._invoke`/`_run_tools`, both backends; closes exactly half of S-4's "retry mid-run," not all of it |
 | N-9 | `tenant_id` never reached `Policy.check()` | **Fixed** |
 | N-10 | "2 API interfaces" (classic backend vs. LangGraph) | **Fixed** — `Agent(durable=True)` |
+
+### Adversarial architect-review findings, three rounds (N-11…N-36)
+
+A systems-architect review, run three times against the shipped code (never against
+design text or a prior round's own commit message) — full detail in
+[review-architect.md](review-architect.md) (round 1, `G-1`…`G-17`),
+[review-architect-round2.md](review-architect-round2.md) (round 2, `H-1`…`H-6`), and
+[review-architect-round3.md](review-architect-round3.md) (round 3, re-verifies round
+2's six and adds `H-7`…`H-9`). Renumbered `N-11`…`N-36` here for one continuous ledger;
+`G-`/`H-` ids in the "Summary" column are the citation a fix commit actually carries.
+
+| Id | Summary | Status |
+|---|---|---|
+| N-11 (G-1) | `CodeTools.write_source`/`run_tests` classified `write`, not `danger`, despite being arbitrary code execution | **Fixed** — both reclassified `danger` |
+| N-12 (G-2) | `run_tests(target=…)`/`git_diff(path=…)` never passed through `confine()` | **Fixed** — both now confined to the workspace root |
+| N-13 (G-3) | Service API's approval endpoint executed a `danger` tool with no authentication | **Fixed** — `authenticate=` is a required constructor argument |
+| N-14 (G-4) | `calculate("9**9**9**9")` — an unbounded `read`-effect tool — froze the process | **Fixed** — `Pow` bounded |
+| N-15 (G-5) | `TaskLedger`: concurrent `add_task`s lost updates against a shared `Store` | **Fixed** |
+| N-16 (G-6) | `ProgressLedger`'s stall detector evaded forever by one varying nonce argument | **Fixed** |
+| N-17 (G-7) | `Sandbox.isolation` had no field — nothing distinguished "isolated" from "zero isolation" at type or runtime level | **Fixed** — `isolation` field added; see N-30 (H-2) for the event-wiring remainder |
+| N-18 (G-8) | `with_provider_retry()` could bill 0 to the `Ledger` for up to 5 real provider calls on final failure | **Fixed** — `settle_worst_case()` on retry-exhausted failure; see N-29 (H-1) for the success-path remainder |
+| N-19 (G-9) | `allowed_hosts=()` (deny-all) and `allowed_hosts=None` (allow-all) differed only by a comment | **Fixed** — loud `UserWarning` on `None` |
+| N-20 (G-10) | Service API's `Idempotency-Key`/run registry/lock are all process-local; `--workers 4` silently breaks all three | **Fixed with documentation** — no code fix available without a cross-process `Store`-backed registry (a larger redesign); stated plainly in the module's own docstring |
+| N-21 (G-11) | A Service-API approval `require_approval_evidence=True` DENYs still reported `resolved: true` to the approver | **Fixed** |
+| N-22 (G-12) | An untrusted MCP server's `tool.name` choice could force a slug collision, raising `DuplicateToolError` at construction | **Fixed** |
+| N-23 (G-13) | S-9's remainder: the same MCP endpoint under `trusted=True` could lower `danger`→`read` between two `connect()` calls | **Fixed** — `reviewed_tools` hash-pins a tool's shape at review time; see N-34 (H-6) for the remaining default-configuration warning |
+| N-24 (G-14) | `run_golden_set()`/`benchmark()` had no aggregate budget ceiling across N cases | **Fixed** — `run_golden_set` first; see N-28 (H-3) for `benchmark()`'s matching fix |
+| N-25 (G-15) | A sub-agent inherited `safety` but not `approve=` — an unchecked axis | **Fixed** — construction now refuses a child with no `approve=` when the parent has one; see N-31 (H-5) for the check's own documented limit |
+| N-26 (G-16) | `confine()` over-rejected any path containing `%`, breaking legitimate filenames | **Fixed** — narrowed to `%2e`/`%2f`/`%5c`/`%00` |
+| N-27 (G-17) | A `Middleware` hook's own exception was indistinguishable from a tool failure, retried like one | **Fixed** — `MiddlewareHookError` reported separately, never retried |
+| N-28 (H-3) | `benchmark()` — the sibling `run_golden_set()`'s N-24 (G-14) fix named alongside it — still had no aggregate ceiling | **Fixed** — `total_budget=`/`cost_of=`, same shape as `run_golden_set` |
+| N-29 (H-1) | `with_provider_retry()`'s SUCCESS path billed the `Ledger` for one call regardless of how many real attempts preceded it (both backends — round 3 found this broader than round 2's own file list) | **Fixed** — `settle_after_retries()`, the success-path twin of N-18 (G-8)'s `settle_worst_case()` |
+| N-30 (H-2) | N-17 (G-7)'s `Sandbox.isolation` field existed but reached no event — `06 §C`'s own claim that "an audit event can show isolation" was false | **Fixed** — `ToolSpec.isolation` now rides onto `TOOL_FINISHED` |
+| N-31 (H-5) | `_check_subagent_safety`'s `approve=` check verifies a callback exists, not that it approves anything — a child can rubber-stamp with `lambda **_: True` | **Documented** — inherent limit of a caller-supplied-callback interface, not a fixable code gap; docstring now states the boundary explicitly |
+| N-32 (H-6) | N-23 (G-13)'s `reviewed_tools=None` default left the S-9 rug-pull window exactly as open as before the fix, silently | **Fixed** — `McpServerPolicy.__post_init__` warns when `trusted=True` has no `reviewed_tools` |
+| N-33 (H-4) | `docs/02-architecture.md` still said "five" plugin seams (twice) and its module map was missing 13 real modules while naming 6 that never existed | **Fixed** |
+| N-34 (H-7) | Two `external`-effect tool calls in the same batch ran in `dispatch.py`'s **parallel** bucket with no same-batch taint re-check — S-27's serial-only gate did not cover it | **Fixed** — `_bounded` re-checks `check_flow` live, immediately before each parallel call |
+| N-35 (H-8) | `06 §A` row 6's claimed `Provenance`/required-keyword mechanism has zero footprint in the source tree; the real, narrower mechanism (retrieval `Store` classified `external`) was undocumented in that row | **Fixed with documentation** — row rewritten to describe what actually shipped, tier corrected from 3 to 1 for a third-party `Store` author |
+| N-36 (H-9) | `06 §A` row 2's "checked by: a PLUG-1 property test" overstated four example-based unit tests as a property test | **Fixed with documentation** — wording corrected; the underlying mechanism was never in question |
 
 ---
 
