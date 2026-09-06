@@ -894,6 +894,17 @@ def _check_subagent_safety(toolset: ToolSet, parent_safety: str, parent_approve:
     safety-rank check: a child needs an `approve=` of its OWN once its parent has one —
     this does not compare them for equality, only that one exists, matching how
     `safety` is only ever rank-compared, not required to be identical.
+
+    H-5, design/review-architect-round2.md (confirmed still holding,
+    design/review-architect-round3.md): unlike `safety`, `approve=` is not an ordered
+    value to rank-compare — it is an arbitrary callback, and "exists" is the only
+    property a construction-time check can cheaply verify about it. This check closes
+    the "no approver at all" hole; it cannot and does not verify the child's approver
+    behaves as restrictively as the parent's. `Agent(approve=lambda call, **kw: True)`
+    satisfies `child.approve is None` being `False` and passes construction just as
+    readily as a real human-in-the-loop callback would. No static check can tell a
+    rubber stamp from a real approver — this is an inherent limit of any interface
+    built around a caller-supplied function, not a gap specific to this check.
     """
     for spec in toolset:
         child = spec.subagent
