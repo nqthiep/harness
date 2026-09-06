@@ -8,8 +8,7 @@ phải `Mapping[str, str]`, và `Scope.matches()` so sánh bằng `dict(self.arg
 kiểu về chuỗi. `10 == "10"` là `False` trong Python — claim gốc của S-26 đã lỗi thời, không
 còn đúng trên code hôm nay. Không cần sửa.
 """
-import sys, unittest
-sys.path.insert(0, "src")
+import unittest
 
 from harness.policy.decision import Scope
 

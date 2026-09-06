@@ -98,3 +98,14 @@ class ContextAssembler:
             stream=stream,
             output_format=self._output_format,
         )
+
+def canonical_len(req) -> str:
+    """The serialized request.  Its character count is a hard upper bound on the true
+    input token count — no tokenizer emits more tokens than characters (ADR-026).
+
+    Here rather than in a loop: it was defined IDENTICALLY in `run.py` and in
+    `dispatch.py`, and splitting `run.py` is what surfaced the pair (ADR-099). It reads
+    a request and serialises it, which is this module's job and neither engine's.
+    """
+    return canonical({"system": list(req.system), "tools": list(req.tools),
+                      "messages": list(req.messages)})

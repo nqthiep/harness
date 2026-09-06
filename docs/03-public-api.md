@@ -167,10 +167,12 @@ error.** A Poka-Yoke whose message is incomprehensible is only half-built.
 | `try_run(message, *, on_delta=None) -> Result` | Result | Never raises for run outcomes; check `result.ok`. **Exception:** `asyncio.CancelledError` propagates instead of returning a `stop_reason="cancelled"` Result — cancellation is a control signal from the caller, not a run outcome (T-6.2, docs/17-research-alignment.md Y-01); an outer `TaskGroup`/`wait_for` must see it happen. |
 | `arun(...)` / `atry_run(...)` | Awaitable[Result] | Async originals. |
 | `stream(message, *, on_delta=None) -> AsyncIterator[Event]` | AsyncIterator[Event] | T-8.5. `async for ev in agent.stream(msg)` over the real `Event` stream (all 17 kinds, envelope v1 — T-8.1). `on_delta=` stays the separate token-level mechanism; this yields whole `Event`s, not text fragments. Cancelling the iteration cancels the underlying run (T-6.2, extended). |
-| `chat(*, budget=None) -> Chat` | Chat | Stateful multi-turn session with **one ledger for the whole session**, defaulting to 10 × the agent's run budget (ADR-020). As it depletes, answers shorten before the chat ends. `harness.session.Session` (T-8.6) wraps a `Chat` with an id, an owner, a TTL, `.fork()`, `.resume_from()`, and a concurrency boundary — the resource-lifecycle layer `Chat` alone doesn't have. **`durable=True` refuses this call** (§3.5) — a durable multi-turn conversation is `session_id=`, not `Chat`. |
+| `chat(*, budget=None) -> Chat` | Chat | Stateful multi-turn session with **one ledger for the whole session**, defaulting to 10 × the agent's run budget (ADR-020). As it depletes, answers shorten before the chat ends. Turns are `chat.say(msg)` or, from inside a running event loop, `await chat.asay(msg)` — `say()` raises `SyncInAsyncContextError` there rather than deadlocking. `harness.session.Session` (T-8.6) wraps a `Chat` with an id, an owner, a TTL, `.fork()`, `.resume_from()`, and a concurrency boundary — the resource-lifecycle layer `Chat` alone doesn't have. It has both twins too (`say`/`asay`), but **one session is driven sync or async, never both**: the two need different locks and two locks do not exclude each other, so mixing them raises `SessionModeError` rather than silently un-guarding the history (ADR-093; `.fork()` for a session that can go the other way). **`durable=True` refuses this call** (§3.5) — a durable multi-turn conversation is `session_id=`, not `Chat`. |
+| `Chat.asay(msg, *, on_delta=None)` | Chat | One turn, awaitable — same budget check, same history, and the only way to run a conversation turn as a cancellable task. **A cancelled turn advances `spent` but not `messages`:** the tokens were billed and are recorded; there is no assistant reply to record, and appending the user message alone would leave two user turns back to back (ADR-088). |
 | `as_tool(*, name=None, description=None) -> ToolSpec` | ToolSpec | Turns this agent into a subagent tool. |
 | `resume(transcript) -> Result` | Result | Continue an interrupted run from a JSONL transcript. **`durable=True` refuses this call** (§3.5) — a durable run needs no separate resume step. |
 | `with_(**overrides) -> Agent` | Agent | Returns a **new** agent, every field preserved except what `overrides` names. `Agent` is frozen; there are no setters. (N-7: `transcript`/`exporters`/`accepts_tainted`/`sensitive` used to be silently dropped on every call, not just one that touched them — fixed.) |
+| `with_profile(profile: Profile) -> Agent` | Agent | Calls `profile.apply(self)`, then refuses the result with `ProfileLoosenedSafetyError` if it loosened a safety knob the caller already set (§3.7, ADR-073). |
 
 `with_()` exists because `Agent` is immutable, and immutability is what keeps the cache
 prefix stable (ADR-004). Mutating an agent mid-run is not "discouraged" — it is impossible.
@@ -323,6 +325,194 @@ seams already decided:
 `ShortCircuit(result)`, raised from `before_tool`, skips the tool's own function and
 uses `result` as if it had run — still subject to the same truncation/redaction/taint
 labelling a real result gets.
+
+### 3.7 `harness.Profile` — a named, reusable prompt+tools+model bundle
+
+The same "sugar, not a seventh seam" shape as `Middleware` above, for a different
+recurring need: packaging a system prompt, a tool set, a model/effort/budget choice, and
+policies as one thing you can check into a repo and hand to `Agent(...)`, without
+inventing a second way to construct an agent.
+
+```python
+from harness import Agent
+
+class ResearchProfile:
+    name = "research"                              # shown in an error, never the agent's own name
+    def apply(self, agent: Agent) -> Agent:
+        return agent.with_(
+            job=f"You are {agent.name}, a research assistant.\n\n{agent.job}",
+            tools=[*agent.toolset, search, fetch],   # ADD to what the caller passed
+            budget="$1, 60 steps",
+        )
+
+agent = Agent(name="Researcher", job="What changed in Python 3.13's typing module?") \
+            .with_profile(ResearchProfile())
+agent.run("go")                  # same Agent surface — try_run/run/arun/atry_run unchanged
+```
+
+`Profile` is a `Protocol` (like `Policy`/`Sandbox`): a `name: str` and an
+`apply(agent: Agent) -> Agent` method is the whole contract, so a profile can live in
+your own repo with no import from the library beyond the types its `apply()` happens to
+use. `Agent(...)` keeps meaning what it always meant — `name=` is the agent's identity,
+`job=` is this session's own mission, `tools=` is anything you want present regardless
+of which profile runs. A profile written well ADDS to all three (`agent.job` folded in
+as a section, `agent.toolset` kept and extended) rather than discarding what the caller
+passed — `examples/coding_profile.py::CodingProfile`,
+`examples/research_profile.py::ResearchProfile` and
+`examples/vision_profile.py::VisionProfile` are three real, structurally different
+profiles built this way.
+
+**A profile carries a whole capability domain without a new kind of component, business
+logic included.** `apply()` returns an `Agent`, so it reaches everything `with_()` and
+`with_middleware()` reach — a tool's own function wrapped to change what it returns
+(`with_verification`), middleware on all five hooks, durable state in a `Store`, a
+subagent via `as_tool()`, and the `sensitive=`/`accepts_tainted=` grants. That is why no
+smaller unit beneath `Profile` was introduced when vision was added (ADR-077): a
+seven-member "faculty" protocol returning fragments for a fixed fold to consume is less
+expressive than a method that returns an `Agent`, and bundling capability inside one
+`apply()` would slip past the one-profile-per-agent rule above. The division that
+actually pays is by TESTABILITY, not by framework layer: business logic in plain classes
+and pure functions (`vision_tools.py`'s identity matching, posture and phrasing — no
+camera, no model file, no `Agent`), adapters where hardware and vendor SDKs live, and
+tool functions as glue. `CodingProfile`'s `Verifier` is the same division, and neither
+needed anything added to this API.
+
+#### Where a recipe's code lives: `examples/`, `harness.contrib`, or core
+
+Three tiers, and the boundary is what you are expected to DO with the code (ADR-082):
+
+| tier | what belongs there | promise |
+|---|---|---|
+| `examples/` | judgment meant to be forked — prompts, `Verifier`'s command list, priority tables, thresholds | none; copy it and edit it |
+| `harness.contrib` | domain-neutral mechanism with no new dependency — `contrib.driver`, `contrib.output_shaping` | shipped and checked, NO compatibility promise, never re-exported from `harness` |
+| core (`harness`) | the six seams and the mechanism they serve | the documented contract, an ADR trail, a risk register |
+
+The rule that decides it: **copy-paste what you want people to edit; ship what you do
+not want them to re-derive.** A prompt you cannot edit is worthless, so prompts are
+copied. Interrupt handling with four safety rules drifts silently in every fork, so it
+ships. `harness/contrib/__init__.py` carries the four admission criteria; the one that
+does the most work is "no new dependency", which is why `examples/vision_tools.py` stays
+copy-paste however reusable it looks.
+
+#### Conventions for a profile's own parameters
+
+`Profile`'s **contract** is two members, and `Agent.with_profile()` touches nothing
+else. A profile's **configuration** — its constructor — is its domain's own vocabulary,
+and measured across the three real ones it barely overlaps at all:
+
+| | fields | its own vocabulary |
+|---|---|---|
+| `CodingProfile` | 18 | `root`, `test_command`, `verify_commands`, `protected`, `sandbox`, `reader_model`, … |
+| `ResearchProfile` | 6 | `search_tool`, `fetch_tool`, `min_sources`, `house_style` |
+| `VisionProfile` | 15 | `detector`, `camera`, `buffer`, `threshold`, `margin`, `private`, `allow_sinks`, … |
+
+Shared by all three: `name` and `budget`. Shared by two: `model`, `effort`, `store`,
+`extra_middleware`. That is the intended shape — `root=` means nothing to a camera and
+`detector=` means nothing to a test suite, so a common parameter schema would be a bag
+of half-meaningless `Optional`s, which is the `AgentBuilder` this project already
+[considered and rejected](02-architecture.md). What IS shared is a set of promises the
+type system cannot state. Follow these, and `tests/test_profile_conventions.py` checks
+them across every profile in `examples/` at once:
+
+1. **`name` is the profile's id, never the agent's.** It is what
+   `ProfileLoosenedSafetyError` and the second-profile refusal quote back; the agent's
+   own name stays `Agent(name=...)`.
+2. **Add, never replace — tools, prompt, policies alike.** `tools=[*agent.toolset, ...]`,
+   `policies=[*agent.policies, ...]`, and the caller's `job` folded in as a SECTION of
+   your template rather than discarded. Rebuilding `tools=` from scratch silently drops
+   the caller's own `danger` tools, which are the ones a profile is least entitled to
+   touch; discarding `job` loses the only statement of what this session is for. Half of
+   this one is now enforced rather than trusted: re-declaring a name the caller already
+   declared, under an effect that decides weaker rules, is refused (ADR-084). Following
+   the spread form makes that unreachable anyway — two specs sharing a name inside one
+   list is a `DuplicateToolError` from `ToolSet` itself.
+3. **Say which sizing knobs you own, and mean it.** All three set `budget=`, because a
+   budget describes the SHAPE of the work — how many pages a question is worth fetching,
+   how many steps a task takes — which the profile knows and the caller usually does
+   not. `model=`/`effort=` are a different question (how good must the answer be, at what
+   price), and the profiles genuinely disagree: `CodingProfile` overrides them, because a
+   coding session that silently ran on a weak model fails in ways the caller blames on
+   the prompt; `ResearchProfile` leaves them to `Agent(...)`. Either is fine. Leaving it
+   undocumented is not, because the caller cannot otherwise tell whether their
+   `Agent(model=...)` survives.
+4. **Inject anything with a lifetime or a vendor behind it, and never close it.**
+   `store=`, `sandbox=`, `camera=`, `detector=`, `search_tool=`/`fetch_tool=`. `apply()`
+   returns an `Agent`, which is frozen and has no lifecycle to hang a `close()` on, so
+   the caller owns construction and teardown — `CodingProfile`'s `store=` docstring
+   records the file-descriptor leak that established this rule (ADR-076). A default may
+   be built when the field is `None`, but then it is a short-script convenience, and say
+   so.
+5. **`enable_*` for anything that widens what the agent can do, off by default.**
+   `enable_shell`, `enable_findings`, `enable_enrollment`. An operator turns those on
+   deliberately; a profile default should not decide it for them — the same reasoning
+   `allowed_hosts=()`'s deny-by-default carries.
+6. **Grants belong to the caller.** A profile may ASK for `accepts_tainted=` or a wider
+   `allowed_hosts=`; it may never write them itself. `_refuse_if_loosened` enforces this,
+   and `VisionProfile` turns it into a feature: because it cannot grant
+   `accepts_tainted=["enroll_person"]`, storing face data is always a line in the
+   operator's own source.
+7. **Keep the prompt byte-stable and computed once.** It lands in `job=`, the
+   cache-linted prefix, and `Chat.say()` reconstructs the `Agent` every turn — so
+   anything varying (a live `git status`, a set iterated in nondeterministic order, a
+   count that grows) raises `NonDeterministicPromptError` on turn N of a conversation
+   rather than at startup. Read files at construction, in `apply()`; put anything that
+   genuinely changes per step in a tool result instead.
+
+**Writing this down immediately found a violation**, which is the argument for having
+written it: `CodingProfile` built its `ask_reader` subagent without passing
+`safety=agent.safety`, so it took the default `"standard"` and
+`_check_subagent_safety` refused the result —
+`Agent(safety="strict").with_profile(CodingProfile(...))` raised `UnsafeToolSetError`
+and the profile could not be used on a hardened agent at all. Present since that file's
+first commit; found by asserting convention 6 over all three profiles at once instead of
+one at a time.
+
+**Classify the tools, and the safety engine does the rest.** A profile's most
+consequential decisions are usually its `effect=` choices rather than its code.
+`VisionProfile` gets its consent gate for free that way: `enroll_person` is `danger`, so
+every biometric write ASKs a human; `look` is `external`, so camera content is marked
+untrusted; and those two together mean `_check_tool_set` refuses construction unless the
+CALLER writes `accepts_tainted=["enroll_person"]` themselves — which `_refuse_if_loosened`
+guarantees a profile cannot do on their behalf. None of that is enforced by the profile.
+
+**The one rule `Agent.with_profile()` enforces that a profile author never has to know
+exists: a profile may extend an agent, never loosen it.** After `profile.apply(self)`
+runs, `_refuse_if_loosened` (`agent.py`) compares the result against the agent you
+started with on the knobs a prompt-and-tools bundle has no legitimate reason to touch —
+`safety`, `accepts_tainted`, `allowed_hosts`, `require_approval_evidence`,
+`max_asks_per_run`, which `policies` survive, whether a `sensitive` declaration was
+dropped, whether an `approve=` gate got removed entirely, and — compared by tool NAME —
+whether any tool the caller already declared came back under an effect that decides
+weaker rules (ADR-084: `danger` → `read` took a measured approval gate from 1 ask to 0,
+and `external` → `read` dropped the `UNTRUSTED` mark that is the whole input to
+`TaintPolicy`). Any of those moving in the
+unsafe direction raises
+`ProfileLoosenedSafetyError` naming every culprit, before a live `Agent` is ever
+returned — the same "caught at construction" discipline the lethal-trifecta check
+already applies, and the same shape `_check_subagent_safety` already enforces for a
+subagent ("more restricted than its parent, never less"). See ADR-073.
+
+**A second rule, added after the first shipped: at most one profile per agent, unless
+you say otherwise.** `CodingProfile()` then `ResearchProfile()` on the same `Agent`
+constructed with no error and no warning — measured, not hypothetical — producing a
+garbled system prompt (each profile rebuilds the whole prompt around its own template,
+so fragments of the first survive under the second) and a toolset unioning `search`/
+`fetch` (`external`) with `write_source`/`git_commit` (`write`): exactly the
+"reads the untrusted world, writes the codebase" combination `CodingProfile`'s own
+`ask_reader` subagent exists to keep separate. `_check_tool_set`'s lethal-trifecta
+refusal does not catch it (scoped to `external`+`danger`, not `external`+`write` — core's
+own settled scope, unchanged by this fix). `Agent.with_profile()` now refuses a SECOND
+call by default; `allow_multiple=True` is the explicit opt-in, the same shape
+`accepts_tainted=`/`allowed_hosts=None` already use elsewhere for a real but
+narrower-than-`danger` risk. It waives that one rule only — `ToolSet`'s duplicate-name
+guard and `_refuse_if_loosened`'s safety-knob check both still run underneath it.
+
+**`durable=True` — verified through construction only.** `with_profile()` mechanically
+works on the LangGraph backend too (a profile-wrapped `ToolSpec` constructs without
+error, `durable` survives `with_()`), but whether an actual RUN through the compiled
+graph invokes a wrapped tool function identically to the classic backend has never been
+observed — that needs a real model call, and none has happened in this codebase's
+history (OI-11). Treat the combination as untested past construction.
 
 ## 4. Choosing an effect
 

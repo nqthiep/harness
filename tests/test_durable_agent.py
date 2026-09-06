@@ -10,12 +10,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, "src")
-
 from harness import Agent, tool
 from harness.errors import ConfigError, UnsafeToolSetError
 from harness.models.fake import FakeModel
 from harness.result import StopReason
+import _paths
 
 
 @tool(effect="read")
@@ -246,7 +245,7 @@ class DurableProcessExits(unittest.TestCase):
                 "from harness.models.fake import FakeModel\n"
                 "a = Agent(name='p', job='x', durable=True, allowed_hosts=None,\n"
                 "         provider=FakeModel([FakeModel.text('hi')]))\n"
-                "print(a.run('hello').text)\n" % str(Path("src").resolve())
+                "print(a.run('hello').text)\n" % str(_paths.SRC)
             )
             r = subprocess.run([sys.executable, str(script)], cwd=tmp,
                                capture_output=True, text=True, timeout=20)

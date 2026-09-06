@@ -14,11 +14,7 @@ Nhóm test ở đây tương ứng đúng bốn điều `progress.py` tự hứa
    (`tests/test_redteam.py::RT06`, `tests/test_walkthrough.py::rt06`,
    `tests/test_lg.py`, `tests/test_parity.py` đã sửa cho điều này).
 """
-import sys
 import unittest
-
-sys.path.insert(0, "src")
-sys.path.insert(0, "tests")
 
 from fake_chat import FakeChat
 from langchain_core.messages import HumanMessage
@@ -149,7 +145,13 @@ class VongLapClassic(unittest.TestCase):
         r = agent.try_run("go")
         self.assertIs(r.stop_reason, StopReason.STALLED)
         self.assertFalse(r.ok)
-        self.assertEqual(r.steps, STALL_AFTER)
+        # STALL_AFTER + 1, và con số này chính là thứ đã chặn ADR-118 suốt một vòng.
+        # `ProgressLedger` đếm số lần LẶP LẠI, nên lượt gọi model đầu tiên chưa có gì để
+        # lặp: một run bị chặn ở lần lặp thứ STALL_AFTER đã gọi model STALL_AFTER + 1
+        # lần. Kỳ vọng cũ (`== STALL_AFTER`) chỉ đúng với con trỏ `while` của vòng lặp,
+        # tức đúng vì `Result.steps` đang ở SAI đơn vị. Đo được: cả hai backend đều phát
+        # 7 sự kiện `model.request` cho kịch bản này, và giờ cả hai đều báo steps=7.
+        self.assertEqual(r.steps, STALL_AFTER + 1)
         # Lý do phải đọc được, không phải một mã lỗi trơ.
         self.assertIn("không có lời gọi tool nào mới", r.detail)
 
@@ -192,7 +194,11 @@ class NeTranhQuaAgentThat(unittest.TestCase):
                   provider=FakeModel(script)).try_run("go")
         self.assertIs(r.stop_reason, StopReason.STALLED,
                      "G-6: một khoá không khai vẫn né được bộ đếm")
-        self.assertEqual(r.steps, STALL_AFTER)
+        # STALL_AFTER + 1, cùng lý do đã ghi ở test đầu file: `Result.steps` giờ đếm
+        # LƯỢT GỌI MODEL (ADR-118), còn `ProgressLedger` đếm số lần LẶP LẠI — lượt gọi
+        # đầu tiên chưa có gì để lặp. Kỳ vọng cũ đúng với con trỏ `while`, tức đúng vì
+        # `Result.steps` đang ở sai đơn vị.
+        self.assertEqual(r.steps, STALL_AFTER + 1)
 
 
 class BackendGraph(unittest.TestCase):

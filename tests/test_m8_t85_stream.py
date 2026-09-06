@@ -2,10 +2,7 @@
 taxonomy 16 kind thật, mang envelope v1 (T-8.1).
 """
 import asyncio
-import sys
 import unittest
-
-sys.path.insert(0, "src")
 
 from harness import Agent, tool
 from harness.models.fake import FakeModel

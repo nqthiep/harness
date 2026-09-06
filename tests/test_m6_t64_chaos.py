@@ -12,10 +12,7 @@ Round-38 bài học (`testing/__init__.py`) đã dạy.
 trợ `returns=`) ghi lại, chưa sửa (ngoài phạm vi chaos testing).
 """
 import dataclasses
-import sys
 import unittest
-
-sys.path.insert(0, "src")
 
 from harness import Agent, tool
 from harness.models.fake import FakeModel

@@ -10,9 +10,10 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from . import audit
+from .audit import utcnow as _utcnow
 from .context.assembler import canonical as _canonical
 from .errors import ToolContractError
 from .idempotency import execute_once, idempotency_key
@@ -21,11 +22,11 @@ from .middleware import MiddlewareHookError, _call_scope
 from .observe.events import EventKind
 from .policy.base import Ruling, ToolCall, Verdict
 from .policy.builtin import check_flow, emits_of
-from .policy.decision import (POLICY_ENGINE_VERSION, Actor, Decision, Scope,
-                              actor_json, evidence_json)
+from .policy.decision import Actor
 from .policy.label import Integrity, Label
 from .secrets import redact
 from .tools import EFFECT_PROFILES, ToolSpec
+from .subagent import run_subagent
 
 #: T-6.3, docs/17-research-alignment.md — `EFFECT_PROFILES[...].retryable` was already
 #: derived per effect class (ADR-003: read/external True, write/danger False) but nothing
@@ -92,6 +93,14 @@ class Dispatcher:
     def __init__(self, engine) -> None:
         self._e = engine            # the RunEngine, for bus/ledger/policy/taint/agent
         self.ran: list[str] = []
+        #: What SUCCEEDED, which is a different question from what ran. `RequireBeforePolicy`
+        #: documents `ctx.tools_called` as "populated from **completed** calls earlier in
+        #: the run" and both engines fed it from ATTEMPTED ones. Measured with an advisor
+        #: that raises on every attempt: `deploy` ran anyway, on both backends — a gate
+        #: satisfied by its own failure, which is worse than no gate at all.
+        #: `self.ran` is left alone: `Result.tools_run` answers "did my tool execute?"
+        #: (IDL-49), and a tool that raised did execute.
+        self.succeeded: list[str] = []
         # S-4/N-8: a fresh, in-memory store per `Dispatcher` — and a `Dispatcher` is
         # built fresh per `RunEngine` per `atry_run()` (this file's own module docstring
         # + `run.py`'s `self._dispatch = Dispatcher(self)`), so this never leaks across
@@ -104,7 +113,7 @@ class Dispatcher:
         ctx = RunContext(run_id, self._e._a.name, step, self._e._taint.label,
                          self._e._a.safety, self._e._l.remaining_wall_clock(),
                          tenant_id=self._e._a.tenant_id, principal=self._e._a.principal,
-                         tools_called=frozenset(self.ran))
+                         tools_called=frozenset(self.succeeded))
         planned: list[tuple[dict, ToolSpec | None, Ruling | None]] = []
 
         for b in calls:
@@ -116,10 +125,10 @@ class Dispatcher:
             call = ToolCall(b["id"], b["name"], b.get("input", {}), spec,
                            idempotency_key(run_id, b["id"]))
             d = self._e._engine.decide(call, ctx)
+            actor = evidence = None
+            asked_by = d.policy if d.verdict is Verdict.ASK else None
             if d.verdict is Verdict.ASK:
                 self._e._asks += 1
-            actor = evidence = None
-            if d.verdict is Verdict.ASK:
                 # S-25(b): approval fatigue is a channel the model controls — injected
                 # content can make it call a `write` tool 40 times with slightly
                 # different args, 40 ASKs later the 41st gets approved on reflex. A cap
@@ -156,25 +165,22 @@ class Dispatcher:
                         d = Ruling(prior, "a live row in the decision log answers this",
                                   "decision-log")
                         actor = Actor.policy("decision-log-reuse")
-                # Every resolved ASK becomes a row — including the ask-cap denial. An
-                # audit log that records only what was permitted cannot answer "what did
-                # we refuse, and why" (docs/05 §1, the same rule `policy.decided` follows
-                # by being emitted for ALLOW as well as DENY). Scoped to THIS call_id, so
-                # a grant here never silently covers the next call: `Decision` refuses to
-                # be constructed any other way without an `expires_at` (ForeverAllow).
-                self._e._decisions.record(Decision(
-                    id=f"dec-{b['id']}", verdict=d.verdict,
-                    scope=Scope(tool=b["name"], args=dict(b.get("input", {})),
-                                server=spec.server, call_id=b["id"]),
-                    actor=(actor if actor is not None else
-                           (Actor.human("approver", via="callback")
-                            if self._e._a.approve is not None else Actor.policy(d.policy))),
-                    decided_at=_utcnow(), expires_at=None, run_id=run_id, reason=d.reason,
-                    policy_version=POLICY_ENGINE_VERSION, evidence=evidence))
-            self._e._bus.emit(EventKind.POLICY_DECIDED, step=step, tool=b["name"],
-                           call_id=b["id"], verdict=d.verdict.name, reason=d.reason,
-                           policy=d.policy,
-                           actor=actor_json(actor), evidence=evidence_json(evidence))
+                # Every resolved ASK becomes a row — including the ask-cap denial.
+                # Scoped to THIS call_id, so a grant here never silently covers the next
+                # call: `Decision` refuses to be constructed any other way without an
+                # `expires_at` (ForeverAllow).
+                if actor is None and self._e._a.approve is not None:
+                    actor = Actor.human("approver", via="callback")
+            # One row per call at this gate, carrying the FINAL verdict — an ASK is not
+            # one (`Decision.__post_init__` refuses to store it) and `asked_by` is how
+            # the policy that raised the question survives into the trail anyway. F8:
+            # `audit.decided` is also what records a refusal, so a DENY from
+            # `EffectPolicy`/`TaintPolicy`/`EgressPolicy`/`RequireBeforePolicy`/a user
+            # policy finally reaches the book — before this the only `record()` in this
+            # file sat inside the ASK branch above, and every other refusal was an event
+            # and nothing durable.
+            self._decided(d, b, spec, step, run_id, actor=actor, evidence=evidence,
+                          resolved_ask=asked_by is not None, asked_by=asked_by)
             planned.append((b, spec, d))
 
         # I-3: every tool_use gets exactly one tool_result, in the model's call order.
@@ -203,6 +209,7 @@ class Dispatcher:
         # Neither bucket is recorded here anymore: both `parallel` (H-7 below) and
         # `serial` (S-27, right below) can still turn a planned call into a DENY, so
         # each is only added to `self.ran` once its own re-check actually lets it run.
+        executed: list[tuple[int, str]] = []
 
         if parallel:
             # H-7, design/review-architect-round3.md: `EXTERNAL` is `parallel_safe` AND
@@ -220,11 +227,13 @@ class Dispatcher:
             # (`Result.tools_run`'s own contract, IDL-49) still holds even though the
             # calls themselves may finish out of order.
             done = await asyncio.gather(
-                *(self._bounded(b, spec, step) for _, b, spec in parallel),
+                *(self._bounded(b, spec, step, run_id) for _, b, spec in parallel),
                 return_exceptions=False)
-            for (i, _, spec), (r, executed) in zip(parallel, done):
+            for (i, _, spec), (r, ran) in zip(parallel, done):
                 out[i] = r
-                if executed: self.ran.append(spec.name)
+                if ran:
+                    self.ran.append(spec.name)
+                    executed.append((i, spec.name))
         for i, b, spec in serial:
             # S-27: `d` above was decided against the label from BEFORE this batch ran —
             # a fixed snapshot taken once, at the top of this function. The parallel
@@ -240,16 +249,41 @@ class Dispatcher:
             # (lg/runtime.py, I-1/S-2): a gate re-checked at the point of consumption.
             gate = check_flow(self._e._taint.label, spec, self._e._a._grants)
             if gate.verdict is Verdict.DENY:
+                # F7: this refusal used to be a `tool_result` and nothing else — no
+                # `policy.decided`, no `Decision`, no `tool.started`/`tool.finished`. An
+                # operator filtering the stream for DENY saw zero refusals on a run where
+                # the lattice had just blocked an exfiltration, and the last recorded
+                # verdict for the call said ALLOW. Its own row id: the ALLOW this
+                # overturns may already have written one under the plain call id.
+                self._decided(gate, b, spec, step, run_id,
+                              row_id=f"{b['id']}-regate")
                 out[i] = err(b["id"], f"denied by policy: {gate.reason}")
                 continue
             self.ran.append(spec.name)
+            executed.append((i, spec.name))
             out[i] = await self._invoke(b, spec, step)
         for i, origin in dupes:
             out[i] = {**out[origin], "tool_use_id": planned[i][0]["id"]}
+        # Recorded once the results exist, at the end of the batch. Within a batch the
+        # gate still sees only earlier STEPS, which is the honest answer: a prerequisite
+        # called in the same batch as its dependent has not finished when the dependent
+        # is ruled on, so counting it would be the same lie one turn smaller.
+        for i, name in executed:
+            if not out[i].get("is_error"):
+                self.succeeded.append(name)
         return out
 
-    async def _bounded(self, b: Mapping[str, Any], spec: ToolSpec,
-                       step: int) -> "tuple[dict[str, Any], bool]":
+    def _decided(self, d: Ruling, b: Mapping[str, Any], spec: ToolSpec, step: int,
+                 run_id: str, **kw) -> None:
+        """Every verdict this file reaches goes through `audit.decided` — which emits
+        `policy.decided` and records anything that is not an ALLOW. One call shape, so a
+        new branch cannot forget half of the trail (`audit.py`)."""
+        audit.decided(self._e._bus, self._e._decisions, d, run_id=run_id, step=step,
+                      tool=b["name"], call_id=b["id"], args=b.get("input", {}),
+                      server=spec.server, **kw)
+
+    async def _bounded(self, b: Mapping[str, Any], spec: ToolSpec, step: int,
+                       run_id: str) -> "tuple[dict[str, Any], bool]":
         """NFR-09: parallelism is bounded, so a fan-out cannot fork-bomb a downstream
         service.  The semaphore was specified and the parameter stored, but nothing read
         it until Round 26 measured peak concurrency at 30 against a limit of 4."""
@@ -262,6 +296,12 @@ class Dispatcher:
         async with self._e._sem:
             gate = check_flow(self._e._taint.label, spec, self._e._a._grants)
             if gate.verdict is Verdict.DENY:
+                # H-7's re-check is a new refusal path, and a refusal that emits nothing
+                # is the defect ADR-111 closed for `serial`'s: an operator filtering the
+                # stream for DENY saw zero on a run where the lattice had just blocked
+                # an exfiltration. Same row id shape as the serial re-gate — the ALLOW
+                # this overturns may already have written one under the plain call id.
+                self._decided(gate, b, spec, step, run_id, row_id=f"{b['id']}-regate")
                 return err(b["id"], f"denied by policy: {gate.reason}"), False
             return await self._invoke(b, spec, step), True
 
@@ -295,7 +335,7 @@ class Dispatcher:
 
         async def _call() -> str:
             if spec.subagent is not None:
-                value = await self._run_subagent(spec, kwargs)
+                value = await run_subagent(self._e._l, spec, kwargs)
             else:
                 with _call_scope(step=step, call_id=b["id"]):
                     value = await spec.fn(**kwargs)
@@ -353,43 +393,6 @@ class Dispatcher:
                 await asyncio.sleep(min(RETRY_BACKOFF_S * (2 ** attempt), RETRY_BACKOFF_MAX_S))
         return self._tool_error(b, spec, step, reason, t0)
 
-    async def _run_subagent(self, spec: ToolSpec, kwargs: dict) -> str:
-        """§06.4: a subagent is capped by the parent's REMAINING budget, and its spend
-        settles into the parent's ledger.
-
-        Round 28 found both documented and unenforced.  Each child kept an independent
-        ledger, so a $0.10 parent spent $30 through six children while reporting $0.0000 —
-        SC-2a's ceiling leaking entirely through a documented feature.
-
-        S-13: that fix covered `usd` only. `steps` and `wall_clock_s` used to come
-        straight from the child's own declared `Budget`, untouched — four subagents
-        spawned in one turn, each declaring `steps=20`, could burn 80 steps against a
-        parent whose own ceiling was 20. `hold_steps()`/`release_steps()` apply the same
-        TOCTOU fix `hold()` already has for money to the step axis; `wall_clock_s` needs
-        no hold/release (it is not a pooled resource — two children running concurrently
-        do not add up to twice the elapsed time), just a cap to what the parent actually
-        has left at spawn time (`child_wall_clock`).
-        """
-        from dataclasses import replace as _replace
-
-        from .result import Money
-        child = spec.subagent
-        remaining = self._e._l.remaining_usd()
-        want = Money(child.budget.usd) if child.budget.usd is not None else None
-        held = self._e._l.hold(want) if remaining is not None and want is not None else None
-        held_steps = self._e._l.hold_steps(child.budget.steps)
-        child_wc = self._e._l.child_wall_clock(child.budget.wall_clock_s)
-        run_child = child.with_(budget=_replace(
-            child.budget, usd=(held.decimal if held is not None else child.budget.usd),
-            steps=held_steps, wall_clock_s=child_wc))
-        r = await run_child.atry_run(kwargs.get("task", ""))
-        if held is not None:
-            self._e._l.release(held, r.cost)           # settle into the PARENT ledger
-        else:
-            self._e._l.charge(r.cost)
-        self._e._l.release_steps(held_steps, r.steps)
-        return r.text if r.ok else f"{child.name} stopped: {r.stop_reason.value}. {r.text}"
-
     def _tool_error(self, b, spec, step, msg, t0, *, mw: bool = False) -> dict[str, Any]:
         # `mw=True`: G-17 — the failure is a middleware hook's, not the tool's.
         self._e._bus.emit(EventKind.ERROR_RAISED, step=step, type=spec.name, message=msg,
@@ -399,17 +402,6 @@ class Dispatcher:
                        duration_ms=(time.monotonic() - t0) * 1000, is_error=True,
                        truncated=False, isolation=spec.isolation)          # H-2
         return err(b["id"], msg)
-
-
-def _utcnow():
-    return datetime.now(timezone.utc)
-
-
-def canonical_len(req) -> str:
-    """The serialized request.  Its character count is a hard upper bound on the true
-    input token count — no tokenizer emits more tokens than characters (ADR-026)."""
-    return _canonical({"system": list(req.system), "tools": list(req.tools),
-                       "messages": list(req.messages)})
 
 
 def err(call_id: str, message: str) -> dict[str, Any]:

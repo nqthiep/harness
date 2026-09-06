@@ -2,11 +2,8 @@
 — tổng chi phí / P(thành công), kèm khoảng tin cậy — không bao giờ một con số trần trụi
 (§45: "thà nói 'chưa đủ evidence' còn hơn đoán").
 """
-import sys
 import unittest
 from dataclasses import dataclass
-
-sys.path.insert(0, "src")
 
 from harness.eval import cost_per_success
 from harness.eval.cost import _wilson_interval

@@ -45,6 +45,11 @@ class EventKind(str, Enum):
     TOOL_STARTED = "tool.started";       TOOL_FINISHED    = "tool.finished"
     TAINT_RAISED = "taint.raised";       CONTEXT_MANAGED  = "context.managed"
     ERROR_RAISED = "error.raised"; PROGRESS_STALLED = "progress.stalled"
+    #: A `Middleware.before_tool` returned different kwargs from the ones `Policy`
+    #: ruled on. A separate kind rather than a second `tool.requested`, so a consumer
+    #: counting calls still counts calls, and so "what was approved" and "what ran"
+    #: are two facts an auditor can compare instead of one that quietly changed.
+    TOOL_ARGUMENTS_AMENDED = "tool.arguments_amended"
 
 
 @value
@@ -113,6 +118,10 @@ class EventBus:
     def emit(self, kind: EventKind, *, step: int | None = None, **data: Any) -> Event:
         ev = self._make(kind, step, data)
         self.events.append(ev)
+        # Type name and message, not the exception object: Python deletes the `except`
+        # binding at the end of the block, so keeping `exc` to use after the loop is a
+        # read of a deleted variable (mypy says so, and it is right).
+        failed: list[tuple[str, str]] = []
         for i, ex in enumerate(self._exporters):
             if i in self._broken:
                 continue
@@ -120,8 +129,14 @@ class EventBus:
                 ex.emit(ev)
             except Exception as exc:
                 self._broken.add(i)          # disabled for the rest of the run
-                self.events.append(self._make(
-                    EventKind.ERROR_RAISED, step,
-                    {"where": "exporter", "type": type(exc).__name__,
-                     "message": str(exc), "retryable": False}))
+                failed.append((type(exc).__name__, str(exc)))
+        # Reported to the sinks that still work, not only to `self.events`. Appending the
+        # notice in memory was itself a silence: with a transcript plus a console
+        # exporter, the transcript could die and the console — the only thing an operator
+        # was watching — showed nothing. Emitted after the loop so `_broken` is already
+        # updated and the sink that just failed is skipped, which is also what stops this
+        # recursing when the failing sink is the only one.
+        for kind_name, message in failed:
+            self.emit(EventKind.ERROR_RAISED, step=step, where="exporter",
+                      type=kind_name, message=message, retryable=False)
         return ev

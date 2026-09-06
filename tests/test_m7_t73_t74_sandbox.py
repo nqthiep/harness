@@ -8,10 +8,7 @@ secret). "Done": một bản cài đặt bên thứ ba cắm được mà không
 T-7.4: `Sandbox.run` không bao giờ nhận `Secret`; env được lọc trắng. "Test": red-team —
 secret không xuất hiện trong env của tiến trình con.
 """
-import sys
 import unittest
-
-sys.path.insert(0, "src")
 
 from harness.sandbox import Completed, InProcess, Subprocess
 from harness.secrets import Secret

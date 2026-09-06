@@ -15,7 +15,8 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, "src")
+import _paths
+sys.path.insert(0, str(_paths.SRC))
 
 from harness import Effect
 from harness.tools.builtin.calc import calculate

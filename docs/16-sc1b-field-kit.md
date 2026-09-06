@@ -9,6 +9,16 @@
 > This is the runnable instrument: consent, script, observation sheet, scoring, and the
 > analysis that turns the result into a decision. It is designed so a parent, teacher or
 > engineer can run it in an afternoon without having read the rest of this package.
+>
+> **Correction, and a warning about what "mechanically measured" was worth.** The
+> sentence above says everything mechanically measurable about SC-1b *is* measured, and
+> that included "the four-command cold start". It was not: `harness` was not a command
+> (no `[project.scripts]`), `harness setup` was advertised in `--help` with no branch
+> behind it, and the key it would have written to `.env` was never read back — so Step 2
+> of the script below, the step an adult performs while a child watches, could not have
+> been completed by anyone. Found and fixed in ADR-086, now executed by
+> `tests/test_m5.py::TheFourCommandColdStart`. The study was never run, so nobody hit
+> it; had it been run, three children would have been stopped at the second command.
 
 ---
 

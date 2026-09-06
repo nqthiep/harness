@@ -9,11 +9,7 @@ BEFORE emitting, not `agent.py::_state_to_result()` after the graph has already
 returned), and that the raw `build_agent()` escape hatch gets the same parse.
 """
 import dataclasses
-import sys
 import unittest
-
-sys.path.insert(0, "src")
-sys.path.insert(0, "tests")
 
 from harness import Agent
 from harness.models.fake import FakeModel

@@ -420,7 +420,7 @@ coverage.
 - **What.** All 25 `AC-nn` checks in [§14.4](14-validation-plan.md#4-architecture-conformance-tests), plus AC-26.
 - **Why.** Round 22 found 18 of them specified and owned by nobody — including **AC-04 and AC-05**, the AST assertions that every model call is preceded by a budget reservation and every tool execution by a policy verdict. Those two are the executable form of the entire safety and cost argument. A test that no task creates does not exist.
 - **Where.** `tests/conformance/`.
-- **How.** Mostly AST analysis over `src/harness` plus an import-linter contract. AC-04 and AC-05 walk the call graph of `run.py` and assert the adjacency on **every** path, not only paths a behavioral test happens to exercise — which is exactly where a security check gets bypassed. **AC-26** re-runs the Round 22 sweep: every FR, NFR, RT and AC must appear in the traceability matrix below with an owning task.
+- **How.** Mostly AST analysis over `src/harness`, including the layering contract (`tests/test_layering.py` — an earlier draft of this plan promised an import-linter contract and none was ever added). AC-04 and AC-05 walk the call graph of `run.py` and assert the adjacency on **every** path, not only paths a behavioral test happens to exercise — which is exactly where a security check gets bypassed. **AC-26** re-runs the Round 22 sweep: every FR, NFR, RT and AC must appear in the traceability matrix below with an owning task.
 - **Depends.** T-1.5, T-1.2, T-2.2, T-0.9
 - **Contract.** [§14.4](14-validation-plan.md#4-architecture-conformance-tests).
 - **Failure.** A conformance failure blocks merge and is never skipped — these are the tests that catch architectural drift, which is by definition the thing no ordinary test notices.
@@ -449,7 +449,7 @@ proven.
 
 - **What.** The memory seam and its two implementations.
 - **Where.** `memory/`.
-- **How.** Schema in [§05.5](05-data-and-state.md#5-memory-schema-sqlite). `STRICT` tables, WAL, busy timeout, FTS5 search, expiry enforced on read as well as by sweep, `schema_meta.version` checked at open.
+- **How.** Schema in [§05.5](05-data-and-state.md#5-memory-schema-sqlite). `STRICT` tables, WAL, busy timeout, a linear substring scan for `search` (FTS5 was planned here and never built — ADR-113), expiry enforced on read as well as by sweep, `schema_meta.version` checked at open.
 - **Depends.** T-0.1
 - **Contract.** [§04.5](04-interfaces.md#5-store).
 - **Failure.** A newer schema raises rather than guessing. A locked database retries within the busy timeout, then raises a clear error.

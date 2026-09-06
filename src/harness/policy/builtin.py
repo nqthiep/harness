@@ -5,7 +5,8 @@ sync and pure.  The engine resolves a surviving ASK instead (ADR-021).
 """
 from __future__ import annotations
 
-from typing import Any, Sequence
+from collections import deque
+from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse
 
 from ..secrets import contains_live_secret
@@ -119,6 +120,21 @@ class RequireBeforePolicy:
         return Ruling(Verdict.DENY, self._reason, self.name)
 
 
+#: Argument names whose VALUE is treated as a host even without a scheme.  A bare host
+#: under any OTHER name (`target="evil.example"`) is not detected — see `EgressPolicy`'s
+#: "Cái nó KHÔNG bắt".
+_EGRESS_HOST_KEYS = frozenset({"url", "uri", "host", "hostname", "endpoint"})
+
+#: How many values to look at inside one call's `arguments` before giving up.  A bound,
+#: not a belief about real payloads: `arguments` is model-authored, so a self-referential
+#: or absurdly nested value must cost O(1) here rather than hang or raise inside a policy
+#: — `PolicyEngine.decide()` would (correctly) turn a `RecursionError` into a DENY of an
+#: innocent call.  A NODE budget rather than a DEPTH cap, walked breadth-first, on
+#: purpose: a depth cap is evadable by nesting one level deeper than the cap, which is
+#: exactly the shape of evasion this policy is here to make boring.
+_EGRESS_MAX_NODES = 512
+
+
 class EgressPolicy:
     """Advisory, không phải kiểm soát mạng thật — design/review-security.md S-18.
 
@@ -130,22 +146,89 @@ class EgressPolicy:
     SỰ gọi, không phải lúc policy kiểm. Kiểm soát mạng thật (egress proxy, network policy
     ở tầng container) là thứ duy nhất đóng được lỗ đó; đây chỉ chặn trường hợp RÕ RÀNG
     (host không hề có trong danh sách), không hơn.
+
+    **Cái nó BẮT, và tại sao đúng ba thứ này.** "Trường hợp RÕ RÀNG" ở trên là lời hứa,
+    và trước bản vá này ba hình dạng đối số làm nó SAI ngay trong chính định nghĩa của nó:
+
+    * `HTTP://evil.example/` — vẫn là trường hợp rõ ràng, chỉ viết hoa; `str.startswith`
+      phân biệt hoa thường nên nó lọt. Giờ so khớp scheme không phân biệt hoa thường, và
+      host lấy ra cũng hạ về chữ thường trước khi đối chiếu (hostname vốn không phân biệt
+      hoa thường — RFC 4343), nên `HTTP://DOCS.PYTHON.ORG/` vừa không lọt oan vừa không
+      bị chặn oan.
+    * `urls=["http://evil.example/"]`, `req={"url": ...}` — `isinstance(value, str)` bỏ
+      qua sạch. Một tool nhận danh sách URL (batch fetch) là hình dạng bình thường, không
+      phải trò lách; bỏ qua nó biến allowlist thành thứ chỉ cần đổi kiểu đối số là qua.
+      Giờ duyệt cả `list`/`tuple`/`Mapping`, theo bề rộng, tối đa `_EGRESS_MAX_NODES` giá
+      trị mỗi lời gọi.
+    * `effect="danger"` có đối số URL — trước đây chỉ `EXTERNAL` bị soi. Nhưng effect nói
+      về TÍNH ĐẢO NGƯỢC, không nói về việc có chạm mạng hay không, và `tools/_guess()` gán
+      effect theo TÊN: một tool tên `send_report(url=...)` được đoán thành `danger` vì chữ
+      "send", và bằng đúng cái đoán đó rơi ra khỏi allowlist. Một tool KHÔNG đảo ngược
+      được mà lại chạm mạng chính là tool đáng soi nhất, nên giờ soi cả hai effect. Đây là
+      siết chứ không nới (P-2) và không ảnh hưởng deployment nào truyền
+      `allowed_hosts=None`.
+
+    **Cái nó KHÔNG bắt, nói thẳng thay vì để người đọc tự phát hiện.** Một host TRẦN
+    (không scheme) dưới một tên đối số ngoài `_EGRESS_HOST_KEYS` — `target="evil.example"`
+    — vẫn lọt: bắt nó nghĩa là đoán "chuỗi này có phải hostname không" cho MỌI chuỗi, và
+    `"notes.txt"`, `"v1.2"`, một câu tiếng Anh có dấu chấm đều sẽ thành DENY oan. `read`/
+    `write` cũng không bị soi: một tool chạm mạng mà khai `read` là khai sai effect, và
+    chỗ sửa là khai đúng, không phải quét mọi đối số của mọi tool. Cả hai đều là RANH GIỚI
+    ĐÃ BIẾT của một phép kiểm advisory, không phải chỗ chưa kịp làm.
     """
     name = "egress"
 
+    #: `EXTERNAL` (chạm mạng theo định nghĩa) và `DANGER` (không đảo ngược được — nếu nó
+    #: chạm mạng thì đó là lần chạm đáng soi nhất).  Xem docstring.
+    _INSPECTED_EFFECTS = frozenset({Effect.EXTERNAL, Effect.DANGER})
+
     def __init__(self, allowed_hosts: Sequence[str] | None) -> None:
-        self._hosts = tuple(allowed_hosts) if allowed_hosts is not None else None
+        self._hosts = (tuple(h.lower() for h in allowed_hosts)
+                       if allowed_hosts is not None else None)
 
     def check(self, call: ToolCall, ctx: Any) -> Ruling:
-        if self._hosts is None or call.spec.effect is not Effect.EXTERNAL:
+        hosts = self._hosts
+        if hosts is None or call.spec.effect not in self._INSPECTED_EFFECTS:
             return Ruling(Verdict.ALLOW, "", self.name)
-        for key, value in call.arguments.items():
-            if not isinstance(value, str):
-                continue
-            if key in ("url", "uri", "host", "hostname", "endpoint") or value.startswith("http"):
-                host = urlparse(value).hostname or value
-                if not any(host == h or host.endswith("." + h) for h in self._hosts):
+        # A container inherits the key of the argument it came from, so
+        # `urls=["evil.example"]` is read exactly the way `url="evil.example"` is; a
+        # nested Mapping brings its own keys instead.
+        queue: deque[tuple[str, Any]] = deque(call.arguments.items())
+        for _ in range(_EGRESS_MAX_NODES):
+            if not queue:
+                break
+            key, value = queue.popleft()
+            if isinstance(value, str):
+                if key not in _EGRESS_HOST_KEYS and value[:4].lower() != "http":
+                    continue
+                # `hostname` is already lowercased by `urlparse`; the `or value` fallback
+                # (a bare host under a host-shaped key) is not, and hostnames are
+                # case-insensitive (RFC 4343) — so normalise both sides, once.
+                host = (urlparse(value).hostname or value).lower()
+                if not any(host == h or host.endswith("." + h) for h in hosts):
                     return Ruling(
                         Verdict.DENY,
                         f"{host!r} is not in allowed_hosts", self.name)
+            elif isinstance(value, Mapping):
+                queue.extend((str(k), v) for k, v in value.items())
+            elif isinstance(value, (list, tuple)):
+                queue.extend((key, v) for v in value)
         return Ruling(Verdict.ALLOW, "", self.name)
+
+
+def builtins_for(grants: "Grants", allowed_hosts: "Sequence[str] | None") -> tuple:
+    """The three policies EVERY engine runs, built in one place.
+
+    Both engines used to construct this tuple themselves — `agent.py` for the classic
+    loop, `lg/__init__.py` for the durable graph — which made "do both backends enforce
+    the same builtin rules?" a question you answered by reading two files and hoping.
+    A fourth policy added to one and not the other would be invisible: no test fails when
+    a rule is merely absent somewhere.
+
+    Order matters and is asserted by `PolicyEngine`'s `max()` composition (P-2, a policy
+    can only restrict), so it is fixed here rather than repeated: effect first (what the
+    tool IS), then flow (what has happened to the run), then egress (where it may reach).
+
+    `tests/test_parity.py` asserts neither engine builds the tuple itself (ADR-099).
+    """
+    return (EffectPolicy(), TaintPolicy(grants), EgressPolicy(allowed_hosts))

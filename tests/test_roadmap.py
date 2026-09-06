@@ -11,7 +11,9 @@ import asyncio
 import sys
 import unittest
 
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
+# Also run directly, outside pytest — README says `python3 tests/test_roadmap.py` —
+# so `tests/conftest.py` cannot be relied on here.
+import _paths; sys.path.insert(0, str(_paths.SRC))
 
 from harness import Agent, tool
 from harness.models.fake import FakeModel

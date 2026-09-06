@@ -9,17 +9,21 @@ import asyncio
 import uuid
 import warnings
 from dataclasses import replace
-from typing import Any, Callable, Literal, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
 from .budget.ledger import Budget, Ledger
 from .context.assembler import ContextAssembler
 from .context.linter import PrefixWatcher, check_determinism
-from .errors import ConfigError, SyncInAsyncContextError, ToolContractError, UnsafeToolSetError
+from .credentials import resolve_provider
+from .guards import (_check_subagent_safety, _check_tool_set, _is_factory,
+                     _refuse_if_loosened, check_grant_names, check_safety)
+from .errors import (ConfigError, SharedPolicyStateError,
+                     SyncInAsyncContextError, ToolContractError)
 from .middleware import _run_scope
 from .observe.console import ConsoleExporter
 from .observe.events import EventBus
 from .observe.transcript import TranscriptWriter, read as read_transcript
-from .policy.builtin import EffectPolicy, EgressPolicy, TaintPolicy
+from .policy.builtin import builtins_for
 from .policy.label import Grants
 from .policy.engine import PolicyEngine
 from .policy.taint import TaintTracker
@@ -29,6 +33,9 @@ from .secrets import redaction_scope
 from .tools import (EFFECT_PROFILES, Effect, ToolSpec, slug,
                     tool as _tool_decorator)
 from .tools.registry import ToolSet
+
+if TYPE_CHECKING:
+    from .profile import Profile
 
 
 _MISSING: Any = object()
@@ -41,7 +48,8 @@ class Agent:
                  "transcript", "exporters",
                  "tenant_id", "session_id", "principal", "decisions",
                  "durable", "checkpoint",
-                 "_asm", "_watch", "_as_tool_budget", "_grants", "_durable_thread")
+                 "_asm", "_watch", "_as_tool_budget", "_grants", "_durable_thread",
+                 "_profiles")
 
     # Declared for the type checker.  The fields are set through `object.__setattr__`
     # (the Agent is frozen), which a checker cannot see — so without these, **a user
@@ -54,7 +62,13 @@ class Agent:
     model: str
     effort: str
     budget: Budget
-    safety: str
+    #: Narrower than `str` deliberately: `__init__` accepts
+    #: `Literal["standard", "strict"]`, so annotating the ATTRIBUTE as `str` made the
+    #: round trip fail type checking — `Agent(safety=parent.safety)`, which is exactly
+    #: what a subagent has to do to be no less restricted than its parent
+    #: (`_check_subagent_safety`), and what `CodingProfile.apply()` now does for its
+    #: reader (ADR-078). Found by pointing mypy at `examples/` (ADR-082).
+    safety: Literal["standard", "strict"]
     approve: Any
     policies: tuple[Any, ...]
     allowed_hosts: tuple[str, ...] | None
@@ -76,6 +90,7 @@ class Agent:
     _watch: Any
     _as_tool_budget: Any
     _durable_thread: str | None
+    _profiles: tuple[str, ...]
 
     def __init__(
         self,
@@ -150,6 +165,13 @@ class Agent:
         # gets its own, generated once and kept only in memory.
         durable: bool = False,
         checkpoint: Any = None,
+        # Bookkeeping for `with_profile()` (agent.py) — which `Profile.name`s have
+        # already been layered onto this agent. Not something a caller sets by hand;
+        # `with_profile()` appends to it after each successful application. Exists so a
+        # SECOND `.with_profile()` call can be refused by default rather than silently
+        # producing a garbled prompt and an unreviewed tool-set combination — see that
+        # method's own docstring for the concrete case this closes.
+        profiles: Sequence[str] = (),
     ) -> None:
         if args:
             shown = ", ".join(repr(a) for a in args)
@@ -175,6 +197,18 @@ class Agent:
         toolset = ToolSet(tools)
         grants = Grants(accepts_tainted=frozenset(accepts_tainted),
                         sensitive=frozenset(sensitive))
+        # Three spellings, checked before anything reads them. `safety=` first, because
+        # `_check_subagent_safety` and `_refuse_if_loosened` RANK it and a rank of an
+        # unknown word has no answer — that lookup used to be the bare `_SAFETY_RANK[...]`
+        # that turned `safety="stict"` into `KeyError: 'stict'` out of the guard whose
+        # whole job is a readable refusal. Every path that can set `safety=`,
+        # `accepts_tainted=` or `sensitive=` — `with_()`, and so `with_profile()` and
+        # every `Profile.apply` written in terms of it — rebuilds the whole `Agent`
+        # through this constructor, so checking here covers all of them once.
+        if transcript is not None:
+            _probe_transcript(transcript)
+        check_safety(safety)
+        check_grant_names(toolset, grants)
         _check_tool_set(toolset, grants)               # T-1.4, before anything is spent
         _check_subagent_safety(toolset, safety, approve)  # §06.4, before anything is spent
 
@@ -232,6 +266,7 @@ class Agent:
         # here is gone; `durable=True` and `returns=` are no longer mutually exclusive.
         object.__setattr__(self, "durable", durable)
         object.__setattr__(self, "checkpoint", checkpoint)
+        object.__setattr__(self, "_profiles", tuple(profiles))
         # `principal=`/`decisions=` are classic-backend-only, stated in their own
         # docstrings above — `build_agent()` has no parameter to hand either to, so a
         # `durable=True` agent given one would silently do nothing with it. Same "fail
@@ -287,7 +322,7 @@ class Agent:
                     "checkpointer) — there is nothing for _history= to do here."
                 )
             return await self._atry_run_durable(message, on_delta=on_delta)
-        provider = _resolve_provider(self.provider)
+        provider = resolve_provider(self.provider)
         run_id = "r_" + uuid.uuid4().hex[:16]
         exporters = list(self.exporters)
         writer = None
@@ -306,22 +341,22 @@ class Agent:
         # tells people to keep the Agent at module scope for caching (Round 34).
         user_policies = tuple(p() if _is_factory(p) else p for p in self.policies)
         before = _policy_state(user_policies)
-        engine = PolicyEngine(
-            (EffectPolicy(), TaintPolicy(self._grants), EgressPolicy(self.allowed_hosts)),
-            user_policies)
+        engine = PolicyEngine(builtins_for(self._grants, self.allowed_hosts),
+                              user_policies)
         # Open for exactly the window in which a revealed secret can still be written
         # out — wide enough to redact, narrow enough not to retain (Round 25, RT-13).
         try:
             with redaction_scope(), _run_scope(run_id=run_id, session_id=self.session_id,
-                                              tenant_id=self.tenant_id):
+                                              tenant_id=self.tenant_id,
+                                              on_amend=_amender(bus)):
                 result = await RunEngine(self, provider, ledger, engine, taint, self._asm,
                                          bus, self._watch).run(message, messages=_history,
                                                                on_delta=on_delta)
-            _check_shared_policy_state(self.policies, user_policies, before)
+            _check_shared_policy_state(self.policies, user_policies,
+                                       before, bus, result)
             return result
         finally:
-            if writer is not None:
-                writer.close()
+            _close_exporters(exporters)
 
     async def arun(self, message: str, *, on_delta=None) -> Result:
         r = await self.atry_run(message, on_delta=on_delta)
@@ -342,13 +377,18 @@ class Agent:
             )
         from langchain_core.messages import HumanMessage
 
-        graph, close = await self._build_durable_graph()
+        graph, close, runtime = await self._build_durable_graph()
         try:
             thread_id = self.session_id or self._durable_thread_id()
             config = {"configurable": {"thread_id": thread_id}}
             prior = await graph.aget_state(config)
             before = len(prior.values.get("messages") or []) if prior and prior.values else 0
-            with _run_scope(run_id=thread_id, session_id=self.session_id,
+            # `Runtime` keeps ONE bus per run_id (`_bus_for`), and the amendment has to
+            # go through that same one: a second `EventBus` over the same exporters would
+            # start its own `seq` counter and scramble the transcript's order. Private
+            # for now — a public accessor belongs on `Runtime`, not a reach from here.
+            with _run_scope(on_amend=_amender(runtime._bus_for(thread_id)),
+                            run_id=thread_id, session_id=self.session_id,
                             tenant_id=self.tenant_id):
                 out = await graph.ainvoke({"messages": [HumanMessage(message)], "step": 0},
                                           config=config)
@@ -393,7 +433,7 @@ class Agent:
         from .lg.adapter import ProviderChatModel
         from .models import pricing
 
-        provider = _resolve_provider(self.provider)
+        provider = resolve_provider(self.provider)
         model = ProviderChatModel(provider=provider, asm=self._asm,
                                   max_output=pricing.MAX_OUTPUT.get(self.model, 8_000))
         checkpointer, own_conn = await _build_checkpointer(self.checkpoint, self.name)
@@ -404,7 +444,7 @@ class Agent:
             exporters.append(writer)
         if ConsoleExporter.should_attach():
             exporters.append(ConsoleExporter(self.name))
-        graph, _runtime = build_agent(
+        graph, runtime = build_agent(
             model=model, tools=list(self.toolset), budget=self.budget,
             model_name=self.model, safety=self.safety, policies=self.policies,
             allowed_hosts=self.allowed_hosts,
@@ -417,12 +457,11 @@ class Agent:
         )
 
         async def close() -> None:
-            if writer is not None:
-                writer.close()
+            _close_exporters(exporters)
             if own_conn is not None:
                 await own_conn.close()
 
-        return graph, close
+        return graph, close, runtime
 
     async def stream(self, message: str, *, on_delta=None):
         """T-8.5, docs/17-research-alignment.md M8 — `async for ev in agent.stream(msg)`
@@ -608,8 +647,92 @@ class Agent:
         base["tools"] = list(self.toolset)
         base["accepts_tainted"] = self._grants.accepts_tainted
         base["sensitive"] = self._grants.sensitive
+        base["profiles"] = self._profiles
         base.update(overrides)
         return Agent(**base)
+
+    def with_profile(self, profile: "Profile", *, allow_multiple: bool = False) -> "Agent":
+        """A new `Agent`, transformed by `profile` — `docs/02-architecture.md §4` /
+        `profile.py` for why this is sugar over `with_()`, not a seventh seam.
+
+        `profile.apply(self)` does the real work and can call `with_()` however it
+        needs to; what this wrapper adds is the two rules every caller of a
+        third-party `Profile` gets for free, without that profile author having to
+        know either rule exists:
+
+        1. **A profile can extend an agent, never loosen it.** `_refuse_if_loosened`
+           checks the knobs a prompt/tool bundle has no legitimate reason to touch —
+           `safety`, `accepts_tainted`, `sensitive`, `allowed_hosts`,
+           `require_approval_evidence`, `max_asks_per_run`, `approve`, which `policies`
+           survive, and the tool set compared BY NAME (a name the caller already declared
+           may not come back under an effect that decides weaker rules — ADR-084) — the
+           same shape of check `_check_subagent_safety` already runs for a subagent,
+           applied here to a profile instead.
+        2. **At most one profile per agent, unless you say otherwise.** A SECOND
+           `.with_profile()` call is refused by default. Measured, not hypothetical:
+           `CodingProfile()` then `ResearchProfile()` on the same `Agent` constructs
+           without error and produces (a) a garbled system prompt — each profile
+           rebuilds the WHOLE prompt from its own template around `agent.job`, so the
+           second profile's template wins, but with fragments of the first still
+           wedged in — and (b) a toolset unioning `search`/`fetch` (`external`, an
+           untrusted-content source) with `write_source`/`git_commit` (`write`, a
+           code-mutation sink) — exactly the "reads the untrusted world, writes the
+           codebase" combination `CodingProfile`'s OWN `ask_reader` subagent exists to
+           keep separate. `_check_tool_set`'s lethal-trifecta refusal does not catch
+           this: it is scoped to `external`+`danger` (`write` is treated as reversible
+           throughout this library — `git reset` undoes a bad `write_source`/
+           `git_commit`, `design/02-safety-engine.md §4.1`), so `external`+`write` has
+           always been constructible directly (`Agent(tools=[search, write_source])`
+           raised nothing before this fix either, and still doesn't — that is core's
+           own settled scope, not something a profile-layer change should override
+           unilaterally). What composing two profiles changed is not the underlying
+           rule; it made hitting that combination by ACCIDENT trivial and invisible —
+           `.with_profile(a).with_profile(b)` reads as safe composition, not as
+           "union two tool sets and hope." `allow_multiple=True` is the explicit,
+           visible opt-in this library asks for everywhere else a real but
+           narrower-than-`danger` risk exists (`accepts_tainted=`, `allowed_hosts=None`).
+        """
+        if self._profiles and not allow_multiple:
+            raise ConfigError(
+                f"this agent already has {self._profiles[-1]!r} applied as a profile.\n\n"
+                f"  Composing a second profile ({profile.name!r}) was never checked for "
+                f"safety: prompts\n  can garble (each profile rebuilds the whole prompt "
+                f"around its own template), and\n  the union of two profiles' tools can "
+                f"create a combination neither profile alone\n  has — an `external` tool "
+                f"from one profile next to a `write`/`danger` tool from\n  another is "
+                f"exactly the class this library otherwise keeps apart.\n\n"
+                f"  If you are sure this specific combination is safe, say so explicitly:\n"
+                f'      agent.with_profile({profile.name}_profile, allow_multiple=True)\n\n'
+                f"  -> docs/03-public-api.md §3.7"
+            )
+        after = profile.apply(self)
+        _refuse_if_loosened(self, after, profile.name)
+        return after.with_(profiles=(*self._profiles, profile.name))
+
+
+class _TurnCost:
+    """An `Exporter` that keeps one number: what the run had spent when it ended.
+
+    `RUN_FINISHED` is emitted on every exit path including cancellation (`run.py` emits
+    it and then re-raises), and `cost_usd` on it is `str(ledger.spent)` — so this is the
+    only place a cancelled turn's bill is readable from outside, and reading it needs no
+    change to `atry_run`'s signature or return type.
+    """
+
+    __slots__ = ("cost",)
+
+    def __init__(self) -> None:
+        self.cost = Money.ZERO
+
+    def emit(self, event: Any) -> None:
+        from .observe.events import EventKind
+        if event.kind is EventKind.RUN_FINISHED:
+            # `"$0.0009"` — `Money.__str__`'s shape, since the bus carries strings, not
+            # `Decimal`s (IDL-42: state is JSON, and a float here would reintroduce
+            # IDL-01's rounding class).
+            self.cost = Money(str(event.data.get("cost_usd", "0")).lstrip("$"))
+
+    def close(self) -> None: ...
 
 
 class Chat:
@@ -637,7 +760,12 @@ class Chat:
     @property
     def messages(self) -> list: return list(self._messages)
 
-    def say(self, message: str, *, on_delta=None) -> Result:
+    def _turn(self) -> "tuple[Agent, _TurnCost] | Result":
+        """The agent for this turn, or the `Result` that ends the conversation.
+
+        Shared by `say` and `asay` so the conversation budget is computed in exactly one
+        place: two copies of "how much is left" is how a sync and an async twin drift.
+        """
         remaining = (Money(self._budget.usd) - self._spent
                      if self._budget.usd is not None else None)
         if remaining is not None and remaining.decimal <= 0:
@@ -651,7 +779,58 @@ class Chat:
         if remaining is not None:
             turn = self._agent.with_(budget=replace(self._agent.budget,
                                                     usd=remaining.decimal))
-        r = turn.try_run(message, _history=self._messages, on_delta=on_delta)
+        # The billed cost of a turn that never returns one. `atry_run` re-raises
+        # `CancelledError` rather than returning a Result (run.py, T-6.2/Y-01 — swallowing
+        # it broke asyncio's cancellation protocol), so every line after the call is
+        # skipped, including `self._spent + r.cost`. The tokens were still paid for:
+        # measured, a turn cancelled mid-tool emits
+        # `RUN_FINISHED stop_reason='cancelled' cost_usd='$0.0009'` and the conversation
+        # ledger saw none of it (ADR-088). An `Exporter` is the read-only seam that
+        # already carries this number, so no new plumbing crosses `atry_run`.
+        sink = _TurnCost()
+        return turn.with_(exporters=[*turn.exporters, sink]), sink
+
+    def say(self, message: str, *, on_delta=None) -> Result:
+        """One turn, synchronously. `asay` is the same turn from a running event loop."""
+        prepared = self._turn()
+        if isinstance(prepared, Result):
+            return prepared
+        turn, sink = prepared
+        try:
+            r = turn.try_run(message, _history=self._messages, on_delta=on_delta)
+        except asyncio.CancelledError:
+            self._spent = self._spent + sink.cost
+            raise
+        return self._record(r)
+
+    async def asay(self, message: str, *, on_delta=None) -> Result:
+        """One turn, from inside a running event loop.
+
+        `say()` cannot be used there — it goes through `try_run`, whose `_guard_sync`
+        raises `SyncInAsyncContextError` rather than deadlocking. Without this twin, a
+        caller that needs to interleave a conversation with anything else (the
+        `harness.contrib` `Driver`, which cancels a turn to serve an urgent event) had to
+        drive `atry_run(..., _history=...)` itself and reimplement this class's
+        bookkeeping around a PRIVATE keyword argument (ADR-088).
+
+        **A cancelled turn advances `spent` but not `messages`.** The spend is real and is
+        recorded. The history is not: there is no assistant reply to record, and appending
+        the user message alone would leave two user turns back to back — a shape this
+        library has never sent to a real provider and will not start guessing about here.
+        A caller that wants the interrupted question asked again re-sends it.
+        """
+        prepared = self._turn()
+        if isinstance(prepared, Result):
+            return prepared
+        turn, sink = prepared
+        try:
+            r = await turn.atry_run(message, _history=self._messages, on_delta=on_delta)
+        except asyncio.CancelledError:
+            self._spent = self._spent + sink.cost
+            raise
+        return self._record(r)
+
+    def _record(self, r: Result) -> Result:
         self._messages = list(r.messages)
         self._spent = self._spent + r.cost
         return r
@@ -665,24 +844,6 @@ class Chat:
         new._messages = list(self._messages)
         new._spent = self._spent
         return new
-
-
-def _resolve_provider(provider: Any) -> Any:
-    """The classic and durable run paths both need "the caller's provider, or the
-    default Anthropic one if a key is configured, or a clear error" — factored out so
-    the two copies of this couldn't drift (they briefly did, mid-implementation)."""
-    if provider is None:
-        from .cli import key_status
-        if key_status()[0]:
-            from .models.anthropic import AnthropicProvider
-            provider = AnthropicProvider()
-    if provider is None:
-        raise ConfigError(
-            "this agent has no way to reach a model yet.\n\n"
-            "  Run:  harness setup\n\n"
-            "  -> docs/15-first-agent.md"
-        )
-    return provider
 
 
 async def _build_checkpointer(checkpoint: Any, name: str) -> Any:
@@ -752,15 +913,27 @@ def _state_to_result(state: Any, before: int, run_id: str,
         if isinstance(m, AIMessage):
             if isinstance(m.content, str) and m.content:
                 text = m.content
-            u = m.usage_metadata or {}
+            u: Mapping[str, Any] = m.usage_metadata or {}
             details = u.get("input_token_details", {}) or {}
             usage = usage + Usage(u.get("input_tokens", 0), u.get("output_tokens", 0),
                                   details.get("cache_read", 0), details.get("cache_creation", 0))
             for tc in (m.tool_calls or []):
-                call_names[tc.get("id")] = tc.get("name")
+                # A call with no id cannot be correlated with the `ToolMessage` that
+                # carries its result, and the lookup below is by that id — so an
+                # id-less entry was already dead, never matched, never counted.
+                # mypy objecting to `str | None` as a key was pointing at that, not
+                # at a style question.
+                cid, cname = tc.get("id"), tc.get("name")
+                if cid is not None and cname is not None:
+                    call_names[cid] = cname
         elif isinstance(m, ToolMessage):
             called = call_names.get(m.tool_call_id)
-            if called and getattr(m, "status", "success") != "error":
+            # The `executed` stamp, not `status != "error"`. On this backend a refusal
+            # and a failure are both `status="error"`, so filtering on it dropped every
+            # tool that ran and raised — while the classic loop kept them (IDL-49:
+            # `tools_run` records what EXECUTED). `_stamp_executed` is set at the two
+            # points where a tool has actually been invoked.
+            if called and m.additional_kwargs.get("executed"):
                 tools_run.append(called)
     # N-3: `lg/runtime.py::finish()` already validated this (and downgraded `stop`/
     # `detail` above if it didn't fit) BEFORE `run.finished` fired — this re-parse just
@@ -771,7 +944,7 @@ def _state_to_result(state: Any, before: int, run_id: str,
     # too rather than an unhandled exception out of a method documented not to raise.
     value = None
     if stop is StopReason.COMPLETED and returns is not None:
-        from .run import parse_returns
+        from .stop import parse_returns
         try:
             value = parse_returns(returns, text)
         except ToolContractError as exc:
@@ -828,26 +1001,126 @@ def _raise_if_failed(r: Result) -> None:
         raise RunFailed(r.detail or f"run stopped: {r.stop_reason.value}", r)
 
 
-def _is_factory(p) -> bool:
-    """A Policy *instance* carries `check` as a bound method; a class or a lambda does
-    not.  Testing `hasattr(p, "check")` treats the class itself as an instance, because a
-    class has the attribute too — the first version of this check did exactly that."""
+def _probe_transcript(path) -> None:
+    """Open the transcript once, at construction, so a bad path is a setup error.
+
+    `TranscriptWriter` is built inside `atry_run`, not here, and it used to answer an
+    unopenable path by setting `disabled = True`. Measured:
+
+        Agent(transcript="/proc/definitely-not-writable/t.jsonl").try_run("go")
+        run ok: True   file exists: False   error events: []
+
+    A compliance deployment that requires a transcript got a fully successful run, no
+    artifact, and nothing to distinguish that from a process that was killed. The path is
+    knowable before the run, so this belongs with the other construction-time refusals
+    (docs/02 §7: configuration error -> raised at `Agent(...)`, never at run time).
+
+    It really opens the file rather than guessing from `os.access`: permission bits,
+    read-only mounts, missing parents and a path that is a directory all fail differently
+    and only an open tells the truth about all of them. That leaves an empty file where
+    the caller asked for one, which is the same thing the run would have done a moment
+    later.
+    """
+    import pathlib as _pl
+    p = _pl.Path(path)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8"):
+            pass
+    except OSError as exc:
+        raise ConfigError(
+            f"the transcript path {str(path)!r} cannot be opened for writing: {exc}\n\n"
+            f"  A transcript is the only durable record of what this agent did, so a "
+            f"path that\n  cannot be written is a setup mistake rather than something to "
+            f"discover at 03:00\n  when the volume fills.\n\n"
+            f"  -> docs/05-data-and-state.md"
+        ) from exc
+
+
+def _amender(bus):
+    """How a `Middleware`'s argument rewrite reaches the event stream.
+
+    `middleware.py` sits below `observe` and must not import `EventKind` to make a
+    record, so it calls this instead: the facade is the composition root and is allowed
+    to know both. Same shape as every other seam here — the low layer names a callable,
+    not a type.
+    """
+    def amend(tool: str, middleware: str, before, after) -> None:
+        from .observe.events import EventKind
+        changed = sorted(set(before) | set(after))
+        bus.emit(EventKind.TOOL_ARGUMENTS_AMENDED, tool=tool, middleware=middleware,
+                 fields=[k for k in changed if before.get(k) != after.get(k)],
+                 arguments=dict(after))
+    return amend
+
+
+def _close_exporters(exporters) -> None:
+    """`Exporter.close()` is declared in `observe/events.py` and documented in
+    docs/04 §…, and until now only `TranscriptWriter` — the exporter this library
+    constructs for itself — was ever closed.  Measured on both backends: a user-supplied
+    exporter saw `close() called: False`.
+
+    `OtelExporter.close()` exists specifically to end spans a crashed run left open, so
+    the leak it prevents was not being prevented, and every other implementer was stubbing
+    a method for nothing (an ISP complaint with teeth).
+
+    One exporter raising must not stop the others closing: they are independent sinks, and
+    the whole point of closing is to flush.  The same isolation `EventBus.emit` already
+    applies to emitting.
+    """
+    for e in exporters:
+        close = getattr(e, "close", None)
+        if close is None:
+            continue
+        try:
+            close()
+        except Exception:                 # noqa: BLE001 - a sink that cannot close is
+            pass                          # not a reason to lose the other sinks' flush
+
+
+def _class_data(cls) -> dict[str, str]:
+    """Data attributes a policy's CLASS carries, which are shared by every instance.
+
+    `p.__dict__` misses them entirely, and a counter kept there is the widest possible
+    leak — not one Agent's runs bleeding into each other but every Agent in the process:
+
+        run 1: SneakyPolicy.seen = 1   (no error)
+        run 2: SneakyPolicy.seen = 2   (no error)   <- two separate Agent instances
+
+    Methods, properties and the dunders are skipped: they are the class's definition, not
+    its state, and their reprs carry addresses that would make every snapshot differ from
+    itself.  A class attribute that legitimately changes mid-run — a memo cache, say — is
+    reported by this too, and correctly so: a cache on a shared class IS cross-run state,
+    whatever it was meant for.
+    """
     import inspect
-    return not inspect.ismethod(getattr(p, "check", None))
+    out = {}
+    for klass in reversed(cls.__mro__):
+        if klass is object:
+            continue
+        for k, v in vars(klass).items():
+            if k.startswith("__") or inspect.isroutine(v) or inspect.isdatadescriptor(v):
+                continue
+            if isinstance(v, (staticmethod, classmethod, type)):
+                continue
+            out[f"{klass.__name__}.{k}"] = repr(v)
+    return out
 
 
 def _policy_state(policies) -> dict[int, str]:
-    """A cheap snapshot of each policy's mutable attributes."""
+    """A cheap snapshot of each policy's mutable state, instance AND class."""
     out = {}
     for p in policies:
         d = getattr(p, "__dict__", None)
         if d is None:
             d = {s: getattr(p, s, None) for s in getattr(type(p), "__slots__", ())}
-        out[id(p)] = repr(sorted((k, repr(v)) for k, v in d.items()))
+        items = sorted((k, repr(v)) for k, v in d.items())
+        items += sorted(_class_data(type(p)).items())
+        out[id(p)] = repr(items)
     return out
 
 
-def _check_shared_policy_state(declared, used, before) -> None:
+def _check_shared_policy_state(declared, used, before, bus=None, r=None) -> None:
     """A shared policy that mutated during a run carries state into the next one.
 
     Detected here rather than guessed at construction: `EgressPolicy` holds configuration
@@ -859,7 +1132,15 @@ def _check_shared_policy_state(declared, used, before) -> None:
         if _is_factory(original):
             continue                      # a factory: fresh each run, nothing to share
         if before.get(id(live)) != after.get(id(live)):
-            raise ConfigError(
+            # Emitted BEFORE raising. This is the one setup mistake that cannot be seen
+            # until a run has happened, so by now the model has been called and the run
+            # has been billed — and an exception is not an audit record. The exporters
+            # get the finding whether or not the caller catches what follows.
+            if bus is not None:
+                from .observe.events import EventKind
+                bus.emit(EventKind.ERROR_RAISED, error="SharedPolicyStateError",
+                         detail=f"policy {type(live).__name__} mutated during the run")
+            raise SharedPolicyStateError(
                 f"the policy {type(live).__name__!r} changed while it ran, and this agent "
                 f"reuses the same instance on every run.\n\n"
                 f"  The next request would inherit this one's progress — one customer's "
@@ -867,95 +1148,13 @@ def _check_shared_policy_state(declared, used, before) -> None:
                 f"  Pass the class instead of an instance, so each run gets a fresh one:\n\n"
                 f"      policies=[{type(live).__name__}]        ← not "
                 f"{type(live).__name__}()\n\n"
-                f"  -> docs/06-safety.md#4-least-privilege"
+                f"  -> docs/06-safety.md#4-least-privilege", r
             )
 
 
-_SAFETY_RANK = {"standard": 0, "strict": 1}
 
 
-def _check_subagent_safety(toolset: ToolSet, parent_safety: str, parent_approve: Any) -> None:
-    """A subagent inherits restriction only: it may never be laxer than its parent.
-
-    Documented in §06.4 since Round 7 and unenforced until Round 28 executed it — a
-    strict parent could delegate to a standard child and silently drop the safety level
-    for exactly the work it delegated.
-
-    G-15, design/review-architect.md: `safety` was the only axis this ever checked.
-    `dispatch.py::_run_subagent` runs the CHILD's OWN `atry_run` — its OWN `approve=`,
-    never the parent's (`run_child = child.with_(budget=...)` only ever replaces
-    `budget`). `PolicyEngine.resolve()` auto-`ALLOW`s a surviving `ASK` when `approve is
-    None` and the call is neither `safety="strict"` nor `Effect.DANGER` — so a child
-    built with no `approve=` at all, wrapped inside a parent that DOES have a real
-    human-approval callback, silently auto-approves exactly the WRITE-effect-under-
-    `standard`-safety decisions the parent's `approve=` exists to gate. Delegating work
-    to a subagent would be a way to escape not just a safety LEVEL (already checked
-    above) but the approval callback itself. Same restriction-only framing as the
-    safety-rank check: a child needs an `approve=` of its OWN once its parent has one —
-    this does not compare them for equality, only that one exists, matching how
-    `safety` is only ever rank-compared, not required to be identical.
-
-    H-5, design/review-architect-round2.md (confirmed still holding,
-    design/review-architect-round3.md): unlike `safety`, `approve=` is not an ordered
-    value to rank-compare — it is an arbitrary callback, and "exists" is the only
-    property a construction-time check can cheaply verify about it. This check closes
-    the "no approver at all" hole; it cannot and does not verify the child's approver
-    behaves as restrictively as the parent's. `Agent(approve=lambda call, **kw: True)`
-    satisfies `child.approve is None` being `False` and passes construction just as
-    readily as a real human-in-the-loop callback would. No static check can tell a
-    rubber stamp from a real approver — this is an inherent limit of any interface
-    built around a caller-supplied function, not a gap specific to this check.
-    """
-    for spec in toolset:
-        child = spec.subagent
-        if child is None:
-            continue
-        if _SAFETY_RANK[child.safety] < _SAFETY_RANK[parent_safety]:
-            raise UnsafeToolSetError(
-                f"{child.name!r} runs at safety={child.safety!r} but you are wrapping it "
-                f"in an agent at safety={parent_safety!r}.\n\n"
-                f"  A subagent can only ever be MORE restricted than its parent, never "
-                f"less —\n  otherwise delegating work is a way to escape the safety "
-                f"level you chose.\n\n"
-                f'  Fix: Agent(name={child.name!r}, ..., safety="{parent_safety}")\n\n'
-                f"  -> docs/06-safety.md#4-least-privilege"
-            )
-        if parent_approve is not None and child.approve is None:
-            raise UnsafeToolSetError(
-                f"{child.name!r} has no approve= callback, but you are wrapping it in an "
-                f"agent that does.\n\n"
-                f"  A subagent runs its OWN atry_run() with its OWN approve= — not the "
-                f"parent's. Without one, a call inside {child.name!r} that needs approval "
-                f"is silently ALLOWED (no human in the loop), even though the parent "
-                f"clearly wants one for exactly this kind of decision.\n\n"
-                f"  Delegating work to a subagent would otherwise be a way to escape the "
-                f"approval callback you set, the same way it could escape a safety "
-                f"level (checked above).\n\n"
-                f"  Fix: Agent(name={child.name!r}, ..., approve=<the same callback>)\n\n"
-                f"  -> docs/06-safety.md#4-least-privilege"
-            )
 
 
-def _check_tool_set(toolset: ToolSet, grants: Grants) -> None:
-    """The external+danger combination, caught at construction rather than mid-run (F9.1).
 
-    Kiểm theo TÊN qua `grants`, không theo một trường trên `ToolSpec` — `accepts_tainted`
-    không còn là thứ tác giả tool khai được (design/03-tools-and-mcp.md §1.1bis, S-16).
-    """
-    external = [t for t in toolset if t.effect is Effect.EXTERNAL]
-    danger = [t for t in toolset if t.effect is Effect.DANGER
-             and t.name not in grants.accepts_tainted]
-    if not (external and danger):
-        return
-    e, d = external[0].name, danger[0].name
-    raise UnsafeToolSetError(
-        "This helper can read things from the internet AND do something it can't undo.\n\n"
-        f"  {e:<11} can bring in words from a website\n"
-        f"  {d:<11} can't be undone\n\n"
-        f"  A website could trick your helper into using {d} on your stuff.\n\n"
-        "  Pick one:\n"
-        "    1. Take one of them out, or make two separate helpers.  ← easiest\n"
-        f"    2. If {d} really is safe, an OPERATOR says so — not the tool's own code:\n"
-        f'         Agent(..., accepts_tainted=["{d}"])\n\n'
-        "  -> docs/15-first-agent.md"
-    )
+

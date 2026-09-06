@@ -13,8 +13,11 @@ class HarnessError(Exception):
 class ConfigError(HarnessError):
     """A mistake in how the agent or a tool was set up.
 
-    Always raised at import or construction time.  Subclasses must render the four
-    sections required by docs/03-public-api.md §8: what, where, the fix, a docs anchor.
+    Raised at import or construction time, with exactly one exception:
+    `SharedPolicyStateError` below, which is a setup mistake that CANNOT be seen until a
+    run has already happened.  Everything else in this family is a promise that a
+    misconfigured agent never starts.  Subclasses must render the four sections required
+    by docs/03-public-api.md §8: what, where, the fix, a docs anchor.
     """
 
 
@@ -25,6 +28,7 @@ class NonDeterministicPromptError(ConfigError): ...
 class UnsafeToolSetError(ConfigError): ...
 class InvalidBudgetError(ConfigError): ...
 class UnknownModelError(ConfigError): ...
+class ProfileLoosenedSafetyError(ConfigError): ...
 
 class ToolContractError(HarnessError): ...
 class SyncInAsyncContextError(HarnessError): ...
@@ -32,6 +36,26 @@ class SyncInAsyncContextError(HarnessError): ...
 
 class RunFailed(HarnessError):
     """Raised by .run() when the run did not complete.  Carries the partial work."""
+
+    def __init__(self, message: str, partial: object) -> None:
+        super().__init__(message)
+        self.partial = partial
+
+
+class SharedPolicyStateError(ConfigError):
+    """A policy instance mutated during a run, so the next run would inherit it.
+
+    The one `ConfigError` that cannot be raised at construction: a policy holding
+    configuration and a policy holding a state machine look identical until one of them
+    changes, so this is detected by comparing a snapshot taken before the run with one
+    taken after (Round 34).
+
+    It therefore carries `.partial`, the same way `RunFailed` does, and for the same
+    reason: by the time this is detectable the model has been called, tools have run and
+    the run has been billed.  Raising a bare `ConfigError` here discarded the `Result` —
+    the cost, the text, and the pointer to the transcript that would let someone see what
+    the leaking policy actually did.
+    """
 
     def __init__(self, message: str, partial: object) -> None:
         super().__init__(message)

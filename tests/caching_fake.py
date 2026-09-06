@@ -8,8 +8,10 @@ A stub that just reports a number would measure nothing.
 from __future__ import annotations
 
 import json
+
+# Runs OUTSIDE pytest (imported by `bench_cache.py`), so `conftest.py` never applies.
 import sys
-sys.path.insert(0, "src")
+import _paths; sys.path.insert(0, str(_paths.SRC))
 
 from harness.models.fake import FakeModel
 from harness.models.pricing import MAX_OUTPUT, price

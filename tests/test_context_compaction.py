@@ -8,11 +8,7 @@ bại ở đúng chỗ mà tính năng này tồn tại để tránh.
 Nhóm cuối (`BackendGraphVaChuyenRuaTaint`) là nhóm quan trọng nhất trên backend graph: nén
 mà làm rớt nhãn thì chính nó là đường rửa taint (S-19).
 """
-import sys
 import unittest
-
-sys.path.insert(0, "src")
-sys.path.insert(0, "tests")
 
 from fake_chat import FakeChat
 from langchain_core.messages import HumanMessage

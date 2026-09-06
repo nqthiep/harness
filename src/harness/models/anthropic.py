@@ -9,7 +9,7 @@ seam real (ADR-002).
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, Final, Mapping, NamedTuple, cast
 
 from ..errors import (ProviderAuthError, ProviderBadRequest, ProviderError,
                       ProviderRateLimited, ProviderTimeout, ProviderUnavailable)
@@ -17,10 +17,61 @@ from ..result import Usage
 from . import pricing
 from .base import DeltaFn, ModelRequest, ModelResponse
 
+if TYPE_CHECKING:                        # erased at runtime, so the lazy import stands
+    # The vendor's request TypedDicts.  Naming them here is what makes the three casts
+    # in `count_input_tokens` checkable at all: a cast to a type the SDK has renamed is
+    # an import error, where a `# type: ignore` would rot in silence.
+    from anthropic.types import (MessageCountTokensToolParam, MessageParam,
+                                 TextBlockParam)
+
 #: Errors this adapter maps.  Anything unmapped becomes ProviderError, never a success.
 _STATUS = {401: ProviderAuthError, 403: ProviderAuthError,
            400: ProviderBadRequest, 404: ProviderBadRequest,
            408: ProviderTimeout, 429: ProviderRateLimited}
+
+
+class _Shape(NamedTuple):
+    """How ONE model takes its reasoning configuration."""
+
+    #: `True` -> `thinking={"type": "adaptive"}`. `False` -> the older
+    #: `{"type": "enabled", "budget_tokens": N}`, which the adaptive models reject with
+    #: a 400 and which the budgeted ones REQUIRE in order to think at all.
+    adaptive: bool
+    #: Whether `output_config.effort` is accepted. It errors on the older models.
+    effort: bool
+
+
+#: Per-model payload shape, because there is no single correct one.
+#:
+#: This table replaces one unconditional `thinking={"type": "adaptive"}` plus one
+#: unconditional `output_config.effort`, sent for every model. That was right for four
+#: of the five models this package prices and wrong for the fifth: `claude-haiku-4-5`
+#: takes `budget_tokens` and REJECTS both adaptive thinking and `effort`, so
+#: `Agent(model="claude-haiku-4-5")` built a payload the endpoint refuses. The
+#: conformance test that was supposed to cover this asserted the opposite —
+#: "`budget_tokens` is a 400 on every model this package prices" — and only ever
+#: exercised `claude-opus-5` (ADR-091).
+#:
+#: Closed over `pricing.PRICES` by construction: `price()` refuses an unpriced model
+#: before `complete()` is ever reached, and
+#: `test_every_priced_model_has_a_declared_payload_shape` fails if the two tables drift.
+_ADAPTIVE, _BUDGETED = _Shape(True, True), _Shape(False, False)
+THINKING_SHAPE: Final[Mapping[str, _Shape]] = {
+    "claude-opus-5":    _ADAPTIVE,
+    "claude-opus-4-8":  _ADAPTIVE,
+    "claude-sonnet-5":  _ADAPTIVE,
+    # Thinking is always ON and not configurable: `{"type": "adaptive"}` is accepted and
+    # equivalent to omitting the parameter, while BOTH `{"type": "disabled"}` and
+    # `{"type": "enabled", "budget_tokens": N}` are a 400. Sending adaptive keeps one
+    # code path for every adaptive-family model.
+    "claude-fable-5":   _ADAPTIVE,
+    "claude-haiku-4-5": _BUDGETED,
+}
+
+#: The vendor's floor for `budget_tokens`, and it must also stay strictly BELOW
+#: `max_tokens`. A budget the ledger sized tightly can leave no room for both, and then
+#: the honest payload carries no `thinking` at all rather than an invalid pair.
+MIN_THINKING_BUDGET: Final = 1024
 
 
 class AnthropicProvider:
@@ -47,9 +98,62 @@ class AnthropicProvider:
                 "  -> docs/15-first-agent.md"
             ) from exc
         self._sdk = anthropic
-        self._client = anthropic.AsyncAnthropic(**({"api_key": api_key} if api_key else {}))
+        # Two calls rather than `**({"api_key": key} if key else {})`: splatting a
+        # `dict[str, str]` typed all fourteen of the SDK's constructor parameters as
+        # `str`, which was ten type errors and bought no reader anything.  The branch is
+        # load-bearing and is preserved exactly — a falsy key (None, or the empty string
+        # a blank `.env` line yields) must pass NO `api_key` at all so the SDK falls back
+        # to the environment, where `api_key=""` would install an empty credential that
+        # the `is None` check below waves straight through.
+        self._client = (anthropic.AsyncAnthropic(api_key=api_key) if api_key
+                        else anthropic.AsyncAnthropic())
+        # Caught here rather than on the first request. Without this, a provider with no
+        # resolvable credential constructs happily and dies mid-run as
+        # `ProviderError: TypeError: "Could not resolve authentication method..."` — an
+        # SDK internal, raised after the budget has already reserved, and NOT a
+        # `ProviderAuthError`, so a caller catching the documented exception for "bad
+        # credentials" misses it. Measured on the `.env` path (ADR-086). Note the SDK
+        # accepts a short or malformed key without complaint — only the ABSENCE of one
+        # is decidable locally; `"nope"` reaches the server and comes back 401.
+        if self._client.api_key is None and getattr(self._client, "auth_token", None) is None:
+            raise ProviderAuthError(
+                "no Anthropic credential is configured.\n\n"
+                "  Run:  harness setup\n"
+                "  or:   export ANTHROPIC_API_KEY=sk-ant-...\n"
+                "  or:   AnthropicProvider(api_key=...)\n\n"
+                "  -> docs/15-first-agent.md"
+            )
         self._counts: dict[str, int] = {}
         self._fallbacks = fallbacks
+
+    async def acheck_credentials(self) -> tuple[bool, str]:
+        """Is this credential accepted? `(True, "")` or `(False, why)`.
+
+        `count_tokens` rather than a one-token `messages.create`: it authenticates
+        against the same key and bills nothing, so validating a key before storing it
+        (IDL-25) does not cost the user money to find out their key works.
+
+        Lives here, not in the CLI, because mapping a vendor exception is exactly what
+        ADR-002 keeps inside this file — the caller gets `(bool, str)` and never sees an
+        `anthropic.*` type. Verified against the live endpoint with a dead key
+        (`tests/live_probe.py`), which is the only half of it a probe without a funded
+        key can reach.
+        """
+        try:
+            # A model this package prices — `claude-opus-4-5` was hardcoded here and is
+            # not one of them, so a credential check named a model the rest of the
+            # library refuses (ADR-091). `count_tokens` needs SOME model id; the default
+            # `Agent(model=...)` is the honest one to use.
+            await self._client.messages.count_tokens(
+                model="claude-opus-5", messages=[{"role": "user", "content": "ok"}])
+        except Exception as exc:
+            return False, str(self._map(exc))
+        return True, ""
+
+    def check_credentials(self) -> tuple[bool, str]:
+        """`acheck_credentials` for a sync caller (the `harness setup` command)."""
+        import asyncio
+        return asyncio.run(self.acheck_credentials())
 
     # -- protocol ---------------------------------------------------------
     def price(self, model: str): return pricing.price(model)
@@ -60,9 +164,21 @@ class AnthropicProvider:
         if key in self._counts:
             return self._counts[key]
         try:
+            # `ModelRequest` carries vendor-neutral `Mapping[str, Any]` blocks by design
+            # (ADR-002 — nothing outside this file names an `anthropic.*` type) and the
+            # SDK wants its own TypedDicts.  Translating between the two IS the adapter's
+            # job, and no checker can prove a `Mapping[str, Any]` is a `TextBlockParam`,
+            # so the assertion is made once, here, naming the target type.  What the
+            # assembler actually builds matches: `{"type": "text", "text": ...}`
+            # (+ optional `cache_control`) for system — context/assembler.py
+            # ::_system_blocks — and `{"name", "description", "input_schema", "strict"}`
+            # for tools — tools/__init__.py::ToolSpec.to_api — every key of which is
+            # declared on `ToolParam`.
             r = await self._client.messages.count_tokens(
-                model=request.model, system=list(request.system),
-                tools=list(request.tools), messages=list(request.messages))
+                model=request.model,
+                system=cast("list[TextBlockParam]", list(request.system)),
+                tools=cast("list[MessageCountTokensToolParam]", list(request.tools)),
+                messages=cast("list[MessageParam]", list(request.messages)))
             n = int(r.input_tokens)
         except Exception:
             # Never fail a run on a counting call.  Over-estimate from characters, which
@@ -72,20 +188,51 @@ class AnthropicProvider:
         self._counts[key] = n
         return n
 
+    def _shape(self, model: str) -> _Shape:
+        shape = THINKING_SHAPE.get(model)
+        if shape is None:                              # pragma: no cover - see below
+            # Unreachable through `Agent`: `pricing.price()` refuses an unpriced model
+            # before the ledger can size a call, so `complete()` never sees one. Raised
+            # rather than defaulted anyway, because a silent default is how a new model
+            # would get the WRONG shape instead of a fixable error.
+            raise ProviderBadRequest(
+                f"no payload shape is declared for model {model!r}, so this adapter "
+                f"does not know whether it takes adaptive thinking or a token "
+                f"budget.\n\n  Add it to `THINKING_SHAPE` in models/anthropic.py.\n\n"
+                f"  -> docs/12-decision-logs.md ADR-091")
+        return shape
+
+    def _thinking(self, shape: _Shape, max_tokens: int) -> dict[str, Any] | None:
+        if shape.adaptive:
+            return {"type": "adaptive"}
+        budget = max(MIN_THINKING_BUDGET, max_tokens // 2)
+        if budget >= max_tokens:
+            return None                                # no room for a valid pair
+        return {"type": "enabled", "budget_tokens": budget}
+
     async def complete(self, request: ModelRequest, *,
                        on_delta: DeltaFn | None = None) -> ModelResponse:
+        shape = self._shape(request.model)
         kwargs: dict[str, Any] = {
             "model": request.model,
             "max_tokens": request.max_tokens,
             "system": list(request.system),
             "messages": list(request.messages),
-            "thinking": {"type": "adaptive"},          # never budget_tokens (400 on 4.7+)
-            "output_config": {"effort": request.effort},
         }
+        thinking = self._thinking(shape, request.max_tokens)
+        if thinking is not None:
+            kwargs["thinking"] = thinking
+        # Built up rather than declared: an EMPTY `output_config` is not the same request
+        # as an absent one, and on a budgeted model both of its keys can be absent.
+        output_config: dict[str, Any] = {}
+        if shape.effort:
+            output_config["effort"] = request.effort
+        if request.output_format:
+            output_config["format"] = dict(request.output_format)
+        if output_config:
+            kwargs["output_config"] = output_config
         if request.tools:
             kwargs["tools"] = list(request.tools)
-        if request.output_format:
-            kwargs["output_config"]["format"] = dict(request.output_format)
 
         # The beta endpoint carries the fallbacks parameter; everything else is identical.
         api = self._client.messages

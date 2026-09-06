@@ -12,10 +12,7 @@ dần; `write`/`danger` luôn đúng MỘT lần thử, không hơn — double-e
 một side effect có kết quả CHƯA BIẾT là đúng lớp lỗi S-4/idempotency (T-6.1, chưa xây)
 tồn tại để ngăn.
 """
-import sys
 import unittest
-
-sys.path.insert(0, "src")
 
 from harness import Agent, tool
 from harness.models.fake import FakeModel

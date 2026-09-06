@@ -12,8 +12,7 @@ Kiểm bằng cách gọi thẳng `Ledger.hold_steps()`/`child_wall_clock()` —
 thật, vì đây là lỗi ở đúng một lớp (`Ledger`), giống cách `test_attack_s14.py` đã làm cho
 `reserve()`.
 """
-import sys, unittest
-sys.path.insert(0, "src")
+import unittest
 
 from harness.budget.ledger import Budget, Ledger
 

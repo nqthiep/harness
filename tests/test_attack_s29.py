@@ -14,8 +14,7 @@ khoảng cách đó có thể là NGAY LẬP TỨC (cùng lượt) hoặc CÁCH 
 dừng). Chính khoảng cách đó là chỗ audit trail cũ để lộ khoảng trống: sổ chỉ có một hàng
 cho lúc DUYỆT, không có hàng nào cho lúc THỰC THI THẬT.
 """
-import sys, unittest
-sys.path.insert(0, "src")
+import unittest
 
 from datetime import datetime, timezone
 

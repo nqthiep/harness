@@ -7,11 +7,7 @@ backend — this exact node being invoked again for a call that already complete
 silently re-run fn() a second time: the double-effect class S-4 exists to guard
 against, at the single-call granularity dispatch-level retry can actually reach.
 """
-import sys
 import unittest
-
-sys.path.insert(0, "src")
-sys.path.insert(0, "tests")
 
 from harness import Agent
 from harness.models.fake import FakeModel

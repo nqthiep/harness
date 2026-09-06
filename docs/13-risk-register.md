@@ -59,21 +59,92 @@ been run in every implementation that claims it?"**
 agents. Integrated as a `Store` (ADR-035). The council's earlier note that it "does not
 resolve on PyPI" was a spelling artifact, not a fact about the package.
 
-**OI-11 — `AnthropicProvider` has never run against the live API.** Its payload is now
-asserted offline against Anthropic's current documented parameter shapes (`thinking`,
-`output_config.effort`, `output_config.format`, `strict`, `betas`/`fallbacks`, model ids),
-which is what caught three wrong or missing claims in Round 38. **What that cannot catch:**
-a parameter the docs describe differently from how the endpoint behaves, and any error
-mapping that depends on a real response. One live call with a real key closes it.
+**OI-11 — `AnthropicProvider` has run against the live API once, unauthenticated; the
+authenticated half is still open.** Its payload is asserted offline against Anthropic's
+current documented parameter shapes (`thinking`, `output_config.effort`,
+`output_config.format`, `strict`, `betas`/`fallbacks`, model ids), which is what caught
+three wrong or missing claims in Round 38.
 
-**OI-10 — The OpenViking binding has never run against a live server.** Its tests drive
-the real `openviking_sdk` client over a stub transport, so the SDK's URL building, request
-shaping, response parsing and error mapping execute — but the server's actual response
-*content* is unverified, because `openviking-server` needs an embedding model and a config
-wizard that requires a TTY. **What this can hide:** a result key this binding does not
-read (`_memos` tries four), an error code outside the table, or a `viking://` addressing
-convention that differs from the one assumed. **Blocking for anyone deploying the viking
-extra**; nothing else waits on it.
+**Halved, not closed (ADR-085).** `tests/live_probe.py` — a manual script, never
+collected, so `no_network` (IDL-08) still governs the suite — sends a syntactically valid
+but dead key to the real `api.anthropic.com` and asserts the adapter maps what comes back:
+
+```
+complete()            -> ProviderAuthError: Error code: 401 - {'type': 'error',
+                         'error': {'type': 'authentication_error',
+                         'message': 'API key is invalid.'}, ...}
+count_input_tokens()  -> 80 (character upper bound 80, unauthenticated)
+```
+
+That is this codebase's first byte from a real model endpoint. It proves DNS, a real TLS
+handshake with the vendor, the endpoint path, a request the installed SDK (1.3.0) accepts
+without a `TypeError`, `_map()`'s `401 -> ProviderAuthError` arm against a real response
+body rather than a hand-written fake of one (IDL-46), and that
+`count_input_tokens`'s never-fail-a-run fallback really does return the character upper
+bound instead of raising.
+
+**What it still cannot catch, and why a live call was not enough on its own:** the server
+rejects the key *before* validating the payload, so `thinking`, `output_config`, `betas`
+and `fallbacks` would look identical whether their names are right or wrong. Measured, not
+assumed: an unknown parameter, `max_tokens: "abc"`, a missing `messages`, an unknown model
+id and a body that is not JSON all return `401 authentication_error`, so differential
+testing of parameter names against a dead key is impossible (ADR-091). Re-verifying the
+payload against the vendor's documentation instead found a real defect — the payload was
+model-independent and one of the five priced models rejects it. Only a funded
+key closes that. Not available here: `ANTHROPIC_API_KEY` is unset, and
+`ANTHROPIC_BASE_URL` points at a host-managed gateway whose credentials this environment
+does not hold (the probe pins the vendor URL so it cannot spend through it). For the
+record, the other two providers are not reachable from here at all — `api.deepseek.com`
+and `api.openai.com` both get `403` to `CONNECT` from the egress proxy, while
+`api.anthropic.com` is on its bypass list.
+
+**The vision pipeline, for comparison, is no longer in this state.** `MediaPipeDetector`
+has run real inference (ADR-090) and the whole `Camera` → `PerceptionBuffer` →
+`CameraSensor` chain has run over real decoded frames of real people (ADR-094). What
+remains there is a physical device, which is a narrower gap than "it has never run" —
+and the technique is the transferable part: `cv2.VideoCapture` reads a file through the
+same interface it reads a device through, so the fake was only ever needed for the
+hardware.
+
+**What the probe found within minutes of existing (ADR-086).** Five breaks in the
+first-run path every no-key message in this library points at: `.env` was never loaded,
+`key_status` answered by substring and returned a `bool`, a missing credential surfaced
+mid-run as `ProviderError: TypeError: ...` rather than `ProviderAuthError`, `harness
+setup` was advertised in `--help` with no branch behind it, and `pyproject.toml` declared
+no console script — so there was no `harness` command to run at all. All fixed and tested;
+the point for this register is that `no_network` (IDL-08) is load-bearing and correct, and
+its cost is that nothing downstream of "get a credential" had ever been executed.
+
+**OI-10 — CLOSED for the key-value path, open for search (ADR-096).** It has now run
+against a live `openviking-server`, and every risk this entry named was real:
+
+* **The `viking://` convention was wrong.** Every URI used scope `memories`;
+  a real server answers `Invalid scope 'memories'. Must be one of: agent, queue,
+  resources, session, temp, upload, user`. `tests/test_viking.py` asserted the wrong
+  scope, and passed, because a stub transport cannot disagree with you about a
+  convention.
+* **`_memos` read none of the right keys.** It tried `results`/`nodes`/`items`/`data`; a
+  real search response is `{"memories": [...], "resources": [...], "skills": [...],
+  "total": N}`.
+* **An error code was misclassified, and that is what made the first one invisible.**
+  `INVALID_URI` was listed as absence, so `put()` returned successfully having written
+  nothing and `get()` returned `None` — indistinguishable from an empty store.
+
+All three fixed; the round trip (`put`/`get`/`delete`) now works against a real server,
+and the old scope raises instead of silently no-opping.
+
+**The wizard this entry blamed does not exist.** Getting a server up needed three things,
+none of them a TTY: `pip install openviking` (a separate distribution from
+`openviking-sdk`), four lines of JSON in `~/.openviking/ov.conf`, and an embedding
+backend — the default downloads a GGUF from `huggingface.co`, which this environment's
+proxy refuses with 403 at CONNECT, so `tests/stub_embedder.py` serves the
+OpenAI-compatible endpoint the config explicitly supports pointing at.
+
+**Still open: semantic recall.** Content written through `put()` does not come back from
+`search()` on this server. Whatever indexes a written resource is not something this
+binding triggers, and `reindex` is deliberately not among its capabilities. So `search`
+parses the real response shape and has not been shown to return a written value —
+`tests/viking_probe.py` is the thing to re-run when that is worked out.
 
 
 Kept deliberately short. Each states why it does **not** block implementation. Anything

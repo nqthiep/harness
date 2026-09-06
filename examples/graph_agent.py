@@ -7,7 +7,8 @@ LangGraph does, and the rules stay identical. That is not just a claim — the
 end of this file prints proof read straight off the compiled graph.
 """
 import sys
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src")); sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 
 from fake_chat import FakeChat                     # stands in for a real model, no key needed
 from langchain_core.messages import HumanMessage

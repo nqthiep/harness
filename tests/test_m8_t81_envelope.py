@@ -5,10 +5,7 @@
 mặt, có giá trị hợp lý mặc định, và construction `Event(...)` KIỂU CŨ (positional, không
 biết 4 field mới) vẫn chạy được (tương thích ngược).
 """
-import sys
 import unittest
-
-sys.path.insert(0, "src")
 
 from harness import Agent
 from harness.models.fake import FakeModel

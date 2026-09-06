@@ -13,7 +13,8 @@ part.
 Kept in the same bilingual style `test_attack_s27.py` already established.
 """
 import sys, unittest
-sys.path.insert(0, "src")
+import _paths
+sys.path.insert(0, str(_paths.SRC))
 
 from harness import Agent, tool
 from harness.models.base import ModelResponse

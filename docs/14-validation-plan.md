@@ -116,7 +116,7 @@ against slow architectural drift, which no ordinary test catches.
 
 | ID | Asserts | ADR |
 |---|---|---|
-| AC-01 | No module in L2 imports an L0 adapter (import-linter) | §02.2 |
+| AC-01 | No module in L2 imports an L0 adapter, composition roots excepted by name and three KNOWN GAPs recorded (`test_layering.py::L2NeverNamesAnL0Adapter`) | §02.2 |
 | AC-02 | No public API accepts `parallel_safe` / `retryable` / `requires_approval` | ADR-003 |
 | AC-03 | `Agent` has no public setter; all fields frozen | ADR-004 |
 | AC-04 | Every `provider.complete` call site is immediately preceded by `ledger.reserve` (AST analysis) | ADR-005, I-1 |
@@ -249,6 +249,7 @@ milestone; a step that stops working is a regression in the *plan*, not just the
 | Step | Expected | Verifies |
 |---|---|---|
 | 0. `pip install harness && harness setup && harness new joker && python joker.py` | A working agent, from nothing, in four commands | SC-1b, ADR-013 |
+| 0a. **Re-run step 0 as commands, not as a description** | Three of the four had never been executed: there was no `[project.scripts]`, so `harness` was not a command; `main()` advertised `setup` with no branch behind it; and `.env` was written but never read (ADR-086). Now covered by `tests/test_m5.py::TheFourCommandColdStart` as far as it goes without a PyPI release and a funded key | ADR-086, IDL-62 |
 | 0b. `ls -a` after `harness new` | `.gitignore` exists and lists `.env` | Register #36 |
 | 1. Clone, `uv sync`, `pytest` | Green in < 60 s, no API key needed | SC-5, T-0.1 |
 | 2. Read [§11](11-implementation-plan.md), pick T-0.2 | Contract, tests and DoD are unambiguous | Plan quality |

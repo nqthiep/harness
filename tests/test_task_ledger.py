@@ -11,12 +11,8 @@ lời hứa hỏng thì test nói ra hứa nào hỏng:
 """
 import asyncio
 import os
-import sys
 import tempfile
 import unittest
-
-sys.path.insert(0, "src")
-sys.path.insert(0, "tests")
 
 from harness import Agent, Effect
 from harness.errors import HarnessError

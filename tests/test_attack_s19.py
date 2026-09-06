@@ -18,8 +18,7 @@ Không cần đẩy context lên hàng trăm nghìn token để kích hoạt `_m
 minh riêng, rồi tổ hợp trong một state dựng thẳng ở trạng thái "sau tấn công" để xác nhận
 gate vẫn đứng.
 """
-import sys, unittest
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
+import unittest
 
 from fake_chat import FakeChat
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage

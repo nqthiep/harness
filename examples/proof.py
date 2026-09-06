@@ -7,21 +7,30 @@ isn't met**. Nothing here is just described in prose and nodded through.
 
 Three requirements CANNOT be proven with code, and this file says so plainly at the end
 instead of skipping them: SC-1b (measured with real children), OI-10 (a real OpenViking
-server), OI-11 (a real Anthropic API).
+server), OI-11 (a FUNDED Anthropic key — the transport and the error path
+now have live evidence, ADR-085).
 """
 from __future__ import annotations
 
 import asyncio
 import json
+from typing import Any
 import subprocess
 import sys
+from pathlib import Path
 import time
 from dataclasses import dataclass
 from decimal import Decimal
 
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
+_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_ROOT / "src"))
+sys.path.insert(0, str(_ROOT / "tests"))
 
-PASSED, FAILED, WARNED = [], [], []
+# Each row is `(requirement_id, requirement, detail)` — unpacked three-wide at the
+# bottom of the file, which is what the annotation has to say.
+PASSED: "list[tuple[str, str, str]]" = []
+FAILED: "list[tuple[str, str, str]]" = []
+WARNED: "list[tuple[str, str, str]]" = []
 
 
 def passed(req_id: str, requirement: str, evidence: str) -> None:
@@ -175,19 +184,23 @@ from harness.models.pricing import MAX_OUTPUT, price                   # noqa: E
 L = Ledger(Budget.parse("$0.05"))
 mt = L.size_call(1200, price("claude-opus-5"), MAX_OUTPUT["claude-opus-5"])
 res = L.reserve(1200, mt, price("claude-opus-5"))
-assert res.estimate.decimal <= Budget.parse("$0.05").usd
+ceiling = Budget.parse("$0.05").usd
+assert ceiling is not None                  # `usd=None` means unlimited (S-20)
+assert res.estimate.decimal <= ceiling
 passed("SI.2", "Budget is RESERVED before every call, not reconciled after",
        f"$0.05 -> max_tokens auto-derived = {mt}, estimate ${res.estimate.decimal} <= "
        f"ceiling (ADR-017)")
 
 broken = 0
 for usd in ("$0.01", "$0.05", "$1"):
+    usd_cap = Budget.parse(usd).usd     # not `cap`: SIII below reuses that name for an
+    assert usd_cap is not None          # int line count, and this is a `Decimal | None`
     for tok in (200, 5000, 20000):
         for m in ("claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"):
             l2 = Ledger(Budget.parse(usd))
             try:
                 t = l2.size_call(tok, price(m), MAX_OUTPUT[m])
-                if l2.reserve(tok, t, price(m)).estimate.decimal > Budget.parse(usd).usd:
+                if l2.reserve(tok, t, price(m)).estimate.decimal > usd_cap:
                     broken += 1
             except Exception:
                 pass
@@ -195,7 +208,8 @@ assert broken == 0
 passed("SI.2", "27 combinations (price x budget x length) -- none exceeds the ceiling",
        "P-8: the arithmetic is checked by default, not eyeballed (Round 17)")
 
-r = subprocess.run([sys.executable, "tests/bench_cache.py"], capture_output=True, text=True)
+r = subprocess.run([sys.executable, str(_ROOT / "tests/bench_cache.py")],
+                   capture_output=True, text=True)
 line = [l for l in r.stdout.splitlines() if "SC-4" in l]
 assert "PASS" in r.stdout, r.stdout[-400:]
 passed("SI.2", "Cache-safety by construction, measured",
@@ -259,7 +273,7 @@ passed("SI.3", "A Secret cannot leak through an f-string, repr, a log, or JSON",
        "__str__/__format__ mask it; __reduce__ blocks serialization; redact() catches "
        "it at output boundaries")
 
-short_log = []
+short_log: list[tuple[str, dict]] = []
 class Recorder:
     def emit(self, e): short_log.append((e.kind.value, e.data))
     def close(self): pass
@@ -279,7 +293,7 @@ passed("SI.3", "FAIL SAFE -- a `danger` tool is DENIED by default with no approv
 section("SI.4", "INTELLIGENT -- maximum intelligence per unit of cost and latency")
 from harness.models.anthropic import AnthropicProvider                 # noqa: E402
 
-captured = {}
+captured: "dict[str, Any]" = {}   # a provider payload: nested dicts/lists
 class _M:
     async def create(self, **k): captured.update(k); raise SystemExit
 class _B: messages = _M()
@@ -326,15 +340,16 @@ warn("SI.4", "NO automatic model routing -- rejected by the council, for a reaso
 section("SI.5 + SIII", "EFFICIENT * SOLID * CLEAN CODE * KISS * NOT OVER-ENGINEERED")
 t0 = time.perf_counter()
 out = subprocess.run([sys.executable, "-c",
-                      "import sys;sys.path.insert(0,'src');import harness"],
+                      "import sys;sys.path.insert(0,%r);import harness"
+                      % str(Path(__file__).resolve().parents[1] / "src")],
                      capture_output=True)
 ms = (time.perf_counter() - t0) * 1000
 assert out.returncode == 0
 passed("SI.5", f"`import harness` = {ms:.0f} ms, 3 core dependencies (NFR-01/05)",
        "langgraph (36 packages) and openviking-sdk are EXTRAs; core doesn't pull them in")
 
-for f, cap in (("src/harness/run.py", 251), ("src/harness/dispatch.py", 257)):
-    n = len([l for l in open(f) if l.strip() and not l.strip().startswith("#")])
+for f, cap in (("src/harness/run.py", 250), ("src/harness/dispatch.py", 250)):
+    n = len([l for l in open(_ROOT / f) if l.strip() and not l.strip().startswith("#")])
     assert n <= cap, f"{f} = {n}"
 passed("SIII", "The loop stays boring -- a ~250-line ceiling (IDL-13)",
        "Round 28 hit the ceiling -> split off dispatch.py instead of raising the ceiling. "
@@ -352,8 +367,15 @@ passed("SIII", "The loop stays boring -- a ~250-line ceiling (IDL-13)",
        "riding onto `TOOL_FINISHED` off a new optional `ToolSpec.isolation` field -- "
        "dispatch.py -> 257")
 
-for cmd in (["ruff", "check", "src", "tests", "examples"], ["mypy"]):
-    rc = subprocess.run(cmd, capture_output=True, text=True)
+# `sys.executable -m mypy`, not `mypy`: the one on PATH may be a tool venv without this
+# project's declared dependencies installed, where `ignore_missing_imports` erases the
+# typed surface of `anthropic` and reports success over nothing (15 errors hid that way).
+for cmd in (["ruff", "check", "src", "tests", "examples"],
+            [sys.executable, "-m", "mypy"]):
+    # cwd, because ruff resolves those three arguments and mypy reads its config
+    # against the working directory — running this file from anywhere else checked
+    # whatever happened to be under the caller's cwd, or nothing.
+    rc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(_ROOT))
     assert rc.returncode == 0, rc.stdout[-500:]
 passed("SIII", "ruff clean, mypy clean -- both are CI gates (AC-62/63)",
        "Round 39: 162 + 112 errors -> 0; every warning suppression carries a reason")
@@ -393,18 +415,23 @@ except Exception as e:
 
 try:
     Agent(name="X", job="j", model="fake", provider=FakeModel([]),
-          returns=Conclusion("a", "b"), budget="$1")
+          # The mistake IS the demonstration: `returns=` takes a TYPE, and this rung
+          # exists to show what happens when an instance is passed instead. Silenced
+          # rather than fixed — fixing it would delete the rung.
+          returns=Conclusion("a", "b"),  # type: ignore[arg-type]
+          budget="$1")
 except Exception as e:
     ladder.append(("Construction", "returns= given an instance", str(e).splitlines()[0]))
 
 try:
-    Money(1.5)
+    Money(1.5)      # type: ignore[arg-type]  # the mistake IS the rung: IDL-01 bans float
 except TypeError as e:
     ladder.append(("Call-time", "float used as currency", str(e)))
 
 assert len(ladder) == 5, ladder
-for grade, mistake, msg in ladder:
-    print(f"      [{grade:<13}] {mistake:<26} -> {msg[:44]}")
+for stage, mistake, msg in ladder:              # NOT `grade`: `readability.grade` is
+    print(f"      [{stage:<13}] {mistake:<26} -> {msg[:44]}")   # imported below, and a
+                                                # leaked loop variable would shadow it
 passed("SII", "Five common mistakes, all blocked BEFORE anything runs",
        "none of these is a runtime error; docs/08 lists 83 failure modes ranked by "
        "prevention tier")
@@ -423,7 +450,7 @@ for l in ['          from harness import Agent, tool', '',
     print(l)
 print()
 
-sys.path.insert(0, "tests")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 from readability import grade                                          # noqa: E402
 
 grades = {}
@@ -494,12 +521,11 @@ passed("SXV", "OpenViking plugs into the Store seam; `recall` is `external` so i
 
 # =============================================================================
 section("SXIII", "DELIVERABLE -- the nine things section XIII requires")
-import pathlib                                                         # noqa: E402
 import re                                                              # noqa: E402
 
-adr_text = pathlib.Path("docs/12-decision-logs.md").read_text()
-risk_text = pathlib.Path("docs/13-risk-register.md").read_text()
-plan_text = pathlib.Path("docs/14-validation-plan.md").read_text()
+adr_text = (_ROOT / "docs/12-decision-logs.md").read_text()
+risk_text = (_ROOT / "docs/13-risk-register.md").read_text()
+plan_text = (_ROOT / "docs/14-validation-plan.md").read_text()
 def count_unique(text: str, pat: str) -> int:
     r"""`\b` matters: without it `R-(\d+)` also matches the "R-" inside "ADR-004",
     and this file would print a count it had not measured."""
@@ -524,5 +550,5 @@ print("  The three remaining items need an environment this one doesn't have, no
 print("    * SC-1b -- real 10-12 year old children")
 print("    * OI-10 -- a real openviking-server (needs an embedding model + a wizard "
       "that requires a TTY)")
-print("    * OI-11 -- a real Anthropic API (needs ANTHROPIC_API_KEY)")
+print("    * OI-11 -- a FUNDED Anthropic key. The transport and the 401 path are\n              now proven live (tests/live_probe.py); the PAYLOAD shape is not,\n              because the key is rejected before the payload is validated")
 print("\n  Every + item above is a running assertion: break the library and this file breaks.")

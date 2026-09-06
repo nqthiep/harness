@@ -15,8 +15,7 @@ is not silent." Cơ chế này CHƯA TỪNG được cài — `grep "unlimited/U
 phải event). Bản vá: thêm `EventKind.BUDGET_UNLIMITED` (`budget.unlimited`, ADR-041), phát
 đúng một lần mỗi run/thread ngay sau `RUN_STARTED`, ở cả hai backend.
 """
-import sys, unittest
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
+import unittest
 
 from harness import Agent
 from harness.budget.ledger import Budget

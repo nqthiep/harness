@@ -5,13 +5,13 @@ are grouped by the requirement in HARNESS.md they defend, so a future change tha
 one can see which promise it broke.
 """
 import asyncio, json, sys, unittest
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
 
 from harness import Agent, tool
 from harness.models.base import ModelRequest, ModelResponse
 from harness.models.fake import FakeModel
 from harness.result import StopReason, Usage
 import harness.testing as T
+import _paths
 
 RAN: list = []
 
@@ -36,7 +36,7 @@ class ProviderPayload(unittest.TestCase):
     """HARNESS.md §I.4 — the payload is the whole of what 'Intelligent' buys, and it had
     never been sent, because `AnthropicProvider` has never run against the live API."""
 
-    def payload(self, **kw):
+    def payload(self, model="claude-opus-5", max_tokens=1000, **kw):
         from harness.models.anthropic import AnthropicProvider
         seen = {}
 
@@ -48,19 +48,65 @@ class ProviderPayload(unittest.TestCase):
         p = AnthropicProvider.__new__(AnthropicProvider)
         p._client, p._counts, p._sdk = C(), {}, None
         p._fallbacks = kw.get("fallbacks", True)
-        req = ModelRequest(model="claude-opus-5", system=(), tools=(),
+        req = ModelRequest(model=model, system=(), tools=(),
                            messages=({"role": "user", "content": "hi"},),
-                           max_tokens=1000, effort="medium", stream=False,
+                           max_tokens=max_tokens, effort="medium", stream=False,
                            output_format=None)
         try: asyncio.run(p.complete(req))
         except SystemExit: pass
         return seen
 
-    def test_adaptive_thinking_never_budget_tokens(self):
-        """`budget_tokens` is a 400 on every model this package prices."""
-        k = self.payload()
-        self.assertEqual(k["thinking"], {"type": "adaptive"})
-        self.assertNotIn("budget_tokens", json.dumps(k))
+    def test_the_adaptive_models_get_adaptive_thinking_and_no_budget_tokens(self):
+        """`budget_tokens` is a 400 on these four. NOT on all five — see the next
+        test, which is the correction this one used to be wrong about."""
+        for model in ("claude-opus-5", "claude-opus-4-8", "claude-sonnet-5",
+                      "claude-fable-5"):
+            with self.subTest(model=model):
+                k = self.payload(model)
+                self.assertEqual(k["thinking"], {"type": "adaptive"})
+                self.assertNotIn("budget_tokens", json.dumps(k))
+
+    def test_the_budgeted_model_gets_budget_tokens_and_no_effort(self):
+        """`claude-haiku-4-5` REJECTS adaptive thinking and rejects
+        `output_config.effort`; it takes `{"type": "enabled", "budget_tokens": N}`.
+
+        The old version of this class asserted the opposite as a general rule
+        ("`budget_tokens` is a 400 on every model this package prices") while only ever
+        exercising `claude-opus-5`, so `Agent(model="claude-haiku-4-5")` built a payload
+        the endpoint refuses and every test passed (ADR-091).
+        """
+        k = self.payload("claude-haiku-4-5", max_tokens=8000)
+        self.assertEqual(k["thinking"], {"type": "enabled", "budget_tokens": 4000})
+        self.assertNotIn("output_config", k)
+
+    def test_a_thinking_budget_stays_below_max_tokens_or_is_omitted(self):
+        """The floor is 1024 and it must be strictly under `max_tokens`. A tightly
+        sized budget can leave no room for both, and then the payload carries no
+        `thinking` rather than an invalid pair."""
+        k = self.payload("claude-haiku-4-5", max_tokens=3000)
+        self.assertEqual(k["thinking"]["budget_tokens"], 1500)
+
+        k = self.payload("claude-haiku-4-5", max_tokens=2000)
+        self.assertEqual(k["thinking"]["budget_tokens"], 1024,
+                         "the floor applies, and 1024 < 2000 so it still fits")
+
+        for tight in (1024, 500):
+            with self.subTest(max_tokens=tight):
+                k = self.payload("claude-haiku-4-5", max_tokens=tight)
+                self.assertNotIn("thinking", k)
+
+    def test_every_priced_model_has_a_declared_payload_shape(self):
+        """The two tables cannot drift: `price()` refuses an unpriced model, so this
+        equality is what makes `THINKING_SHAPE` complete by construction."""
+        from harness.models.anthropic import THINKING_SHAPE
+        from harness.models.pricing import PRICES
+        self.assertEqual(set(THINKING_SHAPE), {m for m in PRICES if m != "fake"})
+
+    def test_an_undeclared_model_fails_visibly_rather_than_guessing(self):
+        from harness.errors import ProviderBadRequest
+        with self.assertRaises(ProviderBadRequest) as ctx:
+            self.payload("claude-from-the-future")
+        self.assertIn("THINKING_SHAPE", str(ctx.exception))
 
     def test_effort_lives_inside_output_config(self):
         self.assertEqual(self.payload()["output_config"]["effort"], "medium")
@@ -195,9 +241,14 @@ class NotOverEngineered(unittest.TestCase):
     """HARNESS.md §III — the loop staying boring is what keeps it auditable (IDL-13)."""
 
     def test_the_loop_is_still_under_its_ceiling(self):
-        import pathlib
-        for f, cap in (("src/harness/run.py", 251), ("src/harness/dispatch.py", 257)):
-            body = [l for l in pathlib.Path(f).read_text().splitlines()
+        # 250, not the 251/257 the other branch raised them to. IDL-13's rule is that
+        # the ceiling is a forcing function, not a measurement: when a file overruns you
+        # split it at a seam. That is how `dispatch.py` came from `run.py` (Round 28),
+        # `stop.py` from `run.py`, `audit.py` from `dispatch.py` (ADR-111), and
+        # `execute.py` from `dispatch.py` here (ADR-119) when this merge put the two
+        # branches' additions in one file at 265 lines.
+        for f, cap in (("run.py", 250), ("dispatch.py", 250)):
+            body = [l for l in (_paths.CORE / f).read_text().splitlines()
                     if l.strip() and not l.strip().startswith("#")]
             self.assertLessEqual(len(body), cap, f"{f} is {len(body)} lines")
 
@@ -210,15 +261,100 @@ class StaticChecks(unittest.TestCase):
         import shutil, subprocess
         if shutil.which(cmd[0]) is None:
             self.skipTest(f"{cmd[0]} is not installed")
-        return subprocess.run(cmd, capture_output=True, text=True)
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              cwd=str(_paths.ROOT))
 
     def test_ruff_is_clean(self):
         r = self._tool("ruff", "check", "src", "tests", "examples")
         self.assertEqual(r.returncode, 0, r.stdout[-2000:])
 
     def test_mypy_is_clean(self):
-        r = self._tool("mypy")
+        """`sys.executable -m mypy`, never the one on `PATH`, and the difference was 15
+        errors.
+
+        A type checker sees a dependency only if that dependency is installed for the
+        interpreter it is asked about. `shutil.which("mypy")` here resolved to a uv tool
+        venv that does not have `anthropic` in it, so `ignore_missing_imports` erased the
+        entire typed surface of a DECLARED RUNTIME DEPENDENCY and this test reported
+        success over nothing:
+
+            which mypy        /root/.local/bin/mypy (1.19.1)
+            mypy              Success: no issues found in 102 source files
+            python -m mypy    Found 15 errors in 2 files          (2.3.1)
+
+        `pyproject.toml` now turns `ignore_missing_imports` off for `anthropic.*`, which
+        makes the wrong-environment case loud rather than silent — but a config that
+        depends on being run correctly is not a gate, so the invocation is pinned here
+        too. Both halves are needed: the override catches the wrong interpreter, this
+        line stops us asking the wrong interpreter in the first place.
+        """
+        import subprocess
+        import sys
+        r = subprocess.run([sys.executable, "-m", "mypy"], capture_output=True,
+                           text=True, cwd=str(_paths.ROOT))
         self.assertEqual(r.returncode, 0, r.stdout[-2000:])
+
+    def test_every_cited_adr_exists(self):
+        """763 citations across this repository address a decision by NUMBER. Two of them
+        — ADR-098 and ADR-099 — were cited from five modules and from commit messages
+        while having no section at all: the reasoning went into the commit and the log was
+        never updated. A citation that resolves to nothing is worse than no citation, and
+        nothing checked (ADR-103)."""
+        import pathlib as _p
+        import re
+
+        log = (_paths.DOCS / "12-decision-logs.md").read_text()
+        defined = set(re.findall(r"^### (ADR-\d{3})", log, re.M))
+        cited = set()
+        for root in ("src", "tests", "examples", "docs", "design"):
+            for f in _p.Path(root).rglob("*"):
+                if f.suffix in (".py", ".md") and "__pycache__" not in str(f):
+                    cited |= set(re.findall(r"ADR-\d{3}", f.read_text()))
+        self.assertEqual(sorted(cited - defined), [],
+                         "cited somewhere, defined nowhere")
+
+    def test_the_adr_index_is_complete_and_the_numbers_are_unique(self):
+        """The index is the only thing that turns a number back into a subject without
+        scrolling 4,000 lines, so it is worth nothing the moment it is stale."""
+        import collections
+        import re
+
+        log = (_paths.DOCS / "12-decision-logs.md").read_text()
+        sections = re.findall(r"^### (ADR-\d{3})", log, re.M)
+        index_block = log.split("## 0. Index", 1)[1].split("\n---", 1)[0]
+        indexed = re.findall(r"^\| \[(ADR-\d{3})\]", index_block, re.M)
+
+        counts = collections.Counter(sections)
+        self.assertEqual([n for n, c in counts.items() if c > 1], [],
+                         "two sections share one ADR number")
+        self.assertEqual(sorted(indexed), sorted(sections),
+                         "the index and the sections disagree")
+
+    def test_mypy_co_analyses_the_examples_with_core(self):
+        """`examples/` is 6,780 lines that other files in this repo import, so "it is
+        only an example" stopped being true a while ago (ADR-082). `test_mypy_is_clean`
+        above already covers it — `pyproject.toml` lists it in `files` — and THAT is the
+        fact worth pinning down, because checking the two units separately is measurably
+        weaker: with `examples/` alone, every call into core is typed `Any` and 10 real
+        findings hid behind that (ADR-087).
+
+        Worth having: pointing the checker here for the first time found a leaked loop
+        variable in `proof.py` shadowing `readability.grade` (it worked only because of
+        the order the two lines happened to be in) and, through the profiles, two core
+        annotation defects — `Profile.name` declared as a settable variable, which meant
+        NO `frozen=True` profile satisfied the Protocol, and `Agent.safety` annotated
+        `str` while `__init__` takes a `Literal`, so `Agent(safety=parent.safety)` — what
+        every subagent must do — failed to type check. Co-analysis then found a third:
+        `cost_per_success` annotated `Sequence[Result]` while its docstring promised the
+        structural contract, so the duck-typed record its own bench passes was rejected.
+        """
+        import tomllib
+        with open(_paths.repo("pyproject.toml"), "rb") as f:
+            files = tomllib.load(f)["tool"]["mypy"]["files"]
+        self.assertIn("examples", files,
+                      "examples/ dropped out of the checked set; a separate `mypy "
+                      "examples/` run types every call into core as Any")
+        self.assertIn("src/harness", files)
 
     def test_a_user_gets_real_type_checking_on_the_value_types(self):
         """The count was never the point.  Before `dataclass_transform`, every value type
@@ -227,7 +363,7 @@ class StaticChecks(unittest.TestCase):
         import shutil, subprocess, tempfile, pathlib as _p, os
         if shutil.which("mypy") is None:
             self.skipTest("mypy is not installed")
-        src = os.path.abspath("src")
+        src = str(_paths.SRC)
         with tempfile.TemporaryDirectory() as d:
             f = _p.Path(d) / "u.py"
             f.write_text(
@@ -240,8 +376,8 @@ class StaticChecks(unittest.TestCase):
                 "bad = Usage(1, 2, 3, 4, 5)\n"
                 "typo = Usage(input_tokns=1)\n")
             env = {**os.environ, "MYPYPATH": src}
-            r = subprocess.run(["mypy", "u.py", "--ignore-missing-imports",
-                                "--no-error-summary"],
+            r = subprocess.run([sys.executable, "-m", "mypy", "u.py",
+                                "--ignore-missing-imports", "--no-error-summary"],
                                capture_output=True, text=True, env=env, cwd=d)
             own = [l for l in r.stdout.splitlines() if l.startswith("u.py")]
             self.assertTrue(own or r.returncode == 0, r.stdout[-1500:])
@@ -281,14 +417,14 @@ class TheProofRuns(unittest.TestCase):
         here because an example nobody runs rots — and this one already shipped a broken
         state machine once (Round 41)."""
         import subprocess
-        r = subprocess.run([sys.executable, "examples/full_agent.py"],
+        r = subprocess.run([sys.executable, str(_paths.EXAMPLES / "full_agent.py")],
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout[-2500:] + r.stderr[-1500:])
         self.assertIn("WHICH CAPABILITY ON WHICH BACKEND", r.stdout)
 
     def test_the_proof_passes(self):
         import subprocess
-        r = subprocess.run([sys.executable, "examples/proof.py"],
+        r = subprocess.run([sys.executable, str(_paths.EXAMPLES / "proof.py")],
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout[-3000:] + r.stderr[-2000:])
         self.assertIn("Proven with real running code", r.stdout)

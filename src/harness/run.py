@@ -7,12 +7,11 @@ of code (examples/proof.py SIII) and treats an overrun as a design signal.
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from typing import Any, Mapping, Sequence
 
 from .errors import BudgetExceeded, ProviderRateLimited, ProviderTimeout, ProviderUnavailable, ToolContractError
-from .context.assembler import canonical as _canonical
+from .context.assembler import canonical as _canonical, canonical_len
 from .context.linter import PrefixWatcher
 from .context.window import manage as manage_context
 from .middleware import _call_scope
@@ -25,6 +24,7 @@ from .retry import with_provider_retry
 #: from this module, so it is not dead however it looks to a linter (Round 39).
 from .dispatch import Dispatcher, RunContext as RunContext
 from .result import Money, Result, StopReason, Usage
+from .stop import CONTINUE, MAX_PAUSES, _MAP, parse_returns
 
 
 
@@ -163,6 +163,14 @@ class RunEngine:
                         stop = StopReason.ERROR
                         detail = (f"the model paused {pauses} times in a row without "
                                   f"finishing; stopping rather than paying for a loop")
+                        # Every run that ends in ERROR emits one ERROR_RAISED — the
+                        # invariant `test_parity.py` now asserts. This site and the
+                        # context-window one below both set the stop and emitted nothing,
+                        # so an operator filtering the event stream for failures saw a
+                        # successful-looking run that had failed (ADR-099).
+                        self._bus.emit(EventKind.ERROR_RAISED, step=step,
+                                       where="provider", type="endless_pause",
+                                       message=detail, retryable=False)
                         break
                     step += 1
                     continue
@@ -190,6 +198,9 @@ class RunEngine:
                             "the conversation no longer fits in this model's context "
                             "window, and there is nothing left to clear or drop — give "
                             "the agent a smaller job, or a model with a bigger window")
+                        self._bus.emit(EventKind.ERROR_RAISED, step=step,
+                                       where="context", type="context_exhausted",
+                                       message=detail, retryable=False)
                         break
                     calls = [b for b in resp.content if b.get("type") == "tool_use"]
                     self._bus.emit(EventKind.STEP_FINISHED, step=step,
@@ -254,14 +265,19 @@ class RunEngine:
                 stop, detail = StopReason.ERROR, str(exc)
                 self._bus.emit(EventKind.ERROR_RAISED, step=step, where="returns",
                                type="ToolContractError", message=detail, retryable=False)
-        self._bus.emit(EventKind.RUN_FINISHED, stop_reason=stop.value, steps=step,
+        # MODEL CALLS, not the `while` cursor. The cursor is `model_calls - 1` on any
+        # run that leaves the loop from the middle and `model_calls` on one that leaves
+        # from the top, so it was neither backend-agreeing nor in the same unit as
+        # `Budget(steps=)` — which `Ledger.count_step()` counts, once per model call.
+        self._bus.emit(EventKind.RUN_FINISHED, stop_reason=stop.value,
+                       steps=self._l.steps_taken,
                        cost_usd=str(self._l.spent), tainted=self._taint.tainted,
                        duration_s=time.monotonic() - run_t0,
                        input_tokens=usage_total.input_tokens,
                        output_tokens=usage_total.output_tokens,
                        cache_read_tokens=usage_total.cache_read_input_tokens,
                        cache_creation_tokens=usage_total.cache_creation_input_tokens)
-        return Result(text, stop, step, self._l.spent, usage_total, run_id,
+        return Result(text, stop, self._l.steps_taken, self._l.spent, usage_total, run_id,
                       self._taint.tainted, tuple(msgs), value, detail,
                       tuple(self._dispatch.ran))
 
@@ -293,58 +309,9 @@ class RunEngine:
         return out, action == "compact_needed"
 
 
-def canonical_len(req) -> str:
-    """The serialized request.  Its character count is a hard upper bound on the true
-    input token count — no tokenizer emits more tokens than characters (ADR-026)."""
-    return _canonical({"system": list(req.system), "tools": list(req.tools),
-                       "messages": list(req.messages)})
 
 
-def parse_returns(want: type, text: str):
-    """Turn a final answer into `Agent(returns=...)`, validated — ADR-022.
-
-    Module-level (N-3) so `lg/runtime.py::finish()` can call the SAME parse the classic
-    loop always has, rather than growing a second implementation that could drift.
-    Round 33 found `returns=` reached the request and the response was never parsed, so
-    `Result.value` was always None: the parameter was accepted and half-honoured. A
-    response that does not fit is an error, never a silent None.
-    """
-    import dataclasses
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ToolContractError(
-            f"this agent was asked for {want.__name__}, but the model replied with "
-            f"text that is not {want.__name__}:\n\n    {text[:120]!r}\n\n"
-            f"  ({exc})"
-        ) from None
-    if not (isinstance(want, type) and dataclasses.is_dataclass(want)):
-        return data
-    fields = {f.name for f in dataclasses.fields(want)}
-    missing = sorted(f.name for f in dataclasses.fields(want)
-                     if f.name not in data
-                     and f.default is dataclasses.MISSING
-                     and f.default_factory is dataclasses.MISSING)
-    if missing:
-        raise ToolContractError(
-            f"the model's answer is missing {', '.join(missing)} for "
-            f"{want.__name__}.\n\n  Got: {sorted(data)}"
-        )
-    return want(**{k: v for k, v in data.items() if k in fields})
 
 
-#: Every provider stop reason maps to exactly one StopReason.  Unknown -> ERROR, never
-#: to a success (ADR-019).  "tool_use" is absent because it continues the loop, and so is
-#: "pause_turn" — see CONTINUE below.
-_MAP = {"end_turn": StopReason.COMPLETED, "max_tokens": StopReason.TRUNCATED,
-        "refusal": StopReason.MODEL_REFUSAL}
 
-#: Stop reasons that mean "not finished, send it back".  `pause_turn` is what a server
-#: tool (web search, web fetch) returns when the model pauses mid-turn; T-0.4 said
-#: "surface pause_turn rather than swallowing it" and the code had never heard of it, so
-#: it fell through to ERROR — the API says *resumable* and the harness said *dead* (Round 38).
-CONTINUE = frozenset({"pause_turn"})
 
-#: A model that pauses forever is a loop the budget would pay for.  Bounded, and the
-#: bound is loud rather than silent.
-MAX_PAUSES = 5

@@ -7,12 +7,9 @@ chốt tại thời điểm bind). Test dưới đây khoá từng luật bằng
 cơ chế load-bearing có một mutation đi kèm (khôi phục hành vi TRƯỚC bản vá, xác nhận test
 đỏ ngay — cùng kỷ luật `test_attack_*.py`).
 """
-import sys
 import unittest
 import warnings
 from datetime import datetime, timezone
-
-sys.path.insert(0, "src")
 
 import mcp.types as mt
 

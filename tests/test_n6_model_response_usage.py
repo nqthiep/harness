@@ -6,11 +6,7 @@ ai kiểm: trước bản vá N-6, `OtelExporter` (đọc mapping `docs/10 §2`)
 `input_tokens`/`output_tokens`/`cache_read_tokens` từ payload này, nhưng payload chưa
 từng mang chúng — exporter im lặng nhận `None` mỗi lần, không phải một lỗi ai nhìn thấy.
 """
-import sys
 import unittest
-
-sys.path.insert(0, "src")
-sys.path.insert(0, "tests")
 
 from harness import Agent
 from harness.models.fake import FakeModel

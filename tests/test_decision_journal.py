@@ -23,13 +23,9 @@ kiểm ở `BuildAgentDecisionsToiDungRuntime` cuối file. Cố ý không kiể
 luật `AuthEvidence`/`require_approval_evidence`, đã có test riêng ở
 `tests/test_attack_s11.py`.
 """
-import sys
 import tempfile
 import unittest
 from pathlib import Path
-
-sys.path.insert(0, "src")
-sys.path.insert(0, "tests")
 
 from fake_chat import FakeChat
 from langchain_core.messages import HumanMessage

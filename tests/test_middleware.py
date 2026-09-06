@@ -5,10 +5,7 @@ never a grab bag of positional arguments; (2) a `Middleware` can add
 restriction/observation, never bypass what the six core seams already decided — most
 importantly, it must never see a tool call `Policy` already denied.
 """
-import sys
 import unittest
-
-sys.path.insert(0, "src")
 
 from harness import (Agent, Middleware, ModelCall, RunIdentity, ShortCircuit,
                      ToolInvocation, tool, with_middleware)
@@ -531,6 +528,69 @@ class ComposesWithAgent(unittest.TestCase):
         self.assertEqual(len(calls), 1,
                          "a deterministic hook bug must be tried exactly once on the "
                          "durable backend too, not retried against the tool's own budget")
+
+
+class BeforeModelIsUncheckedThat(unittest.TestCase):
+    """Pins what `before_model` actually does, because its docstring used to claim a
+    control that does not exist and a corrected docstring drifts back unless something
+    fails when it does."""
+
+    def _varying(self):
+        from dataclasses import replace
+
+        class VariesTheSystemPrompt(Middleware):
+            def __init__(self) -> None:
+                self.n = 0
+
+            def before_model(self, call):
+                self.n += 1
+                return replace(call.request,
+                               system=[{"type": "text", "text": f"turn {self.n}"}])
+
+        return VariesTheSystemPrompt()
+
+    def test_varying_the_system_prompt_raises_nothing(self):
+        """The measurement that made the old docstring false. `PrefixWatcher.observe`
+        is called once per step with the ASSEMBLER's `render_prefix()` — bytes that
+        never pass through a middleware — so the cache-determinism linter cannot see
+        this. It is a silent cache loss, not a `NonDeterministicPromptError`."""
+        mw = self._varying()
+        agent = with_middleware(
+            Agent(name="A", job="j",
+                  provider=FakeModel([FakeModel.text("a")])), mw)
+        result = agent.try_run("x")
+        self.assertTrue(result.ok)
+        self.assertGreaterEqual(mw.n, 1, "before_model should have run")
+
+    def test_injected_content_is_invisible_to_the_pre_flight_count(self):
+        """Why the docstring now tells you to keep anything added here small: the count
+        and the reservation are both taken from the pre-middleware request, so a large
+        injection defeats the ceiling (spend itself is still billed from the provider's
+        real usage by `settle()`)."""
+        from dataclasses import replace
+
+        seen = {}
+
+        class Fat(Middleware):
+            def before_model(self, call):
+                msgs = [*call.request.messages,
+                        {"role": "user", "content": "PADDING " * 500}]
+                return replace(call.request, messages=msgs)
+
+        class Watching(FakeModel):
+            async def count_input_tokens(self, request):
+                seen["counted"] = len(str(request.messages))
+                return await super().count_input_tokens(request)
+
+            async def complete(self, request, *, on_delta=None):
+                seen["sent"] = len(str(request.messages))
+                return await super().complete(request, on_delta=on_delta)
+
+        agent = with_middleware(
+            Agent(name="A", job="j", provider=Watching([FakeModel.text("ok")])), Fat())
+        agent.try_run("x")
+        self.assertLess(seen["counted"], seen["sent"],
+                        "the pre-flight count should not see what before_model added")
 
 
 if __name__ == "__main__":

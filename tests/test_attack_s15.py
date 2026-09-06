@@ -14,8 +14,7 @@ nhiều lượt vẫn thấy lại đúng instance của nó (rate-limit trong M
 đúng); (3) hai thread khác nhau KHÔNG BAO GIỜ thấy state của nhau — kèm mutation test xác
 nhận (2)+(3) load-bearing.
 """
-import sys, unittest
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
+import unittest
 
 from fake_chat import FakeChat
 from langchain_core.messages import HumanMessage

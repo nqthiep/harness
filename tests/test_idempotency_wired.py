@@ -26,12 +26,8 @@ Hai điều được canh riêng ở đây vì chúng là quyết định, khôn
 """
 import asyncio
 import os
-import sys
 import tempfile
 import unittest
-
-sys.path.insert(0, "src")
-sys.path.insert(0, "tests")
 
 from fake_chat import FakeChat
 from langchain_core.messages import HumanMessage

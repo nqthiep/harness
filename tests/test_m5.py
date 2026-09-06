@@ -1,12 +1,13 @@
 """M5 executed: the four-command cold start, and §15's promises as tests."""
 import os, pathlib, re, sys, tempfile, unittest
-sys.path.insert(0, "src")
 
 from harness import Agent, tool, ConfigError, MissingEffectError, ToolSchemaError
-from harness.cli import NO_KEY_MESSAGE, cmd_new, cmd_setup, key_status
+from harness.cli import (NO_KEY_MESSAGE, api_key, cmd_new, cmd_setup, key_status,
+                         read_env_file, write_env)
 from harness.models.fake import FakeModel
+import _paths
 
-DOC = pathlib.Path("docs/15-first-agent.md").read_text()
+DOC = (_paths.DOCS / "15-first-agent.md").read_text()
 
 
 FENCE = re.compile(r"^```(\w*)\n(.*?)^```", re.S | re.M)
@@ -52,12 +53,19 @@ class Scaffold(unittest.TestCase):
         self.assertIn('name="Joker"', tutorial)
 
     def test_the_scaffold_actually_runs(self):
-        """Executes the generated file verbatim, with only the provider swapped — so a
-        real cold start differs from this by the API key alone."""
+        """Executes the generated file verbatim, with only the provider swapped.
+
+        This used to claim "a real cold start differs from this by the API key alone",
+        which was false in two ways at once: `harness setup` had no branch behind it and
+        `pyproject.toml` declared no console script, so three of the four commands §14.1
+        calls the cold start could not be run at all (ADR-086). The claim is now
+        narrowed to what is actually true, and
+        `TheFourCommandColdStart` below executes the rest.
+        """
         cmd_new("joker", cwd=self.d)
         src = (self.d / "joker.py").read_text()
         ns = {}
-        header = (f"import sys; sys.path.insert(0, {os.path.abspath('src')!r})\n"
+        header = (f"import sys; sys.path.insert(0, {str(_paths.SRC)!r})\n"
                   "import harness\n"
                   "from harness.models.fake import FakeModel\n"
                   "_real = harness.Agent\n"
@@ -114,6 +122,251 @@ class Setup(unittest.TestCase):
         self.assertIn("harness setup", str(cm.exception))
         self.assertNotIn("ANTHROPIC_API_KEY", str(cm.exception))
         self.assertIn("harness setup", NO_KEY_MESSAGE)
+
+
+class TheFourCommandColdStart(unittest.TestCase):
+    """`docs/14-validation-plan.md` §251 states the cold start as four commands:
+
+        pip install harness && harness setup && harness new joker && python joker.py
+
+    Three of them went unexecuted for the life of the project. `harness new` and
+    `python joker.py` are covered by `Scaffold` above; this class covers the two that
+    were not, as far as they can go without a PyPI release and without a funded key. It
+    is the mechanically measurable part of SC-1b, and it was measured wrong (ADR-086) —
+    the study in §16 sends a ten-year-old through exactly these commands at Step 2.
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self._cwd = os.getcwd()
+        os.chdir(self._dir.name)
+        self.addCleanup(os.chdir, self._cwd)
+        self._saved = os.environ.pop("ANTHROPIC_API_KEY", None)
+        if self._saved is not None:
+            self.addCleanup(os.environ.__setitem__, "ANTHROPIC_API_KEY", self._saved)
+
+    def test_pip_install_harness_installs_a_harness_command(self):
+        """`pip install` cannot run here, but the thing it would install can be checked:
+        a console script pointing at something callable. There was no
+        `[project.scripts]` at all until ADR-086, so `harness` was a command the
+        documentation invented."""
+        import tomllib
+
+        from harness import cli
+        with open(_paths.repo("pyproject.toml"), "rb") as f:
+            scripts = tomllib.load(f)["project"]["scripts"]
+        self.assertEqual(scripts["harness"], "harness.cli:main")
+        module, _, attr = scripts["harness"].partition(":")
+        self.assertTrue(callable(getattr(cli, attr)))
+        self.assertEqual(module, "harness.cli")
+
+    def test_harness_setup_stores_a_validated_key_the_library_can_then_read(self):
+        """The whole of Step 2, through `main` rather than through `cmd_setup`'s
+        injection points: the prompt, the validation, the write, and — the part that was
+        missing — the library reading it back afterwards."""
+        from unittest.mock import patch
+
+        from harness.cli import api_key, main
+
+        checked = []
+
+        class Provider:
+            def __init__(self, *, api_key):
+                self.key = api_key
+
+            def check_credentials(self):
+                checked.append(self.key)
+                return True, ""
+
+        with patch("builtins.input", return_value="  sk-ant-pasted  "), \
+             patch("harness.models.anthropic.AnthropicProvider", Provider):
+            self.assertEqual(main(["setup"]), 0)
+
+        self.assertEqual(checked, ["sk-ant-pasted"],
+                         "the key is validated before it is stored (IDL-25)")
+        self.assertEqual(api_key({}), ("sk-ant-pasted", ".env file"))
+        self.assertEqual((pathlib.Path(".env").stat().st_mode & 0o777), 0o600)
+
+    def test_a_key_that_does_not_work_is_not_stored(self):
+        from unittest.mock import patch
+
+        from harness.cli import main
+
+        class Provider:
+            def __init__(self, *, api_key):
+                pass
+
+            def check_credentials(self):
+                return False, "Error code: 401"
+
+        with patch("builtins.input", return_value="sk-ant-bad"), \
+             patch("harness.models.anthropic.AnthropicProvider", Provider):
+            self.assertEqual(main(["setup"]), 0)
+        self.assertFalse(pathlib.Path(".env").exists(),
+                         "an invalid key must not reach disk (IDL-25)")
+
+    def test_the_command_tells_the_child_where_to_get_a_key(self):
+        """§15 Step 2 promises "it will tell you exactly where to get one", and a
+        promise in a tutorial a ten-year-old is following is a requirement."""
+        import io
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+
+        from harness.cli import _ask_for_key
+
+        out = io.StringIO()
+        with patch("builtins.input", return_value="k"), redirect_stdout(out):
+            _ask_for_key()
+        self.assertIn("console.anthropic.com", out.getvalue())
+
+
+class TheKeyActuallyReachesTheProvider(unittest.TestCase):
+    """`harness setup` stores a key in `.env`, every no-key message points at
+    `harness setup`, and until ADR-086 nothing in the library ever read that file.
+
+    Measured before the fix, with the key stored exactly as `cmd_setup` stores it:
+
+        key_status(): (True, '.env file')
+        RunFailed: ProviderError: TypeError: "Could not resolve authentication
+                   method. Expected one of api_key, auth_token, or credentials..."
+
+    So the status line said "found", and the run died on an SDK internal. Every test
+    below is one link of that chain.
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.dotenv = pathlib.Path(self._dir.name) / ".env"
+        self.addCleanup(self._dir.cleanup)
+        self._saved = os.environ.pop("ANTHROPIC_API_KEY", None)
+        if self._saved is not None:
+            self.addCleanup(os.environ.__setitem__, "ANTHROPIC_API_KEY", self._saved)
+
+    # -- reading ------------------------------------------------------------
+    def test_the_shapes_a_dotenv_can_take(self):
+        self.dotenv.write_text(
+            "# a comment\n"
+            "\n"
+            "PLAIN=one\n"
+            "export EXPORTED=two\n"
+            'DQUOTED="three"\n'
+            "SQUOTED='four'\n"
+            "  SPACED = five \n"
+            "garbage-with-no-equals\n"
+        )
+        self.assertEqual(read_env_file(self.dotenv),
+                         {"PLAIN": "one", "EXPORTED": "two", "DQUOTED": "three",
+                          "SQUOTED": "four", "SPACED": "five"})
+
+    def test_a_missing_file_is_no_key_not_an_error(self):
+        self.assertEqual(read_env_file(self.dotenv), {})
+
+    def test_the_value_comes_back_not_just_a_boolean(self):
+        """The whole defect in one assertion: the old check answered "is the name in the
+        text" and there was no way to ask for the key itself."""
+        self.dotenv.write_text("ANTHROPIC_API_KEY=sk-ant-from-file\n")
+        self.assertEqual(api_key({}, dotenv=self.dotenv),
+                         ("sk-ant-from-file", ".env file"))
+
+    def test_a_commented_out_assignment_is_not_a_configured_key(self):
+        """`"ANTHROPIC_API_KEY" in dotenv.read_text()` — the old test — reported this
+        file as configured."""
+        self.dotenv.write_text("# ANTHROPIC_API_KEY=sk-ant-old\n")
+        self.assertEqual(key_status({}, dotenv=self.dotenv), (False, ""))
+
+    def test_an_environment_variable_still_wins(self):
+        """ADR-013: two sources of truth for one credential is a support burden
+        forever."""
+        self.dotenv.write_text("ANTHROPIC_API_KEY=sk-ant-from-file\n")
+        self.assertEqual(api_key({"ANTHROPIC_API_KEY": "sk-ant-from-env"},
+                                 dotenv=self.dotenv),
+                         ("sk-ant-from-env", "environment variable"))
+
+    # -- writing ------------------------------------------------------------
+    def test_what_setup_writes_is_what_the_reader_reads(self):
+        """The round trip, which is the property that actually matters: `cmd_setup`'s
+        `write_env` and `_resolve_provider`'s `api_key` are two halves of one
+        contract."""
+        write_env("sk-ant-round-trip", path=self.dotenv)
+        self.assertEqual(api_key({}, dotenv=self.dotenv),
+                         ("sk-ant-round-trip", ".env file"))
+
+    def test_writing_replaces_the_old_key_and_keeps_everything_else(self):
+        self.dotenv.write_text("OTHER=keep\nANTHROPIC_API_KEY=sk-ant-old\nMORE=keep\n")
+        write_env("sk-ant-new", path=self.dotenv)
+        parsed = read_env_file(self.dotenv)
+        self.assertEqual(parsed["ANTHROPIC_API_KEY"], "sk-ant-new")
+        self.assertEqual((parsed["OTHER"], parsed["MORE"]), ("keep", "keep"))
+        self.assertEqual(self.dotenv.read_text().count("ANTHROPIC_API_KEY"), 1)
+
+    def test_the_file_is_not_world_readable(self):
+        write_env("sk-ant-secret", path=self.dotenv)
+        self.assertEqual(self.dotenv.stat().st_mode & 0o777, 0o600)
+        self.assertFalse(self.dotenv.with_name(".env.tmp").exists(),
+                         "the temp file used for the atomic replace was left behind")
+
+    # -- the provider actually receiving it ---------------------------------
+    def test_a_dotenv_key_is_passed_to_the_provider_explicitly(self):
+        """The SDK reads `ANTHROPIC_API_KEY` from the environment and nothing else, so a
+        key that came from `.env` has to be HANDED to it. This is the assertion that
+        would have failed before the fix."""
+        from unittest.mock import patch
+
+        from harness.credentials import resolve_provider
+        with patch("harness.credentials.api_key",
+                   return_value=("sk-ant-from-file", ".env file")):
+            provider = resolve_provider(None)
+        self.assertEqual(provider._client.api_key, "sk-ant-from-file")
+
+    def test_a_provider_with_no_credential_at_all_refuses_to_construct(self):
+        """Rather than constructing and dying on the first request with an SDK
+        `TypeError` mapped to a generic `ProviderError` — after the budget has already
+        reserved, and not the exception a caller catches for bad credentials."""
+        from harness.errors import ProviderAuthError
+        from harness.models.anthropic import AnthropicProvider
+        with self.assertRaises(ProviderAuthError) as ctx:
+            AnthropicProvider()
+        self.assertIn("harness setup", str(ctx.exception))
+
+    def test_with_middleware_gives_the_same_no_key_error_as_a_bare_agent(self):
+        """It built `AnthropicProvider()` itself instead of going through
+        `_resolve_provider` — a third copy of the logic whose own docstring says it
+        exists so copies could not drift."""
+        from unittest.mock import patch
+
+        from harness.middleware import with_middleware
+
+        class M:
+            def before_model(self, call):
+                return call.request
+
+        agent = Agent(name="A", job="hi")
+        with patch("harness.credentials.api_key", return_value=(None, "")):
+            with self.assertRaises(ConfigError) as bare:
+                agent.run("hi")
+            with self.assertRaises(ConfigError) as wrapped:
+                with_middleware(agent, M())
+        self.assertEqual(str(bare.exception), str(wrapped.exception))
+
+    def test_every_command_in_the_help_line_has_a_branch(self):
+        """`setup` was advertised in `main`'s help text and fell through to
+        "unknown command 'setup'" — the command every no-key message tells the user to
+        run did not exist. Compared mechanically so the next added command cannot
+        repeat it."""
+        import inspect
+
+        from harness import cli
+
+        source = inspect.getsource(cli.main)
+        # The help text is one call split over several source lines, so join its string
+        # literals back together before splitting on "|".
+        help_call = source.split("print(", 1)[1].split(")", 1)[0]
+        help_text = "".join(re.findall(r'"([^"]*)"', help_call)).replace("harness ", "")
+        advertised = {part.split()[0] for part in help_text.split("|") if part.strip()}
+        implemented = set(re.findall(r'cmd == "(\w+)"', source))
+        self.assertEqual(advertised - implemented, set(),
+                         "advertised in --help, no branch behind it")
 
 
 class TutorialPromises(unittest.TestCase):
@@ -205,7 +458,7 @@ class TutorialPromises(unittest.TestCase):
         an Agent are executed with a stubbed provider rather than skipped — skipping them
         left the tutorial's headline example untested (Round 29)."""
         ns = {}
-        exec("import sys; sys.path.insert(0, 'src')\n"
+        exec(f"import sys; sys.path.insert(0, {str(_paths.SRC)!r})\n"
              "import harness\nfrom harness import tool\n"
              "from harness.models.fake import FakeModel\n"
              "_real = harness.Agent\n"
@@ -282,7 +535,7 @@ class Readability(unittest.TestCase):
         return out
 
     def test_every_child_facing_error_reads_at_age_ten(self):
-        sys.path.insert(0, "tests")
+        sys.path.insert(0, str(_paths.repo("tests")))
         from readability import grade
         too_hard = {k: grade(v, line_oriented=True)[0] for k, v in self._errors().items()}
         too_hard = {k: g for k, g in too_hard.items() if g > self.LIMIT}
@@ -290,7 +543,7 @@ class Readability(unittest.TestCase):
                          f"messages a ten-year-old cannot read: {too_hard}")
 
     def test_the_tutorial_reads_at_age_ten(self):
-        sys.path.insert(0, "tests")
+        sys.path.insert(0, str(_paths.repo("tests")))
         from readability import grade
         body = DOC[DOC.index("# Make your own AI helper"):DOC.index("## Reviewer notes")]
         g = grade(body)[0]
@@ -300,7 +553,7 @@ class Readability(unittest.TestCase):
         """Prose only.  `accepts_tainted=True` is a parameter name a child copies, not a
         word they have to understand — scanning code for vocabulary flags the wrong thing
         (Round 31)."""
-        sys.path.insert(0, "tests")
+        sys.path.insert(0, str(_paths.repo("tests")))
         from readability import strip_markup
         banned = ["parallel", "retryable", "serial", "untrusted", "reversibly",
                   "auto-allowed", "taint", "ledger", "schema", "protocol", "invariant"]
@@ -333,8 +586,8 @@ class Round30Promises(unittest.TestCase):
 
     def test_every_harness_module_the_docs_import_exists(self):
         import importlib
-        alldocs = "\n".join(p.read_text() for p in pathlib.Path("docs").glob("*.md"))
-        alldocs += pathlib.Path("README.md").read_text()
+        alldocs = "\n".join(p.read_text() for p in _paths.DOCS.glob("*.md"))
+        alldocs += _paths.repo("README.md").read_text()
         mods = set(re.findall(r"^\s*(?:from|import)\s+(harness[\w.]*)", alldocs, re.M))
         missing = []
         for m in sorted(mods):
@@ -346,7 +599,7 @@ class Round30Promises(unittest.TestCase):
 
     def test_every_cli_command_the_docs_promise_is_implemented(self):
         from harness import cli
-        alldocs = "\n".join(p.read_text() for p in pathlib.Path("docs").glob("*.md"))
+        alldocs = "\n".join(p.read_text() for p in _paths.DOCS.glob("*.md"))
         promised = set(re.findall(r"`harness (\w+)", alldocs))
         have = {n[4:] for n in dir(cli) if n.startswith("cmd_")}
         self.assertEqual(promised - have, set(),
@@ -371,7 +624,7 @@ class Round30Promises(unittest.TestCase):
 
     def test_returns_and_tools_share_one_schema_generator(self):
         """AC-24: no second Python-type-to-schema path may exist."""
-        src = pathlib.Path("src/harness/agent.py").read_text()
+        src = (_paths.CORE / "agent.py").read_text()
         self.assertIn("from .tools.schema import _schema_for", src)
 
     def test_calculate_never_evals_model_supplied_text(self):
@@ -417,7 +670,7 @@ class Round30Promises(unittest.TestCase):
         cmd_new("bot", cwd=d)
         # point the scaffold at a fake provider
         f = d / "bot.py"
-        f.write_text(f"import sys; sys.path.insert(0, {os.path.abspath('src')!r})\n"
+        f.write_text(f"import sys; sys.path.insert(0, {str(_paths.SRC)!r})\n"
                      "from harness import Agent\n"
                      "from harness.models.fake import FakeModel\n"
                      "bot = Agent(name='Bot', job='chat', budget='$1',\n"

@@ -1,6 +1,5 @@
 """M2 executed: parallel scheduling, duplicate suppression, context growth."""
-import asyncio, sys, time, unittest
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
+import asyncio, time, unittest
 
 from harness import Agent, tool
 from harness.models.base import ModelResponse

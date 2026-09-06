@@ -15,8 +15,7 @@ nó KHOÁ LẠI bất biến đó bằng cách xét đủ mọi tổ hợp hữu
 Không gian đủ nhỏ để xét HẾT (3 verdict × 3 trạng thái sổ = 9 tổ hợp), không cần
 hypothesis — enumerate hết còn chắc hơn random.
 """
-import sys, unittest
-sys.path.insert(0, "src"); sys.path.insert(0, "tests")
+import unittest
 
 from fake_chat import FakeChat
 from langgraph.checkpoint.memory import MemorySaver

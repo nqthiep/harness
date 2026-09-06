@@ -13,13 +13,10 @@ phân loại effect nói đúng sự thật về từng tool.
 import asyncio
 import os
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from shutil import which
-
-sys.path.insert(0, "src")
 
 from harness import Effect
 from harness.tools.code import PASS_ENV, CodeTools
@@ -446,8 +443,6 @@ class IsolationTrenToolSpecH2(unittest.TestCase):
     def test_isolation_toi_dung_su_kien_TOOL_FINISHED(self):
         """Đầu-cuối: `isolation` phải thật sự đi tới sự kiện, không chỉ nằm trên
         `ToolSpec` — đúng thứ H-2 nói `06 §C` đã lỡ khẳng định có sẵn."""
-        import sys
-        sys.path.insert(0, "src")
         from harness import Agent
         from harness.models.fake import FakeModel
 

@@ -12,11 +12,13 @@ import concurrent.futures
 import dataclasses
 import json
 import time
+from decimal import Decimal
 from typing import Any
 
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import interrupt
 
+from .. import audit
 from ..budget.ledger import Ledger
 from ..dispatch import MAX_ATTEMPTS, RETRY_BACKOFF_MAX_S, RETRY_BACKOFF_S
 from ..errors import BudgetExceeded, ToolContractError
@@ -27,19 +29,18 @@ from ..middleware import MiddlewareHookError, _call_scope
 from ..observe.events import EventBus, EventKind
 from ..policy.base import Ruling, ToolCall, Verdict
 from ..policy.builtin import emits_of
-from ..policy.decision import (POLICY_ENGINE_VERSION, Actor, AuthEvidence, Decision,
-                              DecisionLog, Scope, actor_json, evidence_json)
+from ..policy.decision import Actor, AuthEvidence, DecisionLog
 from ..policy.engine import PolicyEngine
 from ..progress import STALL_AFTER, ProgressLedger, schema_of, stall_reason
 from ..policy.label import Grants, Integrity, Label
 from ..result import Money, StopReason, Usage
 from ..retry import retry_scope
-from ..run import CONTINUE, _MAP, parse_returns
+from ..stop import CONTINUE, MAX_PAUSES, _MAP, parse_returns
 from ..secrets import redact, redaction_scope
 from ..context.window import CLEARED, COMPACT_AT, EDIT_AT, KEEP_RECENT_STEPS
 from ..models.pricing import MAX_CONTEXT
 from ..tools import EFFECT_PROFILES
-from .graph import INTERRUPT, MAX_PAUSES
+from .graph import INTERRUPT
 
 #: Bao nhiêu message CUỐI được giữ nguyên khi nén. Đếm bằng message chứ không bằng
 #: "bước", vì ở backend này một bước là một `AIMessage` cộng N `ToolMessage` (mỗi lời gọi
@@ -223,7 +224,10 @@ class Runtime:
                 self._emit(state, EventKind.BUDGET_UNLIMITED, reason="budget.usd is None")
         self._emit(state, EventKind.STEP_STARTED, step=state.get("step", 0))
         if led.remaining_steps() <= 0:
-            return {"stop_reason": "step_limit", "detail": "reached the step limit",
+            # Same wording as run.py, which names the ceiling that was hit — a caller
+            # reading `Result.detail` should not be able to tell which engine ran.
+            return {"stop_reason": "step_limit",
+                    "detail": f"reached {self._budget.steps} steps",
                     "ledger": led.snapshot(), "asks": asks,
                     "turn_started_at": turn_started_at, "turn_usage": turn_usage,
                     "stalled_steps": stalled_steps, "seen_calls": seen_calls}
@@ -341,7 +345,17 @@ class Runtime:
                "spent_usd": str(led.spent.decimal), "ledger": led.snapshot(),
                "turn_usage": dataclasses.asdict(total_usage)}
         out.update(_classify(raw, bool(getattr(msg, "tool_calls", None)),
-                             state.get("paused", 0)))
+                             state.get("paused", 0), budget_usd=self._budget.usd))
+        # `_classify` is pure and has no bus, so the emit belongs to its caller. Without
+        # it, an unknown stop reason and an endless pause both ended the run as ERROR on
+        # this backend while emitting nothing — the classic loop emitted `ERROR_RAISED`
+        # for the first of those and neither backend did for the second. Found by
+        # comparing the SET of kinds each backend can reach rather than one scenario's
+        # outcome, which is what the hand-written parity rows compare (ADR-099).
+        if out.get("stop_reason") == StopReason.ERROR.value:
+            self._emit(state, EventKind.ERROR_RAISED, step=state.get("step", 0),
+                       where="provider", type="classified_error",
+                       message=out.get("detail", ""), retryable=False)
         return out
 
     # ── gate 2: nothing reaches a tool without a verdict ─────────────────────
@@ -362,9 +376,22 @@ class Runtime:
             d = self._engine_for(_run_id(state)).decide(
                 ToolCall(c["id"], c["name"], c.get("args", {}), spec,
                         idempotency_key(_run_id(state), c["id"])), ctx)
-            self._emit(state, EventKind.POLICY_DECIDED, step=state.get("step", 0),
-                       tool=c["name"], call_id=c["id"], verdict=d.verdict.name,
-                       reason=d.reason, policy=d.policy)
+            # F8: emitted AND, when it is a refusal, recorded. This node is where a
+            # DENY from `EffectPolicy`/`TaintPolicy`/`EgressPolicy`/
+            # `RequireBeforePolicy`/a user policy is decided, and until `audit.decided`
+            # existed the only `Decision` this backend ever wrote came out of
+            # `approval_gate` — so a refusal that never reached an approver left the
+            # approval book empty (measured: `decision rows: []`).
+            #
+            # An ASK is deliberately NOT announced here, and the classic loop does not
+            # announce one either: it is not a decision (`Decision.__post_init__`
+            # refuses to store it) and `approval_gate` emits the verdict it becomes, one
+            # node later. What that row would have carried and the resolved one does not
+            # — the name of the policy that raised the question — rides along as
+            # `asked_by` instead, so nothing is lost and the two engines put the same
+            # number of rows on the stream (F10b).
+            if d.verdict is not Verdict.ASK:
+                self._decided(state, d, c["name"], c["id"], c.get("args", {}), spec)
             if d.verdict is Verdict.DENY:
                 denied.append(ToolMessage(content=f"denied by policy: {d.reason}",
                                           tool_call_id=c["id"], status="error"))
@@ -373,7 +400,9 @@ class Runtime:
                 # checkpointed, and a ToolSpec holds a callable that no serializer can
                 # write.  The spec is runtime configuration, looked up on use (Round 35).
                 pending.append({"call": c, "tool": c["name"],
-                                "verdict": int(d.verdict), "reason": d.reason})
+                                "verdict": int(d.verdict), "reason": d.reason,
+                                "asked_by": d.policy if d.verdict is Verdict.ASK
+                                else None})
         return {"_pending": pending, "messages": denied}
 
     def approval_gate(self, state) -> dict:
@@ -425,32 +454,24 @@ class Runtime:
                     self._engine_for(_run_id(state)).resolve(
                         Ruling(Verdict.ASK, p["reason"], "policy"), call, ctx, self._approve,
                         require_evidence=self._require_approval_evidence))
-            self._emit(state, EventKind.POLICY_DECIDED, step=state.get("step", 0),
-                       tool=p["tool"], call_id=p["call"]["id"], verdict=d.verdict.name,
-                       reason=d.reason, policy=d.policy,
-                       actor=actor_json(reported_actor), evidence=evidence_json(reported_evidence))
             # Phê duyệt là một SỰ KIỆN, không phải một cờ. Ghi nó ra sổ, scoped tới đúng
             # lời gọi này: `call_id` khác None nên grant không sống quá lượt — "duyệt vĩnh
             # viễn" không biểu diễn được (policy/decision.py).
-            self._decisions.record(Decision(
-                id=f"dec-{p['call']['id']}", verdict=d.verdict,
-                scope=Scope(tool=p["tool"], args=dict(p["call"].get("args", {})),
-                            server=spec.server if spec is not None else None,
-                            call_id=p["call"]["id"]),
-                # S-11, đã sửa: `reported_actor` is real identity ONLY when the
-                # `approve=` callback returned `Approval(ok, actor=...)` instead of a
-                # plain `bool` — the common case still falls back to this placeholder,
-                # which is a self-declared "someone called the callback", not verified
-                # identity. `reported_evidence` (also from `Approval`) is the proof, when
-                # the callback supplied one — `require_approval_evidence=True` is what
-                # actually enforces it being present for a `human` actor (`resolve()`
-                # already downgraded `d.verdict` to DENY above if it wasn't).
-                actor=(reported_actor if reported_actor is not None else
-                       (Actor.human("approver", via="callback")
-                        if self._approve is not None else Actor.policy(d.policy))),
-                evidence=reported_evidence,
-                decided_at=_now(), expires_at=None, run_id=_run_id(state), reason=d.reason,
-                policy_version=POLICY_ENGINE_VERSION))
+            #
+            # S-11, đã sửa: `reported_actor` is real identity ONLY when the `approve=`
+            # callback returned `Approval(ok, actor=...)` instead of a plain `bool` — the
+            # common case still falls back to the placeholder below, which is a
+            # self-declared "someone called the callback", not verified identity.
+            # `reported_evidence` (also from `Approval`) is the proof, when the callback
+            # supplied one — `require_approval_evidence=True` is what actually enforces
+            # it being present for a `human` actor (`resolve()` already downgraded
+            # `d.verdict` to DENY above if it wasn't).
+            if reported_actor is None and self._approve is not None:
+                reported_actor = Actor.human("approver", via="callback")
+            self._decided(state, d, p["tool"], p["call"]["id"],
+                          p["call"].get("args", {}), spec, actor=reported_actor,
+                          evidence=reported_evidence, resolved_ask=True,
+                          asked_by=p.get("asked_by"))
             out.append({**p, "verdict": int(d.verdict), "reason": d.reason})
         denied = [ToolMessage(content=f"declined: {p['call']['name']}",
                               tool_call_id=p["call"]["id"], status="error")
@@ -517,15 +538,15 @@ class Runtime:
             # `ForeverAllow` — `Decision.__post_init__` đòi `scope.call_id` khi không có
             # `expires_at`) — sổ giờ có một hàng cho mỗi lần thực thi, không chỉ một hàng
             # cho lần cấp gốc.
-            self._decisions.record(Decision(
-                id=f"dec-{p['call']['id']}-reuse", verdict=Verdict.ALLOW,
-                scope=Scope(tool=p["tool"], args=dict(p["call"].get("args", {})),
-                            server=spec.server if spec is not None else None,
-                            call_id=p["call"]["id"]),
-                actor=Actor.policy("decision-log-reuse"), decided_at=_now(),
-                expires_at=None, run_id=_run_id(state),
-                reason="grant còn sống trong sổ, tái dùng cho lời gọi này",
-                policy_version=POLICY_ENGINE_VERSION))
+            audit.record(
+                self._decisions,
+                Ruling(Verdict.ALLOW, "grant còn sống trong sổ, tái dùng cho lời gọi này",
+                       "decision-log-reuse"),
+                run_id=_run_id(state), tool=p["tool"], call_id=p["call"]["id"],
+                args=p["call"].get("args", {}),
+                server=spec.server if spec is not None else None,
+                actor=Actor.policy("decision-log-reuse"),
+                row_id=f"{p['call']['id']}-reuse")
             return Ruling(Verdict.ALLOW, "grant còn sống trong sổ", "decision-log")
         return Ruling(Verdict.DENY,
                       "không có grant còn hiệu lực cho lời gọi này "
@@ -538,31 +559,36 @@ class Runtime:
         # định (00-foundation §3.2 — nhãn hiệu dụng luôn tính lại, không tích luỹ).
         label = self._effective_label(state)
         msgs: list = []
-        # Compaction-immune companion to `msgs`: one name per call that gets ANY
-        # `ToolMessage` below (declined, gone, errored, or succeeded) — the exact same
-        # criterion `_tools_called()` used to re-derive by scanning `state["messages"]`
-        # for a `ToolMessage` with a matching id (see that method's docstring). Appended
-        # to `state["tools_called_ever"]` at the end of this node instead of replacing
-        # it, so it accumulates across the whole thread the same way
-        # `dispatch.py::Dispatcher.ran` accumulates for the life of a classic-backend run.
+        # Compaction-immune companion to `msgs`: one name per call that SUCCEEDED —
+        # not declined, not missing, not errored. It feeds `_tools_called()`, which feeds
+        # `RequireBeforePolicy`, which documents itself as reading "completed calls."
+        # It used to take any call that got a `ToolMessage` of any kind, and measured
+        # with an advisor raising `RuntimeError` on every attempt the gate opened anyway
+        # and `deploy` reached prod — on both backends. A gate satisfied by its own
+        # prerequisite failing is worse than no gate.
+        #
+        # This is deliberately NOT `Result.tools_run`, which answers a different question
+        # ("did my tool execute?", IDL-49) and still counts a tool that ran and raised.
+        # Appended to `state["tools_called_ever"]` at the end of this node rather than
+        # replacing it, so it accumulates across the thread the way
+        # `dispatch.py::Dispatcher.succeeded` accumulates for a classic-backend run.
         called_now: list[str] = []
         for p in state.get("_pending", []):
             gate = self._regate(p, state, label)
             if gate.verdict is not Verdict.ALLOW:
-                self._emit(state, EventKind.POLICY_DECIDED, step=state.get("step", 0),
-                           tool=p["tool"], call_id=p["call"]["id"],
-                           verdict=gate.verdict.name, reason=gate.reason,
-                           policy=gate.policy)
+                # Its own row id: the ALLOW this overturns may already have written one
+                # under the plain call id (`approval_gate`, or the reuse row above).
+                self._decided(state, gate, p["tool"], p["call"]["id"],
+                              p["call"].get("args", {}), self._tools.get(p["tool"]),
+                              row_id=f"{p['call']['id']}-regate")
                 msgs.append(ToolMessage(content=f"declined: {gate.reason}",
                                         tool_call_id=p["call"]["id"], status="error"))
-                called_now.append(p["tool"])
                 continue
             call = p["call"]
             spec = self._tools.get(p["tool"])
             if spec is None:                    # tool set changed under a resumed run
                 msgs.append(ToolMessage(content=f"tool {p['tool']!r} is no longer available",
                                         tool_call_id=call["id"], status="error"))
-                called_now.append(p["tool"])
                 continue
             # T-6.3, parity with dispatch.py::_invoke — read/external retry on failure
             # up to MAX_ATTEMPTS, backed off; write/danger get exactly one attempt, ever
@@ -572,6 +598,7 @@ class Runtime:
             attempts = MAX_ATTEMPTS if retryable else 1
             ok, reason, payload, replayed = False, "", "", False
             middleware_broke = False   # G-17: distinguishes a hook bug from a tool failure
+            broke_hook = ""            # ...and WHICH hook, which decides whether fn() ran
             # S-4/N-8, parity with dispatch.py::_invoke: `execute_once` keyed on THIS
             # call_id, stable across every attempt below. Without it, a call whose fn()
             # SUCCEEDED but whose json.dumps step right after it raised (or an earlier
@@ -663,6 +690,7 @@ class Runtime:
                     # generic branch below would report a SUCCEEDED call as failed. Stop
                     # immediately, no retry, regardless of `attempts`.
                     reason, middleware_broke = str(exc), True
+                    broke_hook = getattr(exc, "hook", "")
                     break
                 except TimeoutError:
                     reason = ("timed out: run wall-clock budget reached"
@@ -688,9 +716,17 @@ class Runtime:
                            where=("middleware" if middleware_broke else "tool"),
                            type=spec.name, message=reason,
                            retryable=(False if middleware_broke else retryable))
-                msgs.append(ToolMessage(content=redact(reason),
-                                        tool_call_id=call["id"], status="error"))
-                called_now.append(spec.name)
+                failed = ToolMessage(content=redact(reason),
+                                     tool_call_id=call["id"], status="error")
+                # Did `fn()` actually run? A tool that raised did — that is what
+                # `Result.tools_run` records (IDL-49). A `before_tool` hook that raised
+                # means it did NOT; an `after_tool` hook that raised means it did, and
+                # for a `write`/`danger` tool the side effect has already landed. G-17's
+                # `MiddlewareHookError` carries which, because guessing is not neutral
+                # here: guess "did not run" and a `wipe` that ran passes `assert_no_tool`.
+                if broke_hook != "before_tool":
+                    _stamp_executed(failed)
+                msgs.append(failed)
                 continue
             limit = spec.max_result_tokens * 4
             if len(payload) > limit:
@@ -707,6 +743,7 @@ class Runtime:
                            source_tool=spec.name)
             result_msg = ToolMessage(content=redact(payload), tool_call_id=call["id"])
             _stamp_label(result_msg, emitted)
+            _stamp_executed(result_msg)
             msgs.append(result_msg)
             called_now.append(spec.name)
             self._emit(state, EventKind.TOOL_FINISHED, step=state.get("step", 0),
@@ -856,6 +893,10 @@ class Runtime:
 
         Union of two sources, not just one:
 
+        A call that raised, was declined by the re-gate, or named a tool that is gone
+        does NOT count: those are attempts, and a gate that accepts an attempt is
+        satisfied by its own prerequisite failing (measured — see `_run_tools`).
+
         * `state["tools_called_ever"]` — appended to by `_run_tools`, never pruned. This
           is the source of truth going forward: it survives real compaction
           (`_compact`), which drops old `AIMessage`/`ToolMessage` pairs for a
@@ -869,10 +910,24 @@ class Runtime:
           away yet.
         """
         msgs = state.get("messages") or []
-        done_ids = {m.tool_call_id for m in msgs if isinstance(m, ToolMessage)}
+        # `status="error"` excluded: the scan and `tools_called_ever` have to agree on
+        # what "completed" means, or the union below quietly restores what the other one
+        # was fixed to drop.
+        done_ids = {m.tool_call_id for m in msgs if isinstance(m, ToolMessage)
+                    and getattr(m, "status", "success") != "error"}
         from_messages = frozenset(tc.get("name") for m in msgs if isinstance(m, AIMessage)
                                   for tc in (m.tool_calls or []) if tc.get("id") in done_ids)
         return from_messages | frozenset(state.get("tools_called_ever") or ())
+
+    def _decided(self, state, d: Ruling, tool: str, call_id: str, args, spec,
+                 **kw) -> None:
+        """Every verdict this engine reaches goes through `audit.decided` — one call
+        shape for `policy.decided` AND the `Decision` row, shared with `dispatch.py` so
+        a rule about the audit trail cannot land on one engine only (`audit.py`)."""
+        audit.decided(self._bus_for(_run_id(state)), self._decisions, d,
+                      run_id=_run_id(state), step=state.get("step", 0), tool=tool,
+                      call_id=call_id, args=args,
+                      server=spec.server if spec is not None else None, **kw)
 
     def _bus_for(self, run_id: str) -> EventBus:
         if run_id not in self._bus_cache:
@@ -932,7 +987,8 @@ def _provider_stop(msg) -> str:
     return str(meta.get("stop_reason") or meta.get("finish_reason") or "")
 
 
-def _classify(raw: str, has_tool_calls: bool, paused: int = 0) -> dict:
+def _classify(raw: str, has_tool_calls: bool, paused: int = 0,
+              budget_usd: "Decimal | None" = None) -> dict:
     """Map the provider's stop reason with the SAME table the hand-written loop uses.
 
     Round 38: this node never looked at the stop reason at all — it only checked whether
@@ -959,7 +1015,12 @@ def _classify(raw: str, has_tool_calls: bool, paused: int = 0) -> dict:
         return {"stop_reason": "error", "detail": f"unknown stop reason {raw!r}"}
     if mapped is StopReason.COMPLETED:
         return {"paused": 0}
-    detail = ("the answer got cut off because it reached its token ceiling"
+    # Word for word what run.py says, because `Result.detail` is caller-visible and the
+    # loop's phrasing is the one docs/00-council.md and docs/15-first-agent.md quote.
+    # The two copies are guarded by `test_parity.py`'s per-scenario `Result.detail`
+    # comparison, which is what caught them saying different things (F10).
+    detail = (f"the answer got cut off because it reached its budget of "
+              f"{Money(budget_usd) if budget_usd else 'unlimited'}"
               if mapped is StopReason.TRUNCATED else "the model declined this request")
     return {"stop_reason": mapped.value, "detail": detail}
 
@@ -988,6 +1049,27 @@ def _msg_label(msg) -> Label:
     from ..policy.label import Confidentiality
     return Label(Integrity[i] if i else Integrity.TRUSTED,
                 Confidentiality[c] if c else Confidentiality.PUBLIC)
+
+
+def _stamp_executed(msg) -> None:
+    """Mark a `ToolMessage` as one whose tool actually RAN.
+
+    `Result.tools_run` records what executed, not what succeeded (IDL-49) — a tool a
+    policy blocked is absent, a tool that was allowed to run and then raised is present,
+    because it ran and its side effects may well have landed.
+    `harness.testing.assert_no_tool` is built on that reading, so the other answer lets a
+    `wipe` that raised half way through pass an assertion whose whole job is to prove it
+    did not run.
+
+    The classic loop gets this for free: `Dispatcher.ran` is appended at the point of
+    invocation, after the re-gate. This backend could not, because on this side both a
+    refusal and a failure are a `ToolMessage` with `status="error"` and nothing told them
+    apart — so `agent.py::_state_to_result` filtered out every error and dropped the
+    tools that ran. Marked on the message rather than kept in state because `Result` is
+    built from THIS turn's messages, and a thread-wide list would answer a different
+    question (that is `tools_called_ever`, which answers the gate's).
+    """
+    msg.additional_kwargs["executed"] = True
 
 
 def _stamp_label(msg, label: Label) -> None:

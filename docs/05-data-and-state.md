@@ -29,6 +29,7 @@ tracer/OTel exporter — T-8.3 — propagates one in), `tenant_id` and `session_
 | `budget.unlimited` | Once, right after `run.started`, only when `budget.usd is None` | `reason` |
 | `tool.requested` | Model asked | `tool`, `call_id`, `arguments_digest` (sha256, not the arguments) |
 | `policy.decided` | Per call, always | `tool`, `call_id`, `verdict`, `reason`, `policy`, `actor`/`evidence` (S-11, closed — only when the call went through `PolicyEngine.resolve()`; `null` otherwise, and `evidence` never carries a raw `signature`, only `has_signature`) |
+| `tool.arguments_amended` | Only when a `Middleware.before_tool` returns kwargs different from the ones `Policy` ruled on | `tool`, `middleware`, `fields` (which keys changed), `arguments` — digested at rest by the same rule as `tool.requested`, so an auditor compares two digests and sees they differ without either being exposed. A hook cannot reach a call `Policy` denied, so it cannot bypass a verdict; it CAN change the subject of one, and this is the row that says so |
 | `tool.started` | Only if ALLOW; once per attempt (T-6.3 retry) | `tool`, `call_id`, `parallel`, `attempt` |
 | `tool.finished` | Per executed call | `tool`, `call_id`, `duration_ms`, `is_error`, `result_tokens`, `truncated`, `replayed` (S-4/N-8, closed — `True` when `execute_once` returned a cached result instead of calling the tool again for this call_id) |
 | `taint.raised` | First tainted content | `source_tool`, `call_id` |
@@ -126,9 +127,14 @@ CREATE TABLE memos (
   expires_at  REAL
 ) STRICT;
 
-CREATE VIRTUAL TABLE memos_fts USING fts5(key, value, content='memos', content_rowid='rowid');
 CREATE INDEX idx_memos_agent   ON memos(agent);
 CREATE INDEX idx_memos_expires ON memos(expires_at) WHERE expires_at IS NOT NULL;
+
+<!-- This block listed a `CREATE VIRTUAL TABLE memos_fts USING fts5(...)` from Round 7
+     until ADR-113 and no such table has ever been created. `search` is a linear scan
+     scored in Python: 2.7 ms at 1,000 memos, 171.7 ms at 50,000. Fine for a per-agent
+     scratchpad; adding FTS5 would be a schema migration nobody asked for, so the claim
+     went instead of the code. -->
 
 CREATE TABLE schema_meta (version INTEGER NOT NULL) STRICT;
 ```

@@ -595,9 +595,21 @@ class Memo:
     updated_at: float
 ```
 
-`search` in the SQLite implementation is FTS5 keyword search — **not** vector similarity.
-This is stated plainly so nobody assumes semantic recall. Vector search is a non-goal
-([§01.5](01-requirements.md#5-non-goals)); a user who wants it implements `Store`.
+`search` in the SQLite implementation is a **linear scan with substring scoring** — not
+vector similarity, and not the FTS5 index this paragraph claimed from Round 7 until
+ADR-113. There has never been a `memos_fts` table; `memory/sqlite.py` selects every row
+for the agent and scores it in Python. Measured, five searches averaged:
+
+| memos | search |
+|---|---|
+| 1,000 | 2.7 ms |
+| 10,000 | 29.5 ms |
+| 50,000 | 171.7 ms |
+
+Linear, about 3.4 µs a memo. That is fine for the per-agent scratchpad this is and is not
+a corpus index. Semantic recall was never on offer either — vector search is a non-goal
+([§01.5](01-requirements.md#5-non-goals)); a user who wants either implements `Store`,
+which is what `memory/viking.py` does.
 
 Values are strings, not arbitrary objects. Pickling user objects into a store is a
 deserialization vulnerability and a versioning trap.

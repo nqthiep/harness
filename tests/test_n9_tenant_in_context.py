@@ -5,10 +5,7 @@ but was never threaded down into the object `Policy.check(call, ctx)` actually r
 POLICY that decides differently per tenant. Fixed on both backends:
 `dispatch.py::RunContext.tenant_id` and `lg/runtime.py::_Ctx.tenant_id`.
 """
-import sys
 import unittest
-
-sys.path.insert(0, "src")
 
 from harness import Agent, Ruling, Verdict, tool
 from harness.lg import build_agent

@@ -6,10 +6,7 @@ fail open với read" — cả hai điều kiện đều test được KHÔNG C�
 đúng lý do `execute_once` được xây như một hàm độc lập trước, chưa gắn vào
 `Agent`/`Dispatcher` (xem docstring `idempotency.py`).
 """
-import sys
 import unittest
-
-sys.path.insert(0, "src")
 
 from harness.idempotency import execute_once, idempotency_key
 from harness.memory.inmemory import InMemoryStore
