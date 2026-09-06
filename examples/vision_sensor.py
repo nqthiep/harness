@@ -57,15 +57,20 @@ import asyncio
 import sys
 from pathlib import Path
 import time
-from dataclasses import dataclass, fields, replace
-from typing import Callable
+from dataclasses import dataclass, fields
+from dataclasses import replace as _replace
+from typing import Any, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
 
 from harness.contrib.driver import Event, Priority
-from vision_tools import (Camera, Detector, IdentityLedger, PerceptionBuffer, Reading,
-                          describe, distance_of, nearer_than)
+from vision_gaze import (BODIES as LOOK_BODIES, HANDS as LOOK_HANDS,
+                         IDENTITY as LOOK_IDENTITY, SCENE as LOOK_SCENE,
+                         FACES as LOOK_FACES, Focus, Gaze, motion_of)
+from vision_tools import (UNKNOWN_GESTURE, Camera, Detector, IdentityLedger,
+                          PerceptionBuffer, Reading, describe, distance_of,
+                          nearer_than)
 
 #: How many consecutive identical observations make a change real rather than a flicker.
 #: 2 is the cheapest value that survives one dropped frame; raise it for a jittery
@@ -74,13 +79,21 @@ DEFAULT_STABLE_READS = 2
 
 #: What the cheap loop is allowed to notice. Names, not booleans, so a caller reads
 #: `attends={PRESENCE, DISTANCE}` and knows exactly what they turned off.
-PRESENCE, POSTURE, DISTANCE, SCENE = "presence", "posture", "distance", "scene"
+PRESENCE, POSTURE, DISTANCE = "presence", "posture", "distance"
+SCENE, GESTURE = "scene", "gesture"
 
 #: `PRESENCE` is not optional — who is in front of the camera is the sensor's whole
-#: contract, and `_commit`'s blindness rule is written in terms of it. The other three
-#: are.
-ATTENDABLE = frozenset({POSTURE, DISTANCE, SCENE})
+#: contract, and `_commit`'s blindness rule is written in terms of it. The others are.
+ATTENDABLE = frozenset({POSTURE, DISTANCE, SCENE, GESTURE})
 DEFAULT_ATTENDS = frozenset({PRESENCE}) | ATTENDABLE
+
+#: Which `Gaze` stage feeds which attended aspect (ADR-121). An aspect nobody attends to
+#: can produce no event, so paying for its detector would be buying an answer with no
+#: reader — measured: `classify_scene` is 12.97 ms per glance for a field that would be
+#: thrown away. A stage with no entry here (`faces`, `identity`) serves `PRESENCE`, which
+#: is always attended.
+STAGE_FOR: dict[str, str] = {POSTURE: LOOK_BODIES, GESTURE: LOOK_HANDS,
+                             SCENE: LOOK_SCENE}
 
 #: A scene classifier returns a long tail of low-confidence guesses that churn frame to
 #: frame. Both of these exist to keep that churn out of the committed state; without
@@ -116,12 +129,16 @@ class Change:
     #: `Salience.scene`.
     scene_in: tuple[str, ...] = ()
     scene_out: tuple[str, ...] = ()
+    #: Hand shapes that appeared. A hand shape ENDING is not reported: putting your hand
+    #: down is not a second event, and reporting it would double every gesture.
+    gestures: tuple[str, ...] = ()
 
     @property
     def empty(self) -> bool:
         return not (self.arrived or self.left or self.unknown_arrived
                     or self.unknown_left or self.postures or self.moved
-                    or self.nearest or self.scene_in or self.scene_out)
+                    or self.nearest or self.scene_in or self.scene_out
+                    or self.gestures)
 
 
 @dataclass(frozen=True)
@@ -148,6 +165,10 @@ class Salience:
     #: The scene labels changed. LOW, and flat across every label ON PURPOSE — see the
     #: note on rule 1 below.
     scene: Priority = Priority.LOW
+    #: A hand shape appeared. NORMAL: a raised or pointing hand is usually addressed AT
+    #: someone, which is the same "a person is starting an interaction" signal `approach`
+    #: carries. Flat across every gesture, for the same reason `scene` is.
+    gesture: Priority = Priority.NORMAL
     promote: Callable[[Change], Priority | None] | None = None
 
     def of(self, change: Change) -> Priority:
@@ -180,6 +201,8 @@ class Salience:
             tiers.append(self.posture)
         if change.scene_in or change.scene_out:
             tiers.append(self.scene)
+        if change.gestures:
+            tiers.append(self.gesture)
         for _who, before, after in change.moved:
             tiers.append(self.approach if nearer_than(after, before) else self.retreat)
         if change.nearest is not None:
@@ -222,6 +245,8 @@ def render(change: Change) -> str:
         was, now = change.nearest
         verb = "tiến lại gần hơn" if nearer_than(now, was) else "lùi ra xa hơn"
         parts.append(f"người gần nhất {verb} ({was} -> {now})")
+    if change.gestures:
+        parts.append("tôi thấy " + ", ".join(change.gestures))
     if change.scene_in or change.scene_out:
         # Labels are reported as OBSERVATION, never as a conclusion: the classifier's
         # output is untrusted content (rule 1) and it decided no priority to get here.
@@ -265,6 +290,13 @@ class _State:
     nearest: str = ""
     #: Scene labels above `MIN_SCENE_CONFIDENCE`, top `SCENE_LABELS_TRACKED`.
     scene: frozenset[str] = frozenset()
+    #: The hand shapes visible, as a SET rather than per-person. `Hand` carries no
+    #: identity and the detector's ordering is not one, so "Thiep is pointing" would be a
+    #: guess dressed as a fact — the same refusal `postures` makes for unknown faces.
+    #: `UNKNOWN_GESTURE` is dropped: "I could not read that hand" is not a hand shape,
+    #: and letting it in would make a hand drifting in and out of readability look like
+    #: a gesture being made and unmade.
+    gestures: frozenset[str] = frozenset()
 
 
 #: The field names `_settle` debounces, taken from the dataclass rather than restated,
@@ -314,6 +346,7 @@ class CameraSensor:
                  salience: Salience | None = None,
                  stable_reads: int = DEFAULT_STABLE_READS,
                  attends: frozenset[str] | None = None,
+                 gaze: Gaze | None = None,
                  use_thread: bool = True) -> None:
         self.camera, self.detector, self.ledger = camera, detector, ledger
         self.buffer = buffer if buffer is not None else PerceptionBuffer()
@@ -332,6 +365,16 @@ class CameraSensor:
                 f"chọn trong {sorted(ATTENDABLE)} (PRESENCE luôn bật)")
         self.attends = wanted | {PRESENCE}
         self.use_thread = use_thread
+        #: The cascade (ADR-121). Decides which detector stages this glance pays for.
+        self.gaze = gaze if gaze is not None else Gaze()
+        #: What the last glance actually looked at — readable so a caller, the demo and
+        #: the tests can see the decision rather than infer it from timings.
+        self.focus = Focus()
+        #: The last resolved observation, used to CARRY FORWARD every stage that did not
+        #: run. Starts empty, which is correct: before the first glance nothing has been
+        #: measured, and `blind` covers that case downstream.
+        self._held = Reading(at=0.0)
+        self._small: Any = None            # previous subsampled frame, for tier 0
         self._committed = _State()
         self._pending: dict[str, tuple[object, int]] = {}
         #: Counters a caller can assert on rather than infer: how many observations were
@@ -341,18 +384,56 @@ class CameraSensor:
 
     # -- acquisition -----------------------------------------------------------------
 
+    def _worth(self, stage: str, focus: Focus) -> bool:
+        """Did `Gaze` choose this stage, AND is anyone attending to what it produces?
+
+        Two independent gates, and the second one is not redundant: `Gaze` decides
+        whether the answer would be FRESH, `attends` decides whether the answer would be
+        READ. Running `classify_scene` for 12.97 ms to fill a field that `_state_of`
+        discards is a cost with no reader.
+        """
+        if stage not in focus:
+            return False
+        aspect = next((a for a, st in STAGE_FOR.items() if st == stage), None)
+        return aspect is None or aspect in self.attends
+
     def _capture(self) -> Reading:
-        """Grab and infer. SYNC on purpose: this is the body handed to a thread, and
-        keeping it sync is what makes it safe to hand over."""
+        """Glance, then decide what to look at, then look. SYNC on purpose: this is the
+        body handed to a thread, and keeping it sync is what makes it safe to hand over.
+
+        Coarse to fine (ADR-121). Tier 0 is a frame difference at 0.05 ms and always
+        runs. Tier 1 is `detect_faces` at 2.59 ms. Tier 2 — pose, hands, identity, scene,
+        69.88 ms all told — runs only where `Gaze` found a reason. A stage that does not
+        run CARRIES FORWARD its last measured value rather than reporting empty, because
+        a skipped stage produced no measurement and "no measurement" is not "nothing
+        there"; that is ADR-081's blindness rule applied one level down.
+        """
         frame, err = self.camera.grab()
         if err:
             return Reading(at=time.time(), error=err)
+        motion, self._small = motion_of(frame, self._small)
+        held = self._held
         try:
-            faces = tuple(self.detector.detect_faces(frame))
-            bodies = tuple(self.detector.detect_bodies(frame))
-            scene = tuple(self.detector.classify_scene(frame))
-            embeddings = tuple(tuple(self.detector.embed_face(frame, f.box))
-                               for f in faces)
+            focus = self.gaze.locate(motion)
+            faces = (tuple(self.detector.detect_faces(frame)) if LOOK_FACES in focus
+                     else held.faces)
+            changed = tuple(f.box for f in faces) != tuple(f.box for f in held.faces)
+            # "Somebody here has no name yet" — computed from the CARRIED names, so a
+            # person already recognised does not re-trigger identity every glance.
+            unresolved = len(faces) > sum(1 for n in held.names if n)
+            focus = self.gaze.detail(focus, changed=changed, unresolved=unresolved)
+
+            bodies = (tuple(self.detector.detect_bodies(frame))
+                      if self._worth(LOOK_BODIES, focus) else held.bodies)
+            hands = (tuple(self.detector.detect_hands(frame))
+                     if self._worth(LOOK_HANDS, focus) else held.hands)
+            scene = (tuple(self.detector.classify_scene(frame))
+                     if self._worth(LOOK_SCENE, focus) else held.scene)
+            if LOOK_IDENTITY in focus:
+                faces = tuple(
+                    f if f.embedding else _replace(
+                        f, embedding=tuple(self.detector.embed_face(frame, f.box)) or None)
+                    for f in faces)
         except Exception as exc:
             return Reading(at=time.time(),
                            error=f"nhận diện lỗi: {type(exc).__name__}: {exc}")
@@ -360,27 +441,37 @@ class CameraSensor:
             height, width = int(frame.shape[0]), int(frame.shape[1])
         except Exception:
             height = width = 0
-        faces = tuple(f if f.embedding else type(f)(box=f.box, score=f.score,
-                                                    embedding=vec or None)
-                      for f, vec in zip(faces, embeddings))
         self.buffer.frame = frame
+        self.focus = focus
         return Reading(at=time.time(), faces=faces, bodies=bodies, scene=scene,
-                       frame_size=(width, height))
+                       hands=hands, frame_size=(width, height))
 
     async def _observe(self) -> Reading:
-        """One full observation, identity resolved, published to the buffer."""
+        """One observation, identity resolved, published to the buffer.
+
+        Identity is carried forward exactly like every other skipped stage, and getting
+        this wrong is the sharpest edge in the cascade: re-deriving names from embeddings
+        that were not computed this glance would turn every recognised person into an
+        unknown one the moment `Gaze` decided not to re-embed them, and the sensor would
+        announce "Thiep đi khỏi, một người lạ xuất hiện" about a man sitting perfectly
+        still. So when `IDENTITY` did not run, the held names stand — which is sound
+        because the one thing that invalidates them, the set of faces changing, is itself
+        an `on_change` trigger for `IDENTITY`.
+        """
         reading = (await asyncio.to_thread(self._capture) if self.use_thread
                    else self._capture())
         if not reading.ok:
             self.buffer.publish(reading, None)
             return reading
-        names: list[str | None] = []
-        for face in reading.faces:
-            vec = face.embedding
-            names.append((await self.ledger.match(vec)).name if vec else None)
-        resolved = Reading(at=reading.at, faces=reading.faces, bodies=reading.bodies,
-                           scene=reading.scene, frame_size=reading.frame_size,
-                           names=tuple(names))
+        if LOOK_IDENTITY in self.focus:
+            names: list[str | None] = []
+            for face in reading.faces:
+                vec = face.embedding
+                names.append((await self.ledger.match(vec)).name if vec else None)
+            resolved = _replace(reading, names=tuple(names))
+        else:
+            resolved = _replace(reading, names=self._held.names[:len(reading.faces)])
+        self._held = resolved
         self.buffer.publish(resolved, self.buffer.frame)
         return resolved
 
@@ -413,10 +504,14 @@ class CameraSensor:
         scene = frozenset(
             label for label, score in reading.scene[:SCENE_LABELS_TRACKED]
             if score >= MIN_SCENE_CONFIDENCE) if SCENE in self.attends else frozenset()
+        gestures = frozenset(
+            h.gesture for h in reading.hands
+            if h.gesture and h.gesture != UNKNOWN_GESTURE
+        ) if GESTURE in self.attends else frozenset()
         return _State(known=known, unknown=unknown, blind=False,
                       postures=frozenset(postures), distances=frozenset(distances),
                       nearest=nearest if DISTANCE in self.attends else "",
-                      scene=scene)
+                      scene=scene, gestures=gestures)
 
     def _settle(self, state: _State) -> _State:
         """Debounce each field on its OWN clock, and return what has settled.
@@ -481,7 +576,8 @@ class CameraSensor:
                                and before.known == state.known
                                and before.unknown == state.unknown else None),
                       scene_in=tuple(sorted(state.scene - before.scene)),
-                      scene_out=tuple(sorted(before.scene - state.scene)))
+                      scene_out=tuple(sorted(before.scene - state.scene)),
+                      gestures=tuple(sorted(state.gestures - before.gestures)))
 
     # -- the Sensor protocol ---------------------------------------------------------
 
@@ -491,7 +587,7 @@ class CameraSensor:
         change = self._commit(self._state_of(reading))
         if change is None or change.empty:
             return None
-        change = replace(change, reading=reading)
+        change = _replace(change, reading=reading)
         return Event(priority=self.salience.of(change), text=render(change),
                      at=reading.at, source="camera")
 

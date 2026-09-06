@@ -26,9 +26,28 @@ THIEP_BOX, NGHIA_BOX = (140, 70, 240, 240), (420, 80, 180, 180)
 THIEP, NGHIA, STRANGER = (1.0, 0.0, 0.1), (0.0, 1.0, 0.1), (0.5, 0.5, 0.9)
 
 
+def _shade(text: str) -> int:
+    """A stable 40..240 grey for a label. `hash()` is salted per process, so a fixture
+    that used it would paint different pixels on different runs — and the frame
+    difference would then depend on PYTHONHASHSEED."""
+    return 40 + sum(text.encode()) % 200
+
+
 class _Cap:
-    def __init__(self):
+    """A fake `cv2.VideoCapture` whose PIXELS follow the scripted world.
+
+    It used to return a constant black frame while the detector was scripted to change,
+    which is a world where nothing ever moves. That was invisible until `Gaze` (ADR-121)
+    started deciding what to look at from the frame difference: with a constant frame the
+    motion is 0.0 forever, so every motion-triggered stage is skipped and a scripted
+    arrival produces no event. The fixture was wrong, not the cascade — a real camera's
+    pixels change when the world does — so the frame is now drawn from what the detector
+    is currently reporting.
+    """
+
+    def __init__(self, detector=None):
         self.released = 0
+        self.detector = detector
 
     def isOpened(self) -> bool:
         return True
@@ -38,7 +57,29 @@ class _Cap:
 
     def read(self):
         import numpy
-        return True, numpy.zeros((480, 640, 3), dtype=numpy.uint8)
+        frame = numpy.zeros((480, 640, 3), dtype=numpy.uint8)
+        d = self.detector
+        if d is None:
+            return True, frame
+        # Paint each detected thing where it is. Any change to the script — a box that
+        # moved, a posture, a scene label, a hand — changes the pixels, which is exactly
+        # what the frame difference is supposed to notice.
+        for i, face in enumerate(getattr(d, "faces", ()) or ()):
+            x, y, w, h = face.box
+            frame[y:y + h, x:x + w] = 200 - 10 * i
+        # Each region is LARGE on purpose. The frame difference is a mean over the
+        # whole subsampled frame, so a 70x30 patch moves it by ~0.75 — below the 1.5
+        # threshold — and a scripted posture change then registers as a static scene.
+        # Measured while building this fixture; a person standing up in a real frame
+        # moves a large fraction of it, and these regions are sized to match that, not
+        # to be tidy.
+        for i, body in enumerate(getattr(d, "bodies", ()) or ()):
+            frame[300:450, 20 + 160 * i:170 + 160 * i] = _shade(body.posture)
+        for i, hand in enumerate(getattr(d, "hands", ()) or ()):
+            frame[180:290, 20 + 120 * i:130 + 120 * i] = _shade(hand.gesture)
+        for i, (label, _s) in enumerate(getattr(d, "scene", ()) or ()):
+            frame[0:60, 210 * i:210 * i + 200] = _shade(label)
+        return True, frame
 
     def release(self) -> None:
         self.released += 1
@@ -54,7 +95,7 @@ def _sensor(*, faces=(), embeddings=None, buffer=None, salience=None,
         scene=(("home office", 0.7),),
         embeddings=embeddings if embeddings is not None
         else {THIEP_BOX: THIEP, NGHIA_BOX: NGHIA})
-    sensor = CameraSensor(camera=camera or Camera(capture=_Cap()), detector=detector,
+    sensor = CameraSensor(camera=camera or Camera(capture=_Cap(detector)), detector=detector,
                           ledger=ledger, buffer=buffer, salience=salience,
                           stable_reads=stable_reads, use_thread=use_thread)
     return sensor, detector, ledger

@@ -102,6 +102,18 @@ DEFAULT_MARGIN = 0.05
 NOSE, L_SHOULDER, R_SHOULDER = 0, 11, 12
 L_HIP, R_HIP, L_KNEE, R_KNEE = 23, 24, 25, 26
 
+#: MediaPipe's 21 hand landmarks. `HAND_TIPS[i]` and `HAND_PIPS[i]` are the fingertip and
+#: the middle joint of the same finger, thumb first.
+WRIST = 0
+HAND_TIPS = (4, 8, 12, 16, 20)
+HAND_PIPS = (2, 6, 10, 14, 18)
+
+#: How much further from the wrist a tip must be than its own middle joint to count as
+#: extended. A RATIO of two distances from the same origin, so it is scale-free: the same
+#: number works for a hand filling the frame and a hand across the room, which a pixel
+#: threshold would not. 1.15 leaves room for the joint jitter a curled finger still has.
+HAND_EXTENDED_RATIO = 1.15
+
 #: Below this, a landmark's coordinates are noise rather than a measurement.
 MIN_VISIBILITY = 0.5
 
@@ -221,6 +233,19 @@ class Body:
 
 
 @dataclass(frozen=True)
+class Hand:
+    """One detected hand, reduced the same way `Body` is.
+
+    Deliberately NOT tied to a face or a name. Hand landmarks carry no identity, and the
+    detector's ordering is not one, so pairing hand 0 with face 0 would be a guess
+    dressed as a fact — the same reason `_State` keys posture by name and refuses to
+    invent a key for an unknown face.
+    """
+    gesture: str
+    handedness: str = ""
+
+
+@dataclass(frozen=True)
 class Reading:
     """One glance, immutable. Immutable because a sensor thread publishes these by
     swapping a reference while the tool side reads it — an atomic rebind needs no lock,
@@ -241,6 +266,10 @@ class Reading:
     #: out of band, or `identify_person` inside a run — is the only place identity can
     #: enter synchronously readable state.
     names: tuple[str | None, ...] = ()
+    #: Detected hands, unpaired with faces or bodies on purpose — see `Hand`. Appended
+    #: last for the same reason `names` was: every existing positional construction
+    #: keeps working.
+    hands: tuple[Hand, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -406,9 +435,23 @@ class IdentityLedger:
 
 
 def _visible(landmarks: Sequence[Any], *idx: int) -> bool:
-    return all(
-        i < len(landmarks) and getattr(landmarks[i], "visibility", 1.0) >= MIN_VISIBILITY
-        for i in idx)
+    """Are all of these landmarks reported with enough confidence to measure from?
+
+    A landmark type that does not report visibility at all counts as visible. MediaPipe's
+    HAND landmarks are that case and they are why this is spelled out: they carry a
+    `visibility` ATTRIBUTE whose value is `None`, so `getattr(..., "visibility", 1.0)`
+    never reaches its default and returned `None`, which then raised `TypeError` against
+    the float threshold. Found by running the real hand model (ADR-121) — a scripted
+    detector cannot surface it, because the shape of a real landmark is exactly what a
+    fake one is not.
+    """
+    for i in idx:
+        if i >= len(landmarks):
+            return False
+        seen = getattr(landmarks[i], "visibility", None)
+        if seen is not None and seen < MIN_VISIBILITY:
+            return False
+    return True
 
 
 def posture_of(landmarks: Sequence[Any]) -> str:
@@ -432,6 +475,44 @@ def posture_of(landmarks: Sequence[Any]) -> str:
     if torso <= 1e-6:
         return "không rõ dáng"
     return "đang đứng" if (knee_y - hip_y) / torso >= 0.75 else "đang ngồi"
+
+
+#: `gesture_of`'s vocabulary, in the order the finger count selects them: index i is the
+#: gesture for i extended fingers. Five entries because a hand has five fingers, and a
+#: TABLE rather than an if-chain for the same reason `Salience` is one — every answer is
+#: visible at once and none of them depends on the order the branches were written in.
+GESTURES: tuple[str, ...] = ("nắm tay", "đang chỉ", "giơ hai ngón", "giơ ba ngón",
+                             "gần như mở", "bàn tay mở")
+
+UNKNOWN_GESTURE = "không rõ cử chỉ"
+
+
+def gesture_of(landmarks: Sequence[Any]) -> str:
+    """A single-frame hand shape from 21 landmarks, as three or four words.
+
+    **Single-frame on purpose, and that is a limit worth stating rather than hiding.**
+    Waving, beckoning and pointing-at-something are all TEMPORAL — they are a sequence of
+    shapes, not a shape — and nothing here sees more than one frame. This reports the
+    static configuration only. A vocabulary that said "đang vẫy tay" from one frame would
+    be inventing evidence.
+
+    A finger counts as extended when its tip is further from the wrist than its own
+    middle joint by `HAND_EXTENDED_RATIO`. Scale-free by construction, so the answer does
+    not change with how close the hand is — the same property `posture_of` gets by
+    measuring against torso height instead of against the frame.
+    """
+    if len(landmarks) <= max(HAND_TIPS):
+        return UNKNOWN_GESTURE
+    if not _visible(landmarks, WRIST, *HAND_TIPS, *HAND_PIPS):
+        return UNKNOWN_GESTURE
+
+    def reach(i: int) -> float:
+        return math.hypot(landmarks[i].x - landmarks[WRIST].x,
+                          landmarks[i].y - landmarks[WRIST].y)
+
+    out = sum(1 for tip, pip in zip(HAND_TIPS, HAND_PIPS)
+              if reach(tip) > reach(pip) * HAND_EXTENDED_RATIO)
+    return GESTURES[out]
 
 
 def facing_camera(landmarks: Sequence[Any]) -> bool:
@@ -550,6 +631,7 @@ class Detector(Protocol):
 
     def detect_faces(self, frame: Any) -> Sequence[Face]: ...
     def detect_bodies(self, frame: Any) -> Sequence[Body]: ...
+    def detect_hands(self, frame: Any) -> Sequence[Hand]: ...
     def embed_face(self, frame: Any, box: tuple[int, int, int, int]) -> Vector: ...
     def classify_scene(self, frame: Any) -> Sequence[tuple[str, float]]: ...
 
@@ -561,17 +643,33 @@ class FakeDetector:
     bodies: Sequence[Body] = ()
     scene: Sequence[tuple[str, float]] = ()
     embeddings: Mapping[tuple[int, int, int, int], Vector] = field(default_factory=dict)
+    hands: Sequence[Hand] = ()
+    #: How many times each capability was actually asked to run. A coarse-to-fine
+    #: cascade's whole claim is about which stages it SKIPS, and a claim about a call
+    #: that did not happen is only checkable if something counts the calls (ADR-121).
+    calls: dict[str, int] = field(default_factory=dict)
+
+    def _called(self, kind: str) -> None:
+        self.calls[kind] = self.calls.get(kind, 0) + 1
 
     def detect_faces(self, frame: Any) -> Sequence[Face]:
+        self._called("faces")
         return tuple(self.faces)
 
     def detect_bodies(self, frame: Any) -> Sequence[Body]:
+        self._called("bodies")
         return tuple(self.bodies)
 
+    def detect_hands(self, frame: Any) -> Sequence[Hand]:
+        self._called("hands")
+        return tuple(self.hands)
+
     def embed_face(self, frame: Any, box: tuple[int, int, int, int]) -> Vector:
+        self._called("embed")
         return self.embeddings.get(box, ())
 
     def classify_scene(self, frame: Any) -> Sequence[tuple[str, float]]:
+        self._called("scene")
         return tuple(self.scene)
 
 
@@ -620,9 +718,9 @@ class MediaPipeDetector:
 
     def __init__(self, *, face_model: str | None = None, pose_model: str | None = None,
                  scene_model: str | None = None, embed_model: str | None = None,
-                 landmark_model: str | None = None,
+                 landmark_model: str | None = None, hand_model: str | None = None,
                  min_face_confidence: float = 0.5, max_scene_labels: int = 3,
-                 scene_score_threshold: float = 0.15) -> None:
+                 scene_score_threshold: float = 0.15, max_hands: int = 2) -> None:
         #: `landmark_model` wins over `embed_model` for `embed_face`, when both are
         #: given. An `ImageEmbedder` encodes the PICTURE (measured unusable for
         #: identity, ADR-090); the face landmarker encodes the GEOMETRY, which is at
@@ -630,10 +728,11 @@ class MediaPipeDetector:
         #: has been measured, which is not far (ADR-095).
         self._paths = {"face": face_model, "pose": pose_model,
                        "scene": scene_model, "embed": embed_model,
-                       "landmark": landmark_model}
+                       "landmark": landmark_model, "hand": hand_model}
         self._min_face_confidence = min_face_confidence
         self._max_scene_labels = max_scene_labels
         self._scene_score_threshold = scene_score_threshold
+        self._max_hands = max_hands
         self._tasks: dict[str, Any] = {}
 
     # -- construction of the four tasks, each optional --------------------------------
@@ -669,6 +768,9 @@ class MediaPipeDetector:
         elif kind == "pose":
             built = mpv.PoseLandmarker.create_from_options(mpv.PoseLandmarkerOptions(
                 base_options=base, num_poses=4))
+        elif kind == "hand":
+            built = mpv.HandLandmarker.create_from_options(mpv.HandLandmarkerOptions(
+                base_options=base, num_hands=self._max_hands))
         elif kind == "scene":
             built = mpv.ImageClassifier.create_from_options(mpv.ImageClassifierOptions(
                 base_options=base, max_results=self._max_scene_labels,
@@ -728,6 +830,32 @@ class MediaPipeDetector:
         result = task.detect(self._image(frame))
         return tuple(Body(posture=posture_of(lms), facing_camera=facing_camera(lms))
                      for lms in result.pose_landmarks)
+
+    def detect_hands(self, frame: Any) -> Sequence[Hand]:
+        """Hands, as a static shape each. `()` when no `hand_model` was given.
+
+        Measured here on `mediapipe` 1.0.1 + `hand_landmarker.task` (float16), a 640x480
+        photograph: **22.89 ms median**, 1 hand found, handedness "Right", five fingers
+        extended. That cost is the reason `Gaze` exists — it is the second most expensive
+        stage after `detect_bodies` (28.35 ms) and it is worth paying only when something
+        is actually happening.
+
+        **The real-model check covers one hand shape.** Both photographs available here
+        are of an open hand, so the pipeline is verified end to end and the DISCRIMINATOR
+        is not: a `gesture_of` that always answered "bàn tay mở" would pass both. The
+        other shapes are tested against constructed landmarks, directly on the pure
+        function, which is what layer 1 exists for.
+        """
+        task = self._task("hand")
+        if task is None:
+            return ()
+        result = task.detect(self._image(frame))
+        handed = list(getattr(result, "handedness", ()))
+        return tuple(
+            Hand(gesture=gesture_of(lms),
+                 handedness=(handed[i][0].category_name
+                             if i < len(handed) and handed[i] else ""))
+            for i, lms in enumerate(result.hand_landmarks))
 
     def embed_face(self, frame: Any, box: tuple[int, int, int, int]) -> Vector:
         """A vector for one face. Geometry when `landmark_model` was given, otherwise
