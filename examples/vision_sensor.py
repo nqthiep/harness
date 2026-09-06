@@ -600,12 +600,18 @@ class CameraSensor:
 def _demo() -> None:
     from harness.memory.inmemory import InMemoryStore
 
-    from vision_tools import Body, Face, FakeDetector
+    from vision_tools import Body, Face, FakeDetector, Hand
 
     thiep_box, nghia_box = (140, 70, 240, 240), (420, 80, 180, 180)
     thiep, nghia, stranger = (1.0, 0.0, 0.1), (0.0, 1.0, 0.1), (0.5, 0.5, 0.9)
 
     class Cap:
+        """A fake capture whose PIXELS follow the script, because `Gaze` reads the frame
+        difference and a constant frame is a world where nothing ever moves (ADR-121)."""
+
+        def __init__(self, detector=None):
+            self.detector = detector
+
         def isOpened(self) -> bool:
             return True
 
@@ -614,7 +620,22 @@ def _demo() -> None:
 
         def read(self):
             import numpy
-            return True, numpy.zeros((480, 640, 3), dtype=numpy.uint8)
+            frame = numpy.zeros((480, 640, 3), dtype=numpy.uint8)
+            d = self.detector
+            if d is None:
+                return True, frame
+            for i, face in enumerate(d.faces or ()):
+                x, y, w, h = face.box
+                frame[y:y + h, x:x + w] = 200 - 10 * i
+            for i, body in enumerate(d.bodies or ()):
+                frame[300:450, 20 + 160 * i:170 + 160 * i] = (
+                    40 + sum(body.posture.encode()) % 200)
+            for i, hand in enumerate(d.hands or ()):
+                frame[180:290, 20 + 120 * i:130 + 120 * i] = (
+                    40 + sum(hand.gesture.encode()) % 200)
+            for i, (label, _s) in enumerate(d.scene or ()):
+                frame[0:60, 210 * i:210 * i + 200] = 40 + sum(label.encode()) % 200
+            return True, frame
 
         def release(self) -> None:
             pass
@@ -629,7 +650,7 @@ def _demo() -> None:
                                 scene=(("home office", 0.7),),
                                 embeddings={thiep_box: thiep, nghia_box: nghia})
         buffer = PerceptionBuffer()
-        sensor = CameraSensor(camera=Camera(capture=Cap()), detector=detector,
+        sensor = CameraSensor(camera=Camera(capture=Cap(detector)), detector=detector,
                               ledger=ledger, buffer=buffer, use_thread=False)
 
         async def frames(label: str, faces, times: int = 2):
@@ -712,7 +733,7 @@ def _demo() -> None:
         print("=" * 78)
         print("6. HAI TỐC ĐỘ: vòng rẻ chạy liên tục, model chỉ thức khi có KHÁC BIỆT")
         print("=" * 78)
-        watch = CameraSensor(camera=Camera(capture=Cap()), detector=detector,
+        watch = CameraSensor(camera=Camera(capture=Cap(detector)), detector=detector,
                              ledger=ledger, buffer=PerceptionBuffer(), use_thread=False)
         near_box, far_box = (10, 10, 300, 300), (10, 10, 60, 60)
         detector.embeddings = {near_box: thiep, far_box: thiep}
@@ -745,7 +766,7 @@ def _demo() -> None:
         print("=" * 78)
         print("7. attends= — tắt bớt mặt không quan tâm thì nó không tốn gì cả")
         print("=" * 78)
-        quiet = CameraSensor(camera=Camera(capture=Cap()), detector=detector,
+        quiet = CameraSensor(camera=Camera(capture=Cap(detector)), detector=detector,
                              ledger=ledger, buffer=PerceptionBuffer(),
                              attends=frozenset({PRESENCE}), use_thread=False)
         seen = 0
@@ -759,6 +780,52 @@ def _demo() -> None:
               f"{quiet.observations} quan sát")
         print("  -> dáng/khoảng cách/cảnh không vào `_State`, nên không sinh sự kiện")
         print("     và cũng không tốn một nhịp debounce nào")
+
+        print()
+        print("=" * 78)
+        print("8. NHÌN TỔNG THỂ TRƯỚC: liếc rẻ quyết định có đáng nhìn kỹ hay không")
+        print("=" * 78)
+        # Cost per stage, measured on real MediaPipe (ADR-121). Costing the SKIPS is the
+        # only way to state a saving; counting calls alone says nothing about ms.
+        cost = {"faces": 2.59, "bodies": 28.35, "hands": 22.89, "embed": 3.08,
+                "scene": 12.97}
+        det2 = FakeDetector(scene=(("home office", 0.9),), embeddings={thiep_box: thiep},
+                            hands=(Hand("bàn tay mở", "Right"),))
+        watch = CameraSensor(camera=Camera(capture=Cap(det2)), detector=det2,
+                             ledger=ledger, buffer=PerceptionBuffer(), use_thread=False)
+        det2.faces, det2.bodies = (), ()
+        for _ in range(4):
+            await watch.read()                       # phòng trống
+        det2.faces = (Face(box=thiep_box),)
+        det2.bodies = (Body("đang ngồi"),)
+        arrived = [e for e in [await watch.read() for _ in range(4)] if e]
+        for _ in range(92):
+            await watch.read()                       # ...rồi ngồi yên
+        naive = watch.observations * sum(cost.values())
+        real = sum(cost[k] * v for k, v in det2.calls.items() if k in cost)
+        print(f"  {watch.gaze.report()}")
+        print(f"  chạy hết mọi tầng mỗi lần : {naive / 1000:6.2f} s CPU")
+        print(f"  cascade                   : {real / 1000:6.2f} s CPU"
+              f"  ({real / naive:.1%} — rẻ hơn {naive / real:.1f}x)")
+        print()
+        print("  ĐỐI CHỨNG (rẻ mà mù thì vô dụng):")
+        print(f"    Thiep vào                 -> "
+              f"{arrived[0].text.split('.')[0] if arrived else 'IM LẶNG — HỎNG'}")
+        det2.bodies = (Body("đang đứng"),)
+        for i in range(1, 40):
+            ev = await watch.read()
+            if ev:
+                print(f"    đứng dậy                  -> sau {i} lần liếc: "
+                      f"{ev.text.split('.')[0]}")
+                break
+        else:
+            print("    đứng dậy                  -> KHÔNG BAO GIỜ THẤY")
+        watch.gaze.demand("hands")
+        print("    gaze.demand('hands')      -> tầng hands chạy thêm 1 lần theo yêu cầu")
+        before = det2.calls.get("hands", 0)
+        await watch.read()
+        print(f"       hands: {before} -> {det2.calls.get('hands', 0)} "
+              f"(và lệnh tự xoá, không thành chi phí vĩnh viễn)")
 
     asyncio.run(main())
 

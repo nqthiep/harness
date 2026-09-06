@@ -19,8 +19,9 @@ from harness.memory.inmemory import InMemoryStore
 from vision_sensor import (ATTENDABLE, CameraSensor, Change, DISTANCE, GESTURE,
                            POSTURE, PRESENCE, SCENE, Salience, _State,
                            _transitions, render)
-from vision_tools import (Body, Camera, DISTANCE_BANDS, Face, FakeDetector,
-                          IdentityLedger, PerceptionBuffer, distance_of, nearer_than)
+from vision_tools import (Body, Camera, DISTANCE_BANDS, Face, FakeDetector, Hand,
+                          IdentityLedger, PerceptionBuffer, Reading, distance_of,
+                          nearer_than)
 
 THIEP, NGHIA = (1.0, 0.0, 0.1), (0.0, 1.0, 0.1)
 #: Boxes chosen so each lands in a DIFFERENT band of a 640px-wide frame, checked by
@@ -458,6 +459,30 @@ class AttendsIsTheOffSwitch(unittest.TestCase):
         self.assertEqual(state.distances, frozenset(), "DISTANCE is off")
         self.assertEqual(state.nearest, "")
         self.assertEqual(state.scene, frozenset(), "SCENE is off")
+
+    def test_a_reading_that_arrives_with_detail_anyway_is_still_filtered(self):
+        """`_state_of` keeps its own `attends` check, and this is the test that reaches it.
+
+        Since ADR-121, `_worth` also stops an unattended stage from RUNNING, so through
+        the sensor `reading.bodies` is already empty and the check in `_state_of` cannot
+        change the answer — mutation M5 survived once that landed. It is kept anyway, and
+        tested here directly with a hand-built `Reading`, because it is the primary
+        definition of what "unattended" MEANS: `_worth` is a cost optimisation derived
+        from it, and if correctness lived only in the optimisation, then the day some
+        other consumer needs `detect_bodies` to run, unattended aspects would silently
+        start producing events again.
+        """
+        w = Scene(attends=frozenset({PRESENCE}))
+        detailed = Reading(at=1.0, faces=(Face(box=NEAR),), bodies=(Body("đang đứng"),),
+                           scene=(("fire", 0.9),), hands=(Hand("đang chỉ"),),
+                           frame_size=(640, 480), names=("Thiep",))
+        state = w.sensor._state_of(detailed)
+        self.assertEqual(state.known, frozenset({"Thiep"}), "presence is attended")
+        self.assertEqual(state.postures, frozenset())
+        self.assertEqual(state.distances, frozenset())
+        self.assertEqual(state.nearest, "")
+        self.assertEqual(state.scene, frozenset())
+        self.assertEqual(state.gestures, frozenset())
 
     def test_presence_cannot_be_switched_off(self):
         w = Scene(attends=frozenset())

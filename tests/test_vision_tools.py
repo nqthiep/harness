@@ -13,6 +13,7 @@ below cover its no-model-configured behaviour, which is a supported configuratio
 nothing more. See ADR-077.
 """
 import asyncio
+import math
 import json
 import unittest
 
@@ -24,7 +25,9 @@ from vision_tools import (ENROLL, IDENTIFY, LOOK, Body, Camera,
                           L_HIP, L_KNEE, L_SHOULDER, MediaPipeDetector,
                           NOSE, PerceptionBuffer, R_HIP, R_KNEE, R_SHOULDER, Reading,
                           VisionTools, cosine, describe, distance_of, facing_camera,
-                          posture_of, _crop)
+                          posture_of, _crop,
+                          GESTURES, HAND_PIPS, HAND_TIPS, UNKNOWN_GESTURE,
+                          gesture_of)
 
 THIEP = (1.0, 0.0, 0.10)
 NGHIA = (0.0, 1.0, 0.10)
@@ -181,6 +184,85 @@ class IdentityLedgerThat(unittest.TestCase):
     def test_the_ledger_survives_a_round_trip_through_the_store(self):
         run(self.ledger.enroll("Thiep", THIEP))
         self.assertEqual(run(IdentityLedger(self.store).match(THIEP)).name, "Thiep")
+
+
+class _HandLM:
+    """A hand landmark. Separate from `_LM` because the shape it has to imitate is
+    different in exactly the way that mattered: MediaPipe's hand landmarks carry a
+    `visibility` attribute whose VALUE IS None, not a float and not absent."""
+
+    def __init__(self, x: float, y: float, visibility=None) -> None:
+        self.x, self.y, self.z, self.visibility = x, y, 0.0, visibility
+
+
+def _hand(*extended: bool, visibility=None, short: bool = False):
+    """21 landmarks with the named fingers extended.
+
+    Every joint is placed on a ray from the wrist, so "extended" is literally "the tip is
+    further along the ray than the middle joint" — the thing `gesture_of` measures, laid
+    out by hand rather than asserted about.
+    """
+    lms = [_HandLM(0.5, 0.5, visibility) for _ in range(21)]
+    for finger, out in enumerate(extended):
+        angle = 0.3 + finger * 0.2
+        pip_r, tip_r = 0.10, (0.30 if out else 0.10)
+        lms[HAND_PIPS[finger]] = _HandLM(0.5 + pip_r * math.cos(angle),
+                                         0.5 + pip_r * math.sin(angle), visibility)
+        lms[HAND_TIPS[finger]] = _HandLM(0.5 + tip_r * math.cos(angle),
+                                         0.5 + tip_r * math.sin(angle), visibility)
+    return lms[:6] if short else lms
+
+
+class GestureThat(unittest.TestCase):
+    """`gesture_of` in isolation. The real hand model runs (ADR-121: 22.89 ms, one hand
+    found, five fingers extended) but both photographs available here are of an OPEN
+    hand, so the pipeline is verified and the DISCRIMINATOR is not — a `gesture_of` that
+    always answered "bàn tay mở" would pass both. These do the discriminating.
+    """
+
+    def test_every_finger_count_selects_its_own_answer(self):
+        """The mutation this exists for replaces the lookup with a constant. Checking
+        one shape cannot catch that; checking all six can."""
+        for out in range(6):
+            with self.subTest(fingers=out):
+                self.assertEqual(gesture_of(_hand(*([True] * out + [False] * (5 - out)))),
+                                 GESTURES[out])
+
+    def test_a_fist_and_an_open_hand_are_not_the_same_answer(self):
+        self.assertEqual(gesture_of(_hand(False, False, False, False, False)), "nắm tay")
+        self.assertEqual(gesture_of(_hand(True, True, True, True, True)), "bàn tay mở")
+
+    def test_one_finger_out_reads_as_pointing(self):
+        self.assertEqual(gesture_of(_hand(False, True, False, False, False)), "đang chỉ")
+
+    def test_a_hand_with_no_visibility_reported_is_still_readable(self):
+        """The defect the real model found, pinned. MediaPipe hand landmarks carry
+        `visibility=None` — the attribute EXISTS, so `getattr(..., "visibility", 1.0)`
+        never reaches its default and returned `None`, which raised `TypeError` against
+        the float threshold. A landmark type that does not report visibility counts as
+        visible; only a reported LOW value means "cannot measure".
+        """
+        self.assertEqual(gesture_of(_hand(True, True, True, True, True, visibility=None)),
+                         "bàn tay mở")
+
+    def test_a_hand_reported_as_barely_visible_admits_it_does_not_know(self):
+        self.assertEqual(gesture_of(_hand(True, True, True, True, True, visibility=0.1)),
+                         UNKNOWN_GESTURE)
+
+    def test_too_few_landmarks_admits_it_does_not_know(self):
+        self.assertEqual(gesture_of(_hand(True, True, short=True)), UNKNOWN_GESTURE)
+        self.assertEqual(gesture_of([]), UNKNOWN_GESTURE)
+
+    def test_it_does_not_change_with_how_close_the_hand_is(self):
+        """Scale-freedom, the same property `posture_of` has and for the same reason: the
+        measure is a RATIO of two distances from one origin, so shrinking the whole hand
+        leaves the answer alone. An absolute pixel threshold would call a distant open
+        hand a fist."""
+        big = _hand(True, True, True, True, True)
+        small = [_HandLM(0.5 + (lm.x - 0.5) * 0.2, 0.5 + (lm.y - 0.5) * 0.2)
+                 for lm in big]
+        self.assertEqual(gesture_of(big), gesture_of(small))
+        self.assertEqual(gesture_of(small), "bàn tay mở")
 
 
 class PostureThat(unittest.TestCase):

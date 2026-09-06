@@ -133,6 +133,7 @@ section.
 | [ADR-118](#adr-118--both-pinned-parity-defects-unpinned) | Both pinned parity defects, unpinned | Accepted (`test_parity.py` carries no documented differences again) |
 | [ADR-119](#adr-119--merging-two-review-rounds-where-they-agreed-and-the-four-places-they-did-not) | Merging two review rounds: where they agreed, and the four places they did not | Accepted (merged; 60 commits one way, 29 the other) |
 | [ADR-120](#adr-120--two-rates-of-attention-what-the-cheap-loop-is-allowed-to-notice) | Two rates of attention: what the cheap loop is allowed to notice | Accepted |
+| [ADR-121](#adr-121--look-at-the-whole-first-a-glance-decides-what-is-worth-looking-at-closely) | Look at the whole first: a glance decides what is worth looking at closely | Accepted |
 
 ---
 
@@ -5361,3 +5362,136 @@ sense — `Body.posture` is whatever the detector supplies, and with `MediaPipeD
 that is `posture_of`'s three-way heuristic (ADR-077). "Thiep vẫy tay" appears above only
 because a `FakeDetector` was told to say so. Real gesture recognition is a detector
 change, not a sensor change, and this ADR claims nothing about it.
+
+---
+
+### ADR-121 — Look at the whole first: a glance decides what is worth looking at closely
+
+**Status:** Accepted.
+
+**The ask, in the user's words:** the brain does not observe the detail first — it takes
+in the whole, and only when it finds it needs to read body pose, hand pose or a face does
+it look closely to get that information.
+
+**[Unverified] on the neuroscience**, as in ADR-120. Nothing below depends on whether
+biological vision implements this as foveation, as saccadic targeting, or otherwise; the
+engineering argument stands on its own measurements.
+
+**ADR-120 gave the loop two RATES. It did not make the perception itself coarse-to-fine.**
+`_capture` ran every detector stage on every glance and only the REPORTING was gated.
+Measured here — `mediapipe` 1.0.1, a 640x480 photograph of a real person, CPU, median of
+12 runs:
+
+| stage | median | share |
+|---|---|---|
+| frame difference (8x subsample) | **0.05 ms** | — |
+| `detect_faces` | 2.59 ms | 3.7% |
+| `detect_bodies` | **28.35 ms** | 41% |
+| `classify_scene` | 12.97 ms | 19% |
+| `embed_face` (one face) | 3.08 ms | 4.4% |
+| `detect_hands` | 22.89 ms | 33% |
+| **all of them, every glance** | **69.88 ms** | |
+
+At `Driver.sensor_interval_s = 0.2` that is 70 ms of inference every 200 ms — **35% of a
+core, burned continuously, in an empty room** — to re-derive an answer that did not
+change. The frame difference that can tell you nothing happened costs **1400x less**.
+
+**So: tier 0 always, tier 1 always, tier 2 on demand.** Tier 0 is the frame difference.
+Tier 1 is `detect_faces`. Tier 2 is pose, hands, identity and scene, decided by a TABLE
+of four independent triggers per stage — motion, the set of faces changing, an unresolved
+identity, and a staleness bound — the same table idiom as `Salience` and `EFFECT_PROFILES`
+and for the same reason: every stage's policy is visible at once and no answer depends on
+the order the branches were written in.
+
+**Tier 1 is unconditional, and the first version of it was not.** Gating face detection on
+motion saves 2.59 ms of 69.88 — 3.7% — and buys a real failure: a person entering below
+the motion threshold is invisible until the staleness clock fires, and since everything
+downstream keys off faces, the whole cascade goes blind together. Measured while building
+this: with tier 1 gated, a scripted arrival produced **no event at all**. Paying 2.59 ms
+to keep the trigger for everything else live is the cheap side of that trade.
+
+**Measured saving, over 100 glances of a realistic room** (someone arrives, then sits
+still), costing each call at the table above: **6.99 s → 0.51 s of CPU, 13.6x cheaper.**
+
+**And the control, because a cascade that skips everything scores 100%:**
+
+| | result |
+|---|---|
+| Thiep arrives | EVENT |
+| stands up, pixels move | seen in **2 glances** (0.4 s) |
+| stands up, pixels FROZEN | seen in **24 glances** (~4.8 s), by the staleness bound |
+
+That 4.8 s worst case is the honest price of the cascade, it is bounded by `Look.every`,
+and it is stated here rather than left to be discovered.
+
+**Two correctness rules, both ADR-081's blindness rule one level down.**
+
+1. **A skipped stage carries forward its last measured value, never empty.** No
+   measurement is not "nothing there". The sharpest edge is identity: re-deriving names
+   from embeddings that were not computed this glance would flip every recognised person
+   to unknown the moment `Gaze` skipped their embedding, and the sensor would announce
+   *"Thiep đi khỏi, một người lạ xuất hiện"* about a man sitting perfectly still. Sound
+   because the one thing that invalidates a carried name — the set of faces changing — is
+   itself an `on_change` trigger for identity.
+2. **The first glance looks at everything.** Found by a failing test, not by reasoning:
+   `classify_scene` was skipped on a still, empty room, ran for the first time when
+   somebody walked in, and the sensor announced *"chỗ này giờ trông như home office"* as
+   if the room had just changed. "Never measured" must not read as "measured, and there
+   was nothing". One full glance at the start costs 69.88 ms once and deletes the whole
+   error class.
+
+**`attends` now gates the detector, not just the report.** `Gaze` decides whether an
+answer would be FRESH; `attends` decides whether it would be READ. Running
+`classify_scene` for 12.97 ms to fill a field `_state_of` discards is a cost with no
+reader, so an unattended aspect never runs its stage at all.
+
+**Deliberate attention, not only reflex.** `Gaze.demand("hands")` buys one look the table
+would not have taken — the "I need to read that now" half of the description. It is
+cleared once spent, so a demand cannot become a permanent cost, and an unrecognised stage
+name raises rather than being silently dropped.
+
+**Hands are a real stage, measured, not a stub.** `hand_landmarker.task` runs here: 22.89
+ms median, one hand found, handedness "Right", five fingers extended. `gesture_of` reads
+a shape off 21 landmarks as a finger count into a table. It is SINGLE-FRAME and says so —
+waving, beckoning and pointing-at-something are temporal, and a vocabulary that said
+"đang vẫy tay" from one frame would be inventing evidence. `Hand` is deliberately not
+paired with a face or a name: hand landmarks carry no identity and the detector's ordering
+is not one, so "Thiep is pointing" would be a guess dressed as a fact — the same refusal
+`_State.postures` already makes for unknown faces.
+
+**Running the real model found a defect a scripted detector cannot.** MediaPipe's hand
+landmarks carry a `visibility` ATTRIBUTE whose value is `None`. `_visible` read it with
+`getattr(landmarks[i], "visibility", 1.0)`, so the default never fired, and the comparison
+raised `TypeError` against the float threshold. A landmark type that does not report
+visibility now counts as visible; only a REPORTED low value means "cannot measure".
+
+**A fixture had been wrong the whole time.** The fake camera returned a constant black
+frame while the detector was scripted to change — a world where nothing ever moves.
+Harmless until motion became an input, at which point every motion-triggered stage was
+skipped and a scripted arrival produced nothing. The frame is now drawn from what the
+detector reports, and its regions are sized against the measured threshold: a 70x30 patch
+moves the subsampled mean by ~0.75, below the 1.5 floor, so a posture change registered as
+a static scene. Sized for the measurement, not for tidiness.
+
+**Mutation testing: 18 defects injected, 18 killed by a named test** — but three survived
+the first pass, all in `gesture_of`, including the `visibility=None` defect the real model
+had just found. The reason is stated in the code: both photographs available here are of
+an OPEN hand, so the real-model check verifies the PIPELINE and not the DISCRIMINATOR — a
+`gesture_of` that always answered "bàn tay mở" would pass both. The discriminating is done
+by unit tests against constructed landmarks, which is what layer 1 is for.
+
+**A second survivor appeared after the fix, and it was a real question, not a gap.**
+`_state_of` keeps its own `attends` check, and once `_worth` stopped an unattended stage
+from RUNNING, that check could no longer change any answer reached through the sensor —
+ADR-120's mutation M5 went from killed to surviving. Unlike `_transitions`' `stayed`
+(ADR-120), it was kept: it is the primary definition of what "unattended" MEANS, and
+`_worth` is a cost optimisation derived from it. If correctness lived only in the
+optimisation, the day some other consumer needs `detect_bodies` to run, unattended
+aspects would silently start producing events again. It is now tested where it does work
+— directly, on a hand-built `Reading` that arrives carrying detail nobody attends to.
+
+**What this does not do.** It does not track a person between frames — there is no
+identity for an unknown face and none is invented. It does not recognise temporal
+gestures. And the numbers above are this machine's: `sensor_interval_s`, the motion
+threshold and every `Look.every` are camera-dependent and should be re-measured, which is
+what `Gaze.report()` and `CameraSensor.focus` exist to make possible.
