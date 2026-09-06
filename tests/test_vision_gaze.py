@@ -14,7 +14,8 @@ import numpy
 from harness.memory.inmemory import InMemoryStore
 
 from vision_gaze import (BODIES, DEFAULT_MOTION_THRESHOLD, FACES, HANDS, IDENTITY,
-                         MOTION_SUBSAMPLE, SCENE, STAGES, Focus, Gaze, Look, motion_of)
+                         MOTION_SUBSAMPLE, SCENE, STAGES, Focus, Look,
+                         camera_gaze, motion_of)
 from vision_sensor import GESTURE, POSTURE, PRESENCE, CameraSensor
 from vision_tools import (Body, Camera, Face, FakeDetector, Hand, IdentityLedger,
                           PerceptionBuffer)
@@ -148,7 +149,7 @@ class TheFirstGlanceLooksAtEverything(unittest.TestCase):
         room, ran for the first time when somebody walked in, and the sensor announced
         "chỗ này giờ trông như home office" as if the room had just changed.
         """
-        gaze = Gaze()
+        gaze = camera_gaze()
         gaze.glances = 5                       # pretend the first glance is long past
         sensor, detector, ledger = _sensor(frozen=True, gaze=gaze)
 
@@ -255,7 +256,7 @@ class ItStillSees(unittest.TestCase):
 
         glances = run(go())
         self.assertIsNotNone(glances, "a carried value must not be carried forever")
-        self.assertLessEqual(glances, Gaze().looks[BODIES].every + 4,
+        self.assertLessEqual(glances, camera_gaze().looks[BODIES].every + 4,
                              "later than the staleness bound means the bound is not the bound")
 
 
@@ -323,7 +324,7 @@ class DeliberateAttention(unittest.TestCase):
     "I need to read that now"."""
 
     def test_a_demand_buys_a_look_the_table_would_not_have_taken(self):
-        gaze = Gaze()
+        gaze = camera_gaze()
         sensor, detector, ledger = _sensor(frozen=True, gaze=gaze,
                                            faces=(Face(box=BOX),),
                                            bodies=(Body("đang ngồi"),),
@@ -342,7 +343,7 @@ class DeliberateAttention(unittest.TestCase):
         self.assertEqual(after, before + 1, "a demand must be honoured")
 
     def test_a_demand_buys_ONE_look_and_not_a_permanent_cost(self):
-        gaze = Gaze()
+        gaze = camera_gaze()
         sensor, detector, ledger = _sensor(frozen=True, gaze=gaze,
                                            faces=(Face(box=BOX),),
                                            hands=(Hand("bàn tay mở"),))
@@ -363,7 +364,7 @@ class DeliberateAttention(unittest.TestCase):
         self.assertEqual(gaze.demanded, set())
 
     def test_a_misspelt_stage_is_refused_rather_than_dropped(self):
-        gaze = Gaze()
+        gaze = camera_gaze()
         with self.assertRaises(ValueError) as e:
             gaze.demand("body")
         self.assertIn("body", str(e.exception))
@@ -396,7 +397,7 @@ class TheDecisionIsVisible(unittest.TestCase):
         """A stage with no row is never run by the table. If `STAGES` gains a member and
         `DEFAULT_LOOKS` does not, that stage silently never runs — which would look like
         the cascade working very well."""
-        self.assertEqual(set(Gaze().looks), set(STAGES))
+        self.assertEqual(set(camera_gaze().looks), set(STAGES))
         self.assertEqual(set(STAGES), {BODIES, HANDS, IDENTITY, SCENE})
         self.assertNotIn(FACES, STAGES, "tier 1 is unconditional, not table-driven")
 

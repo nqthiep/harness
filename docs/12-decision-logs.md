@@ -134,6 +134,7 @@ section.
 | [ADR-119](#adr-119--merging-two-review-rounds-where-they-agreed-and-the-four-places-they-did-not) | Merging two review rounds: where they agreed, and the four places they did not | Accepted (merged; 60 commits one way, 29 the other) |
 | [ADR-120](#adr-120--two-rates-of-attention-what-the-cheap-loop-is-allowed-to-notice) | Two rates of attention: what the cheap loop is allowed to notice | Accepted |
 | [ADR-121](#adr-121--look-at-the-whole-first-a-glance-decides-what-is-worth-looking-at-closely) | Look at the whole first: a glance decides what is worth looking at closely | Accepted |
+| [ADR-122](#adr-122--adding-a-sense-what-generalised-what-did-not-and-what-a-gate-has-to-catch) | Adding a sense: what generalised, what did not, and what a gate has to catch | Accepted |
 
 ---
 
@@ -5495,3 +5496,106 @@ identity for an unknown face and none is invented. It does not recognise tempora
 gestures. And the numbers above are this machine's: `sensor_interval_s`, the motion
 threshold and every `Look.every` are camera-dependent and should be re-measured, which is
 what `Gaze.report()` and `CameraSensor.focus` exist to make possible.
+
+---
+
+### ADR-122 — Adding a sense: what generalised, what did not, and what a gate has to catch
+
+**Status:** Accepted.
+
+**The question:** how is the code shaped so that another vision feature, or a voice
+capability, is easy to add later?
+
+**Answered by building the second sense rather than by describing the first.** ADR-120 and
+ADR-121 built a perception design around a camera and asserted it was general. Nothing had
+tested that. `examples/voice_tools.py` + `examples/voice_sensor.py` are the test, and they
+found three things — one coupling in the shipped mechanism, two defects re-introduced in
+the new sense by the person who had just fixed them in the old one.
+
+**First, the measurement of how extensible it actually was.** Adding an ASPECT (posture,
+distance, scene, gesture) touches ten places. Each was removed in turn from an aspect that
+already worked, and the suite re-run:
+
+    8 of 10 steps were caught.  2 were SILENT.
+
+Both silent ones were `Salience` — forgetting the row, and forgetting to score it in
+`of()`. Their effect is that a new aspect quietly gets the fallback tier instead of the one
+its author believes they set. Fail-safe, since the fallback never preempts, and still
+wrong, and still invisible. `tests/test_sense_wiring.py` closes them by ITERATING the
+`Change` dataclass rather than naming its fields, so an aspect added next year is covered
+the day it is added: for every field it bumps each `Salience` row in turn and requires that
+some row can change the answer. Re-measured after: **10 of 10 caught.** The one thing still
+uncaught is lowering a row's default tier, which is a tuning decision no gate should pin —
+and RAISING one is caught, in both senses, by the shared `never reaches HIGH` test.
+
+**Second, the coupling in the shipped mechanism.** `Gaze.detail` iterated a module-level
+`STAGES` tuple naming the camera's stages. A `Gaze` built with a voice table therefore
+looped over `("bodies", "hands", "identity", "scene")`, found none of them in its own
+`looks`, and decided **nothing at all** — every voice stage skipped, forever. The sensor
+looked wonderfully cheap, which is the failure mode that makes this class of bug dangerous:
+getting a cascade wrong makes it FASTER. Stages now come from `self.looks`, the only place
+that knows what they are.
+
+**`Look`/`Focus`/`Gaze` moved to `harness.contrib.attention`**, under the rule
+`contrib/__init__.py` states: *copy-paste what you want people to EDIT; ship what you do
+not want them to RE-DERIVE.* The three correctness rules (first glance runs everything,
+carry forward, bound the staleness) are exactly what a fork gets subtly wrong in the
+direction that looks like success. The TUNING — `DEFAULT_LOOKS`, thresholds, stage names —
+stays in `examples/`, because those are judgment and a threshold you cannot edit is
+worthless. Each sense supplies a named constructor: `camera_gaze()`, `voice_gaze()`. Not a
+subclass — nothing about a microphone changes how the cascade DECIDES, only what its stages
+are called; if either had needed to override a method, the abstraction would have been
+wrong.
+
+**What did NOT generalise, and should not have.** The camera's `_State` is about who is
+PRESENT — a set that persists between observations. Audio has no such thing: a sentence has
+a beginning and an end, and there is no "still saying it" the way there is a "still
+standing there". So `voice_sensor._State` is about whether somebody is speaking, who, and
+how loudly, and `Change.said` reports a sentence ONCE, at the moment it is heard, rather
+than diffing a set. Forcing audio into the presence-set shape would have produced a sensor
+that re-announced the same sentence on every listen until the speaker stopped. The tiers
+are likewise genuinely different: the camera's cheap question is "did the picture change"
+and the microphone's is "is there sound"; sharing them would have been a fake abstraction.
+
+**Third, and the most useful finding: the sharp rules are NOT inherited.** Building on the
+same mechanism does not give you its correctness. Two defects, both fixed in vision, both
+re-created in voice within an hour, both found by running it:
+
+| defect | what it did |
+|---|---|
+| the identified speaker was not carried across listens where identity did not run | the sensor said *"ai đó nói"* about a person it had recognised one listen earlier — vision's "a man sitting still becomes a stranger", exactly |
+| `speech` (stale, from the VAD) was combined with `level` (fresh, from tier 1) | a room going quiet was announced as *"giọng nhỏ đi (nói to → thì thầm)"* — a state that never existed |
+
+The second one taught something new that vision had not shown: **the right carry-forward
+for a field is sometimes a cheaper FRESH estimate, not the stale precise one.** Where tier 1
+measures the same question more coarsely, a skipped tier-2 stage should fall back to tier 1
+rather than to its own last answer. Mixing a stale field with a fresh one invents a state.
+
+A third, smaller one: `render` appended the full description unconditionally, so a change
+that IS the sentence printed it twice — and every duplicated token is paid for on every
+subsequent model call in the run.
+
+**Rule 1 is sharper for audio and is stated where it applies.** A camera needs a sign held
+to the lens; a microphone needs somebody to simply SAY "urgent, cancel everything".
+`Salience.speech` is therefore one tier for every sentence, and
+`test_priority_never_comes_from_content` checks both senses at once: the same aspect
+carrying alarming text and dull text must score identically. A wake word is `promote=`,
+which is the operator's code reading a `Change`.
+
+**So, concretely, what adding things costs today.**
+
+| you want to add | you write | what tells you if you got it wrong |
+|---|---|---|
+| a new vision detail (gaze direction, age) | a `Detector` method, a `Reading` field, a `Look` row, an `_State` field + the aspect wiring | `test_sense_wiring.py` — 10 of 10 wiring steps |
+| a new backend for an existing detail | one `Detector` / `Listener` implementation | the existing suite, unchanged |
+| a whole new sense (touch, a log tail) | a `Sensor` — `async read() -> Event | None` and `close()` | `test_sense_wiring.py` covers it the moment it is added to `SAMPLES` |
+| a new priority policy | a `Salience` table, or `promote=` | the never-preempt and not-from-content gates |
+
+**What this does not claim.** No ASR model ships or has been run: `FakeListener` is the only
+`Listener` that exists, and `voice_tools` says so rather than implying a backend. There is
+no measured threshold for voice identity — `vision_tools.IdentityLedger` earned its
+`DEFAULT_THRESHOLD` from measured overlap (ADR-090, ADR-095) and nothing comparable has been
+measured for voices, so `_name_for` is an exact-match lookup, which is honest. And the
+speaker carried across a run assumes one speaker per run: a second person interjecting is
+misattributed until `Look.every` forces a re-identification (~10 s at
+`sensor_interval_s=0.2`). Real diarisation is a `Listener`, not this.

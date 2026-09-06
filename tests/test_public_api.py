@@ -90,6 +90,7 @@ SUBMODULE_TIERS: dict[str, str] = {
     # -- contrib.  `contrib/__init__.py` states the rule itself: "Never `from harness
     #    import Driver`. The longer path is the disclaimer."
     "harness.contrib.driver": "contrib tier — no compatibility promise, by design",
+    "harness.contrib.attention": "contrib tier — no compatibility promise, by design",
     "harness.contrib.calibration": "contrib tier — no compatibility promise, by design",
     "harness.contrib.output_shaping": "contrib tier — no compatibility promise, by design",
     # -- tiers `docs/03-public-api.md §6` names as submodule-reached.

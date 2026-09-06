@@ -67,7 +67,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
 from harness.contrib.driver import Event, Priority
 from vision_gaze import (BODIES as LOOK_BODIES, HANDS as LOOK_HANDS,
                          IDENTITY as LOOK_IDENTITY, SCENE as LOOK_SCENE,
-                         FACES as LOOK_FACES, Focus, Gaze, motion_of)
+                         FACES as LOOK_FACES, Focus, Gaze, camera_gaze,
+                         motion_of)
 from vision_tools import (UNKNOWN_GESTURE, Camera, Detector, IdentityLedger,
                           PerceptionBuffer, Reading, describe, distance_of,
                           nearer_than)
@@ -366,7 +367,7 @@ class CameraSensor:
         self.attends = wanted | {PRESENCE}
         self.use_thread = use_thread
         #: The cascade (ADR-121). Decides which detector stages this glance pays for.
-        self.gaze = gaze if gaze is not None else Gaze()
+        self.gaze = gaze if gaze is not None else camera_gaze()
         #: What the last glance actually looked at — readable so a caller, the demo and
         #: the tests can see the decision rather than infer it from timings.
         self.focus = Focus()
