@@ -394,16 +394,25 @@ class WhatTheRealPipelineShowed(unittest.TestCase):
         unknown face" is the same state as "one unknown face". Seeing the swap is
         identity's job, which ADR-090 measured as unusable with a generic image
         embedder: the same limitation from the other side.
+
+        The two strangers stand at the SAME distance here, deliberately. When ADR-120
+        gave the sensor a distance band this test failed, and it deserved to: its two
+        boxes were 240px and 180px wide in a 640px frame — 0.375 and 0.28 of it, which
+        is `rất gần` and `ở khoảng cách nói chuyện`. Those were never the same state,
+        and the old assertion only passed because nothing was looking. Holding the box
+        size fixed isolates the claim this test is actually making, which is about
+        IDENTITY; the band crossing gets its own test below.
         """
         # Starts EMPTY, like the clip does: with a face already in frame the baseline
         # would BE "one stranger" and no arrival could ever fire.
         sensor, detector, _ = _sensor(faces=[], stable_reads=1)
+        elsewhere = (NGHIA_BOX[0], NGHIA_BOX[1], THIEP_BOX[2], THIEP_BOX[3])
 
         async def go():
             first = await sensor.read()                     # baseline: nobody
             _see(detector, [Face(THIEP_BOX, 0.9)])
             second = await sensor.read()                    # one stranger arrives
-            _see(detector, [Face(NGHIA_BOX, 0.9)])          # a DIFFERENT stranger
+            _see(detector, [Face(elsewhere, 0.9)])          # a DIFFERENT stranger
             third = await sensor.read()
             _see(detector, [])
             fourth = await sensor.read()
@@ -414,6 +423,30 @@ class WhatTheRealPipelineShowed(unittest.TestCase):
         self.assertIsNotNone(second)
         self.assertIsNone(third, "a stranger swapped for a stranger is the same state")
         self.assertIsNotNone(fourth, "and the departure still fires")
+
+    def test_and_a_stranger_who_crosses_a_band_is_reported_as_MOVEMENT(self):
+        """The other half of the test above, and the reason it had to be split.
+
+        The sensor cannot tell "the same stranger stepped back" from "a different
+        stranger, standing further away" — it has no identity for either. So it says
+        the true thing it can support: the nearest person is in a different band. That
+        is not a claim about who, and the text does not make one.
+        """
+        sensor, detector, _ = _sensor(faces=[], stable_reads=1)
+        far = (NGHIA_BOX[0], NGHIA_BOX[1], 60, 60)          # 60/640 = 0.09 -> ở xa
+
+        async def go():
+            await sensor.read()                             # baseline: nobody
+            _see(detector, [Face(THIEP_BOX, 0.9)])          # 0.375 -> rất gần
+            await sensor.read()
+            _see(detector, [Face(far, 0.9)])
+            return await sensor.read()
+
+        moved = asyncio.run(go())
+        self.assertIsNotNone(moved, "a band crossing is a real observable difference")
+        self.assertIn("lùi ra xa", moved.text)
+        self.assertNotIn("vừa đi khỏi", moved.text, "nobody departed")
+        self.assertNotIn("vừa xuất hiện", moved.text, "and nobody arrived")
 
     def test_an_exhausted_source_does_not_name_a_camera_index(self):
         """The real run ended with `camera 0 không trả về hình` for an exhausted video

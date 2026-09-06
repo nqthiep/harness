@@ -441,21 +441,49 @@ def facing_camera(landmarks: Sequence[Any]) -> bool:
     return abs(landmarks[L_SHOULDER].y - landmarks[R_SHOULDER].y) < 0.12
 
 
+#: The distance bands, ORDERED far → near. The order is the point: "đang tiến lại gần"
+#: is a comparison between two bands, so something has to say which of two strings is
+#: nearer. Leaving that knowledge at the call site is how the ladder and the comparison
+#: drift apart; `distance_of` and `nearer_than` both read this tuple.
+DISTANCE_BANDS: tuple[str, ...] = ("ở xa", "ở khoảng cách nói chuyện", "rất gần")
+
+#: Share of the frame width a face must fill to reach each band above the first.
+#: Same length as `DISTANCE_BANDS[1:]`, checked by `tests/test_vision_tools.py`.
+DISTANCE_CUTS: tuple[float, ...] = (0.15, 0.35)
+
+
 def distance_of(face: Face, frame_size: tuple[int, int]) -> str:
     """How close someone is, from how much of the frame their face fills.
 
     Crude on purpose. The alternative — a real distance estimate — needs a calibrated
     camera, and "đang ở rất gần" is all the model can act on anyway.
+
+    QUANTISED on purpose too, and that matters more than the crudeness: `CameraSensor`
+    puts this string into its committed state, and a continuous value there would differ
+    every frame, so every frame would be a "change" and the cheap always-on loop would
+    wake the model constantly. Three bands is what makes it usable as state.
     """
     width = frame_size[0]
     if not width:
         return ""
     share = face.box[2] / width
-    if share >= 0.35:
-        return "rất gần"
-    if share >= 0.15:
-        return "ở khoảng cách nói chuyện"
-    return "ở xa"
+    band = DISTANCE_BANDS[0]
+    for cut, name in zip(DISTANCE_CUTS, DISTANCE_BANDS[1:]):
+        if share >= cut:
+            band = name
+    return band
+
+
+def nearer_than(a: str, b: str) -> bool:
+    """Is band `a` nearer to the camera than band `b`? Unknown bands compare as neither.
+
+    A helper rather than an index lookup at the call site because `""` — no frame size,
+    so no measurement — must not sort as "furthest away"; it is "don't know", and a
+    move to or from it is not an approach.
+    """
+    if a not in DISTANCE_BANDS or b not in DISTANCE_BANDS:
+        return False
+    return DISTANCE_BANDS.index(a) > DISTANCE_BANDS.index(b)
 
 
 def describe(reading: Reading, names: Sequence[str | None] = ()) -> str:

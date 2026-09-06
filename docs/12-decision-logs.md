@@ -132,6 +132,7 @@ section.
 | [ADR-117](#adr-117--four-things-the-extension-surface-promised-and-did-not-do) | Four things the extension surface promised and did not do | Accepted |
 | [ADR-118](#adr-118--both-pinned-parity-defects-unpinned) | Both pinned parity defects, unpinned | Accepted (`test_parity.py` carries no documented differences again) |
 | [ADR-119](#adr-119--merging-two-review-rounds-where-they-agreed-and-the-four-places-they-did-not) | Merging two review rounds: where they agreed, and the four places they did not | Accepted (merged; 60 commits one way, 29 the other) |
+| [ADR-120](#adr-120--two-rates-of-attention-what-the-cheap-loop-is-allowed-to-notice) | Two rates of attention: what the cheap loop is allowed to notice | Accepted |
 
 ---
 
@@ -5243,3 +5244,100 @@ taking the whole set — they were measuring the trifecta by accident.
 
 **Measured after:** 1426 passed, 229 subtests, ruff clean, `python -m mypy` clean on 104
 source files, `run.py` 219 / `dispatch.py` 228 / `audit.py` 109 / `subagent.py` 45.
+
+---
+
+### ADR-120 — Two rates of attention: what the cheap loop is allowed to notice
+
+**Status:** Accepted.
+
+**The ask, in the user's words:** when a person watches the world, the brain usually
+processes nothing even though images keep arriving through the eyes; it engages only when
+it notices a phenomenon or an action it needs to look at further in order to respond
+appropriately. *"tôi không biết đó là não có 2 tần số xử lý hay có một cơ chế nào khác."*
+
+**[Unverified] on the neuroscience.** Whether biological vision implements this as two
+processing rates, as predictive coding, as attentional gating, or as something else is
+outside what this document can source, and nothing below depends on the answer. What
+follows is the ENGINEERING pattern the description maps onto, argued on its own costs.
+
+**Half of it already existed, and that half was right.** ADR-081 built `CameraSensor` on
+exactly this split: `Driver._pump_forever` calls `Sensor.read()` every
+`sensor_interval_s` (0.2s) — a grab, an inference, a diff, no model call, no tokens —
+and the expensive rate engages only when `read()` returns an `Event`. Cheap loop always
+on; expensive loop on difference. So the question was never "build two rates", it was
+**what is the cheap loop allowed to notice**, and the answer was too narrow.
+
+**Measured before the change** — a `FakeDetector` driven through nine observations, with
+an arrival and a departure first as a non-vacuity control, because a probe that reports
+silence and cannot produce ANY event is measuring nothing:
+
+| observation | before | after |
+|---|---|---|
+| Thiep VÀO *(control)* | EVENT | EVENT |
+| Thiep RA *(control)* | EVENT | EVENT |
+| Thiep ĐỨNG DẬY | **im lặng** | EVENT |
+| Thiep VUNG TAY | **im lặng** | EVENT |
+| Thiep TIẾN LẠI GẦN (`ở xa` → `rất gần`) | **im lặng** | EVENT |
+| cảnh đổi `home office` → `fire, smoke` | **im lặng** | EVENT |
+
+`_State` carried `known`, `unknown`, `blind` and nothing else, so posture, distance and
+scene could not enter a `Change` and therefore could not wake anything. The eyes were
+open; the gate had one input.
+
+**The defect that had to be fixed FIRST, or widening would have made it worse.**
+`_commit` debounced the whole `_State` as a single value: a new state had to be seen
+`stable_reads` times *in its entirety*. Measured on the shipped code — ten observations,
+Thiep present in all ten, only the `unknown` count flickering 1,2,1,2:
+
+    số sự kiện phát ra: 0        (suppressed = 10)
+
+A perfectly stable arrival, swallowed by an unrelated field's jitter. Survivable with two
+fields. Fatal with posture, distance and scene, which jitter *by nature* — one twitchy
+scene classifier would have blinded the sensor to people walking in. `_settle` now
+debounces each field on its own clock and a field that has not settled keeps its
+committed value, so the sensor reports what it is currently sure of, aspect by aspect.
+Same probe after: **1 event**.
+
+**Every new field is QUANTISED, and that is the load-bearing constraint.** A continuous
+value in the committed state differs on essentially every frame, so every frame commits a
+change and the expensive rate collapses into the cheap one — the two rates become one and
+the whole design is gone. So: posture is `posture_of`'s three literals; distance is
+`DISTANCE_BANDS`' three; scene is labels above `MIN_SCENE_CONFIDENCE`, capped at
+`SCENE_LABELS_TRACKED`. Adding a field to `_State` means first deciding its bands.
+
+**Posture and per-person distance are tracked for NAMED people only.** An unknown face
+has no stable key across frames — the detector's ordering is not an identity — so
+`"#0 stood up"` would fire every time detection order shuffled. The one aspect an unknown
+still contributes to is `nearest`, the closest band over all faces, because "somebody is
+now very close" is worth waking for whether or not you know who they are and it needs no
+per-face identity.
+
+**Rule 1 survives, and the scene field is where it was nearly lost.** `Salience` gained
+`posture`/`approach`/`retreat`/`scene` rows and `of()` now takes the `max` over what
+actually changed rather than falling through a ladder — one observation can settle
+several differences and a ladder makes the answer depend on row order. The temptation was
+`"fire" in labels ⇒ CRITICAL`. That is refused: a camera is `effect="external"`, its
+labels are untrusted content, and wiring a label to a priority puts a picture held up to
+the lens in charge of preemption. `scene` is ONE tier for every label; an operator who
+wants fire to preempt writes `promote=`, which is their code reading a `Change`.
+
+**`attends=` is the off switch.** `frozenset({PRESENCE, POSTURE, DISTANCE, SCENE})` by
+default; an unattended aspect is never computed into `_State`, so it costs no debounce and
+can produce no event. `PRESENCE` cannot be removed — `_commit`'s blindness rule is written
+in terms of it — and an unrecognised name raises rather than being silently ignored.
+
+**One existing test failed and deserved to.**
+`test_one_stranger_replacing_another_is_invisible` pinned "one unknown face is the same
+state as one unknown face". Its two strangers had 240px and 180px boxes in a 640px frame
+— 0.375 and 0.28, which is `rất gần` and `ở khoảng cách nói chuyện`. They were never the
+same state; the assertion only passed because nothing was looking. It now holds the box
+size fixed, isolating the claim it is actually making (about IDENTITY), and the band
+crossing gets its own test asserting the sensor reports MOVEMENT and does not claim an
+arrival or a departure it cannot support.
+
+**What this does not do.** It does not detect gestures, gaze, or actions in the verb
+sense — `Body.posture` is whatever the detector supplies, and with `MediaPipeDetector`
+that is `posture_of`'s three-way heuristic (ADR-077). "Thiep vẫy tay" appears above only
+because a `FakeDetector` was told to say so. Real gesture recognition is a detector
+change, not a sensor change, and this ADR claims nothing about it.
