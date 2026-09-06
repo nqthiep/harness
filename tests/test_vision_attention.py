@@ -270,16 +270,62 @@ class AnArrivalIsNotAlsoAPostureChange(unittest.TestCase):
         self.assertNotIn("chuyển từ", fired[0].text)
         self.assertEqual(fired[0].priority, Priority.NORMAL, "arrival's tier, not LOW")
 
-    def test_transitions_reports_only_people_present_in_both(self):
-        """The rule stated directly, away from the sensor: `_transitions` is what keeps
-        an arrival from doubling as a change."""
+    def test_a_departure_does_not_also_claim_the_nearest_person_moved(self):
+        """`nearest` is the band of WHOEVER is closest, so it only means "movement"
+        while the population holds still.
+
+        Measured in the demo before this was fixed: Thiep (rất gần) leaves, Nghia (ở
+        khoảng cách nói chuyện) stays exactly where she is, and the sensor reported
+        "Thiep vừa đi khỏi; người gần nhất lùi ra xa hơn" — a motion nobody made. Two
+        different people's bands compared as if they were one person's.
+        """
+        w = Scene()
+
+        async def go():
+            await w.enrol()
+            await w.settle((NEAR, THIEP, "đang ngồi"), (TALK, NGHIA, "đang ngồi"))
+            w.at((TALK, NGHIA, "đang ngồi"))               # Thiep goes; Nghia does not
+            return await w.read()
+
+        fired = run(go())
+        self.assertEqual(len(fired), 1)
+        self.assertIn("Thiep vừa đi khỏi", fired[0].text)
+        self.assertNotIn("người gần nhất", fired[0].text)
+        self.assertNotIn("lùi ra xa", fired[0].text)
+
+    def test_transitions_needs_a_name_on_BOTH_sides(self):
+        """The rule stated directly, away from the sensor: the key INTERSECTION is what
+        keeps an arrival from doubling as a change.
+
+        `_transitions` used to take a third argument restricting it to people present in
+        both committed states. Mutation M3 removed that restriction and nothing failed,
+        because the intersection here already excludes everyone it would have — so the
+        argument went (ADR-120) and this test pins the mechanism that was actually doing
+        the work, rather than the one the docstring claimed was.
+        """
         before = frozenset({("Thiep", "đang ngồi")})
         after = frozenset({("Thiep", "đang đứng"), ("Nghia", "đang đứng")})
-        self.assertEqual(_transitions(before, after, frozenset({"Thiep"})),
-                         (("Thiep", "đang ngồi", "đang đứng"),))
-        self.assertEqual(_transitions(before, after, frozenset({"Thiep", "Nghia"})),
+        self.assertEqual(_transitions(before, after),
                          (("Thiep", "đang ngồi", "đang đứng"),),
                          "Nghia has no 'before'; there is no transition to report")
+        self.assertEqual(_transitions(after, before),
+                         (("Thiep", "đang đứng", "đang ngồi"),),
+                         "and symmetrically, no 'after' is no transition either")
+        self.assertEqual(_transitions(before, before), (),
+                         "an unchanged value is not a transition")
+
+    def test_a_stale_name_left_by_per_field_settling_reports_nothing(self):
+        """The one way `postures` and `known` can disagree, checked rather than argued.
+
+        Per-field settling can leave a name in the committed `postures` after its owner
+        has left `known` — its posture never settled, so the old value is held. That
+        name is then absent from the NEXT observation's map, so the intersection drops
+        it and no phantom transition is reported for someone who is not there.
+        """
+        stale = frozenset({("Thiep", "đang ngồi"), ("Nghia", "đang ngồi")})
+        now = frozenset({("Thiep", "đang đứng")})            # Nghia has gone
+        self.assertEqual(_transitions(stale, now),
+                         (("Thiep", "đang ngồi", "đang đứng"),))
 
 
 class PriorityStillComesFromStructureNotFromContent(unittest.TestCase):

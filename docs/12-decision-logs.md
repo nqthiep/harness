@@ -5336,6 +5336,26 @@ size fixed, isolating the claim it is actually making (about IDENTITY), and the 
 crossing gets its own test asserting the sensor reports MOVEMENT and does not claim an
 arrival or a departure it cannot support.
 
+**Mutation testing found a parameter that could not change an answer.** Sixteen defects
+injected, sixteen killed by a named test — but only after the first pass. `_transitions`
+originally took a third argument, `stayed`, documented as what keeps an arrival from also
+announcing a posture change. Mutation M3 deleted the restriction and NOTHING failed. The
+docstring was wrong: `postures` keys are a subset of `known` by construction in
+`_state_of`, so the key intersection inside `_transitions` already excludes everyone
+`stayed` would have. The one way per-field settling can make the two disagree — a stale
+name held in `postures` after its owner left `known` — puts that name on only one side,
+so the intersection drops it regardless. The argument was removed rather than left in
+looking load-bearing, and the test that asserted it now asserts the intersection instead.
+A parameter that cannot change an answer is worse than no parameter: it invites the next
+reader to trust it for a guarantee it never gave.
+
+**And it found a sentence the sensor had no evidence for.** Demo section 1, after the
+widening: *"Thiep vừa đi khỏi; người gần nhất lùi ra xa hơn"* — Thiep left, Nghia stayed
+exactly where she was, and nobody moved at all. `nearest` is the band of WHOEVER is
+closest, so across a population change the two bands belong to two different people and
+comparing them asserts a motion that did not happen. `nearest` is now reported only while
+`known` and `unknown` both hold still; the departure carries the news on its own.
+
 **What this does not do.** It does not detect gestures, gaze, or actions in the verb
 sense — `Body.posture` is whatever the detector supplies, and with `MediaPipeDetector`
 that is `posture_of`'s three-way heuristic (ADR-077). "Thiep vẫy tay" appears above only

@@ -21,8 +21,12 @@ present" repeated thirty times a second is noise the context window pays for.
 * **Priority is a TABLE, filled in by code.** Rule 1 of `harness.contrib.driver`: a camera is
   `effect="external"` and its content is untrusted, so if event TEXT could set priority,
   anyone holding up a sign reading "URGENT" could preempt the agent. `Salience` maps a
-  structural `Change` — who arrived, who left, how many unrecognised faces — to a
-  `Priority`. Nothing reads the priority out of a string.
+  structural `Change` — who arrived, who left, how many unrecognised faces, who changed
+  posture or distance band, which scene labels came and went — to a `Priority`. Nothing
+  reads the priority out of a string. The scene row is where this was easiest to lose:
+  every label carries the SAME tier, so a picture of a fire held up to the lens buys no
+  more urgency than a picture of a cat. An operator who wants otherwise writes
+  `promote=`, which is their code reading a `Change` (ADR-120).
 
 **The defaults never preempt, on purpose.** `arrival`/`unknown_arrival` are `NORMAL` and
 `departure` is `LOW`, so out of the box a camera can put something in front of the model
@@ -268,17 +272,27 @@ class _State:
 _FIELDS: tuple[str, ...] = tuple(f.name for f in fields(_State))
 
 
-def _transitions(before: frozenset[tuple[str, str]], after: frozenset[tuple[str, str]],
-                 stayed: frozenset[str]) -> tuple[tuple[str, str, str], ...]:
-    """`(who, before, after)` for everyone in `stayed` whose value changed.
+def _transitions(before: frozenset[tuple[str, str]],
+                 after: frozenset[tuple[str, str]]) -> tuple[tuple[str, str, str], ...]:
+    """`(who, before, after)` for everyone whose value changed BETWEEN two observations.
 
-    `stayed` is the people present in BOTH observations. Restricting to them is what
-    keeps "Thiep vừa xuất hiện" from also announcing "Thiep chuyển từ (không có) sang
-    đang ngồi": a value that appeared because its owner did is part of the arrival, not
-    a second event.
+    The INTERSECTION of the two key sets is what does the work, and it is why a person
+    walking in reports an arrival and not also "Thiep chuyển từ (không có) sang đang
+    ngồi": a name only enters one of these maps by being present in that observation, so
+    an arrival has no `before` entry and produces no transition.
+
+    This took a third argument, `stayed` — the people present in both committed states —
+    and it was removed as unreachable rather than left in looking load-bearing. Mutation
+    M3 (ADR-120) deleted the restriction and no test could tell: `postures` keys are a
+    subset of `known` by construction in `_state_of`, so the intersection above already
+    excludes everyone `stayed` would have. Per-field settling can leave a stale name in
+    the committed `postures` after its owner has left `known`, which is the one way the
+    two can disagree — but a name stale on ONE side is absent from the other, so the
+    intersection drops it anyway. A parameter that cannot change an answer is worse than
+    no parameter: it invites the next reader to trust it for a guarantee it never gave.
     """
-    old = {who: v for who, v in before if who in stayed}
-    new = {who: v for who, v in after if who in stayed}
+    old = dict(before)
+    new = dict(after)
     return tuple(sorted((who, old[who], new[who]) for who in old.keys() & new.keys()
                         if old[who] != new[who]))
 
@@ -448,16 +462,24 @@ class CameraSensor:
             #                    not everyone arriving, so this only establishes the
             #                    baseline that later changes diff against.
             return None
-        stayed = before.known & state.known
         return Change(arrived=tuple(sorted(state.known - before.known)),
                       left=tuple(sorted(before.known - state.known)),
                       unknown_arrived=max(0, state.unknown - before.unknown),
                       unknown_left=max(0, before.unknown - state.unknown),
-                      postures=_transitions(before.postures, state.postures, stayed),
-                      moved=_transitions(before.distances, state.distances, stayed),
+                      postures=_transitions(before.postures, state.postures),
+                      moved=_transitions(before.distances, state.distances),
+                      # `nearest` is the band of WHOEVER is closest, so it is only a
+                      # movement while the population holds still. When somebody arrives
+                      # or leaves, the two bands belong to two different people and
+                      # "lùi ra xa hơn" would assert a motion nobody made — measured in
+                      # the demo: "Thiep vừa đi khỏi; người gần nhất lùi ra xa hơn",
+                      # where Thiep left and Nghia never moved. Silent instead, and the
+                      # departure carries the news.
                       nearest=((before.nearest, state.nearest)
                                if before.nearest != state.nearest
-                               and before.nearest and state.nearest else None),
+                               and before.nearest and state.nearest
+                               and before.known == state.known
+                               and before.unknown == state.unknown else None),
                       scene_in=tuple(sorted(state.scene - before.scene)),
                       scene_out=tuple(sorted(before.scene - state.scene)))
 
@@ -589,6 +611,58 @@ def _demo() -> None:
               f"{table.of(Change(arrived=('Thiep',))).name} khi Thiep vào, "
               f"{table.of(Change(arrived=('Nghia',))).name} khi Nghia vào")
         print("  -> promote nhận `Change` (cấu trúc), KHÔNG nhận text (luật 1)")
+
+        print()
+        print("=" * 78)
+        print("6. HAI TỐC ĐỘ: vòng rẻ chạy liên tục, model chỉ thức khi có KHÁC BIỆT")
+        print("=" * 78)
+        watch = CameraSensor(camera=Camera(capture=Cap()), detector=detector,
+                             ledger=ledger, buffer=PerceptionBuffer(), use_thread=False)
+        near_box, far_box = (10, 10, 300, 300), (10, 10, 60, 60)
+        detector.embeddings = {near_box: thiep, far_box: thiep}
+        script = [
+            ("Thiep ngồi yên (nền)",        far_box,  "đang ngồi", (("home office", 0.9),)),
+            ("... vẫn ngồi yên",            far_box,  "đang ngồi", (("home office", 0.9),)),
+            ("... vẫn ngồi yên",            far_box,  "đang ngồi", (("home office", 0.9),)),
+            ("Thiep ĐỨNG DẬY",              far_box,  "đang đứng", (("home office", 0.9),)),
+            ("... vẫn đứng",                far_box,  "đang đứng", (("home office", 0.9),)),
+            ("Thiep TIẾN LẠI GẦN",          near_box, "đang đứng", (("home office", 0.9),)),
+            ("... vẫn đứng gần",            near_box, "đang đứng", (("home office", 0.9),)),
+            ("CẢNH ĐỔI thành bếp",          near_box, "đang đứng", (("kitchen", 0.9),)),
+            ("... vẫn là bếp",              near_box, "đang đứng", (("kitchen", 0.9),)),
+        ]
+        woke = 0
+        for label, box, posture, scene in script:
+            detector.faces = (Face(box=box),)
+            detector.bodies = (Body(posture),)
+            detector.scene = scene
+            events = [await watch.read() for _ in range(2)]
+            fired = [e for e in events if e is not None]
+            woke += len(fired)
+            head = fired[0].text.split(".")[0] if fired else "(không gọi model)"
+            print(f"  {label:<24} {head}")
+        print(f"  -> {watch.observations} lần quan sát rẻ, {woke} lần đánh thức model "
+              f"({woke / watch.observations:.0%})")
+        print("  -> mắt vẫn mở suốt; chỉ KHÁC BIỆT mới đáng một lần gọi model")
+
+        print()
+        print("=" * 78)
+        print("7. attends= — tắt bớt mặt không quan tâm thì nó không tốn gì cả")
+        print("=" * 78)
+        quiet = CameraSensor(camera=Camera(capture=Cap()), detector=detector,
+                             ledger=ledger, buffer=PerceptionBuffer(),
+                             attends=frozenset({PRESENCE}), use_thread=False)
+        seen = 0
+        for _label, box, posture, scene in script:
+            detector.faces = (Face(box=box),)
+            detector.bodies = (Body(posture),)
+            detector.scene = scene
+            for _ in range(2):
+                seen += (await quiet.read()) is not None
+        print(f"  attends={{PRESENCE}}          : {seen} sự kiện trên "
+              f"{quiet.observations} quan sát")
+        print("  -> dáng/khoảng cách/cảnh không vào `_State`, nên không sinh sự kiện")
+        print("     và cũng không tốn một nhịp debounce nào")
 
     asyncio.run(main())
 
