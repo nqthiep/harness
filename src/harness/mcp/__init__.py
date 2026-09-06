@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import warnings
 from dataclasses import field
 from typing import Any, Awaitable, Callable, Mapping, NewType
 
@@ -82,6 +83,30 @@ class McpServerPolicy:
     #: per-tool override) is untouched by this — an operator's own stated classification
     #: outranks a hint either way, pinned or not.
     reviewed_tools: Mapping[str, str] | None = None
+
+    def __post_init__(self) -> None:
+        # H-6, design/review-architect-round2.md (confirmed still open, round3): the
+        # S-9/G-13 rug-pull window this field exists to close is exactly as open as
+        # before the field existed whenever an operator leaves it at its default. That
+        # default is easy to reach by doing nothing extra -- same shape as G-9's
+        # allowed_hosts=None warning -- so warn loudly rather than let a `trusted=True`
+        # policy look pinned when it silently isn't.
+        if self.trusted and self.reviewed_tools is None:
+            warnings.warn(
+                f"McpServerPolicy(identity={self.identity!r}, trusted=True) has no "
+                f"reviewed_tools -- every tool this server currently claims via its "
+                f"annotations is classified from those hints, UNPINNED. A server that "
+                f"changes its mind later (rug-pulls a tool's description, inputSchema, "
+                f"or hints between two runs) is re-classified from whatever it claims "
+                f"*at that later bind*, with nothing to catch the difference. This is "
+                f"deliberate and supported (`reviewed_tools=None` is the default), but "
+                f"easy to reach by accident on a policy an operator meant to pin. If "
+                f"this is intentional, this warning is the only cost; if it isn't, set "
+                f"reviewed_tools={{tool_name: tool_fingerprint(...), ...}} after "
+                f"reviewing each tool once, offline.\n\n"
+                f"  -> design/03-tools-and-mcp.md §5.4 / "
+                f"design/review-architect-round2.md H-6",
+                UserWarning, stacklevel=2)
 
 
 def _effect_from_hints(ann: Any) -> Effect:

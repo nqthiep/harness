@@ -9,6 +9,7 @@ cơ chế load-bearing có một mutation đi kèm (khôi phục hành vi TRƯ�
 """
 import sys
 import unittest
+import warnings
 from datetime import datetime, timezone
 
 sys.path.insert(0, "src")
@@ -209,6 +210,37 @@ class ChotHashKhiDaReview(unittest.TestCase):
         a = _tool(name="x", description="d")
         b = _tool(name="x", description="d")
         self.assertEqual(tool_fingerprint(a), tool_fingerprint(b))
+
+
+class CanhBaoRugPullWindowH6(unittest.TestCase):
+    """H-6, design/review-architect-round2.md (confirmed still open, round3): a
+    `trusted=True` policy with `reviewed_tools=None` (the default) leaves G-13's rug-pull
+    window exactly as open as before G-13 existed. Nothing enforced that before this fix
+    -- an operator gets the vulnerable configuration by doing nothing extra, silently."""
+
+    def test_trusted_khong_pin_thi_canh_bao(self):
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            policy = McpServerPolicy(identity=ServerLabel("github"), trusted=True)
+        self.assertEqual(len(w), 1)
+        self.assertTrue(issubclass(w[0].category, UserWarning))
+        self.assertIn("reviewed_tools", str(w[0].message))
+        self.assertIsNone(policy.reviewed_tools, "hành vi không đổi -- vẫn None")
+
+    def test_trusted_da_pin_thi_khong_canh_bao(self):
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            McpServerPolicy(identity=ServerLabel("github"), trusted=True,
+                            reviewed_tools={"search": "somehash"})
+        self.assertEqual(len(w), 0)
+
+    def test_untrusted_khong_can_canh_bao(self):
+        """`trusted=False` không đọc hint nên `reviewed_tools` không liên quan -- không
+        cảnh báo, tránh làm phiền cấu hình hoàn toàn hợp lệ."""
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            McpServerPolicy(identity=ServerLabel("github"), trusted=False)
+        self.assertEqual(len(w), 0)
 
 
 class DungToolSpec(unittest.TestCase):
