@@ -43,6 +43,17 @@ attacker to hold a sign up to the lens, while a microphone only needs someone in
 room — or a television, or a phone on speaker — to say "khẩn cấp" out loud. The words
 still reach the model, because they are the news; they just never reach a `Priority`.
 
+**One stream, two destinations, and the sensor does not pick.** A microphone hears the
+person talking TO the agent and everything else in the room, and the harness cannot tell
+those apart from the audio — `Driver.turn(text)` is the user's message and an `Event` is
+a perception, and putting the wrong one in the wrong channel is exactly what
+`driver.py`'s own docstring warns about ("putting perception into the turn's user message
+is the unlabelled, highest-authority channel this whole design exists to avoid"). Since
+only this sensor owns the stream, something here has to route — so it is a hook,
+`on_turn`, and the policy behind it belongs to the caller. `voice_chat.VoiceChat` is that
+policy: idle means the words are a turn, busy means they are an event. Left unset, this
+stays a pure event source and behaves exactly as it did before the hook existed.
+
 **An error is silence, not news.** A dropped socket or a dead microphone produces no
 event, for the same reason a broken camera does not announce that everyone left: "I
 cannot hear" is not "nobody spoke", and only one of those is a claim about the world this
@@ -154,7 +165,19 @@ class MicSensor:
                  buffer: UtteranceBuffer | None = None,
                  salience: Salience | None = None,
                  known_speakers: "frozenset[str] | set[str] | tuple[str, ...]" = (),
+                 on_turn: "Callable[[Change, str], bool] | None" = None,
                  use_thread: bool = True) -> None:
+        #: The routing seam. A microphone hears BOTH the person talking to the agent and
+        #: everything else in the room, and only this sensor owns the stream — so
+        #: something here has to decide which of the two a finished sentence was. That
+        #: decision is policy, not perception, so it is the caller's: `on_turn` is handed
+        #: the same structural `Change` a `Salience` gets plus the words, and returns
+        #: True if it TOOK the utterance as the user's turn. Taken utterances produce no
+        #: event, because delivering the same sentence twice — once as the message and
+        #: once as a perception — is how an agent ends up answering itself.
+        #: `None` (the default) keeps this a pure event source: everything is an event.
+        #: `voice_chat.VoiceChat` is the implementation of that policy worth reading.
+        self.on_turn = on_turn
         self.microphone, self.transcriber = microphone, transcriber
         self.buffer = buffer if buffer is not None else UtteranceBuffer()
         self.salience = salience if salience is not None else Salience()
@@ -166,6 +189,7 @@ class MicSensor:
         self.chunks_sent = 0
         self.utterances = 0
         self.errors = 0
+        self.turns_taken = 0
 
     # -- the feed: audio in, out of band ----------------------------------------------
 
@@ -236,6 +260,10 @@ class MicSensor:
                         known_speaker=bool(last.speaker
                                            and last.speaker in self.known_speakers))
         if change.empty:
+            return None
+        if self.on_turn is not None and self.on_turn(change, text):
+            # Taken as the user's turn. Deliberately NOT also an event: see `on_turn`.
+            self.turns_taken += 1
             return None
         return Event(priority=self.salience.of(change), text=render(change, text),
                      at=last.at, source="mic")
