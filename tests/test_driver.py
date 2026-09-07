@@ -348,6 +348,53 @@ class TheEventAnnouncerThat(unittest.TestCase):
         self.assertEqual(caught.exception.result, "the event text")
 
 
+class TheAnnouncerAndTheCarrierToolThat(unittest.TestCase):
+    """What happens when the MODEL calls the carrier tool for real.
+
+    Not hypothetical: the obvious carrier for a camera agent is its own `look`, and a
+    camera agent calls `look` constantly. Measured before the fix — the event was
+    swallowed and the announcer then went silent for the life of the process.
+    """
+
+    def test_it_waits_rather_than_injecting_into_a_response_that_already_calls_it(self):
+        """Two identical `(name, kwargs)` calls in one response collapse to one dispatch
+        before `before_tool` can recognise the injected id, so the injected result was
+        replaced by the tool's own output. Measured then: two identical `look_around`
+        results and the event never seen. The event stays pending instead, which is what
+        the inbox is for, and rides the next response that does not call the carrier."""
+        inbox = EventInbox()
+        inbox.offer(Event(Priority.NORMAL, "Thiep just spoke"))
+        announcer = EventAnnouncer(inbox, carrier="look_around")
+        agent = _agent([FakeModel.tool_call("look_around", {}), FakeModel.text("ok")],
+                       tools=(look_around, list_tasks), mws=[announcer])
+        result = agent.try_run("begin")
+        seen = [str(b.get("content")) for m in result.messages
+                for b in (m.get("content") or [])
+                if isinstance(b, dict) and b.get("type") == "tool_result"]
+        self.assertIn("Thiep just spoke", seen, "the event must still reach the model")
+        self.assertIn("nothing much", seen,
+                      "and the model's own call must still get its real result")
+
+    def test_a_stale_arm_does_not_silence_it_for_the_life_of_the_process(self):
+        """The regression. `_armed` is set in `after_model` and cleared in `before_tool`;
+        if the injected call never reaches `before_tool` — collapsed, or the turn
+        cancelled — the old code left it set and every later `after_model` returned
+        early. Measured: three consecutive runs delivered nothing, with the event still
+        pending and `announced` frozen at 1. Same livelock shape as the one
+        `EventInbox.delivered` exists to prevent, arriving through the other door."""
+        inbox = EventInbox()
+        inbox.offer(Event(Priority.NORMAL, "Thiep just spoke"))
+        announcer = EventAnnouncer(inbox, carrier="look_around")
+        announcer._armed = Event(Priority.NORMAL, "a previous injection nobody consumed")
+        agent = _agent([FakeModel.text("..."), FakeModel.text("ok")],
+                       tools=(look_around, list_tasks), mws=[announcer])
+        result = agent.try_run("begin")
+        seen = [str(b.get("content")) for m in result.messages
+                for b in (m.get("content") or [])
+                if isinstance(b, dict) and b.get("type") == "tool_result"]
+        self.assertIn("Thiep just spoke", seen)
+
+
 class TheHighTierDoesNotLivelockThat(unittest.TestCase):
     """F-1, the regression that shipped. Measured before the fix: one `HIGH` event
     denied every `write`/`danger` call in every subsequent run, forever, because the

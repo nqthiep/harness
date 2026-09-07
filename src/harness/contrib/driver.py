@@ -404,6 +404,15 @@ class EventAnnouncer(Middleware):
 
     The honest cost: the stored transcript contains an assistant `tool_use` the model
     never emitted. `announced` counts them so a caller can surface that.
+
+    **The carrier is usually a tool the model also calls itself, and that had to be
+    handled.** The obvious carrier for a camera agent is its own `look`, and such an
+    agent calls `look` constantly. Injecting into a response that already calls the
+    carrier produces two identical `(name, kwargs)` calls, which collapse to one dispatch
+    before `before_tool` can recognise the injected id: the event was replaced by the
+    tool's real output, `_armed` was never cleared, and every later `after_model`
+    returned early — silent for the life of the process. Both halves are fixed in
+    `after_model` and pinned by `tests/test_driver.py`.
     """
 
     def __init__(self, inbox: EventInbox, carrier: str,
@@ -412,11 +421,43 @@ class EventAnnouncer(Middleware):
         self.announced = 0
         self._armed: Event | None = None
 
+    @staticmethod
+    def _calls(response: Any, name: str) -> bool:
+        """Does this response already contain a call to `name`? Blocks are dicts from
+        every provider in this library, but a plain `getattr` fallback costs nothing and
+        stops this being the line that breaks on the next one."""
+        for block in getattr(response, "content", ()) or ():
+            kind = (block.get("type") if isinstance(block, dict)
+                    else getattr(block, "type", None))
+            named = (block.get("name") if isinstance(block, dict)
+                     else getattr(block, "name", None))
+            if kind == "tool_use" and named == name:
+                return True
+        return False
+
     def after_model(self, call: Any) -> Any:
         from dataclasses import replace
 
+        # A stale arm — `before_tool` never ran for the previous injection, because the
+        # turn was cancelled or the call was collapsed before it got there. Left set, it
+        # silences this middleware for the LIFE OF THE PROCESS: measured, three
+        # consecutive runs delivered nothing with `_armed` still True and the event
+        # still pending. That is the same livelock shape `EventInbox`'s `delivered` flag
+        # exists to prevent, arriving through the other door, so an arm that outlived its
+        # model call is dropped rather than believed.
+        self._armed = None
+
         event = self.inbox.pending_undelivered()
-        if event is None or event.priority > self.ceiling or self._armed is not None:
+        if event is None or event.priority > self.ceiling:
+            return call.response
+        if self._calls(call.response, self.carrier):
+            # The model is calling the carrier FOR REAL in this same response, with the
+            # same (name, kwargs) the injection would use. Those two collapse to one
+            # dispatch before `before_tool` can recognise the injected id, so the event
+            # would be silently replaced by the tool's own output — measured: two
+            # identical `look` results and the event never seen. Wait for a response that
+            # does not call the carrier; the event stays pending, which is what the inbox
+            # is for.
             return call.response
         # Armed, not taken: the event stays in the inbox until `before_tool` actually
         # turns it into a tool result, which is the moment `deliver()` may be recorded.
